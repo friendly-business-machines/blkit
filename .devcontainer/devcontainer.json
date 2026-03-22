@@ -1,0 +1,41 @@
+{
+  // Friendly label shown in VS Code UI (Dev Containers: Reopen in Container, etc.).
+  // This is display-only and does not affect build/runtime behavior.
+  "name": "blkit (Ubuntu 24.04 LTS)",
+
+  // Build configuration for the container image used by VS Code.
+  // VS Code runs `docker build` with these settings when creating/rebuilding.
+  "build": {
+    // Dockerfile path relative to this file (`.devcontainer/devcontainer.json`).
+    "dockerfile": "Dockerfile",
+
+    // Build context is project root (`..`) rather than `.devcontainer` folder.
+    // This allows COPY access to repository files if future Dockerfile steps need them.
+    // User-related values are defined in Dockerfile ARG defaults to avoid duplication.
+    "context": ".."
+  },
+
+  // VS Code settings/extensions applied when opening this project in the dev container.
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  },
+
+  // User account VS Code uses for terminals, tasks, debug sessions, and extensions.
+  // Must match a user that exists in the built image.
+  "remoteUser": "vscode",
+
+  // On container start, Dev Containers may update remoteUser UID/GID to match host.
+  // Goal: avoid bind-mount file permission issues when host and container IDs differ.
+  // Most impactful on Linux/macOS hosts; typically low/no-op impact on Windows hosts.
+  "updateRemoteUserUID": true,
+
+  // Run a quick tool-version report each time VS Code attaches to the container.
+  "postAttachCommand": "bash .devcontainer/post-attach.sh"
+}
