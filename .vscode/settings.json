@@ -1,0 +1,25 @@
+{
+  // Commit message generation instructions for GitHub Copilot Chat
+  // ==============================================================
+  "github.copilot.chat.commitMessageGeneration.instructions": [
+    // Chris Beam's rules:
+    { "text": "Separate subject from body with a blank line" },
+    { "text": "Limit the subject line to 50 characters" },
+    { "text": "Capitalize the subject line i.e. Begin all subject lines with a capital letter." },
+    { "text": "Do not end the subject line with a period" },
+    { "text": "Use the imperative mood in the subject line" },
+    { "text": "Wrap the body at 72 characters" },
+    { "text": "Use the body to explain what and why vs. how" },
+    // Conventional commit rules:
+    { "text": "Commits MUST be prefixed with a type, which consists of a noun, feat, fix, etc., followed by the OPTIONAL scope, and REQUIRED terminal colon and space." },
+    { "text": "The type feat MUST be used when a commit adds a new feature to your application or library." },
+    { "text": "The type fix MUST be used when a commit fixes a bug in your application or library." },
+    { "text": "A scope MAY be provided after a type. A scope MUST consist of a noun describing a section of the codebase surrounded by parenthesis, e.g., fix(parser):" },
+    { "text": "A description MUST immediately follow the colon and space after the type/scope prefix. The description is a short summary of the code changes, e.g., fix: array parsing issue when multiple spaces were contained in string." },
+    { "text": "A longer commit body MAY be provided after the short description, providing additional contextual information about the code changes. The body MUST begin one blank line after the description." },
+    { "text": "A commit body is free-form and MAY consist of any number of newline separated paragraphs." },
+    // Custom rules:
+    { "text": "Footers MUST NOT be included."},
+    { "text": "types other than fix: and feat: are allowed, for example, build:, chore:, ci:, docs:, style:, refactor:, perf:, test:" },
+  ]
+}
