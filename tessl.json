@@ -1,0 +1,9 @@
+{
+  "name": "blkit",
+  "mode": "vendored",
+  "dependencies": {
+    "tessl-labs/spec-driven-development": {
+      "version": "1.0.5"
+    }
+  }
+}
