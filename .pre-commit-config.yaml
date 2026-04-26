@@ -1,0 +1,149 @@
+repos:
+  # ---------------------------------------------------------------------------
+  # General
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      # - id: no-commit-to-branch
+      #   args: [--branch, main, --branch, master]
+      - id: check-added-large-files
+        args: [--maxkb=2048]
+
+  # ---------------------------------------------------------------------------
+  # Secret scanning
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/trufflesecurity/trufflehog
+    rev: v3.88.1
+    hooks:
+      - id: trufflehog
+        name: TruffleHog secret scan
+        entry: trufflehog git file://. --since-commit HEAD --only-verified=false --fail
+        language: golang
+        pass_filenames: false
+
+  # ---------------------------------------------------------------------------
+  # Markdown
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.44.0
+    hooks:
+      - id: markdownlint
+        args: [--fix]
+
+  # ---------------------------------------------------------------------------
+  # Go
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/dnephin/pre-commit-golang
+    rev: v0.5.1
+    hooks:
+      - id: go-fmt
+        files: ^go/
+      - id: go-imports
+        files: ^go/
+      - id: golangci-lint
+        files: ^go/
+
+  # ---------------------------------------------------------------------------
+  # Rust
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --manifest-path rust/Cargo.toml --
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --manifest-path rust/Cargo.toml -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+  # ---------------------------------------------------------------------------
+  # Python
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.6
+    hooks:
+      - id: ruff-format
+        files: ^python/
+      - id: ruff
+        name: ruff check
+        args: [--fix]
+        files: ^python/
+
+  - repo: local
+    hooks:
+      - id: pyrefly
+        name: pyrefly type check
+        entry: pyrefly check
+        language: system
+        types: [python]
+        files: ^python/
+        pass_filenames: false
+
+  # ---------------------------------------------------------------------------
+  # Java
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: checkstyle
+        name: checkstyle
+        entry: mvn --file java/pom.xml checkstyle:check --no-transfer-progress
+        language: system
+        types: [java]
+        pass_filenames: false
+
+  # ---------------------------------------------------------------------------
+  # C#
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: dotnet-format
+        name: dotnet format
+        entry: dotnet format csharp/blkit.sln
+        language: system
+        types_or: [c#]
+        pass_filenames: false
+
+  # ---------------------------------------------------------------------------
+  # TypeScript
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        files: ^typescript/
+        types_or: [ts, javascript, json, yaml, markdown]
+
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v9.24.0
+    hooks:
+      - id: eslint
+        files: ^typescript/.*\.[jt]s$
+        args: [--fix]
+        additional_dependencies:
+          - eslint@9.24.0
+          - typescript-eslint@8.30.1
+
+  - repo: local
+    hooks:
+      - id: tsc
+        name: tsc type check
+        entry: bash -c 'cd typescript && npx tsc --noEmit'
+        language: system
+        files: ^typescript/
+        types: [ts]
+        pass_filenames: false
