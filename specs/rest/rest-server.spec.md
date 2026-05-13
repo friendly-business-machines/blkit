@@ -7,9 +7,9 @@ targets:
 
 # REST Server
 
-The `blkit.restserver` package provides a long-running HTTP server that exposes processes registered on a [`BrokerGateway`](../messagebroker/overview.spec.md) as REST endpoints. Clients submit process runs over HTTP, deliver messages to suspended instances, cancel/terminate, and observe progress via Server-Sent Events.
+The `blkit.restserver` package provides a long-running HTTP server that exposes processes registered on a [`BrokerGateway`](../messagebroker/overview.spec.md) as REST endpoints. Clients submit process runs over HTTP, respond to per-instance input requests, cancel/terminate, and observe progress via Server-Sent Events.
 
-The REST server interacts only with a `BrokerGateway`. It does not hold a `StateStore` or any direct queue reference. Each `POST` to the submission endpoint runs `gw.Submit(...)`; each SSE subscription runs `gw.Subscribe(...)`. State queries (admin UIs, audit) connect to the `StateStore` directly, separately from this interface.
+The REST server interacts only with a `BrokerGateway`. It does not hold a `StateStore` or any direct queue reference. Each `POST` to the submission endpoint runs `gw.Submit(...)`; each SSE subscription runs `gw.SubscribeToInstance(...)`. State queries (admin UIs, audit) connect to the `StateStore` directly, separately from this interface.
 
 ```go
 package restserver
@@ -23,7 +23,7 @@ package restserver
 // and ctx cancellation stops both together.
 //
 // If opts.EmbeddedWorker is nil, Run is broker-only and relies on remote
-// workers to consume the broker's commands.
+// workers to consume the broker's job queue.
 func Run(ctx context.Context, gw messagebroker.BrokerGateway, opts Options) error
 
 type Options struct {
@@ -42,8 +42,9 @@ type Options struct {
     Input    func(ctx context.Context, raw map[string]any) (map[string]any, error)        // default: identity
     Response func(ctx context.Context, result *EvaluationResult) (any, error)             // default: snapshot of result.Context
 
-    // How often to re-query gw.ListAvailableProcesses(...) to update the
-    // cached registry. Default 30s. Set to 0 to disable refresh.
+    // Deprecated/no-op in v1: registry updates are pushed via
+    // gw.SubscribeToProcessRegistry(...). Reserved for back-compat with
+    // earlier polling designs.
     RegistryPollInterval *time.Duration
 
     // If non-nil, Run also runs an embedded worker in the same process.
@@ -84,11 +85,11 @@ Routing uses `net/http.ServeMux` (Go 1.22+) only — no third-party dependencies
 | `GET` | `/processes` | List all `ProcessRegistration`s the broker currently exposes |
 | `GET` | `/processes/{namespace}/{processId}/{version}` | Single process registration (description + input schema + markdown) |
 | `POST` | `/processes/{namespace}/{processId}/{version}/instances` | Submit a new process run |
-| `POST` | `/instances/{instanceId}/messages` | Deliver a message to a suspended instance |
-| `POST` | `/instances/{instanceId}/cancel` | Cancel a running/suspended instance |
+| `POST` | `/instances/{instanceId}/input-responses` | Respond to a `RequestInputTask` waiting on this instance |
+| `POST` | `/instances/{instanceId}/cancel` | Cancel a pending / running / suspended instance |
 | `POST` | `/instances/{instanceId}/terminate` | Hard-stop a running/suspended instance |
-| `GET` | `/instances/{instanceId}/events` | SSE stream of `Event`s for the instance |
-| `GET` | `/instances/{instanceId}/result` | Block until terminal status; return final `EvaluationResult` |
+| `GET` | `/instances/{instanceId}/events` | SSE stream of `InstanceEvent`s for the instance |
+| `GET` | `/instances/{instanceId}/result` | Block until the instance finishes; return final `EvaluationResult` |
 
 `{namespace}` typically contains slashes (it's a Go package path). The handler extracts the full segment between `/processes/` and `/{processId}` as the namespace. Implementations may URL-encode the namespace in client-side URL construction; the server URL-decodes on receipt.
 
@@ -98,7 +99,7 @@ Routing uses `net/http.ServeMux` (Go 1.22+) only — no third-party dependencies
 
 ### `GET /processes`
 
-Returns an array of `ProcessRegistration` JSON objects from `gw.ListAvailableProcesses(ctx)`, each augmented with the description and input schema produced by `opts.Schema(reg)`.
+Returns an array of `ProcessRegistration` JSON objects from the server's local registry cache (maintained by `gw.SubscribeToProcessRegistry(ctx)` — see [Startup sequence](#startup-sequence)), each augmented with the description and input schema produced by `opts.Schema(reg)`.
 
 **Response 200**:
 
@@ -123,7 +124,7 @@ Returns an array of `ProcessRegistration` JSON objects from `gw.ListAvailablePro
 ]
 ```
 
-The cached snapshot is refreshed every `RegistryPollInterval`.
+The cache is push-updated by `gw.SubscribeToProcessRegistry(ctx)` — adds, removes, and heartbeat losses arrive as `RegistryUpdate` messages.
 
 ### `GET /processes/{namespace}/{processId}/{version}`
 
@@ -153,20 +154,20 @@ The handler:
 
 The endpoint returns immediately — execution happens asynchronously on the worker. To watch the instance's progress, the client subsequently opens an SSE connection to `/instances/{instanceId}/events` or polls `/instances/{instanceId}/result`.
 
-### `POST /instances/{instanceId}/messages`
+### `POST /instances/{instanceId}/input-responses`
 
-Delivers a message to a suspended instance. Request body:
+Responds to a `RequestInputTask` that this instance is currently waiting on. The client first learns about the pending request via the SSE stream (`input_request` event, which carries `requestId`). Request body:
 
 ```json
 {
-  "messageRef": "approval-response",
+  "requestId": "01HZ...",
   "payload": { "...": "..." }
 }
 ```
 
-The handler calls `gw.DeliverMessage(ctx, instanceID, messageRef, payload)`.
+The handler calls `gw.RespondToInputRequest(ctx, instanceID, requestID, payload)`.
 
-**Response 202**: empty body. The handler does not wait for the worker to consume the command; success means the message was published. Outcomes (`INSTANCE_NOT_FOUND`, `NOT_WAITING`, etc.) flow back as `Event`s on the SSE stream.
+**Response 202**: empty body. The handler does not wait for the worker to consume the job; success means the response was published. Outcomes (`INSTANCE_NOT_FOUND`, `NOT_WAITING`, contract-validation failures) flow back as `error` events on the SSE stream.
 
 **Response 500**: broker-publish error.
 
@@ -178,27 +179,31 @@ Request body (optional):
 { "reason": "user clicked cancel" }
 ```
 
-The handler calls `gw.Cancel(ctx, InterruptRequest{Namespace, ProcessID, Version, InstanceID, Reason})`. The `(Namespace, ProcessID, Version)` triple needs to be known to the handler — see [Instance Routing](#instance-routing) below for how that is resolved.
+The handler calls `gw.Cancel(ctx, CancelRequest{Namespace, ProcessID, Version, InstanceID, Reason})`. The `(Namespace, ProcessID, Version)` triple needs to be known to the handler — see [Instance Routing](#instance-routing) below for how that is resolved.
 
-**Response 202**: published; outcome flows back via events.
+**Response 200**: queue-side cancellation succeeded (instance was Pending; no opt-in needed).
 
-**Response 400**: `ErrCancelNotAllowed` (process opted out).
+**Response 202**: cancel instruction published to a running/suspended instance; outcome flows back via the SSE stream.
+
+**Response 400**: `ErrCancelNotAllowed` (instance is Running/Suspended and the process opted out of external cancellation).
 
 **Response 404**: `ErrUnknownProcess` — the process registration aged out, or the instance's process was never advertised to the gateway.
+
+**Response 409 Conflict**: `ErrAlreadyCompleted` / `ErrAlreadyCancelled` / `ErrAlreadyFailed` — instance is already finished. Response body carries the specific status.
 
 **Response 500**: broker-publish error.
 
 ### `POST /instances/{instanceId}/terminate`
 
-Identical to `/cancel` but calls `gw.Terminate(...)`. Returns `400` for `ErrTerminateNotAllowed`.
+Identical to `/cancel` but calls `gw.Terminate(ctx, TerminateRequest{...})`. Always requires `AllowExternalTerminate` (terminate has no queue-side short-circuit). Returns `400` for `ErrTerminateNotAllowed` and `409` for the `ErrAlready*` family.
 
 ### `GET /instances/{instanceId}/events`
 
 Server-Sent Events stream. The handler:
 
 1. Sets `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`.
-2. Calls `gw.Subscribe(ctx, EventFilter{InstanceID: &instanceID})` to obtain the event channel.
-3. For each `Event` received, writes one SSE frame:
+2. Calls `gw.SubscribeToInstance(ctx, instanceID)` to obtain the event channel.
+3. For each `InstanceEvent` received, writes one SSE frame:
 
 ```
 event: <kind>
@@ -207,32 +212,32 @@ data:  <JSON-encoded event payload>
 
 ```
 
-`<kind>` is the lowercase event-kind name: `status_change`, `message_request`, `node_completed`, `error`, `result`. The trailing blank line is required by the SSE protocol.
+`<kind>` is the lowercase event-kind name: `status_change`, `input_request`, `node_completed`, `error`, `result`. The trailing blank line is required by the SSE protocol.
 
 The connection closes when:
 
 - The client disconnects (the request `ctx` cancels), **or**
-- The instance reaches a terminal status and the final `result` event is delivered (the channel from `gw.Subscribe` closes).
+- The instance reaches a finished status (Completed / Cancelled / Failed) and the corresponding final event is delivered (the channel from `gw.SubscribeToInstance` closes).
 
 Heartbeats: the handler sends an SSE comment frame (`: heartbeat\n\n`) every 15s when no real events are pending, to keep idle proxies from killing the connection.
 
 ### `GET /instances/{instanceId}/result`
 
-Synchronous wait for terminal status. The handler calls `gw.Wait(ctx, instanceID)` and returns the final `EvaluationResult`.
+Synchronous wait for the instance to finish. The handler subscribes via `gw.SubscribeToInstance(ctx, instanceID)` and returns when the first event of kind `result` (Completed) or `error` (Failed) arrives, or when a `status_change` lands on `Cancelled`. Implementations may share this as a small helper (`waitForFinish(gw, instanceID)`); it is not a gateway verb.
 
 **Response 200**: `opts.Response(ctx, result)`-shaped body when status is `Completed`.
 
 **Response 422 Unprocessable Entity**: when status is `Failed` or `Cancelled`. Body includes the failure reason.
 
-**Response 408 Request Timeout**: when the request `ctx` times out before the instance reaches terminal status.
+**Response 408 Request Timeout**: when the request `ctx` times out before the instance finishes.
 
-**Long-poll behavior**: clients can supply a `?timeout=30s` query parameter to bound the wait. The handler builds a child context with that deadline. If the deadline fires before the instance is terminal, the handler returns `408`. Default is no application-level timeout — the wait runs until the request `ctx` is cancelled.
+**Long-poll behavior**: clients can supply a `?timeout=30s` query parameter to bound the wait. The handler builds a child context with that deadline. If the deadline fires before the instance finishes, the handler returns `408`. Default is no application-level timeout — the wait runs until the request `ctx` is cancelled.
 
 ---
 
 ## Instance Routing
 
-`Cancel` and `Terminate` need the `(Namespace, ProcessID, Version)` of the target instance to call `gw.Cancel(...)` / `gw.Terminate(...)`, but the URL only carries `instanceId`. The REST server does not have direct `StateStore` access, so it cannot look up the instance's process triple.
+`Cancel` and `Terminate` need the `(Namespace, ProcessID, Version)` of the target instance to call `gw.Cancel(...)` / `gw.Terminate(...)` (the gateway uses the triple to look up the process's `AllowExternalCancel` / `AllowExternalTerminate` opt-ins). The URL only carries `instanceId`. The REST server does not have direct `StateStore` access, so it cannot look up the instance's process triple.
 
 Two options for resolving this, supported in v1:
 
@@ -271,9 +276,9 @@ When `Run` is called:
 
    If the worker's `RegisterProcesses` call fails, `Run` returns the error without listening.
 
-2. **Initial registry snapshot** — call `gw.ListAvailableProcesses(ctx)`. Cache the result in memory.
+2. **Registry subscription** — call `gw.SubscribeToProcessRegistry(ctx)` and spawn a goroutine that maintains a local in-memory map keyed by `(Namespace, ProcessID, Version)`. The first batch of `RegistryUpdate`s carries the snapshot (each is `RegistryUpdateSnapshot`), terminated by a single `RegistryUpdateSnapshotComplete` sentinel; after that, the goroutine applies `Added` / `Removed` / `HeartbeatLost` updates as they arrive. The cache is read under a mutex during request dispatch.
 
-3. **Refresh goroutine** — if `opts.RegistryPollInterval > 0`, spawn a goroutine that re-queries every `RegistryPollInterval` and updates the cached snapshot under a mutex.
+   Until the snapshot phase completes, `GET /processes` returns `503 Service Unavailable` and submission attempts return `404`.
 
 4. **HTTP server** — construct an `http.Server{Addr: opts.Addr, Handler: mux}` where `mux` is a configured `*http.ServeMux` with the routes documented above. Call `srv.ListenAndServe()`.
 
@@ -286,7 +291,7 @@ When `Run` is called:
 When `ctx` is cancelled:
 
 1. Call `srv.Shutdown(graceCtx)` with a derived context for graceful drain. In-flight requests finish; SSE streams see their channels close as the gateway honours `ctx`.
-2. Wait for the embedded worker goroutine (if any) to finish. The worker performs its own graceful shutdown: stop accepting new commands, drain in-flight executors, unregister, drain writer pool, return.
+2. Wait for the embedded worker goroutine (if any) to finish. The worker performs its own graceful shutdown: stop fetching new jobs, drain in-flight executors, unregister, drain writer pool, return.
 3. `Run` returns `ctx.Err()` (or `nil` if `ctx` cancelled cleanly).
 
 If the embedded worker fails mid-life, the worker goroutine returns an error; `Run` propagates it back to the caller after stopping the HTTP server.
@@ -295,16 +300,16 @@ If the embedded worker fails mid-life, the worker goroutine returns an error; `R
 
 ## SSE format reference
 
-Each `Event` from `gw.Subscribe(...)` becomes one SSE frame:
+Each `InstanceEvent` from `gw.SubscribeToInstance(...)` becomes one SSE frame:
 
 ```
 event: status_change
 id:    01HZ...
 data:  {"from":"Pending","to":"Running"}
 
-event: message_request
+event: input_request
 id:    01HZ...
-data:  {"nodeId":"await-approval","messageRef":"approval-response"}
+data:  {"nodeId":"await-approval","requestId":"01HZ...","payload":{"prompt":"Approve loan?"}}
 
 event: node_completed
 id:    01HZ...
@@ -321,7 +326,7 @@ data:  {"status":"Completed","context":{...}}
 
 The `id:` field uses a stream-unique identifier (ULID or broker-supplied sequence). Clients reconnecting with `Last-Event-ID` get a "best-effort" replay only — the gateway's retention policy governs how far back replay can go (per-broker spec). The REST server does not buffer events itself.
 
-The `result` event is always the last frame on an instance-scoped stream. The handler closes the connection after writing it.
+The terminal frame on an instance-scoped stream is whichever of `result` (Completed) / `error` (Failed) / a `Cancelled` `status_change` lands first. The handler closes the connection after writing it.
 
 ---
 
@@ -424,13 +429,13 @@ const { instanceId } = await submit.json();
 // 2. Open SSE stream
 const events = new EventSource(`/instances/${instanceId}/events`);
 
-events.addEventListener("message_request", (e) => {
+events.addEventListener("input_request", (e) => {
     const req = JSON.parse(e.data);
     promptUserForApproval(req).then((response) => {
-        fetch(`/instances/${instanceId}/messages`, {
+        fetch(`/instances/${instanceId}/input-responses`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ messageRef: req.messageRef, payload: response }),
+            body: JSON.stringify({ requestId: req.requestId, payload: response }),
         });
     });
 });
@@ -446,23 +451,23 @@ events.addEventListener("result", (e) => {
 
 ## Concurrency & Lifecycle
 
-The `BrokerGateway` interface is required to be safe for concurrent use, by contract, so multiple in-flight HTTP requests sharing the same gateway is safe. `Options` is captured by value at `Run` time and not mutated. The cached `[]ProcessRegistration` snapshot is read under a mutex during refresh and during request dispatch.
+The `BrokerGateway` interface is required to be safe for concurrent use, by contract, so multiple in-flight HTTP requests sharing the same gateway is safe. `Options` is captured by value at `Run` time and not mutated. The cached `ProcessRegistration` map is read under a mutex during request dispatch and written under the same mutex by the registry-subscription goroutine.
 
-SSE handlers each spawn a `gw.Subscribe(...)` subscription. Each is independent — multiple clients watching the same instance get the same event stream, fanned out by the gateway implementation.
+SSE handlers each spawn a `gw.SubscribeToInstance(...)` subscription. Each is independent — multiple clients watching the same instance get the same event stream, fanned out by the gateway implementation.
 
 ---
 
 ## Edge Cases
 
-- The broker has no live workers when `Run` starts: `gw.ListAvailableProcesses` returns an empty slice. `GET /processes` returns `[]`. Submission attempts return `404` (process not found) until a worker registers.
+- The broker has no live workers when `Run` starts: `gw.SubscribeToProcessRegistry` delivers an empty snapshot (just the `RegistryUpdateSnapshotComplete` sentinel). `GET /processes` returns `[]`. Submission attempts return `404` (process not found) until a worker registers and the corresponding `RegistryUpdateAdded` arrives.
 - `opts.Addr` is empty: `Run` returns a `ValueError`.
 - `opts.Schema` is nil: `Run` returns a `ValueError`. Client tooling needs the schema to construct submissions.
 - The HTTP server exits with a non-`ErrServerClosed` error (e.g. port already in use): `Run` returns that error. The embedded worker (if any) is still drained before returning.
-- A client opens an SSE stream then disconnects: the request `ctx` cancels, `gw.Subscribe`'s channel returns no more events, the handler exits, the gateway cleans up the subscription.
+- A client opens an SSE stream then disconnects: the request `ctx` cancels, `gw.SubscribeToInstance`'s channel returns no more events, the handler exits, the gateway cleans up the subscription.
 - Slow SSE consumer (small client read buffer): backpressure is handled by the gateway. If events are dropped, a `BACKPRESSURE_DROP` error event is emitted on the stream — see [../messagebroker/overview.spec.md](../messagebroker/overview.spec.md).
 - An SSE client uses `Last-Event-ID` to reconnect after a network blip: replay is best-effort and depends on the gateway's retention policy. Per-implementation specs document the actual replay window.
-- A `POST /instances/{instanceId}/cancel` for an already-terminal instance: the handler responds 202 (publish succeeded), but the worker emits `Event{Kind: Error, Code: "ALREADY_TERMINAL"}` on the SSE stream. Clients that want synchronous confirmation should subscribe before issuing the cancel.
-- `GET /instances/{instanceId}/result` for an unknown instance: the request blocks on `gw.Wait(...)` until the request `ctx` cancels. There is no synchronous "does this instance exist?" check — that's a consequence of the gateway not having state-store access.
+- A `POST /instances/{instanceId}/cancel` for an already-finished instance: the handler returns `409 Conflict` with the specific `ErrAlready*` carried in the body. No event flows to the SSE stream — the gateway resolved this synchronously from the broker's status record.
+- `GET /instances/{instanceId}/result` for an unknown instance: the request opens a subscription that yields an `error` event with `code: "INSTANCE_NOT_FOUND"` (per the messagebroker spec's async-error model), which the handler maps to `404 Not Found`.
 - Multiple subscribers to the same instance via SSE: each gets the full event stream by default (broadcast). See [../messagebroker/overview.spec.md](../messagebroker/overview.spec.md).
 - The embedded worker fails `RegisterProcesses` at startup: `Run` returns the error without binding the listening port.
 - `EmbeddedWorker.WorkerID` is empty: `Run` returns a `ValueError` before starting anything.

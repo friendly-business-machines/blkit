@@ -13,9 +13,9 @@ The FAAS layer is a thin wrapper around `Process.Evaluate()` (see [process.spec.
 
 1. Resolves the inbound event to a `*Process` via `Route` + `blkit.LookupProcess(namespace, id, version)`.
 2. Extracts initial `Input` variables from the event via `Input`.
-3. Builds the initial state via `store.NewExecutionState(process, NewExecutionStateOpts{StartId: opts.StartID, Input: input})` and calls `process.Evaluate(EvaluateOpts{Context: ctx, History: hist})`.
+3. Builds the initial state via `store.NewExecutionState(process, NewExecutionStateOpts{StartId: opts.StartID, Input: input})`, calls `gw.MarkRunning(...)` if a `Gateway` is configured, then calls `process.Evaluate(EvaluateOpts{Context: ctx, History: hist})`.
 4. Persists the resulting `ExecutionHistory` and `ExecutionContext` to the configured `StateStore`, if any.
-5. Publishes `Event`s and (on suspension) a continuation command via the configured `BrokerGateway`, if any.
+5. Signals outcome on the configured `BrokerGateway`, if any: `MarkCompleted` / `MarkFailed` on terminal status, or `ReenqueueSuspended` if the process suspended (so a future `JobResume` can resume it).
 6. Formats and returns a response in the shape the vendor SDK expects.
 
 Per-vendor specs:
@@ -37,7 +37,7 @@ type FaasHandlerOpts struct {
     Input      func(ctx context.Context, event json.RawMessage) (map[string]any, error)                // optional; default unmarshals event JSON into map[string]any
     Response   func(ctx context.Context, result *EvaluationResult) (any, error)                        // optional; default returns a map[string]any snapshot of result.Context (each task's Output keyed by task id)
     StateStore StateStore                                                                              // optional; if set, history and context are persisted after Evaluate()
-    Gateway    messagebroker.BrokerGateway                                                             // optional; if set, the handler publishes Events during/after Evaluate and a continuation command on suspension
+    Gateway    messagebroker.BrokerGateway                                                             // optional; if set, the handler calls MarkRunning, posts errors via PostError, and signals outcome via MarkCompleted / MarkFailed / ReenqueueSuspended
 }
 ```
 
@@ -108,23 +108,33 @@ If `StateStore` is `nil`, persistence is skipped — the user can persist inside
 
 ## Event Emission
 
-If `Gateway` is set, the handler publishes `Event`s via `gw.PublishEvent(...)` during and after `Evaluate`. This mirrors what the worker spec describes: `StatusChange` on every status update, `NodeCompleted` after each task / decision, `MessageRequest` when reaching a `SuspendUntilMessage`, `Error` on failure, and the final `Result` on terminal status. External subscribers (MCP servers, web servers, admin UIs) can observe progress via `gw.Subscribe(...)`.
+If `Gateway` is set, the handler emits events to subscribers during evaluation via the gateway's per-event verbs:
+
+- `MarkRunning(instanceID)` once, before calling `Evaluate`.
+- `PostError(instanceID, err)` for any non-terminal task errors that the retry policy will handle (the gateway delivers these as `InstanceEventError` to subscribers; status does not change).
+- Node-completion and input-request events are emitted by `Evaluate`'s internal publish hooks (per-impl wiring; the FAAS layer itself does not call out node-completion verbs directly).
+
+External subscribers (MCP servers, web servers, admin UIs) observe progress via `gw.SubscribeToInstance(...)`.
 
 If `Gateway` is `nil`, no events are emitted. The handler runs to a terminal status invisibly to the broker.
 
 ---
 
-## Continuation on Suspension
+## Outcome on Suspension
 
-If `Gateway` is set **and** the process suspended (did not reach a terminal `ProcessStatusCompleted` or `ProcessStatusFailed` — see [process.spec.md "Suspension"](../processes/process.spec.md#suspension)), the handler publishes a continuation command on the broker. The continuation will be consumed later — by a worker pool, by another FAAS invocation triggered via a broker-event-bridge (EventBridge / Pub/Sub / NATS triggers), or by any other consumer subscribed to the same broker.
+If `Gateway` is set **and** the process suspended (did not reach a terminal `ProcessStatusCompleted` or `ProcessStatusFailed` — see [process.spec.md "Suspension"](../processes/process.spec.md#suspension)), the handler calls `gw.ReenqueueSuspended(ctx, instanceID)`. This places a `JobResume` on the broker queue for the process key, to be picked up later — by a worker pool, by another FAAS invocation triggered via a broker-event-bridge (EventBridge / Pub/Sub / NATS triggers), or by any other consumer of the broker's job stream.
 
-The exact mechanism (a `Command{Kind: CommandContinuation}` on a continuation queue, or a special event-stream entry, or a per-broker variant) is documented in each implementation's spec — see [../messagebroker/redis.spec.md](../messagebroker/redis.spec.md), [nats.spec.md](../messagebroker/nats.spec.md), [in-memory.spec.md](../messagebroker/in-memory.spec.md).
+The exact wire shape for the `JobResume` (subject naming, payload encoding, delivery substrate) is documented in each implementation's spec — see [../messagebroker/redis.spec.md](../messagebroker/redis.spec.md), [nats.spec.md](../messagebroker/nats.spec.md), [azure-service-bus.spec.md](../messagebroker/azure-service-bus.spec.md), [google-pubsub.spec.md](../messagebroker/google-pubsub.spec.md), [in-memory.spec.md](../messagebroker/in-memory.spec.md).
 
-After a successful publish, the handler returns success to the vendor SDK. The current invocation has done its job.
+After a successful `ReenqueueSuspended`, the handler returns success to the vendor SDK. The current invocation has done its job.
 
-If the publish fails, the handler returns that error to the vendor SDK.
+If `ReenqueueSuspended` fails, the handler returns that error to the vendor SDK.
 
-If `Gateway` is `nil` and the process suspended, the handler still persists (if `StateStore` is set) and returns the `Response` for the suspended state, but no continuation is scheduled. The user is responsible for resuming the process by some other mechanism.
+If `Gateway` is `nil` and the process suspended, the handler still persists (if `StateStore` is set) and returns the `Response` for the suspended state, but no re-enqueue happens. The user is responsible for resuming the process by some other mechanism.
+
+## Outcome on Completion / Failure
+
+If `Gateway` is set and `result.Status == Completed`, the handler calls `gw.MarkCompleted(ctx, instanceID, *result.EvaluationResult)`. If `result.Status == Failed`, the handler calls `gw.MarkFailed(ctx, instanceID, InstanceError{Code: "PROCESS_FAILED", Message: ...})`. These verbs publish the terminal event to subscribers and mark the instance finished in the broker's status record (so a later `Cancel` / `Terminate` will see the correct `ErrAlready*`).
 
 ---
 
@@ -144,13 +154,13 @@ The `Response` callback shapes the value returned to the vendor SDK.
 | Outcome | Returned to vendor SDK |
 |---|---|
 | `result.Status == Completed` | success, with `Response` value |
-| `result.Status == Suspended` and `Gateway` set, continuation publish succeeds | success, with `Response` value |
-| `result.Status == Suspended` and `Gateway` not set | success, with `Response` value (no continuation scheduled) |
+| `result.Status == Suspended` and `Gateway` set, `ReenqueueSuspended` succeeds | success, with `Response` value |
+| `result.Status == Suspended` and `Gateway` not set | success, with `Response` value (no re-enqueue scheduled) |
 | `result.Status == Failed` | error to vendor SDK |
 | `Evaluate()` returned a Go error | that error to vendor SDK |
 | `StateStore.Save()` returned an error | that error to vendor SDK |
-| `Gateway.PublishEvent()` returned an error | that error to vendor SDK |
-| Continuation publish returned an error | that error to vendor SDK |
+| `Gateway.MarkRunning` / `MarkCompleted` / `MarkFailed` returned an error | that error to vendor SDK |
+| `Gateway.ReenqueueSuspended` returned an error | that error to vendor SDK |
 | `Route` returned an error | that error to vendor SDK |
 | `Input` returned an error | that error to vendor SDK |
 | `Route` resolved a non-registered process | `UnknownProcessError` to vendor SDK |
@@ -178,4 +188,4 @@ The vendor SDK (and the FAAS platform) decides retry semantics based on whether 
 - The process completes in the same invocation — `result.Status == Completed`. No continuation is published even if `Gateway` is set.
 - The process fails — `result.Status == Failed`. State is persisted (if `StateStore` is set) so the failure is recorded; no continuation is enqueued.
 - Concurrent invocations of the handler — safe. The handler does not mutate `FaasHandlerOpts`, the `*Process` instances are stateless per [process.spec.md "Statefulness"](../processes/process.spec.md), and the `StateStore` / `BrokerGateway` interfaces are required to be safe for concurrent use.
-- A FAAS-only deployment (no worker pool) does not register processes with the broker. As a result, those processes do not appear in `gw.ListAvailableProcesses(...)` and producers using that path (e.g. an MCP server) won't see them. To expose FAAS-deployed processes to producers, run a worker pool on the same broker — the worker registers and FAAS handles the actual evaluation; the two roles can coexist on the same `(Namespace, ProcessID, Version)`.
+- A FAAS-only deployment (no worker pool) does not register processes with the broker. As a result, those processes do not appear in registry snapshots delivered by `gw.SubscribeToProcessRegistry(...)`, and producers using that path (e.g. an MCP server) won't see them. To expose FAAS-deployed processes to producers, run a worker pool on the same broker — the worker registers and FAAS handles the actual evaluation; the two roles can coexist on the same `(Namespace, ProcessID, Version)`.

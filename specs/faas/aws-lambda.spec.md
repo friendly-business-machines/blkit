@@ -21,7 +21,7 @@ The returned function:
 2. Calls `opts.Input(ctx, event)` (or the default JSON unmarshaller) to build the `Input` map.
 3. Calls `process.Evaluate(EvaluateOpts{StartId: opts.StartID, Input: input})`.
 4. If `opts.StateStore` is set, calls `Save()` with the resulting history.
-5. If `opts.Gateway` is set, publishes `Event`s during/after `Evaluate` and (on suspension) a continuation command via the gateway.
+5. If `opts.Gateway` is set, signals outcome on the broker: `MarkCompleted` / `MarkFailed` on terminal status, or `ReenqueueSuspended` on suspension.
 6. Calls `opts.Response(ctx, result)` (or the default which returns a `map[string]any` snapshot of `result.Context`) and returns the value.
 
 Any error from these steps is returned to `aws-lambda-go`, which propagates it to the Lambda runtime — the platform's retry / DLQ semantics then apply.
@@ -122,8 +122,8 @@ func main() {
 ## Edge Cases
 
 - The Lambda runtime may invoke the handler concurrently. The handler is safe under concurrent use; see [overview.spec.md](overview.spec.md) "Edge Cases".
-- Lambda's 15-minute execution limit applies. Processes whose total execution time may exceed this should set `MaxRunTime` (see [process.spec.md](../processes/process.spec.md)) to fail fast, or be designed to suspend (e.g. via timer or message catch events) and resume via the `Gateway` continuation path.
+- Lambda's 15-minute execution limit applies. Processes whose total execution time may exceed this should set `MaxRunTime` (see [process.spec.md](../processes/process.spec.md)) to fail fast, or be designed to suspend (e.g. via timer events or `RequestInputTask`) so a future `JobResume` resumes them.
 - Lambda retries depend on the trigger source and configuration (asynchronous invocations retry up to twice by default; SQS retries via visibility timeout until the message is moved to a DLQ). The handler does not attempt its own retry — it relies on the platform.
 - Cold starts: construct `*Process`, `StateStore`, and `BrokerGateway` in package-level `var` blocks or `init()` so they are reused across warm invocations. The factory itself is also reusable.
 - Returning `(nil, nil)` is permitted; some Lambda trigger types (e.g. SQS, EventBridge) ignore the return value.
-- Edge cases around `Route`, `Input`, persistence, and re-enqueue are documented in [overview.spec.md](overview.spec.md) "Edge Cases".
+- Edge cases around `Route`, `Input`, persistence, and outcome signaling are documented in [overview.spec.md](overview.spec.md) "Edge Cases".

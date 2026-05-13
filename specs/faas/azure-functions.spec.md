@@ -24,7 +24,7 @@ The returned handler:
 3. Calls `opts.Input(ctx, body)` (or the default JSON unmarshaller) to build the `Input` map.
 4. Calls `process.Evaluate(EvaluateOpts{StartId: opts.StartID, Input: input})`.
 5. If `opts.StateStore` is set, calls `Save()` with the resulting history.
-6. If `opts.Gateway` is set, publishes `Event`s during/after `Evaluate` and (on suspension) a continuation command via the gateway.
+6. If `opts.Gateway` is set, signals outcome on the broker: `MarkCompleted` / `MarkFailed` on terminal status, or `ReenqueueSuspended` on suspension.
 7. Calls `opts.Response(ctx, result)` (or the default which returns a `map[string]any` snapshot of `result.Context`) and writes the value to the response.
 
 The `context.Context` passed into all callbacks is `r.Context()`.
@@ -58,12 +58,12 @@ For HTTP-triggered functions, the body is **not** wrapped in an envelope — the
 | Outcome | HTTP status | Body |
 |---|---|---|
 | `result.Status == Completed` | `200 OK` | JSON-encoded context snapshot |
-| `result.Status == Suspended` and `Gateway` set, continuation publish succeeds | `202 Accepted` | JSON `{"processInstanceId": "..."}` |
+| `result.Status == Suspended` and `Gateway` set, `ReenqueueSuspended` succeeds | `202 Accepted` | JSON `{"processInstanceId": "..."}` |
 | `result.Status == Suspended` and `Gateway` not set | `200 OK` | JSON-encoded context snapshot |
 | `result.Status == Failed` | `500 Internal Server Error` | JSON `{"error": "..."}` |
 | `Evaluate()` returned a Go error | `500 Internal Server Error` | JSON `{"error": "..."}` |
 | `StateStore.Save()` returned an error | `500 Internal Server Error` | JSON `{"error": "..."}` |
-| `Gateway.PublishEvent()` or continuation publish returned an error | `500 Internal Server Error` | JSON `{"error": "..."}` |
+| Any `Gateway.Mark*` / `ReenqueueSuspended` returned an error | `500 Internal Server Error` | JSON `{"error": "..."}` |
 | `Route` returned `UnknownProcessError` | `404 Not Found` | JSON `{"error": "..."}` |
 | `Route` or `Input` returned any other error | `400 Bad Request` | JSON `{"error": "..."}` |
 

@@ -17,8 +17,8 @@ A `Task` is a unit of work in a business process. All tasks implement `ProcessNo
 ```
 ProcessNode (interface)
 ├── StartEvent, EndEvent, CancelEvent, ErrorEvent, TerminateEvent,
-│   SuspendForDurationEvent, SuspendUntilDatetimeEvent, SuspendUntilMessageEvent,
-│   PauseForDurationEvent, PauseUntilMessageEvent
+│   SuspendForDurationEvent, SuspendUntilDatetimeEvent,
+│   PauseForDurationEvent
 ├── ParallelGateway, ExclusiveGateway, InclusiveGateway, JoinGateway
 ├── DecisionTask                 (decision logic + task framing in one type)
 └── Task
@@ -465,17 +465,16 @@ triggerReports.MultiInstance = NewMultiInstanceConfig(
 
 ## RequestInputTask
 
-Publishes a typed input-request event onto the `BrokerGateway` and waits for a correlated response delivered via `BrokerGateway.DeliverMessage`. The response payload is written back into the `ExecutionContext` under `PayloadVariable`. The wait can be durable (suspend), in-memory (pause), or a hybrid that pauses briefly and then suspends if no response arrives.
+Publishes a typed input-request event onto the instance's topic via the `BrokerGateway` and waits for a correlated response delivered via `BrokerGateway.RespondToInputRequest`. The response payload is written back into the `ExecutionContext` under `PayloadVariable`. The wait can be durable (suspend), in-memory (pause), or a hybrid that pauses briefly and then suspends if no response arrives.
 
-`RequestInputTask` consolidates the common "emit request → suspend / pause for reply" pattern that previously required a `NativeFunctionTask` followed by a `SuspendUntilMessage` (see [event-nodes.spec.md](event-nodes.spec.md#pattern-request-input-from-a-human-or-another-system)). It supports both human-in-the-loop and system-to-system input requests — blkit does not distinguish between the two; the responder simply calls `BrokerGateway.DeliverMessage` against the correct `(processInstanceID, messageRef)`.
+`RequestInputTask` is the only mechanism in blkit for waiting on external input — there are no event-node equivalents. It supports both human-in-the-loop and system-to-system input requests; blkit does not distinguish between the two. The responder calls `BrokerGateway.RespondToInputRequest(ctx, instanceID, requestID, payload)`, where `requestID` is the per-fire identifier surfaced on the published `InstanceEventInputRequest`.
 
 ```go
 type RequestInputTask struct {
     Task
-    MessageRef string  // correlation key matched by BrokerGateway.DeliverMessage
 
     // Expression evaluated against the ExecutionContext at task start to build
-    // the payload that accompanies the EventMessageRequest. Typical use:
+    // the payload that accompanies the InstanceEventInputRequest. Typical use:
     // describe to the recipient what is being requested (form schema, prompt
     // text, current case state, etc.).
     RequestPayload BlExpr // resolves to a BlContext
@@ -503,7 +502,7 @@ const (
     RequestInputPauseThenSuspend                             // pause for PauseDuration, then suspend
 )
 
-func NewRequestInputTask(id string, name string, messageRef string, requestPayload BlExpr, opts ...RequestInputTaskOpts) *RequestInputTask { ... }
+func NewRequestInputTask(id string, name string, requestPayload BlExpr, opts ...RequestInputTaskOpts) *RequestInputTask { ... }
 
 type RequestInputTaskOpts struct {
     ResponseContract *InputContract
@@ -513,18 +512,20 @@ type RequestInputTaskOpts struct {
 }
 ```
 
+The task carries no design-time message-ref or label — the runtime generates a per-fire `requestID` (UUIDv7) for each invocation of the task, and that ID is what producers use to address `RespondToInputRequest`. For Loop / Multi-Instance the runtime generates one `requestID` per iteration.
+
 ### Lifecycle
 
 1. Task starts → runtime evaluates `RequestPayload` against the current `ExecutionContext`.
-2. Runtime publishes `Event{Kind: EventMessageRequest, MessageRequest: {NodeID, MessageRef, Payload}}` via `BrokerGateway.PublishEvent` (see [../messagebroker/overview.spec.md](../messagebroker/overview.spec.md#event-types)). `ctx.ProcessInstanceID()` is mirrored onto the event by the runtime so subscribers can route the response back via `BrokerGateway.DeliverMessage(processInstanceID, messageRef, payload)`.
+2. Runtime generates a `requestID` and publishes `InstanceEvent{Kind: InputRequest, InputRequest: {NodeID, RequestID, Payload}}` via the gateway's instance-topic publish path (see [../messagebroker/overview.spec.md](../messagebroker/overview.spec.md#event-types)). Subscribers route the response back via `BrokerGateway.RespondToInputRequest(instanceID, requestID, payload)`.
 3. The token enters the configured wait mode (see below).
-4. On `DeliverMessage` arrival the runtime validates the payload against `ResponseContract` if set, writes it under `PayloadVariable` if set, then resumes past the task.
+4. On `RespondToInputRequest` arrival the runtime validates the payload against `ResponseContract` if set, writes it under `PayloadVariable` if set, then resumes past the task.
 
 ### Wait modes
 
-- **`RequestInputSuspend`** (default): the runtime suspends the process immediately on entering the task — `ExecutionHistory` records a suspension step, `StateStore.Save` persists state, `Evaluate()` returns with status `ProcessStatusSuspended`. Semantics are identical to `SuspendUntilMessageEvent`. FAAS-compatible.
-- **`RequestInputPause`**: the runtime parks the goroutine on an in-memory channel — status remains `ProcessStatusRunning`, no `StateStore` write occurs, other parallel branches continue advancing. Semantics are identical to `PauseUntilMessageEvent`. Not FAAS-addressable (no goroutine survives invocation), and the wait is lost across worker restarts.
-- **`RequestInputPauseThenSuspend`**: the runtime starts in pause mode and, if no response arrives within `PauseDuration`, **converts** the wait to a suspension. The token's position does not change; only the wait substrate is swapped — `ExecutionHistory` records a suspension step, `StateStore.Save` persists state, and `Evaluate()` returns. A subsequent `DeliverMessage` then drives a continuation in the usual way. Use this for "fast path is in-memory, slow path is durable" workloads (e.g. a human approval that usually returns in seconds but occasionally takes hours). See [../worker/worker.spec.md](../worker/worker.spec.md) for the worker-side pause-to-suspend conversion.
+- **`RequestInputSuspend`** (default): the runtime suspends the process immediately on entering the task — `ExecutionHistory` records a suspension step, `StateStore.Save` persists state, the worker calls `gw.ReenqueueSuspended(...)`, and `Evaluate()` returns with status `ProcessStatusSuspended`. The eventual `JobResume` (driven by a matching `RespondToInputRequest`) can be picked up by any worker. FAAS-compatible.
+- **`RequestInputPause`**: the runtime parks the goroutine on an in-memory channel keyed by `(instanceID, requestID)` — status remains `ProcessStatusRunning`, no `StateStore` write occurs, other parallel branches continue advancing. Not FAAS-addressable (no goroutine survives invocation), and the wait is lost across worker restarts (the broker's in-flight timeout redelivers the originating job and the task re-enters the pause).
+- **`RequestInputPauseThenSuspend`**: the runtime starts in pause mode and, if no response arrives within `PauseDuration`, **converts** the wait to a suspension. The token's position does not change; only the wait substrate is swapped — `ExecutionHistory` records a suspension step, `StateStore.Save` persists state, the worker calls `gw.ReenqueueSuspended(...)`, and `Evaluate()` returns. A subsequent `RespondToInputRequest` then drives a continuation in the usual way. Use this for "fast path is in-memory, slow path is durable" workloads (e.g. a human approval that usually returns in seconds but occasionally takes hours). See [../worker/worker.spec.md](../worker/worker.spec.md) for the worker-side pause-to-suspend conversion.
 
 ### Exit ports
 
@@ -532,11 +533,11 @@ All exit-port kinds inherited from `Task` are supported — `TimerExitPort`, `Er
 
 ### Correlation
 
-Same `(processInstanceID, MessageRef)` correlation as `SuspendUntilMessageEvent` / `PauseUntilMessageEvent`. blkit does not provide content-based correlation; the responder must address `DeliverMessage` to the exact `processInstanceID` and `messageRef`. The `processInstanceID` is included automatically in the published `MessageRequest` event so subscribers (UIs, integration adapters) can build the response correctly.
+Correlation is per-fire via `requestID`. blkit does not provide content-based correlation; the responder addresses `RespondToInputRequest` to the exact `(processInstanceID, requestID)`. Subscribers receive the `requestID` on the published `InstanceEventInputRequest`.
 
 ### Loop and Multi-Instance
 
-Both are supported. `MultiInstance` is the canonical "ask N reviewers in parallel" pattern — each iteration emits its own `MessageRequest` event with a unique iteration-scoped `messageRef` (see edge cases below for the disambiguation rule).
+Both are supported. `MultiInstance` is the canonical "ask N reviewers in parallel" pattern — each iteration generates its own `requestID` and emits its own `InstanceEventInputRequest`, so responders address each iteration distinctly with no extra disambiguation logic.
 
 ### Example — request approval from a human with a 24-hour SLA
 
@@ -546,7 +547,6 @@ ptr := func(s string) *string { return &s }
 requestApproval := NewRequestInputTask(
     "request-approval",
     "Request Manager Approval",
-    "approval-response",
     Bl.Context(map[string]BlExpr{
         "prompt":      Bl.String("Approve loan?"),
         "applicant":   Bl.ContextVar("start.applicant"),
@@ -577,7 +577,7 @@ loanApproval := NewProcess("loan-approval", "1.0", ProcessOpts{
 
 ### Example — system-to-system input request (no human, pure async integration)
 
-The responder is another service that posts results back via `BrokerGateway.DeliverMessage` once it has computed the requested value.
+The responder is another service that posts results back via `BrokerGateway.RespondToInputRequest` once it has computed the requested value.
 
 ```go
 ptr := func(s string) *string { return &s }
@@ -585,7 +585,6 @@ ptr := func(s string) *string { return &s }
 requestScore := NewRequestInputTask(
     "request-score",
     "Request Risk Score",
-    "risk-score-response",
     Bl.Context(map[string]BlExpr{
         "applicant_id": Bl.StringVar("start.applicant_id"),
         "model":        Bl.String("v3"),
@@ -1009,7 +1008,7 @@ orderFlow := NewProcess("order-flow", "1.0", ProcessOpts{
 })
 ```
 
-A concurrent branch (or external `DeliverMessage` call) writes `flags.cancel_in_flight = true`; the conditional exit port fires, `processOrder` is cancelled, and flow continues to `cleanup`.
+A concurrent branch (or external `RespondToInputRequest` on a peer `RequestInputTask`) writes `flags.cancel_in_flight = true`; the conditional exit port fires, `processOrder` is cancelled, and flow continues to `cleanup`.
 
 ### Example — Fire a side-task when a threshold is crossed (non-interrupting)
 
@@ -1070,10 +1069,10 @@ The `monitor` task continues running; when stock drops below 10, the reorder bra
 - A `TriggerProcessTask` does not link the new instance as a child: `ParentProcessInstanceID` and `UltimateParentProcessInstanceID` on the submitted `ProcessTask` remain `nil`. Use `SubProcessTask` if a parent/child relationship is required.
 - A `RequestInputTask` constructed with `WaitMode == RequestInputPauseThenSuspend` and a nil `PauseDuration` produces a `ProcessDefinitionError` at construction.
 - A `RequestInputTask` constructed with any `WaitMode` other than `RequestInputPauseThenSuspend` and a non-nil `PauseDuration` produces a `ProcessDefinitionError` at construction — `PauseDuration` is meaningless in the other modes.
-- A `RequestInputTask` whose response payload fails the configured `ResponseContract` raises a task error with `ErrorRef == "INPUT_CONTRACT_VIOLATION"`. The delivered message is **not** re-queued — the responder is expected to send a fresh `DeliverMessage` after correcting the payload, addressed to the same `(processInstanceID, messageRef)`.
-- A `RequestInputTask` that reaches a terminal event (timer fires, parent cancelled, `TerminateEvent` reached on a sibling branch, etc.) before the response arrives has its pending message-wait unregistered. A late-arriving `DeliverMessage` for that `(processInstanceID, messageRef)` returns `NOT_WAITING` per [../messagebroker/overview.spec.md](../messagebroker/overview.spec.md#error-model).
+- A `RequestInputTask` whose response payload fails the configured `ResponseContract` raises a task error with `ErrorRef == "INPUT_CONTRACT_VIOLATION"`. The rejected response is **not** retried — the responder is expected to send a fresh `RespondToInputRequest` after correcting the payload, addressed to the same `(processInstanceID, requestID)`.
+- A `RequestInputTask` that reaches a terminal event (timer fires, parent cancelled, `TerminateEvent` reached on a sibling branch, etc.) before the response arrives has its pending wait unregistered. A late-arriving `RespondToInputRequest` for that `(processInstanceID, requestID)` returns `NOT_WAITING` per [../messagebroker/overview.spec.md](../messagebroker/overview.spec.md#error-model).
 - A `RequestInputTask` with `WaitMode == RequestInputPauseThenSuspend` whose `PauseDuration` is zero or negative is treated as `RequestInputSuspend` (no pause window).
-- A `RequestInputTask` with `MultiInstance` emits one `EventMessageRequest` per iteration. Each iteration's wait registers under `(processInstanceID, messageRef + ":" + iterationIndex)` to disambiguate responders; the iteration index is also included in the published event payload so responders can address the correct iteration.
+- A `RequestInputTask` with `MultiInstance` emits one `InstanceEventInputRequest` per iteration. Each iteration generates its own unique `requestID`, so responders address each iteration distinctly via `RespondToInputRequest(processInstanceID, requestID, payload)` with no extra disambiguation logic; the iteration index is included in the published event payload for responders that need to display or log it.
 - A `RequestInputTask` running under `RequestInputPause` inside a FAAS invocation holds the invocation open until the response arrives or the task's `TimerExitPort` fires. Suspend modes are strongly preferred for FAAS — the spec does not mechanically prevent `RequestInputPause` in FAAS, but billing and cold-start behaviour discourage it.
 
 ---
@@ -1087,5 +1086,5 @@ The following task types are **intentionally not implemented** in blkit. They mu
 | Task type | Reason omitted |
 |---|---|
 | Service task | External service calls (HTTP, gRPC, vendor SDKs, etc.) are expressed as `NativeFunctionTask` functions. Callers implement service adapters in their own libraries; blkit provides no connector or job-worker infrastructure. For *blkit-to-blkit* dispatch use `TriggerProcessTask`; for external-system sends use `NativeFunctionTask`. |
-| Receive task | Passive waiting for inbound messages (no outbound request emitted) is expressed as `SuspendUntilMessage` or `PauseUntilMessage` event nodes (see [event-nodes.spec.md](event-nodes.spec.md)) rather than a task type. If you also need to *request* the input that you're waiting for, use `RequestInputTask` instead. blkit's correlation remains `(processInstanceID, messageRef)` only — content-based correlation and broad message brokering stay caller responsibilities. |
+| Receive task | Passive waiting for inbound messages (no outbound request emitted) is **not** supported in v1. All external input must be requested explicitly via `RequestInputTask`, which makes the input contract enforceable on both ends. blkit's correlation is per-fire `(processInstanceID, requestID)` only — content-based correlation and broad message brokering stay caller responsibilities. |
 | Manual task | BPMN "manual task" describes work performed offline with no system involvement (paper forms, physical assembly, etc.). blkit has no event to record beyond a `NativeFunctionTask` that the operator's tooling marks complete via a synthetic call; there is nothing for the runtime to model. |
