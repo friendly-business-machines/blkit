@@ -308,7 +308,7 @@ The `StateStore` interface allows custom implementations — for example, stream
 
 ## Edge Cases
 
-- The state store implementation is independent of the `BrokerGateway` choice. Any combination is valid (e.g. `PostgresStateStore` with `RedisBrokerGateway`).
+- The state store implementation is independent of the `MessageGateway` choice. Any combination is valid (e.g. `PostgresStateStore` with `RedisMessageGateway`).
 - `SQLiteStateStore`, `RocksDBStateStore`, `BadgerDBStateStore`, and `LocalFSStateStore` create their database / directory at the specified path if it does not exist. If the path is not writable, store creation fails with an I/O error.
 - `PostgresStateStore` and `AzureSQLStateStore` require a reachable database server. Behaviour on unreachability is governed by the worker's `WritePolicy` (see [../worker/worker.spec.md](../worker/worker.spec.md#write-policy)) when running under a long-running worker; FaaS handlers surface backend errors directly to the vendor SDK.
 - `PostgresStateStore` and `AzureSQLStateStore` create the schema and tables if they do not exist. If the user lacks `CREATE` privileges, store creation fails with a permissions error.

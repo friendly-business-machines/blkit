@@ -61,7 +61,7 @@ import (
     "github.com/GoogleCloudPlatform/functions-framework-go/functions"
     "github.com/friendly-business-machines/blkit"
     "github.com/friendly-business-machines/blkit/faas"
-    "github.com/friendly-business-machines/blkit/messagebroker"
+    "github.com/friendly-business-machines/blkit/messagegateway"
 
     // Blank-imported with "_" because nothing in this file references the
     // package directly — a regular import would fail to compile with Go's
@@ -75,7 +75,7 @@ import (
 
 var (
     stateStore = blkit.NewPostgresStateStore("postgresql://blkit:secret@db.internal:5432/blkit", "loan_app")
-    gw, _      = messagebroker.NewRedisBrokerGateway(messagebroker.RedisOpts{Addr: "redis.internal:6379"})
+    gw, _      = messagegateway.NewRedisMessageGateway(messagegateway.RedisOpts{Addr: "redis.internal:6379"})
 )
 
 func init() {
@@ -138,5 +138,5 @@ The HTTP-handler shape remains the canonical FAAS interface for GCP; the Pub/Sub
 - The handler is safe under concurrent use; the platform may dispatch multiple requests to the same instance.
 - A request body that is not valid JSON results in `400 Bad Request` (the default `Input` returns an error).
 - A `GET` request results in `400 Bad Request` (the default `Input` requires a body).
-- Cold starts: construct `*Process`, `StateStore`, and `BrokerGateway` in package-level `var` blocks or `init()`. The factory itself is also reusable.
+- Cold starts: construct `*Process`, `StateStore`, and `MessageGateway` in package-level `var` blocks or `init()`. The factory itself is also reusable.
 - Edge cases around `Route`, `Input`, persistence, and re-enqueue are documented in [overview.spec.md](overview.spec.md) "Edge Cases".

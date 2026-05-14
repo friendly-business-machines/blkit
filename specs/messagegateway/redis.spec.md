@@ -1,16 +1,16 @@
 ---
-name: RedisBrokerGateway
-description: Redis/Valkey-backed implementation of BrokerGateway. Implementation pending; this stub records the placeholder.
+name: RedisMessageGateway
+description: Redis/Valkey-backed implementation of MessageGateway. Implementation pending; this stub records the placeholder.
 targets:
-  - ../messagebroker/redis_gateway.go
+  - ../messagegateway/redis_gateway.go
 ---
 
-# RedisBrokerGateway
+# RedisMessageGateway
 
-`RedisBrokerGateway` is the Redis/Valkey-backed implementation of [BrokerGateway](overview.spec.md). Constructor:
+`RedisMessageGateway` is the Redis/Valkey-backed implementation of [MessageGateway](overview.spec.md). Constructor:
 
 ```go
-func NewRedisBrokerGateway(opts RedisOpts) (*RedisBrokerGateway, error)
+func NewRedisMessageGateway(opts RedisOpts) (*RedisMessageGateway, error)
 
 type RedisOpts struct {
     Addr string // e.g. "localhost:6379"
@@ -31,4 +31,4 @@ Implementation pending. This spec is a placeholder. Open design questions:
 - Backpressure-drop policy when a subscriber's buffer overflows.
 - Status record: where to store the per-instance `ProcessStatus` so `Cancel` / `Terminate` can detect already-finished instances (likely a Redis hash keyed by instanceID, written by the worker via the Mark* verbs).
 
-See [overview.spec.md](overview.spec.md) for the abstract `BrokerGateway` interface this implementation satisfies.
+See [overview.spec.md](overview.spec.md) for the abstract `MessageGateway` interface this implementation satisfies.

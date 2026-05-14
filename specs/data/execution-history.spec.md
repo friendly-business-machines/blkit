@@ -23,7 +23,7 @@ type ExecutionHistory struct {
     ProcessVersion        string
     ProcessInstanceID     string
     ProcessInstanceStatus ProcessStatus // RUNNING, SUSPENDED, COMPLETED, or FAILED
-    PublishedAt           *time.Time    // when the start-command for this process instance was published to the BrokerGateway; nil for runs invoked directly via Process.Evaluate() without a broker
+    PublishedAt           *time.Time    // when the start-command for this process instance was published to the MessageGateway; nil for runs invoked directly via Process.Evaluate() without a broker
     StartedAt             *time.Time    // when Evaluate() first ran (nil if still queued)
     CompletedAt           *time.Time    // when the process reached a terminal state (COMPLETED or FAILED) and is no longer being retried
     EvaluationCount       int           // how many times Evaluate() has been called for this process instance (does not include task executions or sub-process evaluations)
@@ -1325,7 +1325,7 @@ Nodes:
 - `evaluation_count` counts only calls to `evaluate()` on this process instance. Task executions and sub-process evaluations (which have their own `ExecutionHistory`) are not counted.
 - Each step uses exactly one timestamp field: `start_timestamp` for start-phase events (PROCESS_STARTED, NODE_SCHEDULED, NODE_STARTED) and `end_timestamp` for completion-phase events (NODE_COMPLETED, NODE_ITERATION_COMPLETED, NODE_FAILED, GATEWAY_RESOLVED, PROCESS_COMPLETED, PROCESS_FAILED). No step carries both.
 - `NODE_ITERATION_COMPLETED` is used for intermediate loop iterations and multi-instance instances. The final iteration/instance uses `NODE_COMPLETED`. The task is not complete (and the token does not advance) until `NODE_COMPLETED` is recorded.
-- `PublishedAt` is `nil` for runs invoked directly via `Process.Evaluate(...)` without a `BrokerGateway` — there is no start-command to publish in that path. When set, it records the moment the start-command for this instance was published to the broker (e.g. by `BrokerGateway.Submit` or by a FAAS handler emitting a continuation).
+- `PublishedAt` is `nil` for runs invoked directly via `Process.Evaluate(...)` without a `MessageGateway` — there is no start-command to publish in that path. When set, it records the moment the start-command for this instance was published to the broker (e.g. by `MessageGateway.Submit` or by a FAAS handler emitting a continuation).
 
 ---
 

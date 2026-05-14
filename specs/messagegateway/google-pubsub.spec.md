@@ -1,18 +1,18 @@
 ---
-name: GooglePubSubBrokerGateway
-description: Google Cloud Pub/Sub-backed implementation of BrokerGateway. Implementation pending; this stub records the placeholder.
+name: GooglePubSubMessageGateway
+description: Google Cloud Pub/Sub-backed implementation of MessageGateway. Implementation pending; this stub records the placeholder.
 targets:
-  - ../messagebroker/googlepubsub_gateway.go
+  - ../messagegateway/googlepubsub_gateway.go
 ---
 
-# GooglePubSubBrokerGateway
+# GooglePubSubMessageGateway
 
-`GooglePubSubBrokerGateway` is the Google Cloud Pub/Sub-backed implementation of [BrokerGateway](overview.spec.md). Pub/Sub provides at-least-once delivery, per-subscription acknowledgment, ordering keys for FIFO-within-key, and attribute-based filters — sufficient primitives for the job queue and per-instance event topic.
+`GooglePubSubMessageGateway` is the Google Cloud Pub/Sub-backed implementation of [MessageGateway](overview.spec.md). Pub/Sub provides at-least-once delivery, per-subscription acknowledgment, ordering keys for FIFO-within-key, and attribute-based filters — sufficient primitives for the job queue and per-instance event topic.
 
 Constructor:
 
 ```go
-func NewGooglePubSubBrokerGateway(opts GooglePubSubOpts) (*GooglePubSubBrokerGateway, error)
+func NewGooglePubSubMessageGateway(opts GooglePubSubOpts) (*GooglePubSubMessageGateway, error)
 
 type GooglePubSubOpts struct {
     // GCP project that owns the topics and subscriptions.
@@ -47,4 +47,4 @@ Implementation pending. This spec is a placeholder. Open design questions:
 - **Retention** for the terminal `InstanceEventResult` — Pub/Sub message retention is per-Topic (default 7 days, configurable up to 31 days). Set retention long enough that late subscribers can still read the final result, and document the trade-off against storage cost.
 - **Pub/Sub Lite** — explicitly **not** supported. Lite is a distinct product with different semantics (per-partition ordering, no filters, lower cost). The gateway targets standard Pub/Sub only.
 
-See [overview.spec.md](overview.spec.md) for the abstract `BrokerGateway` interface this implementation satisfies.
+See [overview.spec.md](overview.spec.md) for the abstract `MessageGateway` interface this implementation satisfies.

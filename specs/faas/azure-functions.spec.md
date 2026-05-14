@@ -85,7 +85,7 @@ import (
 
     "github.com/friendly-business-machines/blkit"
     "github.com/friendly-business-machines/blkit/faas"
-    "github.com/friendly-business-machines/blkit/messagebroker"
+    "github.com/friendly-business-machines/blkit/messagegateway"
 
     // Blank-imported with "_" because nothing in this file references the
     // package directly — a regular import would fail to compile with Go's
@@ -99,7 +99,7 @@ import (
 
 var (
     stateStore = blkit.NewPostgresStateStore("postgresql://blkit:secret@db.internal:5432/blkit", "loan_app")
-    gw, _      = messagebroker.NewRedisBrokerGateway(messagebroker.RedisOpts{Addr: "redis.internal:6379"})
+    gw, _      = messagegateway.NewRedisMessageGateway(messagegateway.RedisOpts{Addr: "redis.internal:6379"})
 )
 
 func main() {
@@ -140,5 +140,5 @@ The handler routes, evaluates, and persists exactly as it does for an HTTP trigg
 - The function host enforces a per-invocation timeout (default 5 minutes for the Consumption plan, configurable up to 60 minutes on Premium / Dedicated). Long-running processes should suspend and rely on broker continuations for resumption.
 - The custom-handler envelope is a stable Azure convention but `Data` field names depend on the user's `function.json`. The handler infers a single binding's name automatically; multiple bindings require the user to consume the full envelope via a custom `Input`.
 - HTTP-triggered functions are detected by absence of the `Data` / `Metadata` envelope; the handler falls back to raw body parsing.
-- Cold starts: construct `*Process`, `StateStore`, and `BrokerGateway` in package-level `var` blocks or `init()`. The factory itself is also reusable.
+- Cold starts: construct `*Process`, `StateStore`, and `MessageGateway` in package-level `var` blocks or `init()`. The factory itself is also reusable.
 - Edge cases around `Route`, `Input`, persistence, and re-enqueue are documented in [overview.spec.md](overview.spec.md) "Edge Cases".

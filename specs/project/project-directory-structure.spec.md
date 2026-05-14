@@ -21,9 +21,9 @@ blkit/
 ├── decisions/        # blkit/decisions — decision models, decision tables, BKMs
 ├── processes/        # blkit/processes — process graphs, tasks, events, gateways
 ├── data/             # blkit/data — InputContract, OutputContract, ExecutionContext, ExecutionHistory, StateStore
-├── messagebroker/    # blkit/messagebroker — BrokerGateway interface and Redis/NATS/in-memory implementations
+├── messagegateway/    # blkit/messagegateway — MessageGateway interface and Redis/NATS/in-memory implementations
 ├── worker/           # blkit/worker — worker.Run, ProcessTask lifecycle, writer pool
-├── restserver/       # blkit/restserver — HTTP REST + SSE server for the BrokerGateway
+├── restserver/       # blkit/restserver — HTTP REST + SSE server for the MessageGateway
 ├── docs/             # Static documentation site source files (Zensical)
 ├── scripts/          # Automation scripts (create-pull-request.sh, create-release.sh, etc.)
 ├── copier/           # Copier project templates

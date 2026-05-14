@@ -1,16 +1,16 @@
 ---
-name: NATSBrokerGateway
-description: NATS + JetStream-backed implementation of BrokerGateway. Implementation pending; this stub records the placeholder.
+name: NATSMessageGateway
+description: NATS + JetStream-backed implementation of MessageGateway. Implementation pending; this stub records the placeholder.
 targets:
-  - ../messagebroker/nats_gateway.go
+  - ../messagegateway/nats_gateway.go
 ---
 
-# NATSBrokerGateway
+# NATSMessageGateway
 
-`NATSBrokerGateway` is the NATS + JetStream-backed implementation of [BrokerGateway](overview.spec.md). Constructor:
+`NATSMessageGateway` is the NATS + JetStream-backed implementation of [MessageGateway](overview.spec.md). Constructor:
 
 ```go
-func NewNATSBrokerGateway(opts NATSOpts) (*NATSBrokerGateway, error)
+func NewNATSMessageGateway(opts NATSOpts) (*NATSMessageGateway, error)
 
 type NATSOpts struct {
     URL string // e.g. "nats://localhost:4222"
@@ -32,4 +32,4 @@ Implementation pending. This spec is a placeholder. Open design questions:
 - Backpressure-drop policy when a subscriber's buffer overflows.
 - Status record: a small KV bucket keyed by instanceID for `ProcessStatus` so `Cancel` / `Terminate` can detect already-finished instances.
 
-See [overview.spec.md](overview.spec.md) for the abstract `BrokerGateway` interface this implementation satisfies.
+See [overview.spec.md](overview.spec.md) for the abstract `MessageGateway` interface this implementation satisfies.

@@ -236,7 +236,7 @@ Validation runs only at the process boundaries — internal tasks are not contra
 
 #### Input validation (at submission)
 
-When a process is submitted (via `BrokerGateway.Submit` for a long-running worker, or via the FaaS handler factory's `Input` extraction), the input variables are checked against the selected `StartEvent`'s `InputContract`. Because every `StartEvent` has a contract by construction, this validation is unconditional:
+When a process is submitted (via `MessageGateway.Submit` for a long-running worker, or via the FaaS handler factory's `Input` extraction), the input variables are checked against the selected `StartEvent`'s `InputContract`. Because every `StartEvent` has a contract by construction, this validation is unconditional:
 
 1. Every **required** field must be present in the input. If missing, a `DataContractValidationError` is produced.
 2. Every field present in the input must be **declared** in the contract (either required or optional). Undeclared fields produce a `DataContractValidationError`.

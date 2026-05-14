@@ -13,7 +13,7 @@ blkit's test suite is written directly in Go alongside the implementation. The I
 
 The Go standard-library [`testing`](https://pkg.go.dev/testing) package, augmented with [`testify`](https://github.com/stretchr/testify) for richer assertions and lifecycle hooks. Tests are run with `go test ./...`.
 
-All tests run in-process — no separate test process, no browser runtime, no external services beyond what an individual test fixture deliberately spins up (e.g. an embedded Redis for `RedisBrokerGateway` tests).
+All tests run in-process — no separate test process, no browser runtime, no external services beyond what an individual test fixture deliberately spins up (e.g. an embedded Redis for `RedisMessageGateway` tests).
 
 ## Test Location
 
@@ -32,7 +32,7 @@ specs/expressions/number.spec.md           → expr/number_test.go
 specs/decision-tasks/decision-table.spec.md → decisions/decision_table_test.go
 specs/processes/task-nodes.spec.md         → processes/task_test.go (and per-task companions)
 specs/data/state-store.spec.md             → data/state_store_test.go
-specs/messagebroker/overview.spec.md       → messagebroker/gateway_test.go
+specs/messagegateway/overview.spec.md       → messagegateway/gateway_test.go
 specs/worker/worker.spec.md                → worker/worker_test.go
 ```
 

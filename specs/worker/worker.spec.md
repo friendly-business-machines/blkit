@@ -1,20 +1,20 @@
 ---
 name: Worker
-description: A blocking goroutine loop that fetches jobs from a BrokerGateway and runs each process to completion locally against a StateStore. Also handles broker-held registry lifecycle (register on startup, heartbeat, unregister on shutdown).
+description: A blocking goroutine loop that fetches jobs from a MessageGateway and runs each process to completion locally against a StateStore. Also handles broker-held registry lifecycle (register on startup, heartbeat, unregister on shutdown).
 targets:
   - ../worker/worker.go
 ---
 
 # Worker
 
-A worker is a blocking call that registers its capability set with the broker, fetches routed [`Job`](../messagebroker/overview.spec.md)s from a [`BrokerGateway`](../messagebroker/overview.spec.md) — selectively, taking only those whose process is registered in the worker's binary — and hands each one to an executor goroutine. Each executor drives its process through its full execution lifecycle: evaluate the process graph and execute ready tasks — streaming `Transaction`s and `ExecutionStep`s to a [`StateStore`](../data/state-store.spec.md) via `WriteBatch` as work happens, and publishing `InstanceEvent`s to the broker via the gateway's status / error verbs — until the process completes or suspends. The executor then persists the boundary metadata via `Save` and signals job outcome with one of `MarkCompleted` / `MarkCancelled` / `MarkFailed` / `ReenqueueSuspended`. Up to `MaxConcurrent` executors run in parallel; the fetch loop pulls new work as soon as a slot is free. This fetch-and-execute cycle repeats for the life of the worker, stopping only when the `workerCtx` passed to `worker.Run` is cancelled.
+A worker is a blocking call that registers its capability set with the broker, fetches routed [`Job`](../messagegateway/overview.spec.md)s from a [`MessageGateway`](../messagegateway/overview.spec.md) — selectively, taking only those whose process is registered in the worker's binary — and hands each one to an executor goroutine. Each executor drives its process through its full execution lifecycle: evaluate the process graph and execute ready tasks — streaming `Transaction`s and `ExecutionStep`s to a [`StateStore`](../data/state-store.spec.md) via `WriteBatch` as work happens, and publishing `InstanceEvent`s to the broker via the gateway's status / error verbs — until the process completes or suspends. The executor then persists the boundary metadata via `Save` and signals job outcome with one of `MarkCompleted` / `MarkCancelled` / `MarkFailed` / `ReenqueueSuspended`. Up to `MaxConcurrent` executors run in parallel; the fetch loop pulls new work as soon as a slot is free. This fetch-and-execute cycle repeats for the life of the worker, stopping only when the `workerCtx` passed to `worker.Run` is cancelled.
 
 Once a worker picks up a `Job`, that worker is responsible for the entire process: every task in the process graph runs in goroutines inside this worker, not as separate broker items handed to other workers. This is the long-running counterpart to the per-event handlers in [faas/overview.spec.md](../faas/overview.spec.md), where each invocation performs one evaluation and re-enqueues any continuation work.
 
 The worker is otherwise stateless — per-instance execution state is reconstructed from the `StateStore` on every pickup.
 
 ```go
-func Run(workerCtx context.Context, gw messagebroker.BrokerGateway, store StateStore, opts Options) error {}
+func Run(workerCtx context.Context, gw messagegateway.MessageGateway, store StateStore, opts Options) error {}
 
 type Options struct {
     // Worker identity. Required. Must be unique per worker instance —
@@ -81,7 +81,7 @@ The worker also publishes its capability set to the **broker-held registry** so 
 When `worker.Run` is called, before the fetch loop starts:
 
 1. Walk `blkit.AllProcesses()` to get the list of processes registered in this binary.
-2. For each, build a `ProcessRegistration` (see [../messagebroker/overview.spec.md](../messagebroker/overview.spec.md)) with `Namespace` / `ProcessID` / `Version` / `Name` / `Description`, the `StartEvents` (with their `InputContract`s), `EndEvents` (with optional `OutputContract`s), `AllowExternalCancel` / `AllowExternalTerminate`, and `Markdown` rendered via `process.ToMarkdown()`.
+2. For each, build a `ProcessRegistration` (see [../messagegateway/overview.spec.md](../messagegateway/overview.spec.md)) with `Namespace` / `ProcessID` / `Version` / `Name` / `Description`, the `StartEvents` (with their `InputContract`s), `EndEvents` (with optional `OutputContract`s), `AllowExternalCancel` / `AllowExternalTerminate`, and `Markdown` rendered via `process.ToMarkdown()`.
 3. Set `WorkerID` on each registration to `opts.WorkerID`.
 4. Call `gw.RegisterProcesses(workerCtx, opts.WorkerID, regs)`.
 
@@ -181,7 +181,7 @@ A panic inside an executor goroutine is recovered: the executor calls `gw.MarkFa
 
 ## Process Task
 
-`ProcessTask` is the worker's internal record for *one evaluation of one instance*. It is created when the worker fetches a `Job` from the gateway, advances through the `TaskStatus` lifecycle as the executor runs, and is discarded once a terminal Mark* verb or `ReenqueueSuspended` is called. `ProcessTask` is **not** transmitted over the broker and is **not** part of the `BrokerGateway` interface — producers describe work via `StartRequest` / `Job`, and the worker maintains `ProcessTask` independently for telemetry, history correlation, and concurrency accounting.
+`ProcessTask` is the worker's internal record for *one evaluation of one instance*. It is created when the worker fetches a `Job` from the gateway, advances through the `TaskStatus` lifecycle as the executor runs, and is discarded once a terminal Mark* verb or `ReenqueueSuspended` is called. `ProcessTask` is **not** transmitted over the broker and is **not** part of the `MessageGateway` interface — producers describe work via `StartRequest` / `Job`, and the worker maintains `ProcessTask` independently for telemetry, history correlation, and concurrency accounting.
 
 ```go
 type TaskStatus int
@@ -203,7 +203,7 @@ type ProcessTask struct {
     ProcessVersion                  string         // version of the process being evaluated
     StartID                         *string        // start event id; set on initial submission, nil on re-evaluation
     Input                           map[string]any // initial input; set on initial submission, nil on re-evaluation
-    PublishedTS                     time.Time      // when the JobStart that produced this ProcessTask was published to the BrokerGateway
+    PublishedTS                     time.Time      // when the JobStart that produced this ProcessTask was published to the MessageGateway
     ExecutionStartTS                *time.Time     // when ExecutionID started; nil while PENDING
     ExecutionFinishTS               *time.Time     // when ExecutionID finished; nil while PENDING/RUNNING
 }
@@ -310,7 +310,7 @@ import (
     "syscall"
 
     "github.com/friendly-business-machines/blkit"
-    "github.com/friendly-business-machines/blkit/messagebroker"
+    "github.com/friendly-business-machines/blkit/messagegateway"
     "github.com/friendly-business-machines/blkit/worker"
 
     // Blank imports load process-defining packages so their NewProcess(...)
@@ -334,7 +334,7 @@ func main() {
         stopWorker()
     }()
 
-    gw, err := messagebroker.NewRedisBrokerGateway(messagebroker.RedisOpts{
+    gw, err := messagegateway.NewRedisMessageGateway(messagegateway.RedisOpts{
         Addr: os.Getenv("BLKIT_REDIS_ADDR"),
     })
     if err != nil {
@@ -455,4 +455,4 @@ Operational notes:
 - Multiple `worker.Run` calls — within the same Go process or across multiple processes/machines — are supported. Each is an independent consumer of the broker. Serialization is whatever the underlying broker provides.
 - `worker.Run` does not own or modify the `Process` graph — it is read-only during execution.
 - The worker registers processes with the broker on startup but does **not** call `NewProcess(...)` itself; in-process registration happens at package init time (via blank imports of process-defining packages from `main`).
-- See [../messagebroker/overview.spec.md](../messagebroker/overview.spec.md) and [state-store.spec.md](../data/state-store.spec.md) for component-specific edge cases.
+- See [../messagegateway/overview.spec.md](../messagegateway/overview.spec.md) and [state-store.spec.md](../data/state-store.spec.md) for component-specific edge cases.

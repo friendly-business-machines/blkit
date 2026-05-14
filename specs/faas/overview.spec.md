@@ -15,7 +15,7 @@ The FAAS layer is a thin wrapper around `Process.Evaluate()` (see [process.spec.
 2. Extracts initial `Input` variables from the event via `Input`.
 3. Builds the initial state via `store.NewExecutionState(process, NewExecutionStateOpts{StartId: opts.StartID, Input: input})`, calls `gw.MarkRunning(...)` if a `Gateway` is configured, then calls `process.Evaluate(EvaluateOpts{Context: ctx, History: hist})`.
 4. Persists the resulting `ExecutionHistory` and `ExecutionContext` to the configured `StateStore`, if any.
-5. Signals outcome on the configured `BrokerGateway`, if any: `MarkCompleted` / `MarkFailed` on terminal status, or `ReenqueueSuspended` if the process suspended (so a future `JobResume` can resume it).
+5. Signals outcome on the configured `MessageGateway`, if any: `MarkCompleted` / `MarkFailed` on terminal status, or `ReenqueueSuspended` if the process suspended (so a future `JobResume` can resume it).
 6. Formats and returns a response in the shape the vendor SDK expects.
 
 Per-vendor specs:
@@ -37,7 +37,7 @@ type FaasHandlerOpts struct {
     Input      func(ctx context.Context, event json.RawMessage) (map[string]any, error)                // optional; default unmarshals event JSON into map[string]any
     Response   func(ctx context.Context, result *EvaluationResult) (any, error)                        // optional; default returns a map[string]any snapshot of result.Context (each task's Output keyed by task id)
     StateStore StateStore                                                                              // optional; if set, history and context are persisted after Evaluate()
-    Gateway    messagebroker.BrokerGateway                                                             // optional; if set, the handler calls MarkRunning, posts errors via PostError, and signals outcome via MarkCompleted / MarkFailed / ReenqueueSuspended
+    Gateway    messagegateway.MessageGateway                                                             // optional; if set, the handler calls MarkRunning, posts errors via PostError, and signals outcome via MarkCompleted / MarkFailed / ReenqueueSuspended
 }
 ```
 
@@ -124,7 +124,7 @@ If `Gateway` is `nil`, no events are emitted. The handler runs to a terminal sta
 
 If `Gateway` is set **and** the process suspended (did not reach a terminal `ProcessStatusCompleted` or `ProcessStatusFailed` — see [process.spec.md "Suspension"](../processes/process.spec.md#suspension)), the handler calls `gw.ReenqueueSuspended(ctx, instanceID)`. This places a `JobResume` on the broker queue for the process key, to be picked up later — by a worker pool, by another FAAS invocation triggered via a broker-event-bridge (EventBridge / Pub/Sub / NATS triggers), or by any other consumer of the broker's job stream.
 
-The exact wire shape for the `JobResume` (subject naming, payload encoding, delivery substrate) is documented in each implementation's spec — see [../messagebroker/redis.spec.md](../messagebroker/redis.spec.md), [nats.spec.md](../messagebroker/nats.spec.md), [azure-service-bus.spec.md](../messagebroker/azure-service-bus.spec.md), [google-pubsub.spec.md](../messagebroker/google-pubsub.spec.md), [in-memory.spec.md](../messagebroker/in-memory.spec.md).
+The exact wire shape for the `JobResume` (subject naming, payload encoding, delivery substrate) is documented in each implementation's spec — see [../messagegateway/redis.spec.md](../messagegateway/redis.spec.md), [nats.spec.md](../messagegateway/nats.spec.md), [azure-service-bus.spec.md](../messagegateway/azure-service-bus.spec.md), [google-pubsub.spec.md](../messagegateway/google-pubsub.spec.md), [in-memory.spec.md](../messagegateway/in-memory.spec.md).
 
 After a successful `ReenqueueSuspended`, the handler returns success to the vendor SDK. The current invocation has done its job.
 
@@ -172,7 +172,7 @@ The vendor SDK (and the FAAS platform) decides retry semantics based on whether 
 
 ## Cold Start and Reuse
 
-`*Process` instances, the `StateStore` connection, and the `BrokerGateway` connection should all be constructed in the FAAS init / global scope so they are reused across warm invocations. The handler factory itself can also be constructed once in `init()` or `main()` and re-used; it captures the options by value and is safe to call concurrently.
+`*Process` instances, the `StateStore` connection, and the `MessageGateway` connection should all be constructed in the FAAS init / global scope so they are reused across warm invocations. The handler factory itself can also be constructed once in `init()` or `main()` and re-used; it captures the options by value and is safe to call concurrently.
 
 ---
 
@@ -187,5 +187,5 @@ The vendor SDK (and the FAAS platform) decides retry semantics based on whether 
 - `Evaluate()` returns a non-nil error and a partially-populated `result` — the handler returns the error without persisting or enqueuing. State for the partial run is lost (no rollback, since FAAS handlers persist nothing during evaluation).
 - The process completes in the same invocation — `result.Status == Completed`. No continuation is published even if `Gateway` is set.
 - The process fails — `result.Status == Failed`. State is persisted (if `StateStore` is set) so the failure is recorded; no continuation is enqueued.
-- Concurrent invocations of the handler — safe. The handler does not mutate `FaasHandlerOpts`, the `*Process` instances are stateless per [process.spec.md "Statefulness"](../processes/process.spec.md), and the `StateStore` / `BrokerGateway` interfaces are required to be safe for concurrent use.
+- Concurrent invocations of the handler — safe. The handler does not mutate `FaasHandlerOpts`, the `*Process` instances are stateless per [process.spec.md "Statefulness"](../processes/process.spec.md), and the `StateStore` / `MessageGateway` interfaces are required to be safe for concurrent use.
 - A FAAS-only deployment (no worker pool) does not register processes with the broker. As a result, those processes do not appear in registry snapshots delivered by `gw.SubscribeToProcessRegistry(...)`, and producers using that path (e.g. an MCP server) won't see them. To expose FAAS-deployed processes to producers, run a worker pool on the same broker — the worker registers and FAAS handles the actual evaluation; the two roles can coexist on the same `(Namespace, ProcessID, Version)`.

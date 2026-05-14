@@ -1,18 +1,18 @@
 ---
-name: AzureServiceBusBrokerGateway
-description: Azure Service Bus-backed implementation of BrokerGateway. Implementation pending; this stub records the placeholder.
+name: AzureServiceBusMessageGateway
+description: Azure Service Bus-backed implementation of MessageGateway. Implementation pending; this stub records the placeholder.
 targets:
-  - ../messagebroker/azuresb_gateway.go
+  - ../messagegateway/azuresb_gateway.go
 ---
 
-# AzureServiceBusBrokerGateway
+# AzureServiceBusMessageGateway
 
-`AzureServiceBusBrokerGateway` is the Azure Service Bus-backed implementation of [BrokerGateway](overview.spec.md). Service Bus provides durable queues, topics with subscriptions, peek-lock delivery, and per-session ordering — the primitives needed for both the job queue and the per-instance event topic.
+`AzureServiceBusMessageGateway` is the Azure Service Bus-backed implementation of [MessageGateway](overview.spec.md). Service Bus provides durable queues, topics with subscriptions, peek-lock delivery, and per-session ordering — the primitives needed for both the job queue and the per-instance event topic.
 
 Constructor:
 
 ```go
-func NewAzureServiceBusBrokerGateway(opts AzureServiceBusOpts) (*AzureServiceBusBrokerGateway, error)
+func NewAzureServiceBusMessageGateway(opts AzureServiceBusOpts) (*AzureServiceBusMessageGateway, error)
 
 type AzureServiceBusOpts struct {
     // Fully-qualified namespace, e.g. "myns.servicebus.windows.net".
@@ -47,4 +47,4 @@ Implementation pending. This spec is a placeholder. Open design questions:
 - **Retention** for the terminal `InstanceEventResult` — Service Bus messages have a TTL (`DefaultMessageTimeToLive`); set it long enough that late subscribers can still read the final result.
 - **Authentication wiring** — Managed Identity (the recommended path in production Azure deployments) vs SAS keys. Both should work; document which path the constructor takes.
 
-See [overview.spec.md](overview.spec.md) for the abstract `BrokerGateway` interface this implementation satisfies.
+See [overview.spec.md](overview.spec.md) for the abstract `MessageGateway` interface this implementation satisfies.

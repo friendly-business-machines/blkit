@@ -40,12 +40,12 @@ type ProcessOpts struct {
 
     // Producer-side interruption opt-ins. Both default to false.
     //
-    // When AllowExternalCancel is true, BrokerGateway.Cancel (see
-    // ../messagebroker/overview.spec.md) accepts external cancel requests for
+    // When AllowExternalCancel is true, MessageGateway.Cancel (see
+    // ../messagegateway/overview.spec.md) accepts external cancel requests for
     // instances of this process. The worker observes the request and injects
     // a synthetic CancelEvent into history (status -> Cancelled).
     //
-    // When AllowExternalTerminate is true, BrokerGateway.Terminate similarly
+    // When AllowExternalTerminate is true, MessageGateway.Terminate similarly
     // accepts external terminate requests, injecting a synthetic TerminateEvent
     // (status -> Completed, all branches cancelled).
     //
@@ -318,7 +318,7 @@ result, err := loanApplication.Evaluate(EvaluateOpts{Context: ctx, History: hist
 if err != nil { /* ... */ }
 
 // Caller decides how to handle a Suspended result — persist result.History and
-// re-run Evaluate later when the awaited event arrives, or wire a BrokerGateway
+// re-run Evaluate later when the awaited event arrives, or wire a MessageGateway
 // for managed continuation. Direct callers get no library-provided continuation.
 ```
 
@@ -477,7 +477,7 @@ If a task fails and there is no error boundary event, the process fails. Any in-
 
 A process can suspend mid-evaluation when it reaches a `SuspendForDuration` / `SuspendUntilDatetime` event node (see [event-nodes.spec.md](event-nodes.spec.md)) or a `RequestInputTask` configured for durable wait (see [task-nodes.spec.md](task-nodes.spec.md#requestinputtask)). When this happens, `Evaluate()` returns with `Status: SUSPENDED` rather than continuing to walk the graph. The token rests at the suspending node and is preserved in `result.History` so that a later `Evaluate()` call (passing the persisted `Context` and `History`) can resume from the same position.
 
-`SUSPENDED` is a non-terminal status. The caller is responsible for arranging resumption — typically by persisting `result.History` and signalling the broker via `BrokerGateway.ReenqueueSuspended(...)` so the eventual `JobResume` is delivered to some worker when the wait condition is satisfied. For `RequestInputTask`, the wait is satisfied by a `BrokerGateway.RespondToInputRequest(processInstanceID, requestID, payload)` call.
+`SUSPENDED` is a non-terminal status. The caller is responsible for arranging resumption — typically by persisting `result.History` and signalling the broker via `MessageGateway.ReenqueueSuspended(...)` so the eventual `JobResume` is delivered to some worker when the wait condition is satisfied. For `RequestInputTask`, the wait is satisfied by a `MessageGateway.RespondToInputRequest(processInstanceID, requestID, payload)` call.
 
 `Pause*` event nodes do **not** transition the process to `SUSPENDED` — they hold the goroutine in-process while other branches advance. The status remains `RUNNING` throughout the pause.
 

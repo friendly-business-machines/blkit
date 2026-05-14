@@ -1,13 +1,13 @@
 ---
-name: BrokerGateway Overview
-description: The unified broker abstraction for blkit. The BrokerGateway interface presents a producer-side API (Submit, Cancel, Terminate, RespondToInputRequest, SubscribeToInstance, SubscribeToProcessRegistry) and a worker-side API (RegisterProcesses, Heartbeat, Unregister, FetchJobs, ReenqueueSuspended, PostError, MarkRunning, MarkCompleted, MarkFailed, MarkCancelled). Three implementations — Redis/Valkey, NATS, in-memory — share this overview. Implementations use broker-native primitives directly.
+name: MessageGateway Overview
+description: The unified broker abstraction for blkit. The MessageGateway interface presents a producer-side API (Submit, Cancel, Terminate, RespondToInputRequest, SubscribeToInstance, SubscribeToProcessRegistry) and a worker-side API (RegisterProcesses, Heartbeat, Unregister, FetchJobs, ReenqueueSuspended, PostError, MarkRunning, MarkCompleted, MarkFailed, MarkCancelled). Three implementations — Redis/Valkey, NATS, in-memory — share this overview. Implementations use broker-native primitives directly.
 targets:
-  - ../messagebroker/gateway.go
+  - ../messagegateway/gateway.go
 ---
 
-# BrokerGateway Overview
+# MessageGateway Overview
 
-`messagebroker.BrokerGateway` is blkit's unified abstraction over the message broker / queue. It presents two role-specific groups of methods on a single interface:
+`messagegateway.MessageGateway` is blkit's unified abstraction over the message broker / queue. It presents two role-specific groups of methods on a single interface:
 
 - **Producer-side** — used by MCP servers, web servers, CLI tools, and admin UIs to submit new process runs, respond to a process's request for input, cancel or terminate, and subscribe to events.
 - **Worker-side** — used by `worker.Run` to register the worker's process capability set, refresh its TTL, fetch jobs, re-enqueue suspended instances, post error messages, and mark instances as Running / Completed / Failed / Cancelled.
@@ -21,7 +21,7 @@ The gateway interacts **only with the broker**, not with the state store. Worker
             │                                 │
             ▼                                 ▼
      ┌──────────────────────────┐
-     │      BrokerGateway       │ ── (broker-native primitives:
+     │      MessageGateway       │ ── (broker-native primitives:
      │ (producer + worker side) │     Redis Streams/Pub-Sub/KV;
      │                          │     NATS JetStream/Core/KV;
      │                          │     Azure Service Bus + Table/Cosmos;
@@ -35,23 +35,23 @@ The gateway interacts **only with the broker**, not with the state store. Worker
                                                   └────────────┘
 ```
 
-`BrokerGateway` implementations use their broker's native primitives directly.
+`MessageGateway` implementations use their broker's native primitives directly.
 
 ---
 
 ## Implementations
 
-The `BrokerGateway` interface has five implementations, each in its own per-broker spec:
+The `MessageGateway` interface has five implementations, each in its own per-broker spec:
 
-- **`RedisBrokerGateway`** — Redis or Valkey backend, see [redis.spec.md](redis.spec.md).
-- **`NATSBrokerGateway`** — NATS + JetStream, see [nats.spec.md](nats.spec.md).
-- **`AzureServiceBusBrokerGateway`** — Azure Service Bus, see [azure-service-bus.spec.md](azure-service-bus.spec.md).
-- **`GooglePubSubBrokerGateway`** — Google Cloud Pub/Sub, see [google-pubsub.spec.md](google-pubsub.spec.md).
-- **`InMemoryBrokerGateway`** — single-process, no external dependencies; suitable for tests and small deployments. See [in-memory.spec.md](in-memory.spec.md).
+- **`RedisMessageGateway`** — Redis or Valkey backend, see [redis.spec.md](redis.spec.md).
+- **`NATSMessageGateway`** — NATS + JetStream, see [nats.spec.md](nats.spec.md).
+- **`AzureServiceBusMessageGateway`** — Azure Service Bus, see [azure-service-bus.spec.md](azure-service-bus.spec.md).
+- **`GooglePubSubMessageGateway`** — Google Cloud Pub/Sub, see [google-pubsub.spec.md](google-pubsub.spec.md).
+- **`InMemoryMessageGateway`** — single-process, no external dependencies; suitable for tests and small deployments. See [in-memory.spec.md](in-memory.spec.md).
 
-All five implement the same `BrokerGateway` interface defined below. Per-broker specs describe how the abstract operations map to broker primitives and the per-broker configuration shape.
+All five implement the same `MessageGateway` interface defined below. Per-broker specs describe how the abstract operations map to broker primitives and the per-broker configuration shape.
 
-The Azure Service Bus and Google Pub/Sub implementations target the same `BrokerGateway` surface but their hosted-broker substrates lack a native key-value store. Both pair the message-bus primitives with a pluggable `RegistryStore` interface (typically Azure Table Storage / Cosmos DB on Azure, Firestore on GCP) for the registry snapshot and per-instance status records — see the respective specs for the trade-offs.
+The Azure Service Bus and Google Pub/Sub implementations target the same `MessageGateway` surface but their hosted-broker substrates lack a native key-value store. Both pair the message-bus primitives with a pluggable `RegistryStore` interface (typically Azure Table Storage / Cosmos DB on Azure, Firestore on GCP) for the registry snapshot and per-instance status records — see the respective specs for the trade-offs.
 
 ---
 
@@ -60,9 +60,9 @@ The Azure Service Bus and Google Pub/Sub implementations target the same `Broker
 Each verb names a single action. There are no tagged-union ack/publish methods — every status transition and every error post has its own verb.
 
 ```go
-package messagebroker
+package messagegateway
 
-type BrokerGateway interface {
+type MessageGateway interface {
     // ===== Producer-side =====
 
     // Submit a new process run. The gateway generates the ProcessInstanceID
@@ -528,11 +528,11 @@ Push-only. Implementations open a long-lived subscription on the broker and forw
 ch, err := gw.SubscribeToInstance(ctx, instanceID)
 for evt := range ch {
     switch evt.Kind {
-    case messagebroker.InstanceEventInputRequest:
+    case messagegateway.InstanceEventInputRequest:
         // surface to UI; eventually call gw.RespondToInputRequest(...)
-    case messagebroker.InstanceEventResult:
+    case messagegateway.InstanceEventResult:
         // channel closes after this
-    case messagebroker.InstanceEventError:
+    case messagegateway.InstanceEventError:
         log.Printf("error: code=%s message=%s", evt.Error.Code, evt.Error.Message)
     }
 }
@@ -561,8 +561,8 @@ Multiple subscribers to the same instance: each gets the full event stream by de
 type ProcessOpts struct {
     // ... existing fields ...
 
-    AllowExternalCancel    bool // default false; required for BrokerGateway.Cancel on a running/suspended instance
-    AllowExternalTerminate bool // default false; required for BrokerGateway.Terminate
+    AllowExternalCancel    bool // default false; required for MessageGateway.Cancel on a running/suspended instance
+    AllowExternalTerminate bool // default false; required for MessageGateway.Terminate
 }
 ```
 
@@ -614,13 +614,13 @@ import (
     "log"
 
     "github.com/friendly-business-machines/blkit"
-    "github.com/friendly-business-machines/blkit/messagebroker"
+    "github.com/friendly-business-machines/blkit/messagegateway"
 
     _ "example.com/processes/lending" // blank import registers the process via NewProcess()
 )
 
 func main() {
-    gw, err := messagebroker.NewRedisBrokerGateway(messagebroker.RedisOpts{
+    gw, err := messagegateway.NewRedisMessageGateway(messagegateway.RedisOpts{
         Addr: "localhost:6379",
     })
     if err != nil {
@@ -630,7 +630,7 @@ func main() {
 
     ctx := context.Background()
 
-    instanceID, err := gw.Submit(ctx, messagebroker.StartRequest{
+    instanceID, err := gw.Submit(ctx, messagegateway.StartRequest{
         Namespace: "example.com/processes/lending",
         ProcessID: "loan-application",
         Version:   "1.0",
@@ -651,16 +651,16 @@ func main() {
 
     for evt := range events {
         switch evt.Kind {
-        case messagebroker.InstanceEventInputRequest:
+        case messagegateway.InstanceEventInputRequest:
             response := promptUserForApproval(ctx, evt.InputRequest)
             if err := gw.RespondToInputRequest(ctx, instanceID, evt.InputRequest.RequestID, response); err != nil {
                 log.Printf("respond: %v", err)
             }
 
-        case messagebroker.InstanceEventResult:
+        case messagegateway.InstanceEventResult:
             log.Printf("done: status=%v outputs=%v", evt.Result.Status, evt.Result.Context)
 
-        case messagebroker.InstanceEventError:
+        case messagegateway.InstanceEventError:
             log.Printf("error: code=%s message=%s", evt.Error.Code, evt.Error.Message)
         }
     }

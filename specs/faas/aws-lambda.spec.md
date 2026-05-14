@@ -38,7 +38,7 @@ import (
     "github.com/aws/aws-lambda-go/lambda"
     "github.com/friendly-business-machines/blkit"
     "github.com/friendly-business-machines/blkit/faas"
-    "github.com/friendly-business-machines/blkit/messagebroker"
+    "github.com/friendly-business-machines/blkit/messagegateway"
 
     // Blank-imported with "_" because nothing in this file references the
     // package directly — a regular import would fail to compile with Go's
@@ -52,7 +52,7 @@ import (
 
 var (
     stateStore = blkit.NewPostgresStateStore("postgresql://blkit:secret@db.internal:5432/blkit", "loan_app")
-    gw, _      = messagebroker.NewRedisBrokerGateway(messagebroker.RedisOpts{Addr: "redis.internal:6379"})
+    gw, _      = messagegateway.NewRedisMessageGateway(messagegateway.RedisOpts{Addr: "redis.internal:6379"})
 )
 
 func main() {
@@ -124,6 +124,6 @@ func main() {
 - The Lambda runtime may invoke the handler concurrently. The handler is safe under concurrent use; see [overview.spec.md](overview.spec.md) "Edge Cases".
 - Lambda's 15-minute execution limit applies. Processes whose total execution time may exceed this should set `MaxRunTime` (see [process.spec.md](../processes/process.spec.md)) to fail fast, or be designed to suspend (e.g. via timer events or `RequestInputTask`) so a future `JobResume` resumes them.
 - Lambda retries depend on the trigger source and configuration (asynchronous invocations retry up to twice by default; SQS retries via visibility timeout until the message is moved to a DLQ). The handler does not attempt its own retry — it relies on the platform.
-- Cold starts: construct `*Process`, `StateStore`, and `BrokerGateway` in package-level `var` blocks or `init()` so they are reused across warm invocations. The factory itself is also reusable.
+- Cold starts: construct `*Process`, `StateStore`, and `MessageGateway` in package-level `var` blocks or `init()` so they are reused across warm invocations. The factory itself is also reusable.
 - Returning `(nil, nil)` is permitted; some Lambda trigger types (e.g. SQS, EventBridge) ignore the return value.
 - Edge cases around `Route`, `Input`, persistence, and outcome signaling are documented in [overview.spec.md](overview.spec.md) "Edge Cases".
