@@ -1,135 +1,119 @@
 ---
 name: BoxedContext
-description: A DecisionNode defined by a set of named context entries — each entry maps a variable name to a boxed expression, automatically sorted by dependencies, with an optional final result expression
+description: A DecisionNode generic over an outputs struct whose fields are the context entries — named, typed expressions with automatic dependency sorting
 targets:
   - ../decisions/boxed_context.go
 ---
 
 # BoxedContext
 
-A `BoxedContext` is a `DecisionNode` defined by a set of named context entries. Each entry binds a variable name to a value expression. Entries are automatically sorted into an execution order based on their dependencies — if one entry references a variable defined by another entry, the dependency is evaluated first. Each entry's result is available to dependent entries as a typed ref returned from `AddEntry`.
+A `BoxedContext` is a `DecisionNode` defined by a set of named entries. Each entry binds an output name to a value expression. Entries can reference other entries' typed handles; the constructor topologically sorts entries by their inter-entry dependencies.
 
-A `BoxedContext` has two forms:
+`BoxedContext` is generic over an outputs struct (see [decision-node.spec.md](decision-node.spec.md)). Every exported field on the outputs struct is one entry on the context. The node evaluates to a `BlContext` keyed by the entry names.
 
-1. **Without a final result** — evaluates to a `BlContext` containing all entries as key-value pairs.
-2. **With a final result** — evaluates to the result of the final (unnamed) expression, with all preceding entries available.
+> A `BoxedContext` is always multi-output. For a single-value computation with named intermediate bindings, use a `LiteralExpression` with intermediate Go vars instead.
 
 ```go
-type BoxedContext struct {
-    DecisionNode  // Id, Name, Description, OutputName, plus Require*/Optional* methods
+type BoxedContext[Outputs any] struct {
+    Id          string
+    Name        string
+    Description *string
 
-    Entries []BoxedEntry
-    Result  BlExpr // optional final result expression
+    Entries []BoxedEntry // topologically sorted by NewBoxedContext
+
+    Outputs Outputs // typed handles, populated by NewBoxedContext
 }
 
 type BoxedEntry struct {
-    Name       string
-    Expression BlExpr
+    Output     BlExpr // the typed handle from the outputs struct that this entry sets
+    Expression BlExpr // the value expression
 }
 
-// AddEntry records an entry on the context AND returns a typed ref bound to
-// the entry's name. The ref is usable in subsequent entry expressions and in
-// the optional final Result.
-func (b *BoxedContext) AddNumberEntry(name string, expression BlExpr) BlNumber
-func (b *BoxedContext) AddStringEntry(name string, expression BlExpr) BlString
-func (b *BoxedContext) AddBooleanEntry(name string, expression BlExpr) BlBoolean
-func (b *BoxedContext) AddDateEntry(name string, expression BlExpr) BlDate
-func (b *BoxedContext) AddTimeEntry(name string, expression BlExpr) BlTime
-func (b *BoxedContext) AddDateTimeEntry(name string, expression BlExpr) BlDateTime
-func (b *BoxedContext) AddDaysTimeEntry(name string, expression BlExpr) BlDaysTimeDuration
-func (b *BoxedContext) AddYearsMonthsEntry(name string, expression BlExpr) BlYearsMonthsDuration
-func (b *BoxedContext) AddListEntry(name string, expression BlExpr) BlList
-func (b *BoxedContext) AddContextEntry(name string, expression BlExpr, schema *ContextContract) BlContext
+func NewBoxedContext[Outputs any](opts BoxedContextOpts[Outputs]) *BoxedContext[Outputs]
 
-func (b *BoxedContext) SetResult(expression BlExpr) *BoxedContext
+type BoxedContextOpts[Outputs any] struct {
+    Id          string
+    Name        string
+    Description *string
+
+    // Entries is a builder closure that receives a pre-populated outputs handle
+    // and returns the entry expressions. Use the typed Bl* handles on `o` to
+    // identify which entry each expression sets and to cross-reference other
+    // entries' outputs.
+    Entries func(o *Outputs) []BoxedEntry
+}
+
+// Helper: pair an outputs-struct handle with the expression that sets it.
+func Entry(output BlExpr, expression BlExpr) BoxedEntry
 
 // Evaluate the context against the input variables
-func (b *BoxedContext) Evaluate(input map[string]any) (BlValue, error)
+func (b *BoxedContext[Outputs]) Evaluate(input map[string]any) (BlValue, error)
 
 // Render as a markdown string
-func (b *BoxedContext) ToMarkdown() string
+func (b *BoxedContext[Outputs]) ToMarkdown() string
 ```
 
-`BoxedContext` is instantiated via direct struct literal — no `New*` factory.
+`NewBoxedContext` allocates the outputs handle, invokes the `Entries` closure, validates the resulting entry list against the outputs struct's fields (every field must be set by exactly one entry; every `Output` handle must belong to this node's outputs struct), then topologically sorts the entries by their cross-entry dependencies. Cycles produce a `DecisionDefinitionError`.
 
 ---
 
 ## Building a BoxedContext
 
-The constructor function declares the node's typed inputs first; entry expressions reference those inputs and any earlier entries' refs. The final `SetResult` (if present) likewise uses captured refs.
-
 ```go
-func monthlyBreakdown() *BoxedContext {
-    bc := &BoxedContext{
-        Id:   "monthly_breakdown",
-        Name: "Monthly Breakdown",
-    }
-    loanAmount := bc.RequireNumber("loan_amount")
-    rate       := bc.RequireNumber("rate")
-    term       := bc.RequireNumber("term")
-
-    principal := bc.AddNumberEntry("principal", loanAmount.Divide(term))
-    interest  := bc.AddNumberEntry("interest",  loanAmount.Multiply(rate).Divide(Bl.Number(12)))
-    bc.AddNumberEntry("total", principal.Add(interest))
-
-    return bc
+type MonthlyBreakdownOutputs struct {
+    Principal BlNumber
+    Interest  BlNumber
+    Total     BlNumber
 }
 
-result, err := monthlyBreakdown().Evaluate(map[string]any{
+var monthlyBreakdown = NewBoxedContext[MonthlyBreakdownOutputs](BoxedContextOpts[MonthlyBreakdownOutputs]{
+    Id:   "monthly_breakdown",
+    Name: "Monthly Breakdown",
+    Entries: func(o *MonthlyBreakdownOutputs) []BoxedEntry {
+        return []BoxedEntry{
+            Entry(o.Principal, loanAmount.Divide(term)),
+            Entry(o.Interest,  loanAmount.Multiply(rate).Divide(Bl.Number(12))),
+            Entry(o.Total,     o.Principal.Add(o.Interest)),
+        }
+    },
+})
+
+result, err := monthlyBreakdown.Evaluate(map[string]any{
     "loan_amount": Bl.Number(120000),
     "rate":        Bl.Number(0.06),
     "term":        Bl.Number(12),
 })
-// result is a BlContext: {principal: 10000, interest: 600, total: 10600}
+// result is BlContext: {principal: 10000, interest: 600, total: 10600}
+//
+// Access typed values downstream:
+// monthlyBreakdown.Outputs.Principal — BlNumber handle
+// monthlyBreakdown.Outputs.Total     — BlNumber handle
 ```
 
-With a final result, the `BoxedContext` evaluates to a single value:
-
-```go
-func eligibilityChecker() *BoxedContext {
-    bc := &BoxedContext{
-        Id:   "eligibility",
-        Name: "Eligibility",
-    }
-    age    := bc.RequireNumber("age")
-    income := bc.RequireNumber("income")
-
-    ageOk    := bc.AddBooleanEntry("age_ok",    age.GreaterThanOrEqual(Bl.Number(18)))
-    incomeOk := bc.AddBooleanEntry("income_ok", income.GreaterThanOrEqual(Bl.Number(30000)))
-
-    bc.SetResult(Bl.If(
-        ageOk.And(incomeOk),
-        Bl.String("eligible"),
-        Bl.String("ineligible"),
-    ))
-    return bc
-}
-
-result, err := eligibilityChecker().Evaluate(map[string]any{
-    "age":    Bl.Number(25),
-    "income": Bl.Number(50000),
-})
-// result is BlString("eligible") — not a context, just the final result
-```
+Here `loanAmount`, `rate`, and `term` are typed `BlNumber` handles from upstream nodes' `.Outputs.X` fields (or DecisionTask-level inputs). `o.Principal` and `o.Interest` are this node's own handles — using them inside the closure declares cross-entry dependencies that `NewBoxedContext` honours when sorting.
 
 ---
 
 ## Evaluation
 
-Whenever entries are added, the `BoxedContext` builds a dependency graph by inspecting which entry refs each expression references. Entries are topologically sorted into an execution order — entries with no dependencies on other entries are evaluated first, and each entry's result is added to the local context before its dependents are evaluated. The declaration order does not affect the execution order.
+The entry list is already topologically sorted by `NewBoxedContext`. At evaluation time:
 
-Circular dependencies between entries produce a `DecisionDefinitionError` at the point the cycle is introduced.
+1. Each entry's expression is evaluated against the input variables plus the accumulated entry results.
+2. The entry's result is stored in the local context under its name (the lowercased outputs-struct field name, or the `bl:"name"` tag).
+3. After all entries are evaluated, the result is a `BlContext` keyed by entry names.
+
+Cycles in the entry graph are rejected at construction time and never observed during evaluation.
 
 ---
 
 ## Markdown Rendering
 
-`ToMarkdown()` returns a markdown string representing the boxed context. Each entry is rendered as a row showing the variable name and its expression (via `BlExpr.ToMarkdown()`). If a final result expression is set, it is rendered as a separate row.
+`ToMarkdown()` returns a markdown string showing each entry's name and its expression in the topologically sorted execution order.
 
 ### Example
 
 ```go
-fmt.Println(monthlyBreakdown().ToMarkdown())
+fmt.Println(monthlyBreakdown.ToMarkdown())
 ```
 
 Output:
@@ -144,26 +128,13 @@ Output:
 | total     | principal + interest    |
 ```
 
-When a final result is set, it appears as a final row:
-
-```text
-### Eligibility
-
-| Name      | Expression                                                |
-|-----------|-----------------------------------------------------------|
-| age_ok    | age >= 18                                                 |
-| income_ok | income >= 30000                                           |
-| (result)  | if age_ok and income_ok then "eligible" else "ineligible" |
-```
-
 ---
 
 ## Edge Cases
 
-- A `BoxedContext` with no entries and no result evaluates to an empty `BlContext`.
-- A `BoxedContext` with no entries but with a result evaluates the result expression against only the input variables.
-- If an entry's expression evaluates to `BlNull`, dependent entries can still reference that ref (it resolves to `BlNull`).
-- Duplicate entry names are invalid; `Add*Entry` with an existing name produces a `DecisionDefinitionError`.
-- Circular dependencies between entries produce a `DecisionDefinitionError` at the point the cycle is introduced.
+- A `BoxedContext` whose `Outputs` struct has no exported fields is invalid; `NewBoxedContext` raises `DecisionDefinitionError`.
+- A `BoxedContext` whose `Entries` closure returns fewer entries than the outputs struct has fields — or duplicates — is invalid; raises `DecisionDefinitionError`.
+- Every entry's `Output` handle must originate from the outputs struct passed to the closure. A foreign handle (e.g., another node's `.Outputs.X`) used in the `Output` position produces `DecisionDefinitionError`.
+- An `Output` handle used inside the `Expression` of another entry declares a cross-entry dependency; cycles are rejected at construction.
+- If an entry's expression evaluates to `BlNull`, dependent entries can still reference that handle (it resolves to `BlNull`).
 - Entries with no dependencies on other entries may execute in any order relative to each other.
-- The `Result` expression can reference any entry's typed ref. It is always evaluated last, after all entries.

@@ -1,165 +1,150 @@
 ---
 name: DecisionNode
-description: Abstract base type for all decision nodes — provides common identity, naming, output, and the typed-input declaration surface shared by DecisionTable, LiteralExpression, BoxedContext, Relation, and Invocation
+description: Common interface for every decision node — the shared identity surface (Id, Name, Description) and evaluation contract satisfied by the generic DecisionTable, LiteralExpression, BoxedContext, Relation, and Invocation types.
 targets:
   - ../decisions/decision_node.go
 ---
 
 # DecisionNode
 
-`DecisionNode` is the abstract base type for every node in a `DecisionTask`. It carries the common attributes — identity, human-readable name, declared output, and the typed-input declaration surface — that all concrete node types share. Concrete node types are:
+`DecisionNode` is the interface every node in a `DecisionTask` satisfies. The five concrete node types are each generic over a caller-supplied outputs struct that declares the node's typed outputs:
 
-- `DecisionTable` — tabular input/output rules with hit policies
-- `LiteralExpression` — a single expression body
-- `BoxedContext` — an ordered list of named entries with an optional final result
-- `Relation` — tabular data that evaluates to a list of contexts
-- `Invocation` — a call to a `BusinessKnowledgeModel` with parameter bindings
+- `DecisionTable[Outputs]` — tabular input/output rules with hit policies
+- `LiteralExpression[Outputs]` — a single expression body
+- `BoxedContext[Outputs]` — an ordered list of named entries with an optional final result
+- `Relation[Outputs]` — tabular data that evaluates to a list of contexts
+- `Invocation[Outputs]` — a call to a `BusinessKnowledgeModel` with parameter bindings
 
 ```go
-type DecisionNode struct {
-    Id          string
-    Name        *string
-    Description *string
-
-    // Output variable name — the key under which this node's result is stored
-    // in the model's evaluation context. Defaults to Id if not set.
-    OutputName *string
-
-    // Internal: the input registry populated by Require*/Optional* calls.
-    // Authors do not write to this directly; it is exposed for introspection
-    // (e.g. for DecisionTask validation).
+type DecisionNode interface {
+    GetId() string
+    GetName() *string
+    GetDescription() *string
+    Evaluate(input map[string]any) (BlValue, error)
 }
-
-// Evaluate this node against the provided input variables.
-// Called by DecisionTask during graph evaluation; may also be called standalone.
-func (d *DecisionNode) Evaluate(input map[string]any) (BlValue, error)
 ```
 
-Concrete node types embed `DecisionNode` and add their own type-specific fields (`Body` on `LiteralExpression`, `Inputs`/`Rules` on `DecisionTable`, etc.).
+Every concrete generic node type implements this interface regardless of its `Outputs` type parameter, so `[]DecisionNode{eligibility, approval, ...}` accepts nodes with different output shapes uniformly.
+
+---
+
+## Outputs structs
+
+Each concrete node's typed outputs are declared by a caller-defined struct. **Naming convention:** the struct name ends in `Outputs` (e.g., `EligibilityOutputs`, `ApprovalOutputs`, `RiskScoreOutputs`).
+
+```go
+type EligibilityOutputs struct {
+    Risk  BlString   // output column "risk"
+    Score BlNumber   // output column "score"
+}
+```
+
+Rules for the outputs struct:
+
+- **Every exported field is an output.** No filter — the caller put it there, so it is an output.
+- A field's static type must implement `BlValue` (`BlString`, `BlNumber`, `BlBoolean`, `BlDate`, `BlTime`, `BlDateTime`, `BlDaysTimeDuration`, `BlYearsMonthsDuration`, `BlList`, `BlContext`, `BlRange`, `BlCalendar`). A non-`BlValue` field type is a `DecisionDefinitionError` at construction time.
+- The column name defaults to the lowercase field name; override with a `bl:"name"` struct tag.
+- Single-output nodes use an outputs struct with exactly one field. Multi-output nodes use one field per output column.
+
+When the constructor runs, every outputs-struct field is populated with a typed handle that downstream nodes reference to consume this node's output.
 
 ---
 
 ## Constructing a node
 
-Decision nodes are instantiated via **direct struct literals** — there is no `New*` factory function. Validation (non-empty `Id`, no duplicate `OutputName`, dependency-graph correctness) happens at `DecisionTask.AddNode` and `DecisionTask.Validate` time, not at struct-literal construction.
+Each concrete type has a generic constructor: `NewDecisionTable[Outputs]`, `NewLiteralExpression[Outputs]`, `NewBoxedContext[Outputs]`, `NewRelation[Outputs]`, `NewInvocation[Outputs]`. The caller passes opts containing the node's logic (rules, body, entries, rows, bindings) and the type parameter pins the outputs struct.
 
 ```go
-calc := &LiteralExpression{
-    Id:   "monthly_payment",
-    Name: "Monthly Payment",
-}
+var eligibility = NewDecisionTable[EligibilityOutputs](DecisionTableOpts{
+    Id:        "eligibility",
+    Name:      "Eligibility Check",
+    HitPolicy: HitPolicyUnique,
+    Inputs:    []TableInput{ /* ... */ },
+    Rules:     []Rule{ /* ... */ },
+})
 ```
 
-The constructor-function idiom (below) is the canonical way to build a node — direct struct literals are the building block inside that function.
+The constructor performs the following steps:
+
+1. Allocate and populate the underlying node value from `opts`.
+2. Reflect on the `Outputs` type parameter. For every exported field:
+   - Verify the field's static type implements `BlValue`. Reject otherwise.
+   - Derive the output's name (lowercased field name, or the `bl:"name"` tag if present).
+   - Register the output on the underlying node.
+   - Allocate a typed handle and assign it into the corresponding field of the returned value's `Outputs`.
+3. Validate node-internal consistency (e.g., every rule output references a declared output; no duplicate output names on this node).
+4. Return the constructed `*DecisionTable[Outputs]` (or analogous for other node types). Validation failures raise a `DecisionDefinitionError`.
+
+The exact return type for the example above is `*DecisionTable[EligibilityOutputs]`. Access patterns:
+
+```go
+eligibility.Outputs.Risk      // BlString  — typed handle
+eligibility.Outputs.Score     // BlNumber  — typed handle
+eligibility.GetId()           // "eligibility"
+eligibility.Evaluate(input)   // standalone evaluation
+```
 
 ---
 
-## Typed-input declaration
+## Cross-node references
 
-Each decision node declares its required inputs via per-type `Require*` methods. Each call:
-
-1. Records the input on the node's internal schema (used to derive dependencies and validate against the model's evaluation context).
-2. Returns a typed Go reference (`BlNumber`, `BlString`, etc.) that resolves at evaluation time from the surrounding scope.
-
-The captured ref is used directly inside the node's body / rules — there is no separate `Bl.NumberVar("loan_amount")` lookup.
+A downstream node references upstream outputs by reading the typed `Bl*` field through `.Outputs.X`. The field's static type carries through the Go compiler — type mismatches are caught at compile time.
 
 ```go
-// Inherited by every concrete decision-node type.
-func (d *DecisionNode) RequireNumber(name string) BlNumber
-func (d *DecisionNode) RequireString(name string) BlString
-func (d *DecisionNode) RequireBoolean(name string) BlBoolean
-func (d *DecisionNode) RequireDate(name string) BlDate
-func (d *DecisionNode) RequireTime(name string) BlTime
-func (d *DecisionNode) RequireDateTime(name string) BlDateTime
-func (d *DecisionNode) RequireDaysTime(name string) BlDaysTimeDuration
-func (d *DecisionNode) RequireYearsMonths(name string) BlYearsMonthsDuration
-func (d *DecisionNode) RequireList(name string) BlList
-func (d *DecisionNode) RequireContext(name string, schema *ContextContract) BlContext
-func (d *DecisionNode) RequireRange(name string) BlRange
-func (d *DecisionNode) RequireCalendar(name string) BlCalendar
-
-// Optional variants — same signatures; the ref evaluates to BlNull if the
-// input is absent at runtime instead of producing a DecisionEvaluationError.
-func (d *DecisionNode) OptionalNumber(name string) BlNumber
-// ...etc.
-```
-
-`Require*` lazy-initializes the internal input registry on first call, so direct struct literals work without an explicit constructor.
-
----
-
-## The constructor-function idiom
-
-Each non-trivial decision node is built inside a **dedicated, domain-named Go function** that returns the constructed node. The function's body is the node's "scope" — it owns the typed refs and their use sites. This is the spec's canonical pattern:
-
-```go
-func monthlyPaymentCalc() *LiteralExpression {
-    calc := &LiteralExpression{
-        Id:   "monthly_payment",
-        Name: "Monthly Payment",
-    }
-    loanAmount := calc.RequireNumber("loan_amount")
-    rate       := calc.RequireNumber("rate")
-    calc.Body = loanAmount.Multiply(rate).Divide(Bl.Number(12))
-    return calc
+type ApprovalOutputs struct {
+    Status BlString
 }
 
-func totalInterestCalc() *LiteralExpression {
-    calc := &LiteralExpression{
-        Id:   "total_interest",
-        Name: "Total Interest",
-    }
-    loanAmount := calc.RequireNumber("loan_amount")  // local; no collision
-    rate       := calc.RequireNumber("rate")
-    term       := calc.RequireNumber("term_months")
-    calc.Body = loanAmount.Multiply(rate).Multiply(term)
-    return calc
-}
+var approval = NewLiteralExpression[ApprovalOutputs](LiteralExpressionOpts{
+    Id:   "approval",
+    Name: "Loan Approval",
+    Body: Bl.If(
+        eligibility.Outputs.Risk.Equals(Bl.String("high")),
+        Bl.String("review"),
+        Bl.String("approved"),
+    ),
+})
 ```
 
-Why this is the idiom (and not just a suggestion):
-
-- **No package-level Go-name collisions.** Each function's locals are independent — `loanAmount` in one constructor cannot conflict with `loanAmount` in another, even in the same file.
-- **One node per scope.** A reader sees the node's schema and body in a single block.
-- **Testable in isolation.** Each constructor is a unit-testable function — call it, inspect the returned node.
-
-Inline construction (passing `&LiteralExpression{...}` directly into `model.AddNode(...)`) is discouraged when the node has more than one or two typed inputs.
-
-Function names are domain-named and **do not use the `new` prefix** — `monthlyPaymentCalc()`, not `newMonthlyPaymentCalc()`. The `new` prefix is reserved for generic factory functions; these are user-authored constructors for specific named nodes.
+`NewDecisionTask` derives the dependency graph by walking each node's expression trees (`Rules`, `Body`, `Entries`, `Rows`, `Bindings`) and collecting output handles. Each handle carries a pointer to its source node, so producer→consumer edges are unambiguous and string-free.
 
 ---
 
 ## Identity
 
-- `Id` is a unique identifier within the containing `DecisionTask`. Duplicate ids are rejected by `DecisionTask.Validate()`.
-- `Name` is an optional human-readable label (e.g., `"Eligibility Check"`).
-- `Description` is optional documentation text.
+- `Id` — unique identifier within the containing `DecisionTask`. Duplicate ids are rejected.
+- `Name` — optional human-readable label.
+- `Description` — optional documentation text.
 
-## Dependencies
+These fields live on each concrete node's struct and are exposed through the interface getter methods (`GetId`, `GetName`, `GetDescription`).
 
-The node's dependencies are derived from its `Require*` calls — every required input field name becomes either:
+---
 
-- An `InputData` reference resolved from the model's caller-provided input variables, **or**
-- An output reference to another `DecisionNode` whose `OutputName` (or `Id`) matches the field name.
+## Evaluation
 
-When the model evaluates this node, all dependencies are evaluated first (transitively, in dependency order), and their outputs are merged into the input context available to this node.
+A `DecisionNode` is evaluated by calling `Evaluate(input)`:
 
-A node that calls no `Require*` methods depends only on the empty input set — it is a constant-producing node.
+- **Single-output case** (outputs struct has exactly one field): returns that field's `BlValue` directly.
+- **Multi-output case**: returns a `BlContext` keyed by the declared output names.
 
-## Output Name
+Within a `DecisionTask`, the runtime evaluates nodes in topologically sorted dependency order and stores each node's result in the evaluation context under the node's `Id`.
 
-When a node's result is stored in the evaluation context (for downstream nodes to consume), it is keyed by `OutputName`. If `OutputName` is `nil`, the `Id` is used as the key.
+---
 
 ## Standalone Evaluation
 
-Any `DecisionNode` can be evaluated independently by calling `.Evaluate(input)` directly, without a containing `DecisionTask`. In this case, the caller is responsible for providing all required input variables — dependency resolution does not occur.
+Any decision node can be evaluated independently by calling `.Evaluate(input)` without a containing `DecisionTask`. The caller is responsible for providing all input variables referenced by the node's expressions. Dependency resolution against other nodes does not occur in standalone mode — references to other nodes' outputs must already be resolvable from the supplied `input`.
+
+---
 
 ## Edge Cases
 
-- A `DecisionNode` whose `Id` is an empty string is invalid; `DecisionTask.Validate()` rejects it.
-- A `DecisionNode` whose declared inputs (via `Require*`) form a circular dependency among nodes is detected by `DecisionTask.Validate()`.
-- `OutputName` must be unique within a `DecisionTask`. Duplicate output names are rejected by `DecisionTask.Validate()`.
-- Calling `.Evaluate()` with a named input variable not declared via `Require*` / `Optional*` produces a `DecisionEvaluationError`. Only variables declared on the node are accepted.
-- Calling the same `Require*` method twice with the same `name` returns the same ref (idempotent registration).
-- Calling `Require*` and `Optional*` for the same `name` is an authoring error and produces a `DecisionDefinitionError` at validation time.
-- A `Require*` declaration whose evaluation-time value is the wrong type (e.g. a `RequireNumber("x")` declaration where `x` resolves to a string) produces a `BlTypeError` at evaluation time.
+- A `DecisionNode` whose `Id` is an empty string is invalid; `NewDecisionTask` rejects it with `DecisionDefinitionError`.
+- An outputs-struct field whose type does not implement `BlValue` is a `DecisionDefinitionError` at construction time.
+- An outputs-struct with no exported fields is a `DecisionDefinitionError` (a node must declare at least one output).
+- An outputs-struct field whose `bl:"name"` tag duplicates another field's effective name (within the same node) is a `DecisionDefinitionError`.
+- Output names must be unique across the whole `DecisionTask`. Collisions are rejected at task construction.
+- Decision nodes forming a circular dependency among themselves are detected by `NewDecisionTask` and rejected with `DecisionDefinitionError`.
+- Calling `.Evaluate()` in standalone mode with an input variable not referenced by any expression on the node is silently ignored.
+- A required input variable that is missing at evaluation time resolves to `BlNull` (consistent with FEEL semantics).
+- A node body that produces a value whose runtime type disagrees with the declared outputs-struct field type produces a `BlTypeError` at evaluation time.

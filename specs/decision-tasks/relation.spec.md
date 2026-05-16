@@ -1,110 +1,114 @@
 ---
 name: Relation
-description: A DecisionNode defined as tabular data — named columns and rows of expressions that evaluate to a BlTable
+description: A DecisionNode generic over a row struct — defines tabular data with typed columns and rows of typed cell expressions, evaluating to a BlTable
 targets:
   - ../decisions/relation.go
 ---
 
 # Relation
 
-A `Relation` is a `DecisionNode` that represents tabular data. It has named columns and rows of expressions. Each row evaluates to a `BlContext` (keyed by column names), and the relation as a whole evaluates to a [`BlTable`](../expressions/table.spec.md) — a typed list of uniformly-keyed rows.
+A `Relation` is a `DecisionNode` that represents tabular data. It is generic over a row struct whose exported fields describe the table's columns. The relation evaluates to a [`BlTable`](../expressions/table.spec.md) — a typed list of uniformly-keyed rows.
 
 Relations are useful for defining static lookup tables, reference data, or any structured data set within a decision model.
 
-```go
-type Relation struct {
-    DecisionNode  // Id, Name, Description, OutputName, plus Require*/Optional* methods
+Unlike the multi-output `DecisionTable`, a `Relation`'s single output is the whole table. Downstream nodes consume it as a typed `BlTable[Row]` via the node's `Table` field.
 
-    Columns []RelationColumn
-    Rows    []RelationRow
+```go
+type Relation[Row any] struct {
+    Id          string
+    Name        string
+    Description *string
+
+    Rows []Row // typed row values, supplied via opts and validated against Row's columns
+
+    Table BlTable[Row] // typed handle to the whole table, populated by NewRelation
 }
 
-// Per-type column factories — register a column on the relation AND return the
-// declared type metadata. Column refs are not used as expressions (rows are
-// authored as ordered expression slices), but the typed factories enforce
-// per-cell type validation.
-func (r *Relation) NumberColumn(name string) RelationColumn
-func (r *Relation) StringColumn(name string) RelationColumn
-func (r *Relation) BooleanColumn(name string) RelationColumn
-func (r *Relation) DateColumn(name string) RelationColumn
-// + per-type column factories for the remaining Bl* types
+func NewRelation[Row any](opts RelationOpts[Row]) *Relation[Row]
 
-func (r *Relation) AddRow(expressions ...BlExpr) *Relation
+type RelationOpts[Row any] struct {
+    Id          string
+    Name        string
+    Description *string
+
+    // Rows is a builder closure returning the typed row values. Each row's
+    // field expressions may reference upstream node outputs (typed Bl* handles)
+    // or DecisionTask-level input handles.
+    Rows func() []Row
+}
 
 // Evaluate the relation — returns a BlTable
-func (r *Relation) Evaluate(input map[string]any) (BlValue, error)
+func (r *Relation[Row]) Evaluate(input map[string]any) (BlValue, error)
 
 // Render as a markdown string
-func (r *Relation) ToMarkdown() string
-
-
-type RelationColumn struct {
-    Name    string
-    TypeRef string // blkit type name (derived from the factory method)
-}
-
-type RelationRow struct {
-    Expressions []BlExpr // one expression per column, in column order
-}
+func (r *Relation[Row]) ToMarkdown() string
 ```
 
-`Relation` is instantiated via direct struct literal — no `New*` factory.
+`NewRelation[Row]` reflects on the `Row` type parameter to derive column metadata:
+
+- **Every exported field is a column.** No filter — the caller put it there, so it is a column.
+- The column name defaults to the lowercased field name; a `bl:"name"` struct tag overrides.
+- The column's type is the field's static `Bl*` type. A non-`BlValue` field type produces `DecisionDefinitionError`.
+
+The constructor then invokes `opts.Rows` and validates each returned row's cell expressions against the column types.
 
 ---
 
-## Building a Relation — the constructor-function idiom
-
-A relation declares its inputs via `Require*` (if any row expressions reference input variables); columns are declared via per-type factories; rows are added with one expression per column:
+## Building a Relation
 
 ```go
-func shippingRates() *Relation {
-    rates := &Relation{
-        Id:   "shipping_rates",
-        Name: "Shipping Rates",
-    }
-    rates.StringColumn("region")
-    rates.NumberColumn("standard_rate")
-    rates.NumberColumn("express_rate")
-
-    rates.AddRow(Bl.String("domestic"),      Bl.Number(5.99),  Bl.Number(12.99))
-    rates.AddRow(Bl.String("europe"),        Bl.Number(15.99), Bl.Number(29.99))
-    rates.AddRow(Bl.String("international"), Bl.Number(25.99), Bl.Number(49.99))
-
-    return rates
+type ShippingRatesRow struct {
+    Region       BlString
+    StandardRate BlNumber
+    ExpressRate  BlNumber
 }
 
-result, err := shippingRates().Evaluate(map[string]any{})
-// result is a BlTable with columns [region, standard_rate, express_rate] and rows:
-//   {region: "domestic",      standard_rate: 5.99,  express_rate: 12.99}
-//   {region: "europe",        standard_rate: 15.99, express_rate: 29.99}
-//   {region: "international", standard_rate: 25.99, express_rate: 49.99}
+var shippingRates = NewRelation[ShippingRatesRow](RelationOpts[ShippingRatesRow]{
+    Id:   "shipping_rates",
+    Name: "Shipping Rates",
+    Rows: func() []ShippingRatesRow {
+        return []ShippingRatesRow{
+            {Region: Bl.String("domestic"),      StandardRate: Bl.Number(5.99),  ExpressRate: Bl.Number(12.99)},
+            {Region: Bl.String("europe"),        StandardRate: Bl.Number(15.99), ExpressRate: Bl.Number(29.99)},
+            {Region: Bl.String("international"), StandardRate: Bl.Number(25.99), ExpressRate: Bl.Number(49.99)},
+        }
+    },
+})
+
+result, err := shippingRates.Evaluate(map[string]any{})
+// result is a BlTable[ShippingRatesRow] with three rows.
+//
+// Downstream typed access:
+// shippingRates.Table — BlTable[ShippingRatesRow]
 ```
 
 ---
 
 ## Row Expressions
 
-Each entry in a `RelationRow` is a `BlExpr`, so row cells can reference declared inputs via the captured typed refs:
+Each row cell is a typed `Bl*` expression, so cells can reference upstream node outputs or DecisionTask-level inputs:
 
 ```go
-func riskThresholds() *Relation {
-    thresholds := &Relation{
-        Id:   "thresholds",
-        Name: "Risk Thresholds",
-    }
-    baseLimit := thresholds.RequireNumber("base_limit")
-
-    thresholds.StringColumn("tier")
-    thresholds.NumberColumn("min_score")
-    thresholds.NumberColumn("max_amount")
-
-    thresholds.AddRow(Bl.String("gold"),   Bl.Number(750), baseLimit.Multiply(Bl.Number(5)))
-    thresholds.AddRow(Bl.String("silver"), Bl.Number(600), baseLimit.Multiply(Bl.Number(3)))
-    thresholds.AddRow(Bl.String("bronze"), Bl.Number(0),   baseLimit)
-
-    return thresholds
+type RiskThresholdsRow struct {
+    Tier      BlString
+    MinScore  BlNumber
+    MaxAmount BlNumber
 }
+
+var riskThresholds = NewRelation[RiskThresholdsRow](RelationOpts[RiskThresholdsRow]{
+    Id:   "thresholds",
+    Name: "Risk Thresholds",
+    Rows: func() []RiskThresholdsRow {
+        return []RiskThresholdsRow{
+            {Tier: Bl.String("gold"),   MinScore: Bl.Number(750), MaxAmount: baseLimit.Multiply(Bl.Number(5))},
+            {Tier: Bl.String("silver"), MinScore: Bl.Number(600), MaxAmount: baseLimit.Multiply(Bl.Number(3))},
+            {Tier: Bl.String("bronze"), MinScore: Bl.Number(0),   MaxAmount: baseLimit},
+        }
+    },
+})
 ```
+
+`baseLimit` is a typed `BlNumber` handle from an upstream node or a DecisionTask-level input.
 
 ---
 
@@ -113,7 +117,7 @@ func riskThresholds() *Relation {
 `ToMarkdown()` returns a markdown table with column names as headers and each row's expressions as cells.
 
 ```go
-fmt.Println(shippingRates().ToMarkdown())
+fmt.Println(shippingRates.ToMarkdown())
 ```
 
 Output:
@@ -132,9 +136,9 @@ Output:
 
 ## Edge Cases
 
-- A `Relation` with no rows evaluates to an empty `BlTable` (with the declared columns and zero rows).
-- A `Relation` with no columns is invalid; `DecisionTask.Validate()` rejects it.
-- A `RelationRow` with fewer expressions than columns produces `BlNull` for the missing columns.
-- A `RelationRow` with more expressions than columns is invalid; `DecisionTask.Validate()` rejects it.
-- Duplicate column names are invalid; `DecisionTask.Validate()` rejects them.
-- Each cell's value is validated against the column's declared type (from the `*Column` factory). A mismatch produces a `BlTypeError`.
+- A `Relation[Row]` whose `Row` type has no exported fields is invalid; `NewRelation` raises `DecisionDefinitionError`.
+- A `Relation` whose `Rows` closure returns an empty slice evaluates to a `BlTable` with the declared columns and zero rows.
+- A `Row` whose field type does not implement `BlValue` is a `DecisionDefinitionError`.
+- A cell expression whose runtime type disagrees with its column's declared type produces a `BlTypeError` at evaluation time.
+- Two fields whose `bl:"name"` tags collide is a `DecisionDefinitionError`.
+- The `Row` struct's field declaration order is the column order in the output table and in `ToMarkdown`.

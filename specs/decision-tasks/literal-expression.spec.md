@@ -1,105 +1,123 @@
 ---
 name: LiteralExpression
-description: A DecisionNode defined by a single expression body — evaluates the body against declared typed inputs and returns the result
+description: A DecisionNode generic over a single-field outputs struct — evaluates a single BlExpr body whose result is bound to the outputs struct's field
 targets:
   - ../decisions/literal_expression.go
 ---
 
 # LiteralExpression
 
-A `LiteralExpression` is a `DecisionNode` defined by a single `BlExpr` body. When evaluated, the body is computed against the inputs declared on the node, returning a single `BlValue`.
+A `LiteralExpression` is a `DecisionNode` defined by a single `BlExpr` body. When evaluated, the body is computed against the input variables, and the result is the value of the node's single output.
+
+`LiteralExpression` is generic over an outputs struct (see [decision-node.spec.md](decision-node.spec.md)). The outputs struct must have exactly one exported field; the body's runtime type must match that field's static type.
 
 ```go
-type LiteralExpression struct {
-    DecisionNode  // Id, Name, Description, OutputName, plus Require*/Optional* methods
+type LiteralExpression[Outputs any] struct {
+    Id          string
+    Name        string
+    Description *string
 
-    Body    BlExpr  // the expression to evaluate
-    TypeRef *string // expected output type (blkit type name)
+    Body BlExpr
+
+    Outputs Outputs // single-field typed handle, populated by NewLiteralExpression
+}
+
+func NewLiteralExpression[Outputs any](opts LiteralExpressionOpts) *LiteralExpression[Outputs]
+
+type LiteralExpressionOpts struct {
+    Id          string
+    Name        string
+    Description *string
+    Body        BlExpr
 }
 
 // Evaluate the body against the input variables
-func (l *LiteralExpression) Evaluate(input map[string]any) (BlValue, error)
+func (l *LiteralExpression[Outputs]) Evaluate(input map[string]any) (BlValue, error)
 
 // Render as a markdown string
-func (l *LiteralExpression) ToMarkdown() string
+func (l *LiteralExpression[Outputs]) ToMarkdown() string
 ```
 
-`LiteralExpression` is instantiated via direct struct literal — no `New*` factory. Inputs are declared on the node via the inherited `Require*` / `Optional*` methods (see [decision-node.spec.md](decision-node.spec.md)).
+`NewLiteralExpression` enforces that `Outputs` has exactly one exported field. The body's declared type (the static type of `opts.Body` as a `BlExpr`) must match that field's `Bl*` type; otherwise `DecisionDefinitionError` is raised. The constructor populates the single field with a typed handle so downstream nodes can reference this node's output as `node.Outputs.FieldName`.
 
 ---
 
-## Building a node — the constructor-function idiom
-
-Each non-trivial `LiteralExpression` lives in its own dedicated, domain-named Go function. Inputs are declared first; the captured typed refs are used to build the body:
+## Building a LiteralExpression
 
 ```go
-func monthlyPaymentCalc() *LiteralExpression {
-    calc := &LiteralExpression{
-        Id:   "monthly_payment",
-        Name: "Monthly Payment",
-    }
-    loanAmount := calc.RequireNumber("loan_amount")
-    rate       := calc.RequireNumber("rate")
-    calc.Body = loanAmount.Multiply(rate).Divide(Bl.Number(12))
-    return calc
+type MonthlyPaymentOutputs struct {
+    Amount BlNumber
 }
 
-result, err := monthlyPaymentCalc().Evaluate(map[string]any{
+var monthlyPayment = NewLiteralExpression[MonthlyPaymentOutputs](LiteralExpressionOpts{
+    Id:   "monthly_payment",
+    Name: "Monthly Payment",
+    Body: loanAmount.Multiply(rate).Divide(Bl.Number(12)),
+})
+
+result, err := monthlyPayment.Evaluate(map[string]any{
     "loan_amount": Bl.Number(200000),
     "rate":        Bl.Number(0.05),
 })
-// result is a BlNumber
+// result is a BlNumber matching monthlyPayment.Outputs.Amount
 ```
 
-A conditional expression follows the same shape:
+Here `loanAmount` and `rate` are typed `BlNumber` handles drawn from earlier nodes' `.Outputs.X` fields (or DecisionTask-level inputs). The body composes them with `Bl` operators; the resulting `BlExpr` is typed `BlNumber`, matching the outputs struct's single field.
+
+### Conditional
 
 ```go
-func applicationStatus() *LiteralExpression {
-    status := &LiteralExpression{
-        Id:   "status",
-        Name: "Application Status",
-    }
-    score := status.RequireNumber("score")
-    status.Body = Bl.If(
+type ApplicationStatusOutputs struct {
+    Status BlString
+}
+
+var applicationStatus = NewLiteralExpression[ApplicationStatusOutputs](LiteralExpressionOpts{
+    Id:   "status",
+    Name: "Application Status",
+    Body: Bl.If(
         score.GreaterThanOrEqual(Bl.Number(700)),
         Bl.String("approved"),
         Bl.String("review"),
-    )
-    return status
-}
+    ),
+})
 ```
 
-The function-scope locals `loanAmount`, `rate`, `score` are independent of any other constructor function in the same file — Go scoping handles disambiguation naturally.
+`score` is a typed `BlNumber` handle from an upstream node (e.g., `creditCheck.Outputs.Score`).
+
+### Cross-node reference
+
+```go
+type ApprovalOutputs struct {
+    Status BlString
+}
+
+var approval = NewLiteralExpression[ApprovalOutputs](LiteralExpressionOpts{
+    Id:   "approval",
+    Name: "Loan Approval",
+    Body: Bl.If(
+        eligibility.Outputs.Eligibility.Equals(Bl.String("eligible")),
+        Bl.String("approved"),
+        Bl.String("denied"),
+    ),
+})
+```
+
+`eligibility.Outputs.Eligibility` is the typed `BlString` handle exposed by the `eligibility` `DecisionTable` node from its `EligibilityOutputs` struct.
 
 ---
 
 ## Type Checking
 
-If `TypeRef` is set, the result of evaluating the body is checked against the declared type. A mismatch produces a `BlTypeError`.
-
-```go
-func ageCheck() *LiteralExpression {
-    check := &LiteralExpression{
-        Id:      "age_check",
-        TypeRef: stringPtr("boolean"),
-    }
-    age := check.RequireNumber("age")
-    check.Body = age.GreaterThanOrEqual(Bl.Number(18))
-    return check
-}
-
-result, err := ageCheck().Evaluate(map[string]any{"age": Bl.Number(25)})
-// result == BlBoolean.TRUE
-```
+The outputs struct's single field declares the expected output type. The body's compile-time type (e.g., `BlNumber`, `BlString`) must match that field. A mismatch is a `DecisionDefinitionError` at construction time. A runtime body value that disagrees with its compile-time type (which should not happen for type-safe `Bl*` expressions, but may for raw values) produces a `BlTypeError` at evaluation time.
 
 ---
 
 ## Markdown Rendering
 
-`ToMarkdown()` returns a markdown string showing the node name, its declared inputs, and the body rendered via `BlExpr.ToMarkdown()`.
+`ToMarkdown()` returns a markdown string showing the node name, the referenced input variables, and the body rendered via `BlExpr.ToMarkdown()`.
 
 ```go
-fmt.Println(monthlyPaymentCalc().ToMarkdown())
+fmt.Println(monthlyPayment.ToMarkdown())
 ```
 
 Output:
@@ -112,11 +130,14 @@ Output:
 **Expression:** `loan_amount * rate / 12`
 ```
 
+The **Inputs** line lists every variable referenced by the body (resolved by walking the expression tree and collecting external references).
+
 ---
 
 ## Edge Cases
 
-- A `LiteralExpression` with no `Body` set (`nil`) is invalid; `Evaluate()` returns a `DecisionDefinitionError`.
-- A `Body` that evaluates to `BlNull` is a valid result, not an error.
-- If `TypeRef` is set and the body evaluates to `BlNull`, no type check is performed (`BlNull` is compatible with any type).
-- Inputs declared via `Require*` that are not referenced in the body are still recorded as dependencies (and evaluated by the model before this node), even though the body ignores them.
+- A `LiteralExpression` whose `Body` is `nil` is invalid; `NewLiteralExpression` raises `DecisionDefinitionError`.
+- A `LiteralExpression` whose `Outputs` struct has zero or more than one exported field is invalid; raises `DecisionDefinitionError`.
+- A `Body` whose compile-time type disagrees with the outputs-struct field type is invalid; raises `DecisionDefinitionError`.
+- A `Body` that evaluates to `BlNull` is a valid result.
+- A `Body` that evaluates to `BlNull` is treated as compatible with any output type (consistent with FEEL semantics).
