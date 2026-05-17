@@ -224,8 +224,14 @@ When the process completes or fails, all tokens are consumed and no markers appe
 For a process `start → validate → review → end`:
 
 ```go
-validate := NewNativeFunctionTask("validate", "Validate", app.Validate)
-review := NewNativeFunctionTask("review", "Review", app.Review)
+var validate = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "validate", Name: "Validate",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var review = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "review", Name: "Review",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
 
 simpleReview := NewProcess("simple-review", "1.0", ProcessOpts{
     Graph: []Edge{
@@ -374,8 +380,14 @@ Nodes:
 For a process with an AND split and join: `start → AND(check-credit, check-income) → JOIN → decide → end`:
 
 ```go
-checkCredit := NewNativeFunctionTask("check-credit", "Check Credit", app.CheckCredit)
-checkIncome := NewNativeFunctionTask("check-income", "Check Income", app.CheckIncome)
+var checkCredit = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "check-credit", Name: "Check Credit",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var checkIncome = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "check-income", Name: "Check Income",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
 decide := decisionTemplate.Clone(DecisionTaskOpts{
     Id:             "decide",
     Name:           "Decide",
@@ -633,8 +645,14 @@ assessRisk := riskTemplate.Clone(DecisionTaskOpts{
     InputMappings:  NewVariableMapping(),
     OutputMappings: NewVariableMapping(),
 })
-approve := NewNativeFunctionTask("approve", "Approve", app.Approve)
-reject := NewNativeFunctionTask("reject", "Reject", app.Reject)
+var approve = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "approve", Name: "Approve",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var reject = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "reject", Name: "Reject",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
 
 conditions := NewGatewayConditions(
     NewBranch("approve", Bl.StringVar("assess-risk.risk_level").Equals(Bl.String("low"))),
@@ -820,7 +838,10 @@ All loop iterations share the same `execution_id` — they are part of a single 
 For a process `start → send → end`, where `send` runs once per recipient in a collection:
 
 ```go
-send := NewNativeFunctionTask("send", "Send Notification", app.SendNotification)
+var send = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "send", Name: "Send Notification",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
 send.MultiInstance = NewMultiInstanceConfig(
     Bl.ListVar("start.recipients"),
     MultiInstanceOpts{ElementVariable: "recipient", IsSequential: false},
@@ -928,8 +949,14 @@ All instances share the same `execution_id`. The `instance` field (1-indexed, ma
 For a process with a loopback: `start → review → XOR(approved → end, needs_revision → revise → review)`:
 
 ```go
-review := NewNativeFunctionTask("review", "Review", app.Review)
-revise := NewNativeFunctionTask("revise", "Revise", app.Revise)
+var review = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "review", Name: "Review",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var revise = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "revise", Name: "Revise",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
 
 conditions := NewGatewayConditions(
     NewBranch("approved", Bl.StringVar("review.status").Equals(Bl.String("approved"))),

@@ -212,16 +212,44 @@ Because `Namespace` is part of the broker routing key produced by `MessageGatewa
 ## Example
 
 ```go
-// Tasks
-validateApplication := NewNativeFunctionTask("validate", "Validate Application", loanApp.ValidateApplication)
-pullCreditReport := NewNativeFunctionTask("credit-report", "Pull Credit Report", loanApp.PullCreditReport)
-checkIncome := NewNativeFunctionTask("check-income", "Check Income", loanApp.CheckIncome)
-issueOfferLetter := NewNativeFunctionTask("offer", "Issue Offer Letter", loanApp.IssueOfferLetter)
-proposeCounter := NewNativeFunctionTask("counter", "Propose Counter", loanApp.ProposeCounter)
-declineApplication := NewNativeFunctionTask("decline", "Decline Application", loanApp.DeclineApplication)
-notifyApplicant := NewNativeFunctionTask("notify", "Notify Applicant", loanApp.NotifyApplicant)
-updateCreditBureau := NewNativeFunctionTask("update-bureau", "Update Credit Bureau", loanApp.UpdateCreditBureau)
-archiveApplication := NewNativeFunctionTask("archive", "Archive Application", loanApp.ArchiveApplication)
+// Tasks (declared package-scope alongside their function bodies; see
+// ../processes/task-nodes.spec.md#nativefunctiontask)
+var validateApplication = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "validate", Name: "Validate Application",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var pullCreditReport = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "credit-report", Name: "Pull Credit Report",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var checkIncome = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "check-income", Name: "Check Income",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var issueOfferLetter = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "offer", Name: "Issue Offer Letter",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var proposeCounter = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "counter", Name: "Propose Counter",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var declineApplication = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "decline", Name: "Decline Application",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var notifyApplicant = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "notify", Name: "Notify Applicant",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var updateCreditBureau = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "update-bureau", Name: "Update Credit Bureau",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var archiveApplication = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "archive", Name: "Archive Application",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
 
 // Sub-process tasks
 verifyIdentity := NewSubProcessTask("verify-id", "Verify Identity",
@@ -331,10 +359,22 @@ A process can define multiple entrypoints and exit points. Each start and termin
 
 ```go
 // Tasks
-review := NewNativeFunctionTask("review", "Review Application", loans.Review)
-generateOffer := NewNativeFunctionTask("generate-offer", "Generate Offer", loans.GenerateOffer)
-sendRejection := NewNativeFunctionTask("send-rejection", "Send Rejection", loans.SendRejection)
-notify := NewNativeFunctionTask("notify", "Notify Applicant", comms.Notify)
+var review = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "review", Name: "Review Application",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var generateOffer = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "generate-offer", Name: "Generate Offer",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var sendRejection = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "send-rejection", Name: "Send Rejection",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
+var notify = NewNativeFunctionTask(NativeFunctionTaskOpts{
+    Id: "notify", Name: "Notify Applicant",
+    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+})
 
 // Decision task — clone of the risk-assessment template
 assessRisk := riskAssessmentTemplate().Clone(DecisionTaskOpts{
@@ -625,7 +665,7 @@ End-to-end loan application pipeline: validates the applicant, runs credit and i
 ## Tasks
 
 ### Validate Application (validate)
-NativeFunctionTask — loan_app.validation.validate_application
+NativeFunctionTask
 Checks applicant data for completeness and basic eligibility.
 
 ### Verify Identity (verify-id)
@@ -633,10 +673,10 @@ SubProcessTask — [kyc-verification](./kyc-verification.md) (start: start)
 Runs KYC checks against the applicant's identity documents.
 
 ### Pull Credit Report (credit-report)
-NativeFunctionTask — loan_app.credit.pull_credit_report
+NativeFunctionTask
 
 ### Check Income (check-income)
-NativeFunctionTask — loan_app.income.check_income
+NativeFunctionTask
 
 ### Run Affordability (affordability)
 DecisionTask — [Affordability Model](./affordability-model.md)
@@ -651,22 +691,22 @@ SubProcessTask — [fraud-check-process](./fraud-check-process.md) (start: start
 Runs the fraud detection sub-process.
 
 ### Issue Offer Letter (offer)
-NativeFunctionTask — loan_app.offers.issue_offer_letter
+NativeFunctionTask
 
 ### Propose Counter (counter)
-NativeFunctionTask — loan_app.offers.propose_counter
+NativeFunctionTask
 
 ### Decline Application (decline)
-NativeFunctionTask — loan_app.decline.decline_application
+NativeFunctionTask
 
 ### Notify Applicant (notify)
-NativeFunctionTask — comms.notify.notify_applicant
+NativeFunctionTask
 
 ### Update Credit Bureau (update-bureau)
-NativeFunctionTask — loan_app.credit.update_credit_bureau
+NativeFunctionTask
 
 ### Archive Application (archive)
-NativeFunctionTask — loan_app.archive.archive_application
+NativeFunctionTask
 ```
 
 ---
