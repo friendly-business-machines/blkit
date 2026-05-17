@@ -224,17 +224,19 @@ When the process completes or fails, all tokens are consumed and no markers appe
 For a process `start → validate → review → end`:
 
 ```go
-var validate = NewNativeFunctionTask(NativeFunctionTaskOpts{
+type StepOutputs struct{ Status BlString }
+
+var validate = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "validate", Name: "Validate",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var review = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var review = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "review", Name: "Review",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
-simpleReview := NewProcess("simple-review", "1.0", ProcessOpts{
-    Graph: []Edge{
+var simpleReview = NewProcess("simple-review", "1.0", ProcessOpts{
+    Graph: []ProcessNode{
         Start("start", "Start", NewInputContract()).To(validate),
         validate.To(review),
         review.To(End("done", "Done")),
@@ -380,13 +382,15 @@ Nodes:
 For a process with an AND split and join: `start → AND(check-credit, check-income) → JOIN → decide → end`:
 
 ```go
-var checkCredit = NewNativeFunctionTask(NativeFunctionTaskOpts{
+type StepOutputs struct{ Status BlString }
+
+var checkCredit = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "check-credit", Name: "Check Credit",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var checkIncome = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var checkIncome = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "check-income", Name: "Check Income",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 decide := decisionTemplate.Clone(DecisionTaskOpts{
     Id:             "decide",
@@ -639,19 +643,21 @@ When parallel branches are active, `NODE_COMPLETED` steps from different branche
 For a process with an XOR split: `start → assess-risk → XOR(approve, reject) → end`:
 
 ```go
+type StepOutputs struct{ Status BlString }
+
 assessRisk := riskTemplate.Clone(DecisionTaskOpts{
     Id:             "assess-risk",
     Name:           "Assess Risk",
     InputMappings:  NewVariableMapping(),
     OutputMappings: NewVariableMapping(),
 })
-var approve = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var approve = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "approve", Name: "Approve",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var reject = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var reject = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "reject", Name: "Reject",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
 conditions := NewGatewayConditions(
@@ -838,17 +844,19 @@ All loop iterations share the same `execution_id` — they are part of a single 
 For a process `start → send → end`, where `send` runs once per recipient in a collection:
 
 ```go
-var send = NewNativeFunctionTask(NativeFunctionTaskOpts{
-    Id: "send", Name: "Send Notification",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
-})
-send.MultiInstance = NewMultiInstanceConfig(
-    Bl.ListVar("start.recipients"),
-    MultiInstanceOpts{ElementVariable: "recipient", IsSequential: false},
-)
+type SendOutputs struct{ Delivered BlBoolean }
 
-notifyAll := NewProcess("notify-all", "1.0", ProcessOpts{
-    Graph: []Edge{
+var send = NewNativeFunctionTask(NativeFunctionTaskOpts[SendOutputs]{
+    Id: "send", Name: "Send Notification",
+    Fn: func(ctx *ExecutionContext) (SendOutputs, error) { /* body */ },
+    MultiInstance: NewMultiInstanceConfig(
+        Bl.ListVar("start.recipients"),
+        MultiInstanceOpts{ElementVariable: "recipient", IsSequential: false},
+    ),
+})
+
+var notifyAll = NewProcess("notify-all", "1.0", ProcessOpts{
+    Graph: []ProcessNode{
         Start("start", "Start", NewInputContract()).To(send),
         send.To(End("done", "Done")),
     },
@@ -949,13 +957,15 @@ All instances share the same `execution_id`. The `instance` field (1-indexed, ma
 For a process with a loopback: `start → review → XOR(approved → end, needs_revision → revise → review)`:
 
 ```go
-var review = NewNativeFunctionTask(NativeFunctionTaskOpts{
+type StepOutputs struct{ Status BlString }
+
+var review = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "review", Name: "Review",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var revise = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var revise = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "revise", Name: "Revise",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
 conditions := NewGatewayConditions(

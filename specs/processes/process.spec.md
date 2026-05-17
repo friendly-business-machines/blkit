@@ -213,42 +213,46 @@ Because `Namespace` is part of the broker routing key produced by `MessageGatewa
 
 ```go
 // Tasks (declared package-scope alongside their function bodies; see
-// ../processes/task-nodes.spec.md#nativefunctiontask)
-var validateApplication = NewNativeFunctionTask(NativeFunctionTaskOpts{
+// ../processes/native-function-task.spec.md). Each task is
+// generic over a typed Outputs struct; for these wiring-focused examples
+// we share a single one-field StepOutputs across every task in the snippet.
+type StepOutputs struct{ Status BlString }
+
+var validateApplication = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "validate", Name: "Validate Application",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var pullCreditReport = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var pullCreditReport = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "credit-report", Name: "Pull Credit Report",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var checkIncome = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var checkIncome = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "check-income", Name: "Check Income",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var issueOfferLetter = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var issueOfferLetter = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "offer", Name: "Issue Offer Letter",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var proposeCounter = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var proposeCounter = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "counter", Name: "Propose Counter",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var declineApplication = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var declineApplication = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "decline", Name: "Decline Application",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var notifyApplicant = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var notifyApplicant = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "notify", Name: "Notify Applicant",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var updateCreditBureau = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var updateCreditBureau = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "update-bureau", Name: "Update Credit Bureau",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var archiveApplication = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var archiveApplication = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "archive", Name: "Archive Application",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
 // Sub-process tasks
@@ -359,21 +363,23 @@ A process can define multiple entrypoints and exit points. Each start and termin
 
 ```go
 // Tasks
-var review = NewNativeFunctionTask(NativeFunctionTaskOpts{
+type StepOutputs struct{ Status BlString }
+
+var review = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "review", Name: "Review Application",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var generateOffer = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var generateOffer = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "generate-offer", Name: "Generate Offer",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var sendRejection = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var sendRejection = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "send-rejection", Name: "Send Rejection",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
-var notify = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var notify = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id: "notify", Name: "Notify Applicant",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
 // Decision task — clone of the risk-assessment template
@@ -482,8 +488,8 @@ result, err := process.Evaluate(EvaluateOpts{Context: ctx, History: hist})
    - **Suspend events** — `SuspendForDuration`, `SuspendUntilDatetime` initiate the suspension drain (see [Suspension](#suspension) below). **Pause events** (`PauseForDuration`) dispatch a goroutine that sleeps for the configured duration; the scheduler loop continues to tick and other ready tasks continue to advance.
 3. **Dispatch ready task nodes as goroutines.** For each ready task node (`NativeFunctionTask`, `DecisionTask`, `SubProcessTask`, `TriggerProcessTask`, `RequestInputTask`):
    - The scheduler records `NODE_SCHEDULED` and `NODE_STARTED`.
-   - The task body is invoked in a **new goroutine** with a `context.Context` derived from the scheduler's parent context (see [Cancellation](#cancellation)).
-   - The task body operates on the **shared `ExecutionContext`** directly — it calls `ctx.Record(nodeID, executionID, values)` zero or more times to append its outputs as Pending transactions, visible only to itself via `ctx.AsExecutor(nodeID)` until commit. See [../data/execution-context.spec.md § Atomic Commit and Visibility](../data/execution-context.spec.md#atomic-commit-and-visibility).
+   - The scheduler invokes `task.Evaluate(ctx, executionID)` in a **new goroutine** with a `context.Context` derived from the scheduler's parent context (see [Cancellation](#cancellation)).
+   - For `NativeFunctionTask[Outputs]` (see [native-function-task.spec.md § Evaluate](native-function-task.spec.md#evaluate)), `Evaluate` invokes the function body and reflects the returned `Outputs` struct into a `map[string]any` recorded as a Pending transaction under `(t.Id, executionID)`. The function body may also call `ctx.Record(...)` directly for intermediate side outputs; those land as additional Pending transactions sharing the same `executionID`. Pending transactions are visible only to the executing node via `ctx.AsExecutor(nodeID)` until commit. See [../data/execution-context.spec.md § Atomic Commit and Visibility](../data/execution-context.spec.md#atomic-commit-and-visibility).
    - **SubProcessTask** is dispatched the same way; its goroutine evaluates a child process recursively under a scoped `ExecutionContext` and a child `ExecutionHistory` with a separate `ProcessInstanceId`.
 4. **Check spawned task goroutines for completion.** For each task goroutine that has finished since the previous tick:
    - On success → the scheduler calls `ctx.Commit(nodeID)`, records `NODE_COMPLETED`, and successors become candidates for the next tick.

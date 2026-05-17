@@ -157,207 +157,36 @@ underwriting := NewProcess("underwriting", "1.0", ProcessOpts{
 
 ## NativeFunctionTask
 
-Invokes a Go function directly. The function and its task-level framing are declared together via `NewNativeFunctionTask`; the resulting `*NativeFunctionTask` is itself a `ProcessNode` that can be placed in a process graph. Reuse across multiple processes is via `Clone(opts)` — function-logic fields are shared by reference with clones; task-level fields are reset (not inherited) on `Clone`.
+`NativeFunctionTask` is a `ProcessNode` that invokes a Go function directly. It is **generic over a caller-supplied outputs struct** that declares the task's typed outputs — the same pattern [`DecisionNode`](../decision-tasks/decision-node.spec.md#outputs-structs) and [`BusinessKnowledgeModel`](../decision-tasks/business-knowledge-model.spec.md) already use. The function body and its task-level framing are declared together in one package-scope `var`; reuse across multiple processes is via `Clone(opts)`.
 
-This mirrors the pattern used by [`DecisionTask`](../decision-tasks/decision-task.spec.md): a single type holding both the logic and the task-level metadata, reused via `Clone`, not via wrapping or a separate factory.
+Exit ports on a `NativeFunctionTask` are configured via `NativeFunctionTaskOpts.ExitPorts` using the standalone constructors documented in this spec (`NewInterruptingTimerExitPort`, `NewErrorExitPort`, `NewInterruptingConditionalExitPort`, etc.). The `Task.Add*` methods do not apply.
+
+See [./native-function-task.spec.md](./native-function-task.spec.md) for the full definition, the `Outputs`-struct rules, `Evaluate`'s contract, retry/timeout semantics, and the `Clone` reuse pattern.
 
 ```go
-type NativeFunctionTask struct {
-    // Function-logic fields — set in NativeFunctionTaskOpts at creation;
-    // treated as immutable by convention thereafter. Shared by reference
-    // with clones.
-    Fn          func(*ExecutionContext) (BlValue, error)
-    Description *string
-
-    // Task-level fields — set in NativeFunctionTaskOpts at creation;
-    // treated as immutable by convention. Reset (not inherited) on Clone.
-    Id                              string
-    Name                            string
-    InputMappings                   *VariableMapping
-    OutputMappings                  *VariableMapping
-    MaxRetries                      int
-    InitialRetryDelay               *time.Duration
-    ExponentialBackoff              bool
-    Timeout                         *time.Duration
-    TimeoutBehavior                 string // "error" (default), "abort", "wait"
-    Loop                            *LoopConfig
-    MultiInstance                   *MultiInstanceConfig
-    MaxExecutionsPerProcessInstance int
-    ExitPorts                       map[string]ExitPort // keyed by exit-port id
+// Brief sketch — full definition in native-function-task.spec.md
+type CalculateScoreOutputs struct {
+    Score  BlNumber
+    Reason BlString
 }
 
-// Construct a NativeFunctionTask. opts.Fn is required and must be non-nil;
-// opts.Id and opts.Name are mandatory at the time of incorporation into a
-// process graph. opts.ExitPorts is converted to the keyed map internally.
-// Any other field in opts is set verbatim; unspecified fields default to
-// their zero values.
-func NewNativeFunctionTask(opts NativeFunctionTaskOpts) *NativeFunctionTask
-
-type NativeFunctionTaskOpts struct {
-    // Function-logic fields
-    Fn          func(*ExecutionContext) (BlValue, error)
-    Description *string
-
-    // Task-level fields — all optional at creation; Id, Name, InputMappings, and
-    // OutputMappings are mandatory at the time of incorporation into a process graph.
-    Id                              string
-    Name                            string
-    InputMappings                   *VariableMapping
-    OutputMappings                  *VariableMapping
-    MaxRetries                      int
-    InitialRetryDelay               *time.Duration
-    ExponentialBackoff              bool
-    Timeout                         *time.Duration
-    TimeoutBehavior                 string // "error" (default), "abort", "wait"
-    Loop                            *LoopConfig
-    MultiInstance                   *MultiInstanceConfig
-    MaxExecutionsPerProcessInstance int
-    ExitPorts                       []ExitPort // converted to the keyed map internally
-}
-
-// Clone returns a new *NativeFunctionTask. Function-logic fields (Fn,
-// Description) are shared by reference with the receiver — opts.Fn and
-// opts.Description are ignored at Clone time. Task-level fields are taken
-// **only** from opts — the receiver's task-level fields are reset, not
-// inherited. Specify every task-level field you want set on the clone.
-func (t *NativeFunctionTask) Clone(opts NativeFunctionTaskOpts) *NativeFunctionTask
-```
-
-- `Fn` receives the current `ExecutionContext` (after any `input_mappings` have been applied) and returns a `BlValue`.
-- The return type is typically a `BlContext` for structured output, but any FEEL type is valid (e.g. `BlNumber`, `BlString`, `BlList`).
-
-### Retry and Timeout
-
-- **`max_retries`** — the maximum number of retry attempts after the initial failure. Default `0` (no retries). A value of `3` means up to 4 total executions (1 initial + 3 retries).
-- **`initial_retry_delay`** — the delay before the first retry attempt after a failure. If `nil`, the first retry begins immediately. When `exponential_backoff` is `true`, this also seeds the doubling sequence (e.g. 1s, 2s, 4s, 8s). The name reflects that this is the delay before the first *retry*, not before the initial attempt.
-- **`exponential_backoff`** — when `true`, the delay doubles after each retry (e.g. 1s, 2s, 4s, 8s).
-- **`timeout`** — the total time budget for all attempts including delays. The timer starts when the first execution begins. If `nil`, there is no time limit.
-- **`timeout_behavior`** — controls what happens when the timeout is reached while an attempt is in progress:
-  - `"abort"` — kill the in-progress attempt immediately and fail the task.
-  - `"wait"` — let the in-progress attempt finish. If it succeeds, the task succeeds. If it fails, no further retries are attempted.
-  - `"error"` — let the in-progress attempt finish, then produce an error regardless of the outcome. This is the default.
-
-### Exit Ports
-
-Exit ports on a `NativeFunctionTask` are configured **only** via `opts.ExitPorts` using the standalone constructors (`NewInterruptingTimerExitPort`, `NewNonInterruptingTimerExitPort`, `NewInterruptingTimerExitPortUntilDateTime`, `NewNonInterruptingTimerExitPortUntilDateTime`, `NewErrorExitPort`, `NewInterruptingConditionalExitPort`, `NewNonInterruptingConditionalExitPort` — see [Exit Ports](#exit-ports-1)). The legacy `task.AddInterruptingWaitForDuration(...)` / `AddErrorExitPort(...)` / `AddInterruptingConditional(...)` mutator methods do not apply to `NativeFunctionTask`.
-
-### Writing a Native Function
-
-The function body is declared inline as the `Fn` field of `NativeFunctionTaskOpts`. The receiver is the full `ExecutionContext` — after any `InputMappings` have been applied — and the function returns a `BlValue`. Authoring a task therefore creates the function and its task-level framing in one declaration that lives in the function's package, exported as a package-scope `var`.
-
-#### Using the execution context
-
-`Fn` reads variables from earlier tasks or inspects process state via `ctx`.
-
-```go
-// loan_app/scoring.go
-package scoring
-
-var CalculateScore = blkit.NewNativeFunctionTask(blkit.NativeFunctionTaskOpts{
+var CalculateScore = NewNativeFunctionTask(NativeFunctionTaskOpts[CalculateScoreOutputs]{
     Id:   "calc-score",
     Name: "Calculate Score",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) {
-        isValid := ctx.Get("validate.is_valid").ToNativeBool()
-        creditScore := ctx.Get("credit-report.score").ToNativeFloat()
-        income := ctx.Get("check-income.annual_income").ToNativeFloat()
-
-        if !isValid {
-            return Bl.Context(map[string]BlExpr{
-                "score":  Bl.Number(0),
-                "reason": Bl.String("Failed validation"),
-            }), nil
-        }
-
-        score := creditScore*0.6 + min(income/1000, 200)*0.4
-
-        return Bl.Context(map[string]BlExpr{
-            "score":  Bl.Number(score),
-            "reason": Bl.String("Calculated from credit and income"),
-        }), nil
+    Fn: func(ctx *ExecutionContext) (CalculateScoreOutputs, error) {
+        // ... body ...
+        return CalculateScoreOutputs{Score: Bl.Number(750), Reason: Bl.String("ok")}, nil
     },
 })
 
-// At the process site (e.g. loan_app/loan.go), reference the package-scope task directly:
-//   start.To(scoring.CalculateScore).To(end)
-```
-
-#### Using mapped variables
-
-When `InputMappings` are set, they reshape the context before `Fn` is called — variables are accessible under their mapped names. This decouples the function from the specific variable paths in the calling process, which is useful when the same function is reused across processes (via [`Clone`](#reuse-via-clone)).
-
-```go
-// loan_app/validation.go
-package validation
-
-var ValidateApplication = blkit.NewNativeFunctionTask(blkit.NativeFunctionTaskOpts{
-    Id:   "validate",
-    Name: "Validate Application",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) {
-        applicant := ctx.Get("applicant").(*BlContext)
-        loanAmount := ctx.Get("loan_amount").ToNativeFloat()
-
-        age := applicant.Get("age").ToNativeInt()
-
-        isValid := age >= 18 && loanAmount > 0
-        notes := "Failed validation"
-        if isValid {
-            notes = "All checks passed"
-        }
-
-        return Bl.Context(map[string]BlExpr{
-            "is_valid":         Bl.Boolean(isValid),
-            "validation_notes": Bl.String(notes),
-        }), nil
-    },
-    InputMappings: NewVariableMapping(
-        [2]string{"start.applicant", "applicant"},
-        [2]string{"start.loan_amount", "loan_amount"},
-    ),
-})
-
-// In a process file (e.g. loan_app/loan.go):
-var loanProcess = NewProcess("loan-process", "1.0", ProcessOpts{
+var loanProcess = NewProcess("loan", "1.0", ProcessOpts{
     Graph: []ProcessNode{
-        Start("start", "Start", NewInputContract()).
-            To(validation.ValidateApplication).
-            To(End("done", "Done")),
+        Start("start", "Start", NewInputContract()).To(CalculateScore).To(End("done", "Done")),
     },
 })
 ```
 
-### Reuse via Clone
-
-To use the same function across multiple processes, declare the task once in its package and `Clone` it at each additional use site. The function body is shared by reference; task-level fields (`Id`, `Name`, mappings, retry config, exit ports) are **reset on Clone** and must be supplied in `opts`. The one-node-one-process rule means the original package-scope task can participate directly in one process; subsequent uses require a `Clone`.
-
-```go
-// loan_app/scoring.go — declared once
-package scoring
-
-var CalculateScore = blkit.NewNativeFunctionTask(blkit.NativeFunctionTaskOpts{
-    Id:   "calc-score",
-    Name: "Calculate Score",
-    Fn: func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
-})
-
-// Process A — uses the package-scope task directly.
-var processA = NewProcess("loan-fast-track", "1.0", ProcessOpts{
-    Graph: []ProcessNode{startA.To(scoring.CalculateScore).To(endA)},
-})
-
-// Process B — Clone, supplying task-level fields fresh.
-var processB = NewProcess("loan-full-review", "1.0", ProcessOpts{
-    Graph: []ProcessNode{
-        startB.To(scoring.CalculateScore.Clone(NativeFunctionTaskOpts{
-            Id:                 "calc-score",
-            Name:               "Calculate Score (Full Review)",
-            MaxRetries:         3,
-            ExponentialBackoff: true,
-        })).To(endB),
-    },
-})
-```
-
-`Clone` resets task-level fields — it does not inherit them from the source. Specify every task-level field you want on the clone via `opts`. Repeated calls to `Clone` on the same source produce independent instances; mutations to one (via `opts` at clone time) do not propagate to others or to the source.
+The shape mirrors [`DecisionTask`](../decision-tasks/decision-task.spec.md): a single type holding both the logic and the task-level metadata, reused via `Clone`, not via wrapping or a separate factory.
 
 ---
 
@@ -506,14 +335,15 @@ sendNotification := NewTriggerProcessTask("send-notification", "Send Notificatio
 )
 sendNotification.AddErrorExitPort("submit-failed")
 
-var handleSubmitFailure = NewNativeFunctionTask(NativeFunctionTaskOpts{
+type HandleSubmitFailureOutputs struct{ Logged BlBoolean }
+var handleSubmitFailure = NewNativeFunctionTask(NativeFunctionTaskOpts[HandleSubmitFailureOutputs]{
     Id:   "submit-failed",
     Name: "Log Submit Failure",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (HandleSubmitFailureOutputs, error) { /* body */ },
 })
 
-approval := NewProcess("approval", "1.0", ProcessOpts{
-    Graph: []Edge{
+var approval = NewProcess("approval", "1.0", ProcessOpts{
+    Graph: []ProcessNode{
         Start("start", "Start", NewInputContract()).To(approve).To(sendNotification).To(End("done", "Done")),
         sendNotification.ExitPort("submit-failed").To(handleSubmitFailure).To(End("logged", "Logged")),
     },
@@ -643,19 +473,22 @@ requestApproval := NewRequestInputTask(
 )
 requestApproval.AddInterruptingWaitForDuration("sla", Bl.DaysTimeDuration("P1D"))
 
-var escalate = NewNativeFunctionTask(NativeFunctionTaskOpts{
+type EscalateOutputs struct{ Status BlString }
+var escalate = NewNativeFunctionTask(NativeFunctionTaskOpts[EscalateOutputs]{
     Id:   "escalate",
     Name: "Escalate",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
-})
-var decide = NewNativeFunctionTask(NativeFunctionTaskOpts{
-    Id:   "decide",
-    Name: "Apply Decision",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (EscalateOutputs, error) { /* body */ },
 })
 
-loanApproval := NewProcess("loan-approval", "1.0", ProcessOpts{
-    Graph: []Edge{
+type DecideOutputs struct{ Decision BlString }
+var decide = NewNativeFunctionTask(NativeFunctionTaskOpts[DecideOutputs]{
+    Id:   "decide",
+    Name: "Apply Decision",
+    Fn:   func(ctx *ExecutionContext) (DecideOutputs, error) { /* body */ },
+})
+
+var loanApproval = NewProcess("loan-approval", "1.0", ProcessOpts{
+    Graph: []ProcessNode{
         Start("start", "Start", NewInputContract()).To(requestApproval).To(decide).To(End("done", "Done")),
         requestApproval.ExitPort("sla").To(escalate).To(End("escalated", "Escalated")),
     },
@@ -697,10 +530,14 @@ Every task — `NativeFunctionTask`, `SubProcessTask`, and `DecisionTask` — ca
 
 ```go
 // Re-run a credit lookup while the score is unavailable, up to 3 attempts
-var fetchScore = NewNativeFunctionTask(NativeFunctionTaskOpts{
+type FetchScoreOutputs struct {
+    Score  BlNumber
+    Status BlString
+}
+var fetchScore = NewNativeFunctionTask(NativeFunctionTaskOpts[FetchScoreOutputs]{
     Id:   "fetch-score",
     Name: "Fetch Credit Score",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (FetchScoreOutputs, error) { /* body */ },
     Loop: NewLoopConfig(
         Bl.StringVar("fetch-score.status").Equals(Bl.String("pending")),
         3,
@@ -714,10 +551,13 @@ The task executes once, then the loop condition is evaluated against the updated
 
 ```go
 // Validate each applicant in a list
-var validate = NewNativeFunctionTask(NativeFunctionTaskOpts{
+type ValidateApplicantOutputs struct {
+    IsValid BlBoolean `bl:"is_valid"`
+}
+var validate = NewNativeFunctionTask(NativeFunctionTaskOpts[ValidateApplicantOutputs]{
     Id:   "validate",
     Name: "Validate Applicant",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (ValidateApplicantOutputs, error) { /* body */ },
     MultiInstance: NewMultiInstanceConfig(
         Bl.ListVar("start.applicants"),
         "applicant",
@@ -805,19 +645,22 @@ The timers cover the task's execution as a whole, not individual iterations. A t
 The most common case: enforce a service-level deadline. If the task has not completed within 1 hour, cancel it and route to an escalation path.
 
 ```go
-var processOrder = NewNativeFunctionTask(NativeFunctionTaskOpts{
+// Example-local outputs struct used by every native task in this snippet.
+type StepOutputs struct{ Status BlString }
+
+var processOrder = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "process",
     Name: "Process Order",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
     ExitPorts: []ExitPort{
         NewInterruptingTimerExitPort("sla-deadline", Bl.DaysTimeDuration("PT1H")),
     },
 })
 
-var escalate = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var escalate = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "escalate",
     Name: "Escalate to Manager",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
 var orderFlow = NewProcess("order-flow", "1.0", ProcessOpts{
@@ -833,19 +676,21 @@ var orderFlow = NewProcess("order-flow", "1.0", ProcessOpts{
 A non-interrupting timer to nudge a long-running task while it continues. The task itself is unaffected; the reminder runs as a parallel branch.
 
 ```go
-var reviewTask = NewNativeFunctionTask(NativeFunctionTaskOpts{
+type StepOutputs struct{ Status BlString }
+
+var reviewTask = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "review",
     Name: "Review Application",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
     ExitPorts: []ExitPort{
         NewNonInterruptingTimerExitPort("reminder", Bl.DaysTimeDuration("PT4H")),
     },
 })
 
-var remind = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var remind = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "remind",
     Name: "Send Reminder",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
 var reviewFlow = NewProcess("review-flow", "1.0", ProcessOpts{
@@ -861,13 +706,15 @@ var reviewFlow = NewProcess("review-flow", "1.0", ProcessOpts{
 The deadline is carried in the process input rather than fixed at definition time. `Bl.DateTimeVar` resolves the deadline against the `ExecutionContext` when the timer is armed. (`SubProcessTask` still uses the `Task.Add*` mutator API — see the §Configuring exit ports on a task subsection above.)
 
 ```go
+type StepOutputs struct{ Status BlString }
+
 runAuction := NewSubProcessTask("auction", "Run Auction", "auction-process", "start")
 runAuction.AddInterruptingWaitUntilDateTime("auction-end", Bl.DateTimeVar("start.auction_end_time"))
 
-var closeAuction = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var closeAuction = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "close",
     Name: "Close Auction",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
 var auctionFlow = NewProcess("auction-flow", "1.0", ProcessOpts{
@@ -883,32 +730,34 @@ var auctionFlow = NewProcess("auction-flow", "1.0", ProcessOpts{
 A loan review with both an interrupting escalation deadline (24h hard cap) and a non-interrupting reminder fired at a deadline carried in process input. Both are attached to the same task.
 
 ```go
-var reviewTask = NewNativeFunctionTask(NativeFunctionTaskOpts{
+type StepOutputs struct{ Status BlString }
+
+var reviewTask = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "review",
     Name: "Review Application",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
     ExitPorts: []ExitPort{
         NewInterruptingTimerExitPort("escalation-timer", Bl.DaysTimeDuration("P1D")),
         NewNonInterruptingTimerExitPortUntilDateTime("reminder-timer", Bl.DateTimeVar("start.reminder_at")),
     },
 })
 
-var escalate = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var escalate = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "escalate",
     Name: "Escalate to Manager",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
-var remind = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var remind = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "remind",
     Name: "Send Reminder",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
-var notify = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var notify = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "notify",
     Name: "Notify Applicant",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
 var loanReview = NewProcess("loan-review", "1.0", ProcessOpts{
@@ -994,19 +843,21 @@ Identical to timer exit ports: every registered error exit port's `OnError` targ
 Route any failure of `processOrder` into a manual-review path.
 
 ```go
-var processOrder = NewNativeFunctionTask(NativeFunctionTaskOpts{
+type StepOutputs struct{ Status BlString }
+
+var processOrder = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "process",
     Name: "Process Order",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
     ExitPorts: []ExitPort{
         NewErrorExitPort("any-error"),
     },
 })
 
-var manualReview = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var manualReview = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "manual",
     Name: "Manual Review",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
 var orderFlow = NewProcess("order-flow", "1.0", ProcessOpts{
@@ -1022,12 +873,13 @@ var orderFlow = NewProcess("order-flow", "1.0", ProcessOpts{
 Catch only `VALIDATION_FAILED`. Capture the error code and message into context variables so the correction task can read them.
 
 ```go
+type StepOutputs struct{ Status BlString }
 ptr := func(s string) *string { return &s }
 
-var validate = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var validate = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "validate",
     Name: "Validate Order",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
     ExitPorts: []ExitPort{
         NewErrorExitPort("validation-failed", ErrorExitPortOpts{
             ErrorRef:             ptr("VALIDATION_FAILED"),
@@ -1037,10 +889,10 @@ var validate = NewNativeFunctionTask(NativeFunctionTaskOpts{
     },
 })
 
-var correct = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var correct = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "correct",
     Name: "Correct Order",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
 var validationFlow = NewProcess("validation-flow", "1.0", ProcessOpts{
@@ -1056,28 +908,29 @@ var validationFlow = NewProcess("validation-flow", "1.0", ProcessOpts{
 Different error codes route to different recovery branches; uncaught errors fail the process.
 
 ```go
+type StepOutputs struct{ Status BlString }
 ptr := func(s string) *string { return &s }
 
-var payment = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var payment = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "payment",
     Name: "Process Payment",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
     ExitPorts: []ExitPort{
         NewErrorExitPort("insufficient-funds", ErrorExitPortOpts{ErrorRef: ptr("INSUFFICIENT_FUNDS")}),
         NewErrorExitPort("network-error", ErrorExitPortOpts{ErrorRef: ptr("NETWORK_ERROR")}),
     },
 })
 
-var decline = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var decline = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "decline",
     Name: "Decline Order",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
-var retry = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var retry = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "retry",
     Name: "Retry Payment",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
 var paymentFlow = NewProcess("payment-flow", "1.0", ProcessOpts{
@@ -1094,28 +947,29 @@ var paymentFlow = NewProcess("payment-flow", "1.0", ProcessOpts{
 A task that has both a deadline and an error recovery path. The two exit ports share the per-task id space, so each must have a distinct id.
 
 ```go
+type StepOutputs struct{ Status BlString }
 ptr := func(s string) *string { return &s }
 
-var charge = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var charge = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "charge",
     Name: "Charge Card",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
     ExitPorts: []ExitPort{
         NewInterruptingTimerExitPort("charge-deadline", Bl.DaysTimeDuration("PT30S")),
         NewErrorExitPort("declined", ErrorExitPortOpts{ErrorRef: ptr("CARD_DECLINED")}),
     },
 })
 
-var timeoutHandler = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var timeoutHandler = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "timeout",
     Name: "Handle Timeout",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
-var declineHandler = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var declineHandler = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "decline",
     Name: "Handle Decline",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
 var checkout = NewProcess("checkout", "1.0", ProcessOpts{
@@ -1193,20 +1047,22 @@ Identical to timer and error exit ports: every registered conditional exit port'
 ### Example — Cancel a long task when an external flag flips
 
 ```go
-var processOrder = NewNativeFunctionTask(NativeFunctionTaskOpts{
+type StepOutputs struct{ Status BlString }
+
+var processOrder = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "process",
     Name: "Process Order",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
     ExitPorts: []ExitPort{
         NewInterruptingConditionalExitPort("kill-switch",
             Bl.BooleanVar("flags.cancel_in_flight")),
     },
 })
 
-var cleanup = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var cleanup = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "cleanup",
     Name: "Roll Back Partial Work",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
 var orderFlow = NewProcess("order-flow", "1.0", ProcessOpts{
@@ -1222,20 +1078,22 @@ A concurrent branch (or external `RespondToInputRequest` on a peer `RequestInput
 ### Example — Fire a side-task when a threshold is crossed (non-interrupting)
 
 ```go
-var monitor = NewNativeFunctionTask(NativeFunctionTaskOpts{
+type StepOutputs struct{ Status BlString }
+
+var monitor = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "monitor",
     Name: "Monitor Inventory",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
     ExitPorts: []ExitPort{
         NewNonInterruptingConditionalExitPort("low-stock",
             Bl.NumberVar("inventory.stock_level").LessThan(Bl.Number(10))),
     },
 })
 
-var reorder = NewNativeFunctionTask(NativeFunctionTaskOpts{
+var reorder = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
     Id:   "reorder",
     Name: "Trigger Reorder",
-    Fn:   func(ctx *ExecutionContext) (BlValue, error) { /* body */ },
+    Fn:   func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
 })
 
 var inventoryFlow = NewProcess("inventory-flow", "1.0", ProcessOpts{
@@ -1254,7 +1112,6 @@ The `monitor` task continues running; when stock drops below 10, the reorder bra
 
 - A task with no `id` set is invalid; construction raises a `ValidationError`.
 - `input_mappings` and `output_mappings` with zero entries are valid (no-op).
-- A `NativeFunctionTask` whose `Fn` is nil is invalid and produces a `ValidationError`.
 - Setting both `loop` and `multi_instance` on the same task produces a `ProcessDefinitionError`.
 - A loop that reaches `max_iterations` stops iterating and completes normally — it is not an error.
 - A loop whose condition is false on the first evaluation still executes the task once (do-while semantics).
