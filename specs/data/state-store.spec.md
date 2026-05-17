@@ -105,7 +105,7 @@ type NewExecutionStateOpts struct {
 
 - **`NewExecutionState`** and **`LoadExecutionState`** are the canonical factories for execution state that will be evaluated. They produce wired Context and History objects whose `Record` / `Commit` / `Abort` calls stream to this store via the writer pool. The bare `Get` / `LatestContext` methods return un-wired snapshots suitable for read-only inspection only — passing those to `Evaluate` would silently swallow all per-event writes.
 - **`WriteBatch`** is the canonical method an implementation must provide. The per-op methods (`RecordTransaction`, `UpdateTransactionStatus`, `Record`) are convenience wrappers that call `WriteBatch` with a 1-element slice.
-- **`StateStore` methods are synchronous** — they may block on I/O. The non-blocking, write-through behaviour seen by `ctx.Record` / `ctx.Commit` callers is provided by the runtime's writer pool (see [../worker/worker.spec.md](../worker/worker.spec.md#writer-pool)), not by the `StateStore` itself. The FaaS handler path persists synchronously and bypasses the pool — see [../faas/overview.spec.md](../faas/overview.spec.md).
+- **`StateStore` methods are synchronous** — they may block on I/O. The non-blocking, write-through behaviour seen by `ctx.Record` / `ctx.Commit` callers is provided by the runtime's writer pool (see [../worker/worker.spec.md](../worker/worker.spec.md#writer-pool)), not by the `StateStore` itself.
 - **`Flush`** is the durability barrier — callers use it when they need a guarantee that prior writes for the instance have landed.
 - **`config()`** returns a dictionary of connection details needed to reconstruct a connection to this state store from another process. Used to forward connection details to worker binaries running on other hosts. `InMemoryStateStore.config()` raises `ValueError` since in-memory state cannot be shared.
 
@@ -169,7 +169,7 @@ FEEL types with blkit-specific attributes (e.g. `BlDate` with offset and timezon
 
 ## InMemoryStateStore (default)
 
-The default state store holds events in memory. Fast and zero-dependency, but lost when the worker process exits. When in-process or transient durability is acceptable, instantiate `NewInMemoryStateStore()` and pass it to `worker.Run` or to a FaaS handler factory. `config()` raises `ValueError` — in-memory state cannot be shared with external processes. `WriteBatch` loops over the ops and applies them to in-memory data structures; `Flush` is a no-op.
+The default state store holds events in memory. Fast and zero-dependency, but lost when the worker process exits. When in-process or transient durability is acceptable, instantiate `NewInMemoryStateStore()` and pass it to `worker.Run`. `config()` raises `ValueError` — in-memory state cannot be shared with external processes. `WriteBatch` loops over the ops and applies them to in-memory data structures; `Flush` is a no-op.
 
 ```go
 type InMemoryStateStore struct{}
@@ -310,7 +310,7 @@ The `StateStore` interface allows custom implementations — for example, stream
 
 - The state store implementation is independent of the `MessageGateway` choice. Any combination is valid (e.g. `PostgresStateStore` with `RedisMessageGateway`).
 - `SQLiteStateStore`, `RocksDBStateStore`, `BadgerDBStateStore`, and `LocalFSStateStore` create their database / directory at the specified path if it does not exist. If the path is not writable, store creation fails with an I/O error.
-- `PostgresStateStore` and `AzureSQLStateStore` require a reachable database server. Behaviour on unreachability is governed by the worker's `WritePolicy` (see [../worker/worker.spec.md](../worker/worker.spec.md#write-policy)) when running under a long-running worker; FaaS handlers surface backend errors directly to the vendor SDK.
+- `PostgresStateStore` and `AzureSQLStateStore` require a reachable database server. Behaviour on unreachability is governed by the worker's `WritePolicy` (see [../worker/worker.spec.md](../worker/worker.spec.md#write-policy)).
 - `PostgresStateStore` and `AzureSQLStateStore` create the schema and tables if they do not exist. If the user lacks `CREATE` privileges, store creation fails with a permissions error.
 - `S3StateStore` requires the bucket to exist and credentials with `PutObject` / `ListObjectsV2` / `GetObject` permissions. Bucket auto-creation is not attempted.
 - `LocalFSStateStore` is single-machine only — `config()` is meaningful only when every consuming process can mount the same absolute path. Network filesystems are explicitly unsupported.

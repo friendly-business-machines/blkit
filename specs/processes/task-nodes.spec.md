@@ -393,7 +393,7 @@ type TriggerProcessTaskOpts struct {
 - The submitted input is built from the parent `ExecutionContext` via `StartValueMapping` (no mapping = empty input map).
 - The input is validated against the target's `StartEvent.InputContract` at submit time. Validation failure produces a `DataContractValidationError`, also catchable via `ErrorExitPort`.
 - The runtime hands off to whichever submission path is configured for the current execution mode:
-  - `MessageGateway.Submit` when a broker is configured (worker / FAAS mode) — see [../messagegateway/overview.spec.md](../messagegateway/overview.spec.md#interface).
+  - `MessageGateway.Submit` when a broker is configured — see [../messagegateway/overview.spec.md](../messagegateway/overview.spec.md#interface).
   - Direct in-process spawn when no broker is configured (direct `Process.Evaluate` callers).
 - The submit returns the new `processInstanceID`. If `InstanceIDVariable` is set, the id is written under that name into the parent `ExecutionContext` before the task completes.
 
@@ -523,8 +523,8 @@ The task carries no design-time message-ref or label — the runtime generates a
 
 ### Wait modes
 
-- **`RequestInputSuspend`** (default): the runtime suspends the process immediately on entering the task — `ExecutionHistory` records a suspension step, `StateStore.Save` persists state, the worker calls `gw.ReenqueueSuspended(...)`, and `Evaluate()` returns with status `ProcessStatusSuspended`. The eventual `JobResume` (driven by a matching `RespondToInputRequest`) can be picked up by any worker. FAAS-compatible.
-- **`RequestInputPause`**: the runtime parks the goroutine on an in-memory channel keyed by `(instanceID, requestID)` — status remains `ProcessStatusRunning`, no `StateStore` write occurs, other parallel branches continue advancing. Not FAAS-addressable (no goroutine survives invocation), and the wait is lost across worker restarts (the broker's in-flight timeout redelivers the originating job and the task re-enters the pause).
+- **`RequestInputSuspend`** (default): the runtime suspends the process immediately on entering the task — `ExecutionHistory` records a suspension step, `StateStore.Save` persists state, the worker calls `gw.ReenqueueSuspended(...)`, and `Evaluate()` returns with status `ProcessStatusSuspended`. The eventual `JobResume` (driven by a matching `RespondToInputRequest`) can be picked up by any worker.
+- **`RequestInputPause`**: the runtime parks the goroutine on an in-memory channel keyed by `(instanceID, requestID)` — status remains `ProcessStatusRunning`, no `StateStore` write occurs, other parallel branches continue advancing. The wait is lost across worker restarts (the broker's in-flight timeout redelivers the originating job and the task re-enters the pause).
 - **`RequestInputPauseThenSuspend`**: the runtime starts in pause mode and, if no response arrives within `PauseDuration`, **converts** the wait to a suspension. The token's position does not change; only the wait substrate is swapped — `ExecutionHistory` records a suspension step, `StateStore.Save` persists state, the worker calls `gw.ReenqueueSuspended(...)`, and `Evaluate()` returns. A subsequent `RespondToInputRequest` then drives a continuation in the usual way. Use this for "fast path is in-memory, slow path is durable" workloads (e.g. a human approval that usually returns in seconds but occasionally takes hours). See [../worker/worker.spec.md](../worker/worker.spec.md) for the worker-side pause-to-suspend conversion.
 
 ### Exit ports
@@ -1073,7 +1073,6 @@ The `monitor` task continues running; when stock drops below 10, the reorder bra
 - A `RequestInputTask` that reaches a terminal event (timer fires, parent cancelled, `TerminateEvent` reached on a sibling branch, etc.) before the response arrives has its pending wait unregistered. A late-arriving `RespondToInputRequest` for that `(processInstanceID, requestID)` returns `NOT_WAITING` per [../messagegateway/overview.spec.md](../messagegateway/overview.spec.md#error-model).
 - A `RequestInputTask` with `WaitMode == RequestInputPauseThenSuspend` whose `PauseDuration` is zero or negative is treated as `RequestInputSuspend` (no pause window).
 - A `RequestInputTask` with `MultiInstance` emits one `InstanceEventInputRequest` per iteration. Each iteration generates its own unique `requestID`, so responders address each iteration distinctly via `RespondToInputRequest(processInstanceID, requestID, payload)` with no extra disambiguation logic; the iteration index is included in the published event payload for responders that need to display or log it.
-- A `RequestInputTask` running under `RequestInputPause` inside a FAAS invocation holds the invocation open until the response arrives or the task's `TimerExitPort` fires. Suspend modes are strongly preferred for FAAS — the spec does not mechanically prevent `RequestInputPause` in FAAS, but billing and cold-start behaviour discourage it.
 
 ---
 

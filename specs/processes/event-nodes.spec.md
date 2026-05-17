@@ -194,7 +194,7 @@ A synthetic `TerminateEvent` step can also be injected by the runtime in respons
 
 ## Suspend Events (Durable Wait)
 
-Suspend events durably halt the process. When reached, `Evaluate()` records the suspension in `ExecutionHistory`, returns with status `ProcessStatusSuspended`, and the runtime persists state to the configured `StateStore`. The FAAS handler unloads; the goroutine exits. A separate event (timer firing, message delivery) later triggers a fresh `Evaluate()` call that resumes from the suspension point.
+Suspend events durably halt the process. When reached, `Evaluate()` records the suspension in `ExecutionHistory`, returns with status `ProcessStatusSuspended`, and the runtime persists state to the configured `StateStore`. The goroutine exits. A separate event (timer firing, message delivery) later triggers a fresh `Evaluate()` call that resumes from the suspension point.
 
 Use suspend events for waits that can exceed an invocation's lifetime — minutes to days. For sub-second to a few-minutes waits where keeping the runtime alive is acceptable, use Pause events instead.
 
@@ -217,7 +217,7 @@ func SuspendForDuration(id string, name string, duration BlExpr) *SuspendForDura
 backoff := SuspendForDuration("backoff", "Wait Before Retry", Bl.DaysTimeDuration("PT15M"))
 ```
 
-The runtime computes the wake time as `now + duration` and persists it. A timer subsystem (the long-running worker's scheduler, or an external scheduler invoking the FAAS handler at the appropriate time) re-enqueues the process when the wake time is reached.
+The runtime computes the wake time as `now + duration` and persists it. A timer subsystem (the long-running worker's scheduler) re-enqueues the process when the wake time is reached.
 
 ### `SuspendUntilDatetime`
 
@@ -249,7 +249,6 @@ Pause events wait without persisting state. The pause node is dispatched as its 
 
 Use pause events when:
 - The wait is short (seconds to a few minutes).
-- The runtime is a long-running worker, not a FAAS invocation. Pausing inside a FAAS handler holds the invocation open and accrues cost; suspend instead.
 - You don't need to free goroutine resources during the wait.
 
 ### `PauseForDuration`
@@ -304,7 +303,6 @@ There is no lower-level "deliver an arbitrary message to a process" verb in v1 �
 - `Cancel`, `Error`, `Terminate`, and additional `End` nodes all consume their token. A `TerminateEvent` reached on one branch cancels other branches' in-flight tasks before they can reach their own terminating events.
 - An `ErrorEvent` whose `ErrorRef` is empty produces a `ProcessDefinitionError`. The error code is part of the process's observable contract — silent failures are not allowed via this node.
 - A `SuspendUntilDatetime` whose evaluated `Deadline` is in the past wakes immediately on the next scheduler tick — this is not an error.
-- A `PauseForDuration` inside a FAAS-deployed process is permitted but discouraged: it holds the invocation open. Use `SuspendForDuration` instead. The spec does not mechanically prevent it.
 - A `TerminateEvent` reached while another branch is mid-task: the in-flight task's goroutine is cancelled (per `Evaluate()`'s existing branch-cancellation behaviour). Side effects already committed by the cancelled task are not rolled back — blkit has no compensation.
 - A `CancelEvent` and `EndEvent` reached on different parallel branches of the same instance: whichever token arrives first wins. The other branches are cancelled. The status reflects the winning node's type (`Cancelled` for `Cancel`, `Completed` for `End`).
 - An `ErrorEvent` whose token races with an `EndEvent` on a parallel branch: the `ErrorEvent` wins by precedence — failure is sticky. Status is `Failed`.

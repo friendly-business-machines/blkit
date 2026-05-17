@@ -7,7 +7,7 @@ targets:
 
 # Process
 
-A `Process` defines a business process — a directed graph of `ProcessNode`s (tasks, gateways, events) connected by sequence flows. The design is inspired by BPMN but blkit does not implement the BPMN specification. Processes are created via `NewProcess()`, which accepts process metadata and a `graph` list of node chain expressions. The blkit registry caches each Process instance (populated by `NewProcess()`); long-running workers and FaaS handlers look it up by `(Namespace, Id, Version)` and call `Evaluate()` on it. Callers can also invoke `Evaluate()` directly to run a process without a worker.
+A `Process` defines a business process — a directed graph of `ProcessNode`s (tasks, gateways, events) connected by sequence flows. The design is inspired by BPMN but blkit does not implement the BPMN specification. Processes are created via `NewProcess()`, which accepts process metadata and a `graph` list of node chain expressions. The blkit registry caches each Process instance (populated by `NewProcess()`); long-running workers look it up by `(Namespace, Id, Version)` and call `Evaluate()` on it. Callers can also invoke `Evaluate()` directly to run a process without a worker.
 
 ```go
 type Process struct {
@@ -162,7 +162,7 @@ Nodes and edges are free-standing during graph construction — they are not ass
 
 ## Registry
 
-`NewProcess()` registers the returned `*Process` in a package-level `blkit` registry keyed by `(Namespace, Id, Version)`. The registry is the single source of truth used by the FAAS handlers to resolve incoming requests to a `*Process` — see [../faas/overview.spec.md](../faas/overview.spec.md). Importing a package that defines processes is therefore sufficient to make those processes routable from a FAAS handler; no explicit registration call is required.
+`NewProcess()` registers the returned `*Process` in a package-level `blkit` registry keyed by `(Namespace, Id, Version)`. The registry is the single source of truth used by the worker to resolve fetched `Job`s to a `*Process` — see [../worker/worker.spec.md](../worker/worker.spec.md#the-process-registry). Importing a package that defines processes is therefore sufficient to make those processes runnable in any worker binary that links the package; no explicit registration call is required.
 
 ### Namespace Derivation
 
@@ -196,7 +196,7 @@ func ResetRegistry()
 
 ### Wire-Protocol Implication
 
-Because `Namespace` becomes part of the routing payload accepted by FAAS handlers (see [../faas/overview.spec.md](../faas/overview.spec.md) "Routing"), the namespace value is part of the operator-visible API contract. Renaming a Go module path, or moving a process file between packages, changes the namespace and is therefore a breaking change for any client enqueuing requests against the old namespace. Authors should treat module paths that contain processes as stable interfaces.
+Because `Namespace` is part of the broker routing key produced by `MessageGateway.Submit` (see [../messagegateway/overview.spec.md](../messagegateway/overview.spec.md)), the namespace value is part of the operator-visible API contract. Renaming a Go module path, or moving a process file between packages, changes the namespace and is therefore a breaking change for any client enqueuing requests against the old namespace. Authors should treat module paths that contain processes as stable interfaces.
 
 ### Edge Cases
 
@@ -529,7 +529,7 @@ When resuming from existing execution state, `Evaluate()` derives the current to
 
 ## Retry
 
-If `Retry` is set on a Process, the runtime automatically retries the process when it fails (`PROCESS_FAILED`). Each retry is a fresh execution of the same process with the same input — a new `ProcessInstanceId`. Retry orchestration is the responsibility of the runtime (the long-running worker, or the FaaS handler / queue continuation loop), not `Evaluate` itself.
+If `Retry` is set on a Process, the runtime automatically retries the process when it fails (`PROCESS_FAILED`). Each retry is a fresh execution of the same process with the same input — a new `ProcessInstanceId`. Retry orchestration is the responsibility of the runtime (the long-running worker), not `Evaluate` itself.
 
 - **`MaxRetries`** — the maximum number of retry attempts after the initial failure. A value of `3` means up to 4 total executions (1 initial + 3 retries). `nil` means no count limit — retries continue until `RetryFor` expires.
 - **`RetryFor`** — the total duration during which retries are permitted. The timer starts when the process was first submitted, not when it first fails. `nil` means no time limit — retries continue until `MaxRetries` is exhausted.
@@ -706,4 +706,4 @@ NativeFunctionTask — loan_app.archive.archive_application
 - Resuming a completed or suspended process by re-calling `Evaluate()` with the same `Context` and `History` produces no new work — `Evaluate()` advances only from positions that the history shows are genuinely ready.
 - `Evaluate()` does not mutate the process object. All mutable state is returned in the `EvaluationResult`. Process instances are safe to reuse across concurrent evaluations of different process instances.
 - `ToMarkdown()` does not require execution state — it renders the graph structure from the process definition.
-- See [../worker/worker.spec.md](../worker/worker.spec.md) for long-running execution and [../faas/overview.spec.md](../faas/overview.spec.md) for FaaS execution.
+- See [../worker/worker.spec.md](../worker/worker.spec.md) for long-running execution.

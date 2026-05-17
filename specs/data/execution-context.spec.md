@@ -198,7 +198,7 @@ A node's writes are an **atomic transaction**: the node may call `Record()` zero
 
 ### Lifecycle
 
-The runtime drives the lifecycle — the worker (long-running or FaaS) calls these as part of its evaluate–execute cycle; see [process.spec.md](../processes/process.spec.md#evaluation):
+The runtime drives the lifecycle — the worker calls these as part of its evaluate–execute cycle; see [process.spec.md](../processes/process.spec.md#evaluation):
 
 1. Worker dispatches node `N` and begins execution.
 2. During execution, `N` may call `ctx.Record(N, execID, values)` one or more times. Each call appends a Pending transaction.
@@ -246,7 +246,7 @@ The in-memory log described above is the **live** copy used by the executing wor
 - `Commit(nodeID)` enqueues an `OpUpdateStatus` write op identifying the affected `CommitNumber`s and the new status (`Committed`).
 - `Abort(nodeID)` enqueues a symmetric `OpUpdateStatus` write op with status `Aborted`.
 
-The enqueue is non-blocking from the caller's perspective — the runtime's writer pool (see [worker.spec.md](../worker/worker.spec.md#writer-pool)) drains the queue in the background and calls `StateStore.WriteBatch`. The FaaS path bypasses the pool and persists synchronously per invocation; see [faas/overview.spec.md](../faas/overview.spec.md). Hot-path reads (`Get`, `Latest`, `Transactions`, `AsOf`, `Scope`, `AsExecutor`) operate exclusively on the live in-memory log and never touch the backend.
+The enqueue is non-blocking from the caller's perspective — the runtime's writer pool (see [worker.spec.md](../worker/worker.spec.md#writer-pool)) drains the queue in the background and calls `StateStore.WriteBatch`. Hot-path reads (`Get`, `Latest`, `Transactions`, `AsOf`, `Scope`, `AsExecutor`) operate exclusively on the live in-memory log and never touch the backend.
 
 When a worker picks up a process instance, the in-memory `ExecutionContext` is reconstructed by calling `StateStore.LatestContext(processInstanceID)`. Persistent backends sort the durable events by `(Timestamp, CommitNumber)` before folding them into the rebuilt log — so arrival order at the backend does not need to be preserved. Visibility cascade and time-travel semantics described above are unchanged because they continue to operate on the live in-memory log; they simply see a deterministically-replayed view of what happened.
 

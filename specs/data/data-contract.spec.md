@@ -236,13 +236,13 @@ Validation runs only at the process boundaries — internal tasks are not contra
 
 #### Input validation (at submission)
 
-When a process is submitted (via `MessageGateway.Submit` for a long-running worker, or via the FaaS handler factory's `Input` extraction), the input variables are checked against the selected `StartEvent`'s `InputContract`. Because every `StartEvent` has a contract by construction, this validation is unconditional:
+When a process is submitted (via `MessageGateway.Submit`), the input variables are checked against the selected `StartEvent`'s `InputContract`. Because every `StartEvent` has a contract by construction, this validation is unconditional:
 
 1. Every **required** field must be present in the input. If missing, a `DataContractValidationError` is produced.
 2. Every field present in the input must be **declared** in the contract (either required or optional). Undeclared fields produce a `DataContractValidationError`.
 3. Every field's value must conform to the declared **type**. A type mismatch produces a `DataContractValidationError`.
 
-A `DataContractValidationError` at submission rejects the submission synchronously — the start-command is never published, or the FaaS handler returns the error to the vendor SDK.
+A `DataContractValidationError` at submission rejects the submission synchronously — the start-command is never published.
 
 #### Output validation (at completion)
 
@@ -285,7 +285,7 @@ Nested types are validated recursively:
 - An `EndEvent` constructed via `End(id, name)` (no `EndOpts`) or `End(id, name, EndOpts{})` (zero opts) has a `nil` `Contract` and performs no output validation.
 - A `DecisionTask` with both `InputContract == nil` and `OutputContract == nil` performs no validation; one-set, one-nil is allowed and the set one is independently validated.
 - Duplicate field names within the same `NewInputContract(...)` or `NewOutputContract(...)` call produce a `DataContractValidationError` at definition time.
-- `DataContractValidationError` at submission time prevents the process from running — the submission is rejected synchronously (the start-command is never published to the broker, or the FaaS handler returns a validation error to the vendor SDK).
+- `DataContractValidationError` at submission time prevents the process from running — the submission is rejected synchronously (the start-command is never published to the broker).
 - `DataContractValidationError` at completion time causes the process to fail — the failure is recorded as `PROCESS_FAILED` in the `ExecutionHistory` with the error attached.
 - A field typed as `BlList` (the class, not a `ListContract`) declares that the value must be a list, but does not constrain the element type. Use `ListContract` for element-level type constraints.
 - A field typed as `BlContext` (the class, not a `ContextContract`) declares that the value must be a context, but does not constrain its keys or value types. Use `ContextContract` for structural constraints on context values.

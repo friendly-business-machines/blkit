@@ -29,7 +29,7 @@ It is **not** suitable for production multi-process deployments — there is no 
 
 Implementation pending. This spec is a placeholder. Open design questions:
 
-- Whether the in-memory broker is shared across all `InMemoryMessageGateway` instances in a process (singleton) or per-gateway (one broker per call to `NewInMemoryMessageGateway`). Singleton matches the FAAS/worker pattern of "one in-memory store per binary."
+- Whether the in-memory broker is shared across all `InMemoryMessageGateway` instances in a process (singleton) or per-gateway (one broker per call to `NewInMemoryMessageGateway`). Singleton matches the worker pattern of "one in-memory store per binary."
 - Backpressure-drop policy on slow subscribers.
 - Lifecycle: explicit `Close()` or rely on context-cancellation.
 
