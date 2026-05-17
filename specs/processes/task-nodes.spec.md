@@ -10,7 +10,7 @@ targets:
 
 # Task Nodes
 
-A `Task` is a unit of work in a business process. All tasks implement `ProcessNode` and can be placed in a process graph via `.To()`. Every task receives the current `ExecutionContext` when executed and returns an updated `Variables` map (which is merged back into the context).
+A `Task` is a unit of work in a business process. All tasks implement `ProcessNode` and can be placed in a process graph via `.To()`. Every task is dispatched by the scheduler in its own goroutine, receives the shared `ExecutionContext`, and writes its outputs by calling `ctx.Record()` directly. The runtime drives `ctx.Commit()` on success and `ctx.Abort()` on failure (see [../data/execution-context.spec.md § Atomic Commit and Visibility](../data/execution-context.spec.md#atomic-commit-and-visibility)).
 
 ## Type Hierarchy
 

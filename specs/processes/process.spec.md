@@ -56,8 +56,9 @@ type ProcessOpts struct {
     AllowExternalTerminate bool
 }
 
-// Walks the graph using token-flow semantics, executing tasks inline until the
-// process completes, suspends waiting for an external event, or fails.
+// Walks the graph using token-flow semantics, dispatching ready tasks as
+// goroutines and awaiting their completion, until the process completes,
+// suspends waiting for an external event, or fails.
 // The process instance is reusable — Evaluate() does not mutate the process object.
 func (p *Process) Evaluate(opts EvaluateOpts) (*EvaluationResult, error)
 
@@ -431,23 +432,25 @@ result, err := process.Evaluate(EvaluateOpts{Context: ctx, History: hist})
 
 ### Execution
 
-`Evaluate()` runs the process end-to-end in a single call, executing tasks inline:
+`Evaluate()` runs a single scheduler goroutine that ticks the process forward. Each tick:
 
-1. `Evaluate()` determines where the tokens are:
-   - If the execution history is empty (fresh start or empty history), this is an **initial evaluation** — a token is placed at the start node and a `PROCESS_STARTED` step is recorded.
-   - If the execution history has prior steps, token positions are derived from the execution history (see Token Position Reconstruction below).
-2. `Evaluate()` walks forward from token positions, processing non-task nodes synchronously:
+1. **Determine ready nodes.** Token positions are derived from `ExecutionHistory` via the rules in [Token Position Reconstruction](#token-position-reconstruction) below. On initial evaluation (empty history), a token is placed at the start node and a `PROCESS_STARTED` step is recorded.
+2. **Process non-task nodes synchronously** on the scheduler goroutine:
    - **StartEvent** — validates input against the `InputContract`, records `NODE_COMPLETED`, moves the token to successors.
    - **Gateway** — evaluates conditions against the `ExecutionContext`, records a `GATEWAY_RESOLVED` step, moves tokens to selected successors.
-   - **Terminating events** — consume the token. `EndEvent` validates `OutputContract` (if set) and records `PROCESS_COMPLETED` once all tokens are consumed. `CancelEvent` cancels in-flight tasks and records `PROCESS_CANCELLED`. `ErrorEvent` cancels in-flight tasks and records `PROCESS_FAILED`. `TerminateEvent` cancels every other branch and records `PROCESS_COMPLETED` immediately. See [event-nodes.spec.md](event-nodes.spec.md).
-   - **Suspend events** — `SuspendForDuration`, `SuspendUntilDatetime` record a suspension step and cause `Evaluate()` to return with `Status: SUSPENDED`. **Pause events** (`PauseForDuration`) block the goroutine in-process; status remains `RUNNING`. External input is handled by the `RequestInputTask` task node (see [task-nodes.spec.md](task-nodes.spec.md#requestinputtask)), which can suspend or pause depending on its `WaitMode`.
-3. When `Evaluate()` reaches a task node, it executes the task inline:
-   - **NativeFunctionTask** — invokes `Fn` directly.
-   - **DecisionTask** — applies `InputMappings`, evaluates the decision logic, applies `OutputMappings`, and merges the result into the `ExecutionContext` under the task `Id`. See [../decision-tasks/decision-task.spec.md](../decision-tasks/decision-task.spec.md).
-   - **SubProcessTask** — creates a child process instance and evaluates it recursively, creating a child `ExecutionHistory` under a separate `ProcessInstanceId`.
-4. When parallel branches are active, tasks on different branches run concurrently as separate goroutines. There is no concurrency limit or backpressure — all ready tasks are spawned immediately.
-5. After each task completes, `Evaluate()` records the completion steps (`NODE_SCHEDULED` → `NODE_STARTED` → `NODE_COMPLETED` or `NODE_FAILED`), updates the `ExecutionContext`, and continues walking from the completed node's successors.
-6. This loop continues until all tokens are consumed (`COMPLETED`), a `CancelEvent` is reached (`CANCELLED`), the process suspends waiting for an external event (`SUSPENDED` — see "Suspension" below), or an unrecoverable error occurs (`FAILED`).
+   - **Terminating events** — consume the token. `EndEvent` validates `OutputContract` (if set) and records `PROCESS_COMPLETED` once all tokens are consumed. `CancelEvent`, `ErrorEvent`, and `TerminateEvent` cancel in-flight task goroutines (see [Cancellation](#cancellation) below) and record `PROCESS_CANCELLED` / `PROCESS_FAILED` / `PROCESS_COMPLETED` respectively. See [event-nodes.spec.md](event-nodes.spec.md).
+   - **Suspend events** — `SuspendForDuration`, `SuspendUntilDatetime` initiate the suspension drain (see [Suspension](#suspension) below). **Pause events** (`PauseForDuration`) dispatch a goroutine that sleeps for the configured duration; the scheduler loop continues to tick and other ready tasks continue to advance.
+3. **Dispatch ready task nodes as goroutines.** For each ready task node (`NativeFunctionTask`, `DecisionTask`, `SubProcessTask`, `TriggerProcessTask`, `RequestInputTask`):
+   - The scheduler records `NODE_SCHEDULED` and `NODE_STARTED`.
+   - The task body is invoked in a **new goroutine** with a `context.Context` derived from the scheduler's parent context (see [Cancellation](#cancellation)).
+   - The task body operates on the **shared `ExecutionContext`** directly — it calls `ctx.Record(nodeID, executionID, values)` zero or more times to append its outputs as Pending transactions, visible only to itself via `ctx.AsExecutor(nodeID)` until commit. See [../data/execution-context.spec.md § Atomic Commit and Visibility](../data/execution-context.spec.md#atomic-commit-and-visibility).
+   - **SubProcessTask** is dispatched the same way; its goroutine evaluates a child process recursively under a scoped `ExecutionContext` and a child `ExecutionHistory` with a separate `ProcessInstanceId`.
+4. **Check spawned task goroutines for completion.** For each task goroutine that has finished since the previous tick:
+   - On success → the scheduler calls `ctx.Commit(nodeID)`, records `NODE_COMPLETED`, and successors become candidates for the next tick.
+   - On error → the scheduler calls `ctx.Abort(nodeID)`, records `NODE_FAILED`, and error boundary handling takes over (see [Error Handling](#error-handling)).
+5. The loop ticks until all tokens are consumed (`COMPLETED`), a `CancelEvent` is reached (`CANCELLED`), the process suspends waiting for an external event (`SUSPENDED` — see [Suspension](#suspension)), or an unrecoverable error occurs (`FAILED`).
+
+Concurrency emerges from the scheduler dispatching every ready task as its own goroutine within the same tick — there is no per-branch walker and no explicit parallelism primitive. The graph topology decides what becomes ready; the scheduler dispatches everything ready immediately. There is no concurrency limit or backpressure.
 
 The returned `EvaluationResult` contains:
 - `Context` — the final `ExecutionContext` after all tasks have executed.
@@ -471,15 +474,33 @@ fmt.Println(result.History.ToMarkdown()) // full execution history
 
 #### Error Handling
 
-If a task fails and there is no error boundary event, the process fails. Any in-flight tasks on other branches are cancelled. The history records `NODE_FAILED` for the failed task and `PROCESS_FAILED` for the process. The `EvaluationResult` has `Status: FAILED` and the `error` field on the `NODE_FAILED` step contains the error details.
+If a task fails and there is no error boundary event, the process fails. The scheduler cancels all in-flight task goroutines via the mechanism described in [Cancellation](#cancellation) below; their pending transactions are aborted via `ctx.Abort(nodeID)`. The history records `NODE_FAILED` for the failed task and `PROCESS_FAILED` for the process. The `EvaluationResult` has `Status: FAILED` and the `error` field on the `NODE_FAILED` step contains the error details.
+
+#### Cancellation
+
+Every task goroutine the scheduler dispatches receives a `context.Context` derived from the scheduler's parent context. The scheduler cancels that context — and therefore signals every in-flight task to stop — in any of the following situations:
+
+- An `ErrorEvent`, `CancelEvent`, or `TerminateEvent` is reached.
+- A task fails and no error boundary event catches it (Error Handling above).
+- `MaxRunTime` or `MaxCompletionTime` expires (see [Timeouts](#timeouts) and [Process Options](#process-options)).
+
+Task implementations are expected to honour `context.Context` cancellation. `NativeFunctionTask.Fn` and any external I/O performed by a task body should be wrapped in `ctx.Done()`-aware patterns; long-running CPU work should periodically check `ctx.Err()`. When a cancelled task goroutine returns, the scheduler calls `ctx.Abort(nodeID)` to discard its Pending transactions and records `NODE_FAILED` (or `NODE_CANCELLED` if cancellation was the explicit cause) for that node.
 
 #### Suspension
 
-A process can suspend mid-evaluation when it reaches a `SuspendForDuration` / `SuspendUntilDatetime` event node (see [event-nodes.spec.md](event-nodes.spec.md)) or a `RequestInputTask` configured for durable wait (see [task-nodes.spec.md](task-nodes.spec.md#requestinputtask)). When this happens, `Evaluate()` returns with `Status: SUSPENDED` rather than continuing to walk the graph. The token rests at the suspending node and is preserved in `result.History` so that a later `Evaluate()` call (passing the persisted `Context` and `History`) can resume from the same position.
+A process can suspend mid-evaluation when it reaches a `SuspendForDuration` / `SuspendUntilDatetime` event node (see [event-nodes.spec.md](event-nodes.spec.md)) or a `RequestInputTask` configured for durable wait (see [task-nodes.spec.md](task-nodes.spec.md#requestinputtask)). When this happens, the scheduler enters a **suspension drain**:
+
+1. The scheduler stops dispatching new ready tasks.
+2. The scheduler waits for every already-spawned task goroutine to finish, committing or aborting each one through the normal completion path.
+3. `Evaluate()` then returns with `Status: SUSPENDED`.
+
+The token rests at the suspending node and is preserved in `result.History` so that a later `Evaluate()` call (passing the persisted `Context` and `History`) can resume from the same position.
+
+**`RequestInputTask` exception** — when a `RequestInputTask` triggers the suspension, the outbound input-request message is sent **immediately** as part of the task's own dispatch, before the surrounding drain begins. The external responder receives the request promptly even if other parallel tasks are still draining. The task itself remains the suspending node; the drain waits on its sibling tasks, not on the response.
 
 `SUSPENDED` is a non-terminal status. The caller is responsible for arranging resumption — typically by persisting `result.History` and signalling the broker via `MessageGateway.ReenqueueSuspended(...)` so the eventual `JobResume` is delivered to some worker when the wait condition is satisfied. For `RequestInputTask`, the wait is satisfied by a `MessageGateway.RespondToInputRequest(processInstanceID, requestID, payload)` call.
 
-`Pause*` event nodes do **not** transition the process to `SUSPENDED` — they hold the goroutine in-process while other branches advance. The status remains `RUNNING` throughout the pause.
+`Pause*` event nodes do **not** transition the process to `SUSPENDED` — the pause node's goroutine sleeps for the configured duration while the scheduler loop continues to tick and dispatch other ready tasks. The status remains `RUNNING` throughout the pause.
 
 When evaluation is invoked with no `Suspend*` nodes in the graph, `SUSPENDED` cannot be reached — the process always runs to `COMPLETED`, `CANCELLED`, or `FAILED`.
 
@@ -676,9 +697,9 @@ NativeFunctionTask — loan_app.archive.archive_application
 - `Evaluate()` requires both `Context` and `History`. Providing one without the other (or neither) raises `ValueError`. Both must come from a `StateStore` factory — `NewExecutionState(...)` for a fresh run or `LoadExecutionState(...)` for a resume.
 - `Evaluate()` with a freshly-built History (no prior steps) is an initial evaluation. The `ProcessInstanceId` was generated by the factory; `Input` is recorded as the initial transaction by the factory and is already present on the Context.
 - `Evaluate()` does not mutate the input `ExecutionHistory`. A deep copy is returned in the result.
-- `Evaluate()` executes all tasks inline and returns when the process completes, suspends waiting for an external event, or fails.
-- Parallel tasks on different branches run concurrently as separate goroutines. There is no concurrency limit or backpressure — all ready tasks are spawned immediately.
-- If a task fails and there is no error boundary event, the process fails. Any in-flight tasks on other branches are cancelled.
+- `Evaluate()` runs a single scheduler loop that dispatches ready tasks as goroutines and awaits their completion. It returns when the process completes, suspends waiting for an external event, or fails.
+- Ready tasks are each dispatched as their own goroutine. Concurrency emerges from the scheduler dispatching multiple ready tasks per tick — there is no concurrency limit or backpressure.
+- If a task fails and there is no error boundary event, the process fails. The scheduler cancels every in-flight task goroutine via its `context.Context` (see [Cancellation](#cancellation)); their pending transactions are aborted via `ctx.Abort(nodeID)`.
 - `NativeFunctionTask` tasks invoke the registered `Fn` directly.
 - `SubProcessTask` tasks are evaluated recursively, creating a child `ExecutionHistory` under a separate `ProcessInstanceId`.
 - `MaxRunTime` is enforced by `Evaluate()` — if the elapsed time exceeds the limit, pending tasks are cancelled and the process fails with `ProcessTimeoutError`. `MaxCompletionTime` is also enforced (measured from the start of the `Evaluate()` call). `Retry` is not enforced by `Evaluate()` — if set, it is ignored (retries are a runtime-level concern).

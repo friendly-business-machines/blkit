@@ -245,7 +245,7 @@ If the resolved deadline is in the past, the suspension is recorded but the runt
 
 ## Pause Events (Ephemeral Wait)
 
-Pause events wait without persisting state. `Evaluate()` blocks the goroutine — it does **not** return — until the wait condition is satisfied. The process status remains `ProcessStatusRunning` throughout. Other parallel branches (if any) continue advancing concurrently; only the token at the pause node is held.
+Pause events wait without persisting state. The pause node is dispatched as its own goroutine that sleeps for the configured duration; the scheduler loop continues to tick and `Evaluate()` does **not** return. The process status remains `ProcessStatusRunning` throughout. Other ready tasks continue to be dispatched and advance concurrently; only the token at the pause node is held.
 
 Use pause events when:
 - The wait is short (seconds to a few minutes).

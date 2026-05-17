@@ -64,7 +64,7 @@ myProcess := NewProcess("my-process", "1.0", []Edge{
 })
 ```
 
-Once the graph is built, `.evaluate()` walks it, executing tasks inline, until the process completes, suspends waiting for an external event, or fails.
+Once the graph is built, `.evaluate()` walks it, dispatching ready tasks as goroutines, until the process completes, suspends waiting for an external event, or fails.
 
 ## Async Execution
 
