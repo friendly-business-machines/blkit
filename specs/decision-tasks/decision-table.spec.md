@@ -15,7 +15,7 @@ A `DecisionTable` is a `DecisionNode` that defines decision logic as a table of 
 type DecisionTable[Outputs any] struct {
     Id          string
     Name        string
-    Description *string
+    Description string
 
     HitPolicy   HitPolicy
     Aggregation *Aggregation
@@ -31,7 +31,7 @@ func NewDecisionTable[Outputs any](opts DecisionTableOpts) *DecisionTable[Output
 type DecisionTableOpts struct {
     Id          string
     Name        string
-    Description *string
+    Description string
     HitPolicy   HitPolicy    // default: HitPolicyUnique
     Aggregation *Aggregation // only valid with HitPolicyCollect
     Inputs      []TableInput
@@ -90,7 +90,7 @@ A single row in the decision table.
 ```go
 type Rule struct {
     Id          *string  // optional; if set, must be unique within the DecisionTable
-    Description *string  // human-readable explanation of this rule
+    Description string // human-readable explanation of this rule
 
     Conditions []InputEntry
     Results    map[string]BlExpr // keyed by output name (matching an Outputs-struct field)

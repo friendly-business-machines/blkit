@@ -17,7 +17,7 @@ This collapses the prior `DecisionModel` + `DecisionModelTask` two-type split in
 type DecisionTask struct {
     // Decision-logic fields — set in DecisionTaskOpts at creation; treated as
     // immutable by convention thereafter. Shared by reference with clones.
-    Description    *string
+    Description    string
     InputContract  *InputContract  // optional; see ../data/data-contract.spec.md
     OutputContract *OutputContract // optional; see ../data/data-contract.spec.md
     DecisionGraph  DecisionGraph   // processed, sorted graph (built by NewDecisionTask)
@@ -55,7 +55,7 @@ func NewDecisionTask(opts DecisionTaskOpts) *DecisionTask
 
 type DecisionTaskOpts struct {
     // Decision-logic fields
-    Description    *string
+    Description    string
     InputContract  *InputContract
     OutputContract *OutputContract
     DecisionGraph  []DecisionNode // raw list; validated + sorted by NewDecisionTask into DecisionTask.DecisionGraph
@@ -151,7 +151,7 @@ To reuse the same decision logic across multiple processes, build the decision l
 ```go
 // Build the template — decision logic only
 var template = NewDecisionTask(DecisionTaskOpts{
-    Description: ptr("Approves or denies a loan based on eligibility and amount"),
+    Description: "Approves or denies a loan based on eligibility and amount",
     InputContract: NewInputContract(
         RequiredField("applicant", applicantSchema),
         RequiredField("loan_amount", BlNumber),
@@ -270,7 +270,7 @@ var approval = NewLiteralExpression[ApprovalOutputs](LiteralExpressionOpts{
 })
 
 var loanApproval = NewDecisionTask(DecisionTaskOpts{
-    Description: ptr("Approves or denies a loan based on eligibility and amount"),
+    Description: "Approves or denies a loan based on eligibility and amount",
     InputContract: NewInputContract(
         RequiredField("applicant", applicantSchema),
         RequiredField("loan_amount", BlNumber),

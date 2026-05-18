@@ -19,7 +19,7 @@ targets:
 type DecisionNode interface {
     GetId() string
     GetName() *string
-    GetDescription() *string
+    GetDescription() string
     Evaluate(input map[string]any) (BlValue, error)
 }
 ```

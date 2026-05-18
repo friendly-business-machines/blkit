@@ -15,7 +15,7 @@ An `Invocation` is a `DecisionNode` that calls a `BusinessKnowledgeModel` (BKM) 
 type Invocation[Outputs any] struct {
     Id          string
     Name        string
-    Description *string
+    Description string
 
     BKM      Invokable
     Bindings []ParameterBinding
@@ -28,7 +28,7 @@ func NewInvocation[Outputs any](opts InvocationOpts) *Invocation[Outputs]
 type InvocationOpts struct {
     Id          string
     Name        string
-    Description *string
+    Description string
     BKM         Invokable
     Bindings    []ParameterBinding
 }

@@ -15,7 +15,7 @@ A `LiteralExpression` is a `DecisionNode` defined by a single `BlExpr` body. Whe
 type LiteralExpression[Outputs any] struct {
     Id          string
     Name        string
-    Description *string
+    Description string
 
     Body BlExpr
 
@@ -27,7 +27,7 @@ func NewLiteralExpression[Outputs any](opts LiteralExpressionOpts) *LiteralExpre
 type LiteralExpressionOpts struct {
     Id          string
     Name        string
-    Description *string
+    Description string
     Body        BlExpr
 }
 

@@ -224,15 +224,16 @@ When the process completes or fails, all tokens are consumed and no markers appe
 For a process `start → validate → review → end`:
 
 ```go
+type StepInputs struct{}
 type StepOutputs struct{ Status BlString }
 
-var validate = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var validate = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "validate", Name: "Validate",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var review = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var review = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "review", Name: "Review",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
 
 var simpleReview = NewProcess("simple-review", "1.0", ProcessOpts{
@@ -382,15 +383,16 @@ Nodes:
 For a process with an AND split and join: `start → AND(check-credit, check-income) → JOIN → decide → end`:
 
 ```go
+type StepInputs struct{}
 type StepOutputs struct{ Status BlString }
 
-var checkCredit = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var checkCredit = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "check-credit", Name: "Check Credit",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var checkIncome = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var checkIncome = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "check-income", Name: "Check Income",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
 decide := decisionTemplate.Clone(DecisionTaskOpts{
     Id:             "decide",
@@ -643,6 +645,7 @@ When parallel branches are active, `NODE_COMPLETED` steps from different branche
 For a process with an XOR split: `start → assess-risk → XOR(approve, reject) → end`:
 
 ```go
+type StepInputs struct{}
 type StepOutputs struct{ Status BlString }
 
 assessRisk := riskTemplate.Clone(DecisionTaskOpts{
@@ -651,13 +654,13 @@ assessRisk := riskTemplate.Clone(DecisionTaskOpts{
     InputMappings:  NewVariableMapping(),
     OutputMappings: NewVariableMapping(),
 })
-var approve = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var approve = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "approve", Name: "Approve",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var reject = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var reject = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "reject", Name: "Reject",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
 
 conditions := NewGatewayConditions(
@@ -844,11 +847,17 @@ All loop iterations share the same `execution_id` — they are part of a single 
 For a process `start → send → end`, where `send` runs once per recipient in a collection:
 
 ```go
+type SendInputs struct{ Recipient BlContext }
 type SendOutputs struct{ Delivered BlBoolean }
 
-var send = NewNativeFunctionTask(NativeFunctionTaskOpts[SendOutputs]{
+var send = NewNativeFunctionTask(NativeFunctionTaskOpts[SendInputs, SendOutputs]{
     Id: "send", Name: "Send Notification",
-    Fn: func(ctx *ExecutionContext) (SendOutputs, error) { /* body */ },
+    InputBindings: func(in SendInputs) []ParameterBinding {
+        return []ParameterBinding{
+            Bind(in.Recipient, Bl.MultiInstanceItem[BlContext]()),
+        }
+    },
+    Fn: func(in *SendInputs) (SendOutputs, error) { /* body */ },
     MultiInstance: NewMultiInstanceConfig(
         Bl.ListVar("start.recipients"),
         MultiInstanceOpts{ElementVariable: "recipient", IsSequential: false},
@@ -957,15 +966,16 @@ All instances share the same `execution_id`. The `instance` field (1-indexed, ma
 For a process with a loopback: `start → review → XOR(approved → end, needs_revision → revise → review)`:
 
 ```go
+type StepInputs struct{}
 type StepOutputs struct{ Status BlString }
 
-var review = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var review = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "review", Name: "Review",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var revise = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var revise = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "revise", Name: "Revise",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
 
 conditions := NewGatewayConditions(

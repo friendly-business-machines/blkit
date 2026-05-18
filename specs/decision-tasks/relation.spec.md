@@ -17,7 +17,7 @@ Unlike the multi-output `DecisionTable`, a `Relation`'s single output is the who
 type Relation[Row any] struct {
     Id          string
     Name        string
-    Description *string
+    Description string
 
     Rows []Row // typed row values, supplied via opts and validated against Row's columns
 
@@ -29,7 +29,7 @@ func NewRelation[Row any](opts RelationOpts[Row]) *Relation[Row]
 type RelationOpts[Row any] struct {
     Id          string
     Name        string
-    Description *string
+    Description string
 
     // Rows is a builder closure returning the typed row values. Each row's
     // field expressions may reference upstream node outputs (typed Bl* handles)

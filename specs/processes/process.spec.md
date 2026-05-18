@@ -16,7 +16,7 @@ type Process struct {
     Version            string
     Namespace          string                     // auto-derived from the Go package import path of the NewProcess() caller; see "Registry"
     Name               *string
-    Description        *string
+    Description        string
     Graph              ProcessGraph               // processed, structured graph (built by NewProcess())
     MaxRunTime         *time.Duration
     MaxCompletionTime  *time.Duration
@@ -32,7 +32,7 @@ func NewProcess(
 // ProcessOpts holds optional parameters for NewProcess()
 type ProcessOpts struct {
     Name               *string
-    Description        *string
+    Description        string
     Graph              []ProcessNode              // raw chain expressions; processed into ProcessGraph
     MaxRunTime         *time.Duration             // measured from when execution begins, not when first queued
     MaxCompletionTime  *time.Duration             // measured from when the process instance is first queued
@@ -216,43 +216,44 @@ Because `Namespace` is part of the broker routing key produced by `MessageGatewa
 // ../processes/native-function-task.spec.md). Each task is
 // generic over a typed Outputs struct; for these wiring-focused examples
 // we share a single one-field StepOutputs across every task in the snippet.
+type StepInputs struct{}
 type StepOutputs struct{ Status BlString }
 
-var validateApplication = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var validateApplication = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "validate", Name: "Validate Application",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var pullCreditReport = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var pullCreditReport = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "credit-report", Name: "Pull Credit Report",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var checkIncome = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var checkIncome = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "check-income", Name: "Check Income",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var issueOfferLetter = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var issueOfferLetter = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "offer", Name: "Issue Offer Letter",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var proposeCounter = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var proposeCounter = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "counter", Name: "Propose Counter",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var declineApplication = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var declineApplication = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "decline", Name: "Decline Application",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var notifyApplicant = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var notifyApplicant = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "notify", Name: "Notify Applicant",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var updateCreditBureau = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var updateCreditBureau = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "update-bureau", Name: "Update Credit Bureau",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var archiveApplication = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var archiveApplication = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "archive", Name: "Archive Application",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
 
 // Sub-process tasks
@@ -363,23 +364,24 @@ A process can define multiple entrypoints and exit points. Each start and termin
 
 ```go
 // Tasks
+type StepInputs struct{}
 type StepOutputs struct{ Status BlString }
 
-var review = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var review = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "review", Name: "Review Application",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var generateOffer = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var generateOffer = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "generate-offer", Name: "Generate Offer",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var sendRejection = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var sendRejection = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "send-rejection", Name: "Send Rejection",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var notify = NewNativeFunctionTask(NativeFunctionTaskOpts[StepOutputs]{
+var notify = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "notify", Name: "Notify Applicant",
-    Fn: func(ctx *ExecutionContext) (StepOutputs, error) { /* body */ },
+    Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
 
 // Decision task — clone of the risk-assessment template

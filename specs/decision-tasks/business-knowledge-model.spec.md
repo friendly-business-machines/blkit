@@ -21,7 +21,7 @@ A `BusinessKnowledgeModel` (BKM) is a reusable, parameterised function. It is no
 type BusinessKnowledgeModel[Parameters any, Output BlValue] struct {
     Id          string
     Name        string
-    Description *string
+    Description string
 
     // Body — exactly one of these must be set
     Body           BlExpr                  // expression body (typed Output)
@@ -40,7 +40,7 @@ func NewBusinessKnowledgeModel[Parameters any, Output BlValue](
 type BKMOpts[Parameters any, Output BlValue] struct {
     Id          string
     Name        string
-    Description *string
+    Description string
 
     // Exactly one of the body fields below must be set.
     Body           func(p *Parameters) Output // expression body

@@ -17,7 +17,7 @@ A `BoxedContext` is a `DecisionNode` defined by a set of named entries. Each ent
 type BoxedContext[Outputs any] struct {
     Id          string
     Name        string
-    Description *string
+    Description string
 
     Entries []BoxedEntry // topologically sorted by NewBoxedContext
 
@@ -34,7 +34,7 @@ func NewBoxedContext[Outputs any](opts BoxedContextOpts[Outputs]) *BoxedContext[
 type BoxedContextOpts[Outputs any] struct {
     Id          string
     Name        string
-    Description *string
+    Description string
 
     // Entries is a builder closure that receives a pre-populated outputs handle
     // and returns the entry expressions. Use the typed Bl* handles on `o` to
