@@ -9,7 +9,7 @@ targets:
 
 Invokes a Go function directly. The function and its task-level framing are declared together via `NewNativeFunctionTask`; the resulting `*NativeFunctionTask[Outputs]` is itself a `ProcessNode` that can be placed in a process graph. Reuse across multiple processes is via `Clone(opts)` — function-logic fields are shared by reference with clones; task-level fields are reset (not inherited) on `Clone`.
 
-`NativeFunctionTask` is **generic over a caller-supplied outputs struct** that declares the task's typed outputs. This is the same pattern [`DecisionNode`](../decision-tasks/decision-node.spec.md#outputs-structs) and [`BusinessKnowledgeModel`](../decision-tasks/business-knowledge-model.spec.md) already use. The framework reflects on the `Outputs` struct at construction to derive the output column names and validate field types. At execution time, `Evaluate` reflects on the returned value to build the `map[string]any` passed to `ctx.Record`.
+`NativeFunctionTask` is **generic over a caller-supplied outputs struct** that declares the task's typed outputs. This is the same pattern [`DecisionNode`](../decision-tasks/decision-node.spec.md#outputs-structs) and [`BusinessKnowledgeModel`](../decision-tasks/business-knowledge-model.spec.md) already use. The framework reflects on the `Outputs` struct at construction to derive the output field names and validate field types. At execution time, `Evaluate` reflects on the returned value to build the `map[string]any` passed to `ctx.Record`.
 
 The shape mirrors [`DecisionTask`](../decision-tasks/decision-task.spec.md): a single type holding both the logic and the task-level metadata, reused via `Clone`, not via wrapping or a separate factory.
 
@@ -38,7 +38,7 @@ type NativeFunctionTask[Inputs any, Outputs any] struct {
 
     // Typed handle fields, populated by NewNativeFunctionTask via reflection.
     // Each field on Inputs / Outputs holds a permanent symbolic handle stamped
-    // with (sourceTaskId: t.Id, fieldName: <effective-name>, type: <Bl-type>).
+    // with (sourceTaskId: t.Id, fieldName: <Go-field-name>, type: <Bl-type>).
     //
     // - Inputs holds the LHS handles that this task's InputBindings closure
     //   pairs with upstream Outputs handles via Bind(in.X, ...).
@@ -109,7 +109,7 @@ func (t *NativeFunctionTask[Inputs, Outputs]) Evaluate(ctx *ExecutionContext, ex
 ```
 
 - `Fn` is a **pure function** over the typed `Inputs` struct — it does **not** receive `*ExecutionContext`. The framework populates `*in` from the `InputBindings` before each call.
-- Every exported field of `Outputs` is recorded as a separate output column under `(t.Id, executionID)`; consumers read individual columns by referencing this task's `Outputs.<field>` handle in their own `InputBindings`.
+- Every exported field of `Outputs` is recorded as a separate output field under `(t.Id, executionID)`; consumers read individual fields by referencing this task's `Outputs.<field>` handle in their own `InputBindings`.
 
 ## Inputs struct
 
@@ -117,11 +117,11 @@ The `Inputs` type parameter declares the task's typed inputs.
 
 - **Every exported field is an input.** Unexported fields are ignored.
 - **Field types must implement `BlValue`** (`BlNumber`, `BlString`, `BlBoolean`, `BlList`, `BlContext`, `BlDateTime`, `BlDaysTimeDuration`, etc.). A field whose type does not implement `BlValue` produces a `ProcessDefinitionError` at construction time.
-- **Column name defaults to the literal Go field name.** No transformation — `LoanAmount` records as `LoanAmount`. Override with a `` `bl:"name"` `` struct tag when needed.
-- **Duplicate effective names** within the same struct produce a `ProcessDefinitionError`.
+- **Field name is the literal Go field name.** No transformation — `LoanAmount` is bound as `LoanAmount`.
+- **Duplicate field names** within the same struct produce a `ProcessDefinitionError`.
 - **`Inputs` may be empty** (`struct{}` or a type with no exported fields). A task that genuinely reads nothing declares an empty struct; the `InputBindings` closure returns an empty slice. This differs from `Outputs`, which requires at least one field.
 
-`NewNativeFunctionTask` allocates a typed handle into each exported field of `t.Inputs` at construction, stamped with `(sourceTaskId: t.Id, fieldName: <effective-name>, type: <Bl-type>)`. These handles are the LHS of the bindings produced by the `InputBindings` closure — `Bind(in.IsValid, ...)` reads the handle out of the populated `in` value the closure receives.
+`NewNativeFunctionTask` allocates a typed handle into each exported field of `t.Inputs` at construction, stamped with `(sourceTaskId: t.Id, fieldName: <Go-field-name>, type: <Bl-type>)`. These handles are the LHS of the bindings produced by the `InputBindings` closure — `Bind(in.IsValid, ...)` reads the handle out of the populated `in` value the closure receives.
 
 ## InputBindings
 
@@ -158,9 +158,9 @@ The `Outputs` type parameter declares the task's typed outputs. The rules match 
 
 - **Every exported field is an output.** Unexported fields are ignored.
 - **Field types must implement `BlValue`** (`BlNumber`, `BlString`, `BlBoolean`, `BlList`, `BlContext`, `BlDateTime`, `BlDaysTimeDuration`, etc.). A field whose type does not implement `BlValue` produces a `ProcessDefinitionError` at construction time.
-- **Column name defaults to the literal Go field name.** No transformation — `LoanAmount` records as `LoanAmount`, consumers read it as `ctx.Get("<task-id>.LoanAmount")`. Override with a `` `bl:"name"` `` struct tag when a different recorded name is needed (e.g. interop with an external system that expects a particular casing).
-- **At least one exported field** is required. An `Outputs` struct with no exported fields produces a `ProcessDefinitionError` — a task must declare at least one output. If the function genuinely emits no useful value, declare a single-field struct (e.g. `Status BlString`) so the recorded transaction has a meaningful column name.
-- **Duplicate effective names** (one field's `bl:"name"` collides with another field's literal name or another field's `bl:"name"` within the same struct) produce a `ProcessDefinitionError`.
+- **Field name is the literal Go field name.** No transformation — `LoanAmount` records as `LoanAmount`, consumers read it as `ctx.Get("<task-id>.LoanAmount")`.
+- **At least one exported field** is required. An `Outputs` struct with no exported fields produces a `ProcessDefinitionError` — a task must declare at least one output. If the function genuinely emits no useful value, declare a single-field struct (e.g. `Status BlString`) so the recorded transaction has a meaningful field name.
+- **Duplicate field names** within the same struct produce a `ProcessDefinitionError`.
 - **Single-output ergonomics.** An `Outputs` struct with exactly one field is the natural shape for tasks that produce a single named value (e.g. `type FetchScoreOutputs struct { Score BlNumber }`). Consumers still read it via the qualified key (`ctx.Get("fetch-score.Score")`).
 
 `NewNativeFunctionTask` runs this reflection once at construction and caches the result on the task; subsequent `Evaluate` calls reuse the cached field-to-name map. The same pass also allocates a typed handle into every exported field of `t.Outputs`; those handles are the symbolic references downstream tasks use to wire to this task's recorded values (see [§ InputBindings § How handles, bindings, and runtime values fit together](#how-handles-bindings-and-runtime-values-fit-together) above).
@@ -176,7 +176,7 @@ func (t *NativeFunctionTask[Inputs, Outputs]) Evaluate(ctx *ExecutionContext, ex
 1. **Resolve bindings.** For each `ParameterBinding` in `t.InputBindings`, evaluate the binding's `Argument` expression against `ctx` to produce a concrete `BlValue`. (For the common case of `Bind(in.X, upstream.Outputs.Y)`, evaluation is `ctx.Get("<upstream-id>.<y-field>")`.)
 2. **Populate a fresh `*Inputs`.** Allocate a new `Inputs` value and assign each resolved value into the field identified by the binding's `Parameter` handle, using the cached field-to-handle map. `t.Inputs` retains its construction-time handles untouched.
 3. **Call `t.Fn(in)`.** If `Fn` returns a non-nil error, return it immediately. `Evaluate` does **not** call `ctx.Abort` — the scheduler still owns abort decisions (see [process.spec.md § Execution](./process.spec.md#execution)).
-4. **Record the returned `Outputs`.** Reflect on the returned struct (a fresh value, separate from `t.Outputs`, with concrete `Bl*` values populated by `Fn`) to build a `map[string]any` keyed by each field's effective name (the same key the construction-time handle on `t.Outputs.X` was stamped with). Call `ctx.Record(t.Id, executionID, values)`. The transaction lands as Pending; the scheduler drives `Commit` on success and `Abort` on failure (unchanged from today). `t.Outputs` retains its handles untouched.
+4. **Record the returned `Outputs`.** Reflect on the returned struct (a fresh value, separate from `t.Outputs`, with concrete `Bl*` values populated by `Fn`) to build a `map[string]any` keyed by each field's Go name (the same key the construction-time handle on `t.Outputs.X` was stamped with). Call `ctx.Record(t.Id, executionID, values)`. The transaction lands as Pending; the scheduler drives `Commit` on success and `Abort` on failure (unchanged from today). `t.Outputs` retains its handles untouched.
 5. Return `nil`.
 
 The duality is worth calling out explicitly: **`t.Inputs` / `t.Outputs` are construction-time handle structs that downstream tasks reference for wiring; the `*Inputs` value passed to `Fn` and the `Outputs` value returned by `Fn` are per-evaluation value structs that carry the actual data.** Same Go type on both sides, opposite contents.
@@ -385,7 +385,7 @@ var processB = NewProcess("loan-full-review", "1.0", ProcessOpts{
 ## Edge Cases
 
 - A `NativeFunctionTask` whose `Fn` is nil is invalid and produces a `ValidationError`.
-- A `NativeFunctionTask[Inputs, Outputs]` whose `Outputs` type parameter has no exported fields is a `ProcessDefinitionError` at construction. A field on either `Inputs` or `Outputs` whose type does not implement `BlValue` is also a `ProcessDefinitionError`. Duplicate effective names within `Inputs` or within `Outputs` (collision between an explicit `bl:"name"` and another field's literal Go name or another `bl:"name"`) are a `ProcessDefinitionError`.
+- A `NativeFunctionTask[Inputs, Outputs]` whose `Outputs` type parameter has no exported fields is a `ProcessDefinitionError` at construction. A field on either `Inputs` or `Outputs` whose type does not implement `BlValue` is also a `ProcessDefinitionError`. Duplicate field names within `Inputs` or within `Outputs` are a `ProcessDefinitionError`.
 - An empty `Inputs` struct (no exported fields) is **valid** — for tasks that read nothing from process state. The `InputBindings` closure must return an empty slice in that case.
 - A `NativeFunctionTask` whose `opts.InputBindings` is `nil` while `Inputs` has at least one exported field is a `ProcessDefinitionError` — every input must be bound. (An empty-Inputs task may have `nil` `InputBindings` or a closure returning an empty slice; both are accepted.)
 - `InputBindings` returning a slice that does **not** bind every exported field of `Inputs` exactly once is a `ProcessDefinitionError`: unbound fields and duplicate bindings are both rejected. There is no `BlNull` default for unbound fields — bind to a literal expression (e.g. `Bl.Boolean(false)`) if a default is desired.

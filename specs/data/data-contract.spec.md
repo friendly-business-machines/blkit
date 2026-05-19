@@ -12,7 +12,7 @@ targets:
 - An **`InputContract`** describes inbound data. It is attached to a `StartEvent` (mandatory; validated at submission) and to a `DecisionTask` (optional; validated at evaluation entry).
 - An **`OutputContract`** describes outbound data. It is attached to an `EndEvent` (optional; validated at completion) and to a `DecisionTask` (optional; validated at evaluation exit).
 
-The two types are structurally identical but distinct so that the wrong direction is a Go type error, not a runtime check. Fields reference FEEL type classes directly rather than type name strings, giving compile-time safety in typed languages. For structured or collection types, `ContextContract`, `ListContract`, and `TableContract` provide nested type constraints.
+The two types are structurally identical but distinct so that the wrong direction is a Go type error, not a runtime check. Fields reference `Bl` type classes directly rather than type name strings, giving compile-time safety in typed languages. For structured or collection types, `ContextContract`, `ListContract`, and `TableContract` provide nested type constraints.
 
 ```go
 type InputContract struct {
@@ -41,7 +41,7 @@ func OptionalField(name string, fieldType FieldType) ContractField
 // FieldType is: BlType | ContextContract | ListContract | TableContract
 ```
 
-`BlType` is any of the FEEL value type classes (`BlNumber`, `BlString`, `BlBoolean`, `BlDate`, `BlTime`, `BlDateTime`, `BlYearsMonthsDuration`, `BlDaysTimeDuration`, `BlList`, `BlContext`, `BlRange`, `BlCalendar`).
+`BlType` is any of the `Bl` value type classes (`BlNumber`, `BlString`, `BlBoolean`, `BlDate`, `BlTime`, `BlDateTime`, `BlYearsMonthsDuration`, `BlDaysTimeDuration`, `BlList`, `BlContext`, `BlRange`, `BlCalendar`).
 
 ---
 
@@ -289,7 +289,7 @@ Nested types are validated recursively:
 - `DataContractValidationError` at completion time causes the process to fail — the failure is recorded as `PROCESS_FAILED` in the `ExecutionHistory` with the error attached.
 - A field typed as `BlList` (the class, not a `ListContract`) declares that the value must be a list, but does not constrain the element type. Use `ListContract` for element-level type constraints.
 - A field typed as `BlContext` (the class, not a `ContextContract`) declares that the value must be a context, but does not constrain its keys or value types. Use `ContextContract` for structural constraints on context values.
-- `BlNull` is not a valid field type — a field that may be absent should be declared as `optional`. At evaluation time, a missing input resolves to `BlNull` per FEEL semantics regardless of contract.
+- `BlNull` is not a valid field type — a field that may be absent should be declared as `optional`. At evaluation time, a missing input resolves to `BlNull` regardless of contract.
 - A single `*InputContract` may be shared by reference across multiple `StartEvent`s with identical input shapes; the same applies to `*OutputContract` across multiple `EndEvent`s. Contracts are read-only after construction, so sharing is safe.
 - `NewContextContract()` with no fields is valid — it constrains the value to be a `BlContext` but imposes no field requirements.
 - `NewListContract(elementType)` with a nested `ListContract` is valid — represents a list of lists.

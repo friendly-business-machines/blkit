@@ -146,5 +146,5 @@ Any decision node can be evaluated independently by calling `.Evaluate(input)` w
 - Output names must be unique across the whole `DecisionTask`. Collisions are rejected at task construction.
 - Decision nodes forming a circular dependency among themselves are detected by `NewDecisionTask` and rejected with `DecisionDefinitionError`.
 - Calling `.Evaluate()` in standalone mode with an input variable not referenced by any expression on the node is silently ignored.
-- A required input variable that is missing at evaluation time resolves to `BlNull` (consistent with FEEL semantics).
+- A required input variable that is missing at evaluation time resolves to `BlNull`.
 - A node body that produces a value whose runtime type disagrees with the declared outputs-struct field type produces a `BlTypeError` at evaluation time.

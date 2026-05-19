@@ -127,7 +127,7 @@ Join(pullCreditReport, checkIncome, runAffordability).To(calculateScore)
 
 ## GatewayConditions and Branches
 
-`GatewayConditions` defines the routing rules for `Xor` and `Or` gateways. Each `Branch` maps a name to a FEEL expression that evaluates to a boolean.
+`GatewayConditions` defines the routing rules for `Xor` and `Or` gateways. Each `Branch` maps a name to a blkit expression that evaluates to a boolean.
 
 ```go
 func NewGatewayConditions(branches ...*Branch) *GatewayConditions

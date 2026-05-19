@@ -132,16 +132,16 @@ Implementations may keep a materialized "latest" view to avoid full replay on ev
 
 ## Context Serialization
 
-For `InMemoryStateStore`, `Transaction.Values` are held as FEEL value objects directly — no serialization is needed.
+For `InMemoryStateStore`, `Transaction.Values` are held as `Bl` value objects directly — no serialization is needed.
 
 For persistent state store implementations (SQLite, RocksDB, BadgerDB, PostgreSQL, AzureSQL, S3, LocalFS), each `Transaction.Values` map is stored in two forms:
 
-- **CBOR binary** — the canonical representation used for loading the value back into the worker. CBOR's semantic tags preserve FEEL types losslessly (e.g. tag 4 for arbitrary-precision decimal fractions). This is the format consumed by replay.
-- **JSON string** — a human-readable copy for inspection and debugging. Not used for deserialization. Each FEEL value is represented as a JSON object with a type discriminator (e.g. `{"_type": "date", "year": 2026, "month": 4, "day": 3, "offset": "+05:30", "timezone": "Asia/Kolkata"}`).
+- **CBOR binary** — the canonical representation used for loading the value back into the worker. CBOR's semantic tags preserve `Bl` types losslessly (e.g. tag 4 for arbitrary-precision decimal fractions). This is the format consumed by replay.
+- **JSON string** — a human-readable copy for inspection and debugging. Not used for deserialization. Each `Bl` value is represented as a JSON object with a type discriminator (e.g. `{"_type": "date", "year": 2026, "month": 4, "day": 3, "offset": "+05:30", "timezone": "Asia/Kolkata"}`).
 
-The CBOR encoding maps FEEL types to CBOR as follows:
+The CBOR encoding maps `Bl` types to CBOR as follows:
 
-| FEEL type | CBOR representation |
+| Bl type | CBOR representation |
 |---|---|
 | `BlNumber` | Decimal fraction (tag 4) |
 | `BlString` | Text string |
@@ -151,11 +151,11 @@ The CBOR encoding maps FEEL types to CBOR as follows:
 | `BlTime` | Tagged map (blkit tag) with hour, minute, second, offset, timezone |
 | `BlDateTime` | Tagged map (blkit tag) with date and time components |
 | `BlDuration` | Tagged map (blkit tag) with years, months, days, hours, minutes, seconds |
-| `BlList` | Array of FEEL values |
-| `BlContext` | Map of string keys to FEEL values |
+| `BlList` | Array of `Bl` values |
+| `BlContext` | Map of string keys to `Bl` values |
 | `BlRange` | Tagged map (blkit tag) with start, end, and inclusive flags |
 
-FEEL types with blkit-specific attributes (e.g. `BlDate` with offset and timezone) use blkit-defined semantic tags from CBOR's private-use range, encoding the full set of attributes as a CBOR map. This ensures lossless round-tripping of all FEEL values regardless of custom attributes.
+`Bl` types with blkit-specific attributes (e.g. `BlDate` with offset and timezone) use blkit-defined semantic tags from CBOR's private-use range, encoding the full set of attributes as a CBOR map. This ensures lossless round-tripping of all `Bl` values regardless of custom attributes.
 
 ---
 

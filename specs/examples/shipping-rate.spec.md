@@ -16,15 +16,15 @@ An e-commerce fulfilment platform needs to calculate the shipping cost for any o
 - **Speed tier** — standard, express, or overnight, each applying a cost multiplier.
 - **Fuel surcharge** — a flat 8% applied to the pre-surcharge total.
 
-This example shows how to compose these calculations entirely using FEEL expressions, without needing a `DecisionTable` or a `Process`. FEEL is a standalone feature of blkit — it can be used anywhere arithmetic, conditionals, or deferred expression evaluation is useful.
+This example shows how to compose these calculations entirely using blkit expressions, without needing a `DecisionTable` or a `Process`. The expression system is a standalone feature of blkit — it can be used anywhere arithmetic, conditionals, or deferred expression evaluation is useful.
 
 ## What This Example Demonstrates
 
-- Using `FEEL.number()` for precise decimal arithmetic
-- Using `FEEL.var()` to reference runtime variables
+- Using `Bl.number()` for precise decimal arithmetic
+- Using `Bl.var()` to reference runtime variables
 - Arithmetic operations: `.add()`, `.sub()`, `.mul()`, `.div()`
 - Comparison and conditional: `.gt()`, `.if_then_else()`
-- Using `FEEL.context()` to build a structured output
+- Using `Bl.context()` to build a structured output
 - Calling `.evaluate(variables)` to materialise a result
 - Composing a multi-step calculation from reusable expression fragments
 
@@ -32,7 +32,7 @@ This example shows how to compose these calculations entirely using FEEL express
 
 ### Inputs
 
-| Variable | FEEL type | Description |
+| Variable | Bl type | Description |
 |---|---|---|
 | `actual_weight_kg` | `number` | Actual measured weight of the parcel, in kilograms |
 | `length_cm` | `number` | Parcel length in centimetres |
@@ -43,7 +43,7 @@ This example shows how to compose these calculations entirely using FEEL express
 
 ### Output
 
-| Variable | FEEL type | Description |
+| Variable | Bl type | Description |
 |---|---|---|
 | `billable_weight_kg` | `number` | The weight the carrier charges for |
 | `base_rate` | `number` | Zone-based fixed charge |
@@ -90,41 +90,41 @@ This example shows how to compose these calculations entirely using FEEL express
 ```python
 # Step 1 — volumetric weight
 volumetric_weight = (
-    FEEL.var("length_cm")
-    .mul(FEEL.var("width_cm"))
-    .mul(FEEL.var("height_cm"))
-    .div(FEEL.number(5000))
+    Bl.var("length_cm")
+    .mul(Bl.var("width_cm"))
+    .mul(Bl.var("height_cm"))
+    .div(Bl.number(5000))
 )
 
 # Step 2 — billable weight (max of actual vs volumetric)
-# FEEL.function_call("max", ...) invokes the built-in FEEL max() function
-billable_weight = FEEL.function_call("max", [
-    FEEL.var("actual_weight_kg"),
+# Bl.function_call("max", ...) invokes the built-in max() function
+billable_weight = Bl.function_call("max", [
+    Bl.var("actual_weight_kg"),
     volumetric_weight,
 ])
 
-# Step 3 — zone-based rates returned as a FEEL context
+# Step 3 — zone-based rates returned as a Bl context
 zone_rates = (
-    FEEL.var("destination_zone").eq(FEEL.number(1))
+    Bl.var("destination_zone").eq(Bl.number(1))
     .if_then_else(
-        FEEL.context({"base": FEEL.number(5.00), "per_kg": FEEL.number(1.50)}),
-        FEEL.var("destination_zone").eq(FEEL.number(2))
+        Bl.context({"base": Bl.number(5.00), "per_kg": Bl.number(1.50)}),
+        Bl.var("destination_zone").eq(Bl.number(2))
         .if_then_else(
-            FEEL.context({"base": FEEL.number(12.00), "per_kg": FEEL.number(2.50)}),
-            FEEL.context({"base": FEEL.number(25.00), "per_kg": FEEL.number(4.00)}),
+            Bl.context({"base": Bl.number(12.00), "per_kg": Bl.number(2.50)}),
+            Bl.context({"base": Bl.number(25.00), "per_kg": Bl.number(4.00)}),
         ),
     )
 )
 
 # Step 4 — speed multiplier
 speed_multiplier = (
-    FEEL.var("speed_tier").eq(FEEL.string("standard"))
+    Bl.var("speed_tier").eq(Bl.string("standard"))
     .if_then_else(
-        FEEL.number(1.0),
-        FEEL.var("speed_tier").eq(FEEL.string("express"))
+        Bl.number(1.0),
+        Bl.var("speed_tier").eq(Bl.string("express"))
         .if_then_else(
-            FEEL.number(1.5),
-            FEEL.number(2.5),
+            Bl.number(1.5),
+            Bl.number(2.5),
         ),
     )
 )
@@ -136,11 +136,11 @@ subtotal = (
     .add(billable_weight.mul(zone_rates.path("per_kg")))
     .mul(speed_multiplier)
 )
-fuel_surcharge = subtotal.mul(FEEL.number(0.08))
+fuel_surcharge = subtotal.mul(Bl.number(0.08))
 total = subtotal.add(fuel_surcharge)
 
 # Final result as a structured context
-result_expr = FEEL.context({
+result_expr = Bl.context({
     "billable_weight_kg": billable_weight,
     "subtotal":           subtotal,
     "fuel_surcharge":     fuel_surcharge,
@@ -179,5 +179,5 @@ The documentation page for this example (`docs/examples/shipping-rate.md`) must 
 1. A short narrative introduction explaining the billing model and what the reader will build.
 2. The complete, runnable Go code.
 3. An explicit walkthrough: show the intermediate values for the first sample row (actual=3.2 kg, regional, express, total=38.88) with each intermediate computation labelled.
-4. A callout explaining the difference between `FEEL.number()` values (arbitrary precision) and native floating-point — and why FEEL arithmetic is preferable for financial calculations.
+4. A callout explaining the difference between `Bl.number()` values (arbitrary precision) and native floating-point — and why `Bl` arithmetic is preferable for financial calculations.
 5. A short note on reusability: because the expressions are pure data structures, `result_expr` can be built once and evaluated many times with different variable maps.

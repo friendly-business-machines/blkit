@@ -1,13 +1,13 @@
 ---
 name: BlBoolean
-description: blkit's boolean type (modelled on FEEL) — true/false with three-valued null propagation; extends BlExpr so all logical operations are deferred and chainable
+description: blkit's boolean type — true/false with three-valued null propagation; extends BlExpr so all logical operations are deferred and chainable
 targets:
   - ../../expr/boolean.go
 ---
 
 # BlBoolean
 
-`BlBoolean` is blkit's boolean type, modelled on FEEL's. It has two values — `true` and `false` — and participates in three-valued logic (drawn from FEEL) where `null` propagates through most logical operations. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
+`BlBoolean` is blkit's boolean type. It has two values — `true` and `false` — and participates in three-valued logic where `null` propagates through most logical operations. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
 
 ```go
 type BlBoolean struct { BlExpr }
@@ -74,5 +74,5 @@ Two `BlBoolean` values are equal if they have the same `value`. Equality with `B
 
 ## Edge Cases
 
-- blkit does not perform truthy/falsy coercion (matching FEEL): integers, strings, and other non-boolean types are never implicitly converted to boolean. Logical operations on non-booleans evaluate to `BlNull`.
-- Boolean literals `true` and `false` are case-sensitive in FEEL-style notation; `True` and `TRUE` are not equivalent.
+- blkit does not perform truthy/falsy coercion: integers, strings, and other non-boolean types are never implicitly converted to boolean. Logical operations on non-booleans evaluate to `BlNull`.
+- Boolean literals `true` and `false` are case-sensitive; `True` and `TRUE` are not equivalent.

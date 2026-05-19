@@ -1,13 +1,13 @@
 ---
 name: BlRange
-description: blkit's range type (modelled on FEEL) — an interval with configurable boundary inclusion; extends BlExpr so membership tests are deferred and chainable
+description: blkit's range type — an interval with configurable boundary inclusion; extends BlExpr so membership tests are deferred and chainable
 targets:
   - ../../expr/range.go
 ---
 
 # BlRange
 
-`BlRange` is blkit's range (interval) type, modelled on FEEL's range. A range defines a contiguous interval of comparable values with configurable inclusion or exclusion at each endpoint. Ranges are used in `in_()` membership tests, decision table input entries, and explicit range literals. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
+`BlRange` is blkit's range (interval) type. A range defines a contiguous interval of comparable values with configurable inclusion or exclusion at each endpoint. Ranges are used in `in_()` membership tests, decision table input entries, and explicit range literals. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
 
 ```go
 type BlRange struct { BlExpr }
@@ -35,7 +35,7 @@ func (r *BlRange) Equals(other BlExpr) BlExpr { ... }
 func (r *BlRange) NotEqual(other BlExpr) BlExpr { ... }
 
 // Eager host-language utilities — only valid on a concrete BlRange after .Evaluate()
-func (r *BlRange) String() string { ... }   // FEEL-style notation: "[1..10]", "(0..1)", "[2025-01-01..2025-12-31)"
+func (r *BlRange) String() string { ... }   // Literal notation: "[1..10]", "(0..1)", "[2025-01-01..2025-12-31)"
 ```
 
 ## Deferred semantics
@@ -49,7 +49,7 @@ result := expr.Evaluate(map[string]BlExpr{"age": Bl.Number(25)})
 
 ## Notation
 
-| FEEL-style Syntax | `start_included` | `end_included` | Meaning |
+| Syntax | `start_included` | `end_included` | Meaning |
 |---|---|---|---|
 | `[a..b]` | `True` | `True` | closed: `a ≤ x ≤ b` |
 | `(a..b)` | `False` | `False` | open: `a < x < b` |
@@ -69,7 +69,7 @@ Calling `includes()` with an incompatible type produces a `BlTypeError` at evalu
 
 ## Unbounded Ranges
 
-Half-unbounded ranges are supported (matching FEEL). Pass `BlNull.INSTANCE` as the unbounded endpoint. `includes()` treats a `null` start as negative infinity and a `null` end as positive infinity.
+Half-unbounded ranges are supported. Pass `BlNull.INSTANCE` as the unbounded endpoint. `includes()` treats a `null` start as negative infinity and a `null` end as positive infinity.
 
 ```go
 // [18..null) — "18 or older"

@@ -1,6 +1,6 @@
 ---
 name: BlTime
-description: blkit's time-of-day type (modelled on FEEL) — a time of day with optional timezone; extends BlExpr so all operations are deferred and chainable
+description: blkit's time-of-day type — a time of day with optional timezone; extends BlExpr so all operations are deferred and chainable
 targets:
   - ../../expr/time.go
 ---
@@ -72,13 +72,13 @@ result, _ := expr.Evaluate(map[string]any{"appointmentTime": Bl.Time(14, 30, 0)}
 `Bl.ToTime()` accepts:
 - Local time (no offset): `"14:30:00"`, `"14:30:00.500"`
 - UTC offset: `"14:30:00Z"`, `"14:30:00+01:00"`, `"14:30:00-05:00"`
-- IANA timezone: `"14:30:00@Europe/Paris"` (notation borrowed from FEEL's DMN 1.3+ extension)
+- IANA timezone: `"14:30:00@Europe/Paris"`
 
 Fractional seconds are accepted to nanosecond precision; stored precision must be at least millisecond.
 
 ## Timezone vs. Offset
 
-blkit distinguishes between a fixed UTC **offset** (`+01:00`) and a named **timezone** (`@Europe/Paris`), following FEEL's distinction:
+blkit distinguishes between a fixed UTC **offset** (`+01:00`) and a named **timezone** (`@Europe/Paris`):
 
 - An **offset** is a fixed displacement from UTC, not DST-aware.
 - A **timezone** is an IANA zone identifier; arithmetic and comparisons respect DST transitions.

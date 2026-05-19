@@ -140,4 +140,4 @@ The **Inputs** line lists every variable referenced by the body (resolved by wal
 - A `LiteralExpression` whose `Outputs` struct has zero or more than one exported field is invalid; raises `DecisionDefinitionError`.
 - A `Body` whose compile-time type disagrees with the outputs-struct field type is invalid; raises `DecisionDefinitionError`.
 - A `Body` that evaluates to `BlNull` is a valid result.
-- A `Body` that evaluates to `BlNull` is treated as compatible with any output type (consistent with FEEL semantics).
+- A `Body` that evaluates to `BlNull` is treated as compatible with any output type.

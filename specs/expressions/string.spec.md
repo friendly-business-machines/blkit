@@ -1,13 +1,13 @@
 ---
 name: BlString
-description: blkit's string type (modelled on FEEL) — an immutable Unicode character sequence; extends BlExpr so all operations are deferred and chainable
+description: blkit's string type — an immutable Unicode character sequence; extends BlExpr so all operations are deferred and chainable
 targets:
   - ../../expr/string.go
 ---
 
 # BlString
 
-`BlString` is blkit's string type, modelled on FEEL's: an immutable sequence of Unicode code points. In FEEL-style notation strings are enclosed in double quotes; `BlString` is the runtime value type.
+`BlString` is blkit's string type: an immutable sequence of Unicode code points. In literal notation strings are enclosed in double quotes; `BlString` is the runtime value type.
 
 `BlString` extends `BlExpr`. Every instance is a **literal leaf node** in a deferred expression tree. All methods return a new `BlExpr` node without computing anything. Call `.evaluate(context?)` once to materialise the result.
 
@@ -105,7 +105,7 @@ Bl.String("café").Length().Evaluate()
 // → BlNumber("4")   (é is one code point)
 
 Bl.String("🎉").Length().Evaluate()
-// → BlNumber("1")   (emoji is one code point; UTF-16 encodes it as two units, but blkit counts one — matching FEEL)
+// → BlNumber("1")   (emoji is one code point; UTF-16 encodes it as two units, but blkit counts one)
 
 // Guard: reject strings that are too long
 Bl.StringVar("username").Length().LessThanOrEqual(Bl.Number(20)).Evaluate(
@@ -337,7 +337,7 @@ Bl.StringVar("filename").EndsWith(Bl.String(".csv")).Evaluate(
 
 Evaluates to `BlBoolean.TRUE` if the **entire string** matches the XML Schema regex `pattern`. Use `".*"` prefix/suffix to test for a partial match anywhere in the string (or use `contains()` for a plain substring check).
 
-`flags` is a string of flag characters (set drawn from FEEL): `"i"` (case-insensitive), `"m"` (multiline), `"s"` (dot matches newline), `"x"` (ignore whitespace in pattern). A malformed pattern raises `BlRegexError` at evaluation time.
+`flags` is a string of flag characters: `"i"` (case-insensitive), `"m"` (multiline), `"s"` (dot matches newline), `"x"` (ignore whitespace in pattern). A malformed pattern raises `BlRegexError` at evaluation time.
 
 ```go
 Bl.String("abc123").Matches(Bl.String("[a-z]+[0-9]+"), nil).Evaluate()
@@ -595,7 +595,7 @@ Bl.String(",a,,b,").Split(Bl.String(",")).Evaluate()
 
 ### `concatenate(other)` / `concat(*others)`
 
-`concatenate(other)` appends a single string expression and corresponds to FEEL's `+` operator for strings.
+`concatenate(other)` appends a single string expression.
 
 `concat(*others)` is a variadic convenience: it appends any number of string expressions in one call, avoiding deeply nested `concatenate()` chains.
 
@@ -623,7 +623,7 @@ Bl.StringVar("street").Concat(
 })
 // → BlString("10 Downing St, London, UK")
 
-// Concatenate() — single operand, corresponds to FEEL's +
+// Concatenate() — single operand
 Bl.StringVar("first").Concatenate(Bl.String(" ")).Concatenate(Bl.StringVar("last")).Evaluate(
     map[string]BlExpr{"first": Bl.String("Jane"), "last": Bl.String("Doe")},
 )
@@ -730,7 +730,7 @@ Bl.String("world").Evaluate().String()           // → "world"
 
 ## Regex Dialect
 
-`matches()`, `replace()`, and `extract()` all use the **XML Schema regex dialect** (the dialect FEEL specifies, adopted by blkit for compatibility) — not PCRE:
+`matches()`, `replace()`, and `extract()` all use the **XML Schema regex dialect** — not PCRE:
 
 - No lookahead or lookbehind assertions.
 - Character class syntax follows XML Schema: `\p{L}` for Unicode letters, `\p{N}` for numeric, `\p{Z}` for separators.

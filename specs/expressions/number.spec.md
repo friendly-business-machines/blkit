@@ -1,13 +1,13 @@
 ---
 name: BlNumber
-description: blkit's number type (modelled on FEEL) — an arbitrary-precision decimal value; extends BlExpr so all operations are deferred and chainable, with a single terminal .evaluate() call
+description: blkit's number type — an arbitrary-precision decimal value; extends BlExpr so all operations are deferred and chainable, with a single terminal .evaluate() call
 targets:
   - ../../expr/number.go
 ---
 
 # BlNumber
 
-`BlNumber` is blkit's numeric type, modelled on FEEL's number — an arbitrary-precision decimal. There is no integer/float distinction (matching FEEL); every number is a decimal with exact representation up to the implementation precision limit.
+`BlNumber` is blkit's numeric type — an arbitrary-precision decimal. There is no integer/float distinction; every number is a decimal with exact representation up to the implementation precision limit.
 
 `BlNumber` extends `BlExpr`. Every `BlNumber` instance is a **literal leaf node** in a deferred expression tree. Chaining any method returns a new `BlExpr` without computing anything. Call `.evaluate(context?)` once at the end to materialise the result.
 
@@ -86,7 +86,7 @@ func (n *BlNumber) String() string { ... }
 
 `Bl.Number(value)` accepts a native integer, float, or decimal string. String input is preferred for values with many decimal places because float literals in host languages may already carry floating-point rounding error before `BlNumber` sees them.
 
-Scientific notation strings (`"1.5e3"`) are accepted and normalised to plain decimal form. Strings with thousands separators (`"1,000"`) are rejected with a `BlTypeError` — use the `number(from, groupingSeparator, decimalSeparator)` built-in (modelled on FEEL's) to parse those.
+Scientific notation strings (`"1.5e3"`) are accepted and normalised to plain decimal form. Strings with thousands separators (`"1,000"`) are rejected with a `BlTypeError` — use the `number(from, groupingSeparator, decimalSeparator)` built-in to parse those.
 
 `"NaN"`, `"Infinity"`, and `"-Infinity"` are invalid inputs and raise a `BlTypeError` immediately; `BlNumber` has no representation for non-finite values.
 
@@ -166,7 +166,7 @@ Bl.NumberVar("price").
 
 ### `divide(other)`
 
-Returns an expression that evaluates to `self` divided by `other`. Evaluates to `BlNull` when the divisor is zero (matching FEEL semantics) — it is not an exception.
+Returns an expression that evaluates to `self` divided by `other`. Evaluates to `BlNull` when the divisor is zero — it is not an exception.
 
 ```go
 Bl.Number(10).Divide(Bl.Number(4)).Evaluate()
@@ -186,7 +186,7 @@ Bl.NumberVar("total").Divide(Bl.NumberVar("count")).Evaluate(
 
 ### `remainder(other)` / `modulo(other)`
 
-Both methods compute the floor-division remainder: the value `r` such that `self = other * floor(self / other) + r`. They are identical in behaviour; `modulo()` is the more intention-revealing name and aligns with the FEEL `modulo` built-in.
+Both methods compute the floor-division remainder: the value `r` such that `self = other * floor(self / other) + r`. They are identical in behaviour; `modulo()` is the more intention-revealing name.
 
 The sign of the result always matches the sign of `other` (floor division). This differs from truncation-based remainder (where the sign follows the dividend), which is what most host-language `%` operators provide for negative operands.
 
@@ -435,7 +435,7 @@ Bl.NumberVar("amount").RoundDown(Bl.Number(0)).Evaluate(
 
 ### `sqrt()`
 
-Returns an expression that evaluates to the non-negative square root of `self`. Evaluates to `BlNull` for negative input — blkit does not support complex numbers (matching FEEL). Evaluates to `BlNumber.zero()` for zero input.
+Returns an expression that evaluates to the non-negative square root of `self`. Evaluates to `BlNull` for negative input — blkit does not support complex numbers. Evaluates to `BlNumber.zero()` for zero input.
 
 ```go
 Bl.Number(9).Sqrt().Evaluate()

@@ -60,7 +60,7 @@ func (t *BlTable) Equals(other BlExpr) BlExpr { ... }   // row-wise, order-sensi
 
 // Eager host-language utilities — only valid on a concrete BlTable after .Evaluate()
 func (t *BlTable) ToRecords() []map[string]BlValue { ... }
-func (t *BlTable) String() string { ... }      // FEEL-style notation: a BlList literal of BlContext rows
+func (t *BlTable) String() string { ... }      // Literal notation: a BlList literal of BlContext rows
 func (t *BlTable) ToMarkdown() string { ... }   // markdown table with aligned columns
 ```
 
@@ -76,7 +76,7 @@ Column order is preserved insertion-style — the order in which columns appear 
 
 ## Markdown Rendering
 
-`ToMarkdown()` returns a single markdown table with aligned columns. Headers are the column names; cells render scalar FEEL values as inline notation (`"Alice"`, `42`, `true`) and nested contexts/lists as compact one-line FEEL literals. Column widths are computed from the longest cell in each column so the rendered table stays readable in plain text.
+`ToMarkdown()` returns a single markdown table with aligned columns. Headers are the column names; cells render scalar `Bl` values as inline notation (`"Alice"`, `42`, `true`) and nested contexts/lists as compact one-line `Bl` literals. Column widths are computed from the longest cell in each column so the rendered table stays readable in plain text.
 
 ```go
 fmt.Println(table.ToMarkdown())

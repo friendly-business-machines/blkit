@@ -1,13 +1,13 @@
 ---
 name: BlYearsMonthsDuration
-description: blkit's years-and-months duration type (modelled on FEEL) — extends BlExpr so all operations are deferred and chainable; covers the PnYnM subset of ISO 8601 durations
+description: blkit's years-and-months duration type — extends BlExpr so all operations are deferred and chainable; covers the PnYnM subset of ISO 8601 durations
 targets:
   - ../../expr/years_months_duration.go
 ---
 
 # BlYearsMonthsDuration
 
-`BlYearsMonthsDuration` represents a duration value covering only years and months — no days, hours, minutes, or seconds. It is modelled on FEEL's `years and months duration` type and maps to the ISO 8601 `PnYnM` format. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
+`BlYearsMonthsDuration` represents a duration value covering only years and months — no days, hours, minutes, or seconds. It maps to the ISO 8601 `PnYnM` format. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
 
 `BlYearsMonthsDuration` and `BlDaysTimeDuration` are distinct, incompatible types:
 

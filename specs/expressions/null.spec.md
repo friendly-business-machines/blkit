@@ -1,13 +1,13 @@
 ---
 name: BlNull
-description: blkit's null singleton (modelled on FEEL's null) — represents absence or unknown; extends BlExpr so logical operations are deferred and chainable
+description: blkit's null singleton — represents absence or unknown; extends BlExpr so logical operations are deferred and chainable
 targets:
   - ../../expr/null.go
 ---
 
 # BlNull
 
-`BlNull` is blkit's null type, modelled on FEEL's null — a singleton value representing the absence of a value or an unknown. It is the result of missing context keys, out-of-range list access, division by zero, and other operations that produce no meaningful result. It extends `BlExpr`, so `BlNull.INSTANCE` is itself a valid leaf node in any expression tree and logical operations return deferred `BlExpr` nodes.
+`BlNull` is blkit's null type — a singleton value representing the absence of a value or an unknown. It is the result of missing context keys, out-of-range list access, division by zero, and other operations that produce no meaningful result. It extends `BlExpr`, so `BlNull.INSTANCE` is itself a valid leaf node in any expression tree and logical operations return deferred `BlExpr` nodes.
 
 ```go
 type BlNull struct { BlExpr }
@@ -52,7 +52,7 @@ Bl.NumberVar("x").InstanceOf("Null")  // any typed factory works; the check is u
 
 ## Null Propagation
 
-`BlNull` propagates through arithmetic, string concatenation, path expressions, and most other operations (matching FEEL semantics). Exceptions are the logical operators (`and_`, `or_`) which follow three-valued logic.
+`BlNull` propagates through arithmetic, string concatenation, path expressions, and most other operations. Exceptions are the logical operators (`and_`, `or_`) which follow three-valued logic.
 
 | Operation | Result |
 |---|---|
@@ -70,11 +70,11 @@ Bl.NumberVar("x").InstanceOf("Null")  // any typed factory works; the check is u
 
 ## Null Equality
 
-`BlNull` is **not** equal to itself: `null = null` evaluates to `BlBoolean.FALSE`. This mirrors SQL NULL semantics (matching FEEL). To test for null, use `instance_of("Null")` in expressions or `is_null()` in host code.
+`BlNull` is **not** equal to itself: `null = null` evaluates to `BlBoolean.FALSE`. This mirrors SQL NULL semantics. To test for null, use `instance_of("Null")` in expressions or `is_null()` in host code.
 
 ## `instance of` Check
 
-The type name for null is `Null` (capital N), following FEEL's spelling. `value instance of Null` evaluates to `BlBoolean.TRUE` if and only if `value` is `BlNull.INSTANCE`.
+The type name for null is `Null` (capital N). `value instance of Null` evaluates to `BlBoolean.TRUE` if and only if `value` is `BlNull.INSTANCE`.
 
 ## Producing Null
 
@@ -92,4 +92,4 @@ The following operations produce `BlNull` at evaluation time:
 
 - `BlNull` cannot be stored as a `BlContext` value for a key whose contract (`InputContract`, `OutputContract`, or nested `ContextContract`) marks the field as required — a `DataContractValidationError` is thrown at write time.
 - Passing `BlNull.INSTANCE` to a factory that requires a non-null argument (e.g. `Bl.String(null)`) produces a `BlTypeError`.
-- `__str__()` returns the string `"null"` — the FEEL-style literal representation used throughout blkit's text rendering.
+- `__str__()` returns the string `"null"` — the literal representation used throughout blkit's text rendering.

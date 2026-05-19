@@ -1,13 +1,13 @@
 ---
 name: BlContext
-description: blkit's context type (modelled on FEEL) — an ordered key-value map; extends BlExpr so all operations are deferred and chainable
+description: blkit's context type — an ordered key-value map; extends BlExpr so all operations are deferred and chainable
 targets:
   - ../../expr/context.go
 ---
 
 # BlContext
 
-`BlContext` is blkit's context type, modelled on FEEL's context: an ordered map from string keys to blkit values. In FEEL-style notation it looks like `{ name: "Alice", age: 30 }`. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
+`BlContext` is blkit's context type: an ordered map from string keys to blkit values. In literal notation it looks like `{ name: "Alice", age: 30 }`. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
 
 `BlContext` is distinct from `ExecutionContext` (the mutable process variable store). `BlContext` is a pure value type used within expressions and decision tables.
 
@@ -41,7 +41,7 @@ func (c *BlContext) NotEqual(other BlExpr) BlExpr { ... }
 
 // Eager host-language utilities — only valid on a concrete BlContext after .Evaluate()
 func (c *BlContext) ToRecord() map[string]BlValue { ... }
-func (c *BlContext) String() string { ... }  // FEEL-style notation: '{ name: "Alice", age: 30 }'
+func (c *BlContext) String() string { ... }  // Literal notation: '{ name: "Alice", age: 30 }'
 ```
 
 ## Deferred semantics
@@ -63,7 +63,7 @@ Keys are always non-empty strings. Keys are case-sensitive.
 
 ## Merging
 
-`merge(*others)` creates a new context containing all keys from `self` and all `others`. When the same key appears in multiple contexts, the **last** context's value wins (right-to-left precedence, modelled on FEEL's `context merge` built-in).
+`merge(*others)` creates a new context containing all keys from `self` and all `others`. When the same key appears in multiple contexts, the **last** context's value wins (right-to-left precedence).
 
 ## Expression Scope
 
@@ -75,4 +75,4 @@ When blkit's evaluator evaluates an expression, the evaluation scope is modelled
 - `put()` with an empty string key produces a `BlTypeError` at evaluation time.
 - `remove()` on a non-existent key evaluates to the original context unchanged.
 - `put_all()` / `merge()` with an empty context is a no-op.
-- Keys with special characters require quoted key syntax in FEEL-style notation: `context["my key"]`.
+- Keys with special characters require quoted key syntax in literal notation: `context["my key"]`.

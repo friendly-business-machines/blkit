@@ -373,8 +373,8 @@ A violation produces a `ProcessDefinitionError`.
 
 - **Title** — the task's `Name` (or `Id`) as a level-1 heading.
 - **Description** — the task's `Description`, if set.
-- **Inputs** — a table listing each `InputContract` field name, its FEEL type, and required/optional status.
-- **Outputs** — a table listing each `OutputContract` field name, its FEEL type, and required/optional status.
+- **Inputs** — a table listing each `InputContract` field name, its `Bl` type, and required/optional status.
+- **Outputs** — a table listing each `OutputContract` field name, its `Bl` type, and required/optional status.
 - **Nodes** — each node rendered via its own `ToMarkdown()`, in dependency order, separated by horizontal rules.
 - **Dependencies** — a summary listing each node and the upstream nodes whose outputs it references in its expression trees.
 
@@ -392,7 +392,7 @@ To render a process's overall structure including instantiated decision tasks, u
 - `Evaluate(input)` is callable on a template or a clone and produces identical results — task-level framing is not exercised by the standalone path.
 - A template with a single node and no contracts is valid and can be cloned.
 - `Evaluate(input)` with an input variable not referenced by any node is silently ignored.
-- A missing required input variable is resolved as `BlNull` (consistent with FEEL semantics) — but `InputContract` validation runs first and may reject it before evaluation begins.
+- A missing required input variable is resolved as `BlNull` — but `InputContract` validation runs first and may reject it before evaluation begins.
 - Invalid decision graphs (cycles among nodes, duplicate node ids, duplicate output names, empty node ids) are rejected by `NewDecisionTask` with a `DecisionDefinitionError`; a `*DecisionTask` value therefore always holds a valid graph. An output handle from outside the graph (referencing a node that is not in `DecisionGraph`) is also a `DecisionDefinitionError`.
 - If a node faults during evaluation, the error propagates — downstream dependents also fault. Nodes not in the dependency chain of the faulted node are still evaluated.
 - A `DecisionTask` with no nodes evaluates successfully, returning an empty result.

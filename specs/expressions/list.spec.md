@@ -1,13 +1,13 @@
 ---
 name: BlList
-description: blkit's list type (modelled on FEEL) — an ordered, immutable, heterogeneous collection; extends BlExpr so all operations are deferred and chainable
+description: blkit's list type — an ordered, immutable, heterogeneous collection; extends BlExpr so all operations are deferred and chainable
 targets:
   - ../../expr/list.go
 ---
 
 # BlList
 
-`BlList` is blkit's ordered collection type, modelled on FEEL's list. It holds zero or more blkit values (mixed types allowed) and is **immutable**. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes. Call `.evaluate()` to materialise the result.
+`BlList` is blkit's ordered collection type. It holds zero or more blkit values (mixed types allowed) and is **immutable**. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes. Call `.evaluate()` to materialise the result.
 
 ```go
 type BlList struct { BlExpr }
@@ -89,7 +89,7 @@ func (l *BlList) AsTable() BlTable { ... }
 
 // Eager host-language utilities — only valid on a concrete BlList after .Evaluate()
 func (l *BlList) ToArray() []BlValue { ... }
-func (l *BlList) String() string { ... }   // FEEL-style notation: "[1, 2, 3]"
+func (l *BlList) String() string { ... }   // Literal notation: "[1, 2, 3]"
 ```
 
 ## Deferred semantics
@@ -104,7 +104,7 @@ result := expr.Evaluate(map[string]BlExpr{"scores": Bl.List(Bl.Number(90), Bl.Nu
 
 ## Indexing
 
-`BlList` uses **1-based indexing** (matching FEEL). The first element is at index `1`; the last is at index `length`. Negative indices count from the end: `-1` is the last element.
+`BlList` uses **1-based indexing**. The first element is at index `1`; the last is at index `length`. Negative indices count from the end: `-1` is the last element.
 
 `get()` evaluates to `BlNull` for any out-of-range index.
 
@@ -135,7 +135,7 @@ Evaluates to a `BlList` of all 1-indexed positions where the element appears. Ev
 
 ## Aggregation and Null
 
-`sum()`, `mean()`, etc. ignore `BlNull` elements in the list (modelled on the FEEL built-in behaviour). They evaluate to `BlNull` only if the list is empty or contains entirely non-numeric values (for numeric aggregations).
+`sum()`, `mean()`, etc. ignore `BlNull` elements in the list. They evaluate to `BlNull` only if the list is empty or contains entirely non-numeric values (for numeric aggregations).
 
 ## Edge Cases
 

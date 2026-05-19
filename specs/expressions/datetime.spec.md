@@ -1,13 +1,13 @@
 ---
 name: BlDateTime
-description: blkit's date-and-time type (modelled on FEEL) — a combined date and time with optional timezone; extends BlExpr so all operations are deferred and chainable
+description: blkit's date-and-time type — a combined date and time with optional timezone; extends BlExpr so all operations are deferred and chainable
 targets:
   - ../../expr/datetime.go
 ---
 
 # BlDateTime
 
-`BlDateTime` represents a combined date and time with an optional timezone offset or IANA zone identifier. It is modelled on FEEL's `date and time` type and uses the ISO 8601 combined datetime format. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
+`BlDateTime` represents a combined date and time with an optional timezone offset or IANA zone identifier. It uses the ISO 8601 combined datetime format. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
 
 ```go
 type BlDateTime struct {

@@ -1,15 +1,15 @@
 ---
 name: BlDate
-description: blkit's date type (modelled on FEEL) — a calendar date (year, month, day) with optional UTC offset or IANA timezone; extends BlExpr so all operations are deferred and chainable; includes blkit-specific business-day and calendar-aware arithmetic
+description: blkit's date type — a calendar date (year, month, day) with optional UTC offset or IANA timezone; extends BlExpr so all operations are deferred and chainable; includes business-day and calendar-aware arithmetic
 targets:
   - ../../expr/date.go
 ---
 
 # BlDate
 
-`BlDate` represents a calendar date — year, month, day — with an optional UTC offset or IANA timezone identifier. It is modelled on FEEL's `date` type and uses the ISO 8601 format `YYYY-MM-DD`. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
+`BlDate` represents a calendar date — year, month, day — with an optional UTC offset or IANA timezone identifier. It uses the ISO 8601 format `YYYY-MM-DD`. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
 
-A plain `BlDate` (no offset or timezone) is timezone-naive, matching FEEL. Attaching an offset or timezone is a blkit-specific addition not present in FEEL. Only one of `offset` or `timezone` may be set on a single instance; providing both raises `BlTypeError`.
+A plain `BlDate` (no offset or timezone) is timezone-naive. Only one of `offset` or `timezone` may be set on a single instance; providing both raises `BlTypeError`.
 
 ```go
 type BlDate struct {
@@ -704,7 +704,7 @@ Bl.Date(2025, 6, 1).Coincides(
 - Month values outside `1–12` in `of()` produce a `BlTypeError`.
 - Day values outside the valid range for the given month produce a `BlTypeError` (no silent day-rollover at construction time).
 - `today()` returns the date in the local system timezone when no timezone argument is supplied.
-- Year zero is a valid `BlDate` value (ISO 8601 proleptic Gregorian calendar, matching FEEL): year `0` is 1 BCE.
+- Year zero is a valid `BlDate` value (ISO 8601 proleptic Gregorian calendar): year `0` is 1 BCE.
 - `add_business_days` and `subtract_business_days` with `days` equal to `0` return self unchanged.
 - `next_business_day` / `prev_business_day` always return a date strictly different from self — they never return self even if self is already a business day.
 - `nth_day_of_week_in_month` with `n = 0` produces a `BlTypeError`.

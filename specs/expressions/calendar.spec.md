@@ -7,7 +7,7 @@ targets:
 
 # BlCalendar
 
-`BlCalendar` is a blkit-specific type with no FEEL counterpart. It is an ordered, immutable collection of `BlCalendarEntry` items, each holding a temporal value — a `BlDate`, a `BlDateTime`, or a `BlRange` whose endpoints are dates or datetimes.
+`BlCalendar` is a blkit-specific type. It is an ordered, immutable collection of `BlCalendarEntry` items, each holding a temporal value — a `BlDate`, a `BlDateTime`, or a `BlRange` whose endpoints are dates or datetimes.
 
 Its primary purpose is to model named sets of significant moments or periods: public holidays for a region, maintenance windows, financial settlement dates, blackout periods, office closure schedules, and so on. Other functions receive a `BlCalendar` as an ordinary input and query it to make decisions.
 

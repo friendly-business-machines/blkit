@@ -103,7 +103,7 @@ func NewVariableMapping(entries ...[2]string) *VariableMapping { ... }
 
 
 type VariableMappingEntry struct {
-    Source string // variable name or FEEL expression
+    Source string // variable name or blkit expression
     Target string // target variable name in context
 }
 ```

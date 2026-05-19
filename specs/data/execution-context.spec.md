@@ -24,7 +24,7 @@ type Transaction struct {
     ExecutionID  string            // groups transactions from the same execution; loopbacks/iterations get distinct ids
     Status       TransactionStatus // Pending, Committed, or Aborted
     Timestamp    time.Time         // when this transaction was appended
-    Values       map[string]any    // one or more key → FEEL value assignments, applied atomically
+    Values       map[string]any    // one or more key → Bl value assignments, applied atomically
 }
 
 type ExecutionContext struct { ... }
@@ -84,7 +84,7 @@ The context is an append-only chronological list of `Transaction` entries. Each 
 - **`node_id`** — the id of the node that produced the transaction. For sub-process nodes, this is a dotted path (`parent-task-id.child-node-id`).
 - **`execution_id`** — a unique hash identifier for the node execution that produced this transaction (e.g. `"b7e2a4f1"`). When a node executes multiple times (loopbacks, loops, multi-instance), each execution has a distinct `execution_id`.
 - **`timestamp`** — when this transaction was committed (typically the moment the node's execution completed).
-- **`values`** — one or more key → FEEL value assignments applied atomically. A transaction may carry a single value or many; all assignments in one transaction share the `commit_number`, `node_id`, `execution_id`, and `timestamp`.
+- **`values`** — one or more key → `Bl` value assignments applied atomically. A transaction may carry a single value or many; all assignments in one transaction share the `commit_number`, `node_id`, `execution_id`, and `timestamp`.
 
 The first transaction (commit 1) is always the start node's submission — keyed under the `StartId` passed to `store.NewExecutionState(...)` — carrying the initial input variables.
 
@@ -149,9 +149,9 @@ status := ctx.Get("review.review_status")          // "approved"
 
 `Get()` projects values without provenance. When the caller needs the originating `CommitNumber`, `ExecutionID`, and `Timestamp` per node (for audit, debugging, or computing diffs), `Latest()` returns one `Transaction` per `NodeID` — the most recent commit, with its full `Values` map and metadata. Iterate `Transactions()` for the full chronological log including superseded commits.
 
-### FEEL Expressions
+### Expressions
 
-In FEEL expressions (gateway conditions, input/output mappings), variables are referenced using dot notation. The leading segment(s) name a node; the remainder names a key (and optionally drills into a nested value):
+In blkit expressions (gateway conditions, input/output mappings), variables are referenced using dot notation. The leading segment(s) name a node; the remainder names a key (and optionally drills into a nested value):
 
 ```go
 // Gateway condition referencing a node's output
@@ -427,7 +427,7 @@ All iteration transactions are preserved in `Transactions()` for audit purposes.
 
 ## Variable Types
 
-All values stored in transaction `Values` are FEEL values:
+All values stored in transaction `Values` are `Bl` values:
 
 - Primitives: `BlString`, `BlNumber`, `BlBoolean`, `BlNull`
 - Dates and times: `BlDate`, `BlTime`, `BlDateTime`, `BlDuration`
@@ -476,7 +476,7 @@ Output:
   review_status: BlString = "error"
 ```
 
-Loopback iterations appear as multiple transactions for the same `node_id`. For nested values (`BlContext`, `BlList`), the output uses indented FEEL literal syntax:
+Loopback iterations appear as multiple transactions for the same `node_id`. For nested values (`BlContext`, `BlList`), the output uses indented `Bl` literal syntax:
 
 ```
 #1 [start] (a3f8c1d2, 2026-04-03T10:00:00Z)
@@ -504,7 +504,7 @@ fmt.Println(ctx.ToMarkdown())
 - A top-level `# ExecutionContext` heading.
 - A metadata bullet list: `process_id`, `process_instance_id`, `parent_process_instance_id` (if set), and `current_commit`.
 - One section per node that has at least one visible transaction. The heading level reflects the node's depth in the NodeID hierarchy (`##` for top-level nodes, `###` for one level deep, etc.).
-- Under each section, the node's latest committed `Values` rendered as a bullet list of `key: FEEL-literal` lines. Nested `BlContext` / `BlList` values render as indented FEEL literals across multiple lines.
+- Under each section, the node's latest committed `Values` rendered as a bullet list of `key: Bl-literal` lines. Nested `BlContext` / `BlList` values render as indented `Bl` literals across multiple lines.
 - A node with no values of its own (e.g. a `SubProcessTask` that just orchestrates children) appears as a heading followed directly by its child sections.
 
 #### Ordering
@@ -595,7 +595,7 @@ For a node whose values include nested `BlContext` / `BlList`:
 - scores: [720, 680, 750]
 ```
 
-Indentation follows the FEEL literal syntax used elsewhere in the spec.
+Indentation follows the `Bl` literal syntax used elsewhere in the spec.
 
 #### Example — BlTable values
 
@@ -615,7 +615,7 @@ When a value is a [`BlTable`](../expressions/table.spec.md), it renders as a pro
 - total: 64.48
 ```
 
-A scalar value, list, or context still renders inline (or with FEEL-literal indentation for nested cases). Only `BlTable` values get table rendering — a plain `BlList[BlContext]` that hasn't been promoted to a `BlTable` falls back to the FEEL-literal form.
+A scalar value, list, or context still renders inline (or with `Bl`-literal indentation for nested cases). Only `BlTable` values get table rendering — a plain `BlList[BlContext]` that hasn't been promoted to a `BlTable` falls back to the `Bl`-literal form.
 
 #### Example — loopbacks and loops
 

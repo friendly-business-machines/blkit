@@ -1,13 +1,13 @@
 ---
 name: BlDaysTimeDuration
-description: blkit's days-and-time duration type (modelled on FEEL) — extends BlExpr so all operations are deferred and chainable; covers the PnDTnHnMnS subset of ISO 8601 durations
+description: blkit's days-and-time duration type — extends BlExpr so all operations are deferred and chainable; covers the PnDTnHnMnS subset of ISO 8601 durations
 targets:
   - ../../expr/days_time_duration.go
 ---
 
 # BlDaysTimeDuration
 
-`BlDaysTimeDuration` represents a duration value covering days, hours, minutes, and seconds — no years or months. It is modelled on FEEL's `days and time duration` type and maps to the ISO 8601 `PnDTnHnMnS` format. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
+`BlDaysTimeDuration` represents a duration value covering days, hours, minutes, and seconds — no years or months. It maps to the ISO 8601 `PnDTnHnMnS` format. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
 
 `BlDaysTimeDuration` and `BlYearsMonthsDuration` are distinct, incompatible types:
 

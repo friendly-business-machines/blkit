@@ -1,13 +1,13 @@
 ---
 name: BlExpr
-description: The deferred expression tree (drawing inspiration from FEEL) — the base class all blkit value types extend; provides only universal operations (equality, logical, navigation, type tests); type-specific operations live on each concrete type
+description: The deferred expression tree — the base class all blkit value types extend; provides only universal operations (equality, logical, navigation, type tests); type-specific operations live on each concrete type
 targets:
   - ../../expr/expr.go
 ---
 
 # BlExpr
 
-`BlExpr` is the abstract base class for every node in a blkit expression tree. blkit's expression model and value types draw inspiration from FEEL (DMN 1.4) but are not a conformance implementation of it. All blkit value types (`BlNumber`, `BlString`, `BlBoolean`, etc.) extend `BlExpr`, making every constructed value a valid starting point for a deferred expression chain.
+`BlExpr` is the abstract base class for every node in a blkit expression tree. All blkit value types (`BlNumber`, `BlString`, `BlBoolean`, etc.) extend `BlExpr`, making every constructed value a valid starting point for a deferred expression chain.
 
 Expression building is always lazy. Methods return a new expression node without evaluating anything. The expression is only evaluated when `.evaluate()` is called explicitly.
 
@@ -18,7 +18,7 @@ type BlValue interface{} // BlNumber | BlString | BlBoolean |
     // BlDate | BlTime | BlDateTime |
     // BlYearsMonthsDuration | BlDaysTimeDuration |
     // BlList | BlContext | BlRange | BlNull |
-    // BlCalendar  // blkit-specific type — has no FEEL counterpart
+    // BlCalendar  // blkit-specific type
 
 
 type BlExpr interface {
@@ -40,7 +40,7 @@ type BlExpr interface {
     NotEqual(other BlExpr) BlExpr     // evaluates to BlBoolean
 
     // ------------------------------------------------------------------ //
-    // Logical — universal; three-valued logic (modelled on FEEL)          //
+    // Logical — universal; three-valued logic                              //
     // ------------------------------------------------------------------ //
 
     And(other BlExpr) BlExpr   // evaluates to BlBoolean or BlNull
@@ -66,7 +66,7 @@ type BlExpr interface {
     // ------------------------------------------------------------------ //
 
     InstanceOf(typeName string) BlExpr
-    // Evaluates to BlBoolean. typeName is a blkit type name (FEEL-style spelling):
+    // Evaluates to BlBoolean. typeName is a blkit type name:
     // "number", "string", "boolean", "date", "time", "date and time",
     // "days and time duration", "years and months duration", "list", "context", "Any".
 
@@ -82,10 +82,9 @@ type BlExpr interface {
     // ------------------------------------------------------------------ //
 
     ToMarkdown() string
-    // Returns a FEEL-style syntax string representing this expression tree.
-    // The output is intended to be human-readable and visually consistent
-    // with FEEL conventions; it is not guaranteed to round-trip through any
-    // FEEL parser.
+    // Returns a human-readable syntax string representing this expression
+    // tree. The output is intended for inspection and rendering; it is not
+    // guaranteed to round-trip through any parser.
 }
 ```
 
@@ -93,9 +92,9 @@ type BlExpr interface {
 
 ## Text Rendering
 
-`to_markdown()` returns a string in FEEL-style syntax representing the expression tree. This is useful for debugging, logging, serialisation, and rendering expressions in human-readable form.
+`to_markdown()` returns a human-readable syntax string representing the expression tree. This is useful for debugging, logging, serialisation, and rendering expressions in human-readable form.
 
-The output is visually modelled on FEEL syntax:
+The output uses a compact literal syntax:
 
 ```go
 Bl.Number(42).ToMarkdown()                              // "42"
@@ -219,7 +218,7 @@ type BlQuantifierBuilder struct { ... }
 
 func (b *BlQuantifierBuilder) Satisfies(condition BlExpr) BlExpr { ... }
 // Completes the quantified expression. Evaluates to BlBoolean or BlNull
-// (BlNull when the collection is empty, matching FEEL semantics).
+// (BlNull when the collection is empty).
 ```
 
 ---
@@ -280,7 +279,7 @@ expr.Evaluate(map[string]any{"x": Bl.String("hi")})  // → raises BlTypeError
 
 ## Null Propagation
 
-All methods propagate `BlNull` through the expression tree at evaluation time, modelled on FEEL's null propagation. When a sub-expression evaluates to `BlNull`, the result of the parent expression is `BlNull` (except for the three-valued logic carve-outs, e.g. `false and null` → `false`).
+All methods propagate `BlNull` through the expression tree at evaluation time. When a sub-expression evaluates to `BlNull`, the result of the parent expression is `BlNull` (except for the three-valued logic carve-outs, e.g. `false and null` → `false`).
 
 This propagation happens at `.evaluate()` time, not at tree-construction time.
 
@@ -305,5 +304,5 @@ Bl.Boolean(true)       // not: .And(true)
 - `Bl.list_()` with no arguments evaluates to an empty `BlList`.
 - `Bl.context_({})` evaluates to an empty `BlContext`.
 - `Bl.for_("x", Bl.list_()).return_(...)` evaluates to an empty `BlList` (empty collection).
-- `Bl.some("x", Bl.list_()).satisfies(...)` evaluates to `BlNull` (empty collection, matching FEEL semantics).
-- `Bl.every("x", Bl.list_()).satisfies(...)` evaluates to `BlBoolean.TRUE` (vacuous truth, matching FEEL semantics).
+- `Bl.some("x", Bl.list_()).satisfies(...)` evaluates to `BlNull` (empty collection).
+- `Bl.every("x", Bl.list_()).satisfies(...)` evaluates to `BlBoolean.TRUE` (vacuous truth).
