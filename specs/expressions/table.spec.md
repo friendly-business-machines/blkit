@@ -1,152 +1,171 @@
 ---
 name: BlTable
-description: blkit's table type — an ordered, immutable list of uniformly-keyed contexts; extends BlExpr so all operations are deferred and chainable
+description: The table (relation) type in the blkit expression language — an ordered list of uniformly-keyed contexts. Covers construction as a list-of-contexts, row/column access, the table built-ins, and the Go layer (BlTable + expr registrations).
 targets:
   - ../../expr/table.go
 ---
 
-# BlTable
+# BlTable — the `table` type
 
-`BlTable` is blkit's tabular value type: an ordered list of `BlContext` rows, all sharing the **same set of column keys** (the "uniform-keys" invariant). It is the typed counterpart to a list of records / a relation in DMN. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
+`table` is a DMN **relation**: an ordered, immutable list of `context` rows that all share the same
+column keys (the "uniform-keys" invariant). The Go value type backing it is `BlTable`.
 
-A `BlTable` is structurally a `BlList[BlContext]` with the additional invariant that every row has the same keys. This makes it a natural fit for the [`TableContract`](../data/data-contract.spec.md#tablecontract) data shape, the output of a [`Relation`](../decision-tasks/relation.spec.md), and any context value that holds tabular data.
+**There is no dedicated table literal.** A table is, structurally, a `list` of uniformly-keyed
+`context`s — so list literals, indexing, filtering, and projection
+([list.spec.md](list.spec.md), [bl-expr.spec.md](bl-expr.spec.md)) all apply. The `table(...)`
+built-in wraps a list of contexts as a validated `BlTable`. See [context.spec.md](context.spec.md)
+and [list.spec.md](list.spec.md).
+
+---
+
+## Construction & access
+
+```
+// A list of uniformly-keyed contexts is the table's data:
+[{region: "domestic", rate: 5.99}, {region: "europe", rate: 15.99}]
+
+// table(list) validates uniform keys and yields a BlTable:
+table([{region: "domestic", rate: 5.99}, {region: "europe", rate: 15.99}])
+
+// Row access (1-based; negative from end; out of range → null):
+table([...])[1]                 // → the first row context
+// Column access is list projection over the rows:
+table([...]).region             // → ["domestic", "europe"]
+// Filter is list filtering (item is the row context):
+table([...])[item.rate > 10]    // → rows with rate > 10
+```
+
+`[@test] ../../expr/table_test.go`
+
+---
+
+## Built-in functions
+
+All blkit extensions (**ext** — no DMN equivalent); relations in DMN are otherwise handled as lists.
+
+| Function | Example | Result |
+|---|---|---|
+| `table(listOfContexts)` | `table([{a:1},{a:2}])` | a validated `BlTable` |
+| `count(t)` | `count(table([...]))` | row count |
+| `isEmpty(t)` | `isEmpty(table([]))` | `true` |
+| `columns(t)` | `columns(table([{a:1,b:2}]))` | `["a", "b"]` (declared/inferred order) |
+| `hasColumn(t, name)` | `hasColumn(t, "rate")` | `true` |
+| `addRow(t, row)` | `addRow(t, {region:"intl", rate:25.99})` | new table (row keys must match) |
+| `removeRow(t, index)` | `removeRow(t, 2)` | new table (1-based) |
+| `project(t, names…)` | `project(t, "region", "rate")` | table with only those columns |
+| `drop(t, names…)` | `drop(t, "rate")` | table without those columns |
+| `rename(t, from, to)` | `rename(t, "rate", "price")` | table with the column renamed |
+| `distinct(t)` | `distinct(t)` | duplicate rows removed (full-row equality) |
+| `sortBy(t, column[, descending])` | `sortBy(t, "rate", true)` | stable sort by column |
+| `asList(t)` | `asList(t)` | the underlying list of context rows |
+
+A table is also a list, so list aggregates/operations apply over its rows (e.g. `count`, filtering,
+`for x in t return …`). `sum(t.rate)` sums a projected column.
+
+`[@test] ../../expr/table_functions_test.go`
+
+---
+
+## Operators
+
+| Operator | Meaning | Example |
+|---|---|---|
+| `t[i]` | row by index | `t[1]` |
+| `t.col` / `t[predicate]` | column projection / row filter | `t.region`, `t[item.rate > 10]` |
+| `=` `!=` | equality (row-wise, order-sensitive; shape is part of identity) | `t1 = t2` |
+
+`[@test] ../../expr/table_operators_test.go`
+
+---
+
+## Migration mapping (legacy method-chained → string)
+
+| Legacy | New form |
+|---|---|
+| `Bl.Table(contexts…)` / `Bl.Table(Bl.Columns, Bl.Row…)` | `table([{…}, {…}])` (a list of contexts) |
+| `columnNames` / `rowCount` / `isEmpty` | `columns(t)` / `count(t)` / `isEmpty(t)` |
+| `row(i)` / `rows` / `firstRow` / `lastRow` | `t[i]` / `asList(t)` / `t[1]` / `t[-1]` |
+| `column(name)` / `hasColumn(name)` | `t.name` (projection) / `hasColumn(t, name)` |
+| `addRow` / `addRows` / `removeRow` | `addRow(t, row)` / repeated `addRow` / `removeRow(t, i)` |
+| `project` / `drop` / `rename` / `distinct` | `project(t, …)` / `drop(t, …)` / `rename(t, from, to)` / `distinct(t)` |
+| `filter` / `sortBy` | `t[predicate]` / `sortBy(t, column[, descending])` |
+| `asList` | `asList(t)` |
+| `equals` | `=` / `!=` |
+| `toRecords` / `String` / `ToMarkdown` | Go host accessors (below) |
+| `BlList.asTable` | `table(list)` |
+
+All are reflected; the table-specific structural ops are blkit extensions, the rest reuse list
+semantics.
+
+---
+
+## Go implementation (expr extension)
+
+Lives in `expr/table.go`. Shared mechanics in
+[bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go).
+
+### Value type & host API (exported)
+
+`BlTable` wraps an ordered column list plus a `[]BlContext` of rows enforcing the uniform-keys
+invariant. Implements `BlValue` (and is list-compatible).
 
 ```go
-type BlTable struct { BlExpr }
+type BlTable struct{ columns []string; rows []BlContext }
 
-// Construction is via Bl.Table(...) — see bl.spec.md.
-// Two construction styles are supported:
-//   1. From row contexts (keys derived from the first row):
-//        Bl.Table(Bl.Context(...), Bl.Context(...))
-//   2. With an explicit column ordering (rows then validated against it):
-//        Bl.Table(Bl.Columns("region", "rate"), Bl.Row(...), Bl.Row(...))
+func (BlTable) Type() BlType { return BlTypeTable }
+func (t BlTable) Equal(other BlValue) BlValue // row-wise, order-sensitive; shape is part of identity
+func (t BlTable) ToMarkdown() string          // aligned markdown table
+func (BlTable) isBlValue() {}
 
-// Properties — deferred
-// ColumnNames BlList            // BlList of BlString in declared/inferred column order
-// RowCount    BlNumber
+func Table(rows ...BlContext) (BlTable, error) // host constructor (validates uniform keys)
+func (t BlTable) ToRecords() []map[string]BlValue
+func (t BlTable) String() string      // list-of-contexts literal
 
-func (t *BlTable) IsEmpty() BlExpr { ... }   // evaluates to BlBoolean (zero rows)
-
-// Row access — deferred; 1-indexed; negative indices count from the end
-func (t *BlTable) Row(index BlExpr) BlContext { ... }   // evaluates to BlNull if out of range
-func (t *BlTable) Rows() BlList { ... }                  // BlList of BlContext (insertion order)
-func (t *BlTable) FirstRow() BlContext { ... }
-func (t *BlTable) LastRow() BlContext { ... }
-
-// Column access — deferred; evaluates to BlList of values in row order
-func (t *BlTable) Column(name string) BlList { ... }
-func (t *BlTable) HasColumn(name string) BlExpr { ... }  // evaluates to BlBoolean
-
-// Immutable structural operations — deferred; evaluate to BlTable
-func (t *BlTable) AddRow(row BlExpr) BlTable { ... }                // row's keys must match the table's columns
-func (t *BlTable) AddRows(rows ...BlExpr) BlTable { ... }
-func (t *BlTable) RemoveRow(index BlExpr) BlTable { ... }           // 1-indexed
-func (t *BlTable) Project(columns ...string) BlTable { ... }        // keep only these columns
-func (t *BlTable) Drop(columns ...string) BlTable { ... }           // drop these columns
-func (t *BlTable) Rename(from string, to string) BlTable { ... }    // rename a column
-func (t *BlTable) Distinct() BlTable { ... }                         // remove duplicate rows (full-row equality)
-
-// Filter and sort — deferred; evaluate to BlTable
-func (t *BlTable) Filter(predicate func(row BlContext) BlExpr) BlTable { ... }
-func (t *BlTable) SortBy(column string, opts ...SortOption) BlTable { ... }
-// SortOption is Ascending() (default) or Descending(); the column's values
-// must be of a comparable type. Stable sort.
-
-// Conversion — deferred
-func (t *BlTable) AsList() BlList { ... }                           // the underlying BlList of BlContext
-
-// Equality — deferred; evaluates to BlBoolean
-func (t *BlTable) Equals(other BlExpr) BlExpr { ... }   // row-wise, order-sensitive; row equality is order-insensitive on keys
-
-// Eager host-language utilities — only valid on a concrete BlTable after .Evaluate()
-func (t *BlTable) ToRecords() []map[string]BlValue { ... }
-func (t *BlTable) String() string { ... }      // Literal notation: a BlList literal of BlContext rows
-func (t *BlTable) ToMarkdown() string { ... }   // markdown table with aligned columns
+// ToArrow exports the table as an Apache Arrow record batch. The schema is
+// derived from the column order; each column's Arrow type is mapped from its
+// Bl* element type (BlNumber → Decimal128, BlString → Utf8, BlBoolean →
+// Boolean, BlDate → Date32, BlDateTime → Timestamp, durations → Duration,
+// nested BlList/BlContext → List/Struct). A BlNull cell becomes a null slot.
+// Returns an error if a column holds mixed, non-uniform types.
+func (t BlTable) ToArrow() (arrow.Record, error)  // github.com/apache/arrow/go/v17/arrow
 ```
 
-## Relation to BlList
-
-A `BlTable` is structurally a `BlList[BlContext]` with the uniform-keys invariant. All `BlList` operations remain available indirectly via `AsList()` — call `t.AsList()` to drop into list-of-context territory when needed. Operations that may break the uniform-keys invariant (e.g. `BlList.Append` with a row that has different keys) are not surfaced on `BlTable` directly; use `AddRow` (which validates) or convert to a list.
-
-Conversely, a `BlList` of `BlContext` may be converted to a `BlTable` via `BlList.AsTable()` (see [list.spec.md](list.spec.md)), which validates uniform keys and raises `BlTypeError` at evaluation time on mismatch.
-
-## Column Order
-
-Column order is preserved insertion-style — the order in which columns appear in `Bl.Columns(...)` (when used) or the order of keys in the first row (when inferred). `Project(...)`, `Rename(...)`, `Drop(...)` preserve relative ordering of the remaining columns. `ColumnNames` and the `ToMarkdown()` rendering follow this order.
-
-## Markdown Rendering
-
-`ToMarkdown()` returns a single markdown table with aligned columns. Headers are the column names; cells render scalar `Bl` values as inline notation (`"Alice"`, `42`, `true`) and nested contexts/lists as compact one-line `Bl` literals. Column widths are computed from the longest cell in each column so the rendered table stays readable in plain text.
+### Registrations (`tableOptions`, unexported)
 
 ```go
-fmt.Println(table.ToMarkdown())
+func tableOptions() []expr.Option {
+    return []expr.Option{ // all ext
+        expr.Function("table",     typed1(tableFn),     new(func(BlList) BlTable)), // validates uniform keys
+        expr.Function("columns",   typed1(columnsFn),   new(func(BlTable) BlList)),
+        expr.Function("hasColumn", typed2(hasColumnFn), new(func(BlTable, BlString) BlBoolean)),
+        expr.Function("addRow",    typed2(addRowFn),    new(func(BlTable, BlContext) BlTable)),
+        expr.Function("removeRow", typed2(removeRowFn), new(func(BlTable, BlNumber) BlTable)),
+        expr.Function("project",   variadic(projectFn), new(func(BlTable, ...BlString) BlTable)),
+        expr.Function("drop",      variadic(dropFn),    new(func(BlTable, ...BlString) BlTable)),
+        expr.Function("rename",    typed3(renameFn),    new(func(BlTable, BlString, BlString) BlTable)),
+        expr.Function("distinct",  typed1(distinctFn),  new(func(BlTable) BlTable)),
+        expr.Function("sortBy",    sortByFn,            new(func(BlTable, BlString) BlTable), new(func(BlTable, BlString, BlBoolean) BlTable)),
+        expr.Function("asList",    typed1(asListFn),    new(func(BlTable) BlList)),
+    }
+}
 ```
 
-Output:
+`table(list)` validates that every element is a `BlContext` with identical keys → `BlTypeError` on
+mismatch. **Reuse.** Row indexing, projection, filtering, and list aggregates are inherited from the
+list machinery (`BlTable` embeds/satisfies `BlList`, so it is accepted wherever a `BlList` is). Native
+Go `[]map[string]any` inputs wrap to `BlTable` when uniform.
 
-```
-| region          | standard_rate | express_rate |
-|-----------------|---------------|--------------|
-| "domestic"      | 5.99          | 12.99        |
-| "europe"        | 15.99         | 29.99        |
-| "international" | 25.99         | 49.99        |
-```
+`[@test] ../../expr/table_test.go`
 
-For an empty table, `ToMarkdown()` renders the header row only. For a table with no columns (vacuous — see edge cases), it returns the empty string.
+---
 
-## Construction Examples
+## Edge cases
 
-### From row contexts
-
-```go
-shippingRates := Bl.Table(
-    Bl.Context(map[string]BlExpr{
-        "region":        Bl.String("domestic"),
-        "standard_rate": Bl.Number(5.99),
-        "express_rate":  Bl.Number(12.99),
-    }),
-    Bl.Context(map[string]BlExpr{
-        "region":        Bl.String("europe"),
-        "standard_rate": Bl.Number(15.99),
-        "express_rate":  Bl.Number(29.99),
-    }),
-)
-```
-
-### With explicit column ordering
-
-```go
-shippingRates := Bl.Table(
-    Bl.Columns("region", "standard_rate", "express_rate"),
-    Bl.Row(Bl.String("domestic"),      Bl.Number(5.99),  Bl.Number(12.99)),
-    Bl.Row(Bl.String("europe"),        Bl.Number(15.99), Bl.Number(29.99)),
-    Bl.Row(Bl.String("international"), Bl.Number(25.99), Bl.Number(49.99)),
-)
-```
-
-`Bl.Row(...)` is positional; values are matched to columns by index. `Bl.Columns(...)` declares the column order — rows are then validated against it.
-
-## Filter and Project
-
-```go
-domestic := shippingRates.Filter(func(row BlContext) BlExpr {
-    return row.Get("region").Equals(Bl.String("domestic"))
-})
-
-ratesOnly := shippingRates.Project("region", "standard_rate")
-```
-
-Both return a new `BlTable` deferred expression node.
-
-## Edge Cases
-
-- `Bl.Table()` with no rows and no `Bl.Columns(...)` produces an empty table with no columns. Adding a row to it sets the column ordering from that row's keys.
-- `Bl.Table(Bl.Columns("a", "b"))` with no rows is valid — an empty table with declared columns.
-- `AddRow(row)` where `row` has keys differing from the table's columns produces a `BlTypeError` at evaluation time.
-- `Project(...)` with a column not present in the table produces a `BlTypeError`.
-- `Rename(from, to)` where `from` is not present, or where `to` collides with another existing column, produces a `BlTypeError`.
-- `SortBy(col)` on a column whose values are mixed types (no total order) produces a `BlTypeError`.
-- `Distinct()` uses `BlContext.Equals` (order-insensitive on keys) for row equality.
-- `Equals(other)` returns false if the column sets differ, even if row data is identical (the table shape is part of identity).
-- `Row(index)` and `Column(name)` evaluate to `BlNull` for out-of-range indices or unknown column names — non-fatal, matching `BlList.Get` and `BlContext.Get` semantics.
-- A `BlList` whose elements are not all `BlContext`, or whose `BlContext` elements have inconsistent keys, produces a `BlTypeError` when converted via `AsTable()`.
+- `table([])` → empty table, no columns; the first `addRow` fixes the column order.
+- `addRow` with mismatched keys → `BlTypeError`.
+- `project`/`rename` referencing an absent column, or `rename` colliding with an existing one →
+  `BlTypeError`.
+- `sortBy` on a mixed-type column → `BlTypeError`.
+- `t[i]` / `t.col` out of range / unknown column → `null`.
+- `distinct` uses order-insensitive row (context) equality.
+- equality is `false` when column sets differ, even with identical row data.

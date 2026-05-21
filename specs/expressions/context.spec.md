@@ -1,78 +1,145 @@
 ---
 name: BlContext
-description: blkit's context type — an ordered key-value map; extends BlExpr so all operations are deferred and chainable
+description: The context type in the blkit expression language — an ordered key-value map. Covers context literals, path access, the context built-in library (incl. blkit extensions), and the Go layer (BlContext + expr registrations).
 targets:
   - ../../expr/context.go
 ---
 
-# BlContext
+# BlContext — the `context` type
 
-`BlContext` is blkit's context type: an ordered map from string keys to blkit values. In literal notation it looks like `{ name: "Alice", age: 30 }`. It extends `BlExpr`, so every instance is a literal leaf node and all operations return deferred `BlExpr` nodes.
+`context` is an ordered map from string keys to values. The Go value type backing it is `BlContext`.
+It is a pure value used within expressions — distinct from `ExecutionContext` (the mutable process
+variable store).
 
-`BlContext` is distinct from `ExecutionContext` (the mutable process variable store). `BlContext` is a pure value type used within expressions and decision tables.
+See [bl-expr.spec.md](bl-expr.spec.md) for context literals and path access, documented there as
+language constructs; this spoke covers the function library and the Go layer.
 
-```go
-type BlContext struct { BlExpr }
+---
 
-// Construction is via Bl.Context(entries map[string]BlExpr) — see bl.spec.md.
-// Bl.Context(nil) yields the empty context.
+## Literals & path access
 
-// Properties — deferred
-// Size BlNumber
+```
+{}                                 // empty
+{name: "Alice", age: 30}           // unquoted keys
+{"my key": 1}                      // quoted keys (special characters)
+{a: 1, b: {c: 2}}                  // nested
+{a: 2, b: a * 2}                   // later entries can reference earlier ones → {a: 2, b: 4}
 
-func (c *BlContext) IsEmpty() BlExpr { ... }   // evaluates to BlBoolean
-
-// Access — deferred
-func (c *BlContext) Get(key string) BlExpr { ... }         // evaluates to BlNull if key not present
-func (c *BlContext) Has(key string) BlExpr { ... }          // evaluates to BlBoolean
-func (c *BlContext) Keys() BlList { ... }                   // BlList of BlString keys (insertion order)
-func (c *BlContext) Values() BlList { ... }                 // BlList of values (insertion order)
-func (c *BlContext) GetEntries() BlList { ... }             // BlList of BlContext {key, value} pairs
-
-// Immutable modification — deferred; evaluate to BlContext
-func (c *BlContext) Put(key string, value BlExpr) BlContext { ... }   // add or overwrite a key
-func (c *BlContext) PutAll(other BlExpr) BlContext { ... }            // merge; other's keys overwrite
-func (c *BlContext) Remove(key string) BlContext { ... }              // context without that key
-func (c *BlContext) Merge(others ...BlExpr) BlContext { ... }         // merge all; later contexts overwrite
-
-// Equality — deferred; evaluates to BlBoolean (order-insensitive)
-func (c *BlContext) Equals(other BlExpr) BlExpr { ... }
-func (c *BlContext) NotEqual(other BlExpr) BlExpr { ... }
-
-// Eager host-language utilities — only valid on a concrete BlContext after .Evaluate()
-func (c *BlContext) ToRecord() map[string]BlValue { ... }
-func (c *BlContext) String() string { ... }  // Literal notation: '{ name: "Alice", age: 30 }'
+{a: {b: 3}}.a.b                    // → 3        (path access)
+{a: 1}.missing                     // → null     (missing key)
+applicant["my key"]                // bracket access for special-character keys
 ```
 
-## Deferred semantics
+Keys are non-empty, case-sensitive strings; insertion order is preserved.
+
+`[@test] ../../expr/context_test.go`
+
+---
+
+## Built-in functions
+
+Standard DMN functions plus blkit extensions (**ext**).
+
+| Function | Example | Result |
+|---|---|---|
+| `getValue(c, key)` | `getValue({foo: 123}, "foo")` | `123` |
+| `getValue(c, keys)` | `getValue({x:1, y:{z:0}}, ["y","z"])` | `0` (nested path) |
+| `getEntries(c)` | `getEntries({foo: 123})` | `[{key: "foo", value: 123}]` |
+| `contextPut(c, key, value)` | `contextPut({x:1}, "y", 2)` | `{x:1, y:2}` |
+| `contextPut(c, keys, value)` | `contextPut({x:1, y:{z:0}}, ["y","z"], 2)` | `{x:1, y:{z:2}}` |
+| `contextMerge(contexts)` | `contextMerge([{x:1},{y:2}])` | `{x:1, y:2}` (later wins) |
+| `keys(c)` **ext** | `keys({a:1, b:2})` | `["a", "b"]` (insertion order) |
+| `values(c)` **ext** | `values({a:1, b:2})` | `[1, 2]` |
+| `has(c, key)` **ext** | `has({a:1}, "a")` | `true` (or `isDefined(c.a)`) |
+| `size(c)` **ext** | `size({a:1, b:2})` | `2` |
+| `isEmpty(c)` **ext** | `isEmpty({})` | `true` |
+| `contextRemove(c, key)` **ext** | `contextRemove({a:1, b:2}, "a")` | `{b: 2}` |
+
+`[@test] ../../expr/context_functions_test.go`
+
+---
+
+## Operators
+
+| Operator | Meaning | Example | Result |
+|---|---|---|---|
+| `.` / `[ ]` | member access | `c.name`, `c["my key"]` | the value, or `null` |
+| `=` `!=` | equality (order-insensitive) | `{a:1,b:2} = {b:2,a:1}` | `true` |
+
+`[@test] ../../expr/context_operators_test.go`
+
+---
+
+## Migration mapping (legacy method-chained → string)
+
+| Legacy | New form |
+|---|---|
+| `Bl.Context(...)` | `{ … }` literal |
+| `size` / `isEmpty` | `size(c)` **ext** / `isEmpty(c)` **ext** |
+| `get(key)` | `c.key` / `c["key"]` / `getValue(c, key)` |
+| `has(key)` | `has(c, key)` **ext** / `isDefined(c.key)` |
+| `keys` / `values` | `keys(c)` **ext** / `values(c)` **ext** |
+| `getEntries` | `getEntries(c)` |
+| `put` / `putAll` / `merge` | `contextPut(c, key, value)` / `contextMerge([...])` |
+| `remove` | `contextRemove(c, key)` **ext** |
+| `equals` / `notEqual` | `=` / `!=` (order-insensitive) |
+| `toRecord` / `String` | Go host accessors (below) |
+
+---
+
+## Go implementation (expr extension)
+
+Lives in `expr/context.go`. Shared mechanics in
+[bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go).
+
+### Value type & host API (exported)
 
 ```go
-ctx := Bl.Context(map[string]BlExpr{"applicant": Bl.Context(map[string]BlExpr{"age": Bl.Number(30)})})
-expr := ctx.Get("applicant").Put("score", Bl.NumberVar("computedScore"))
-result := expr.Evaluate(map[string]BlExpr{"computedScore": Bl.Number(720)})
-// result is a BlContext: {"applicant": {"age": 30}, "score": 720}
+type BlContext struct{ keys []string; m map[string]BlValue } // insertion-ordered
+
+func (BlContext) Type() BlType { return BlTypeContext }
+func (c BlContext) Equal(other BlValue) BlValue // order-insensitive
+func (c BlContext) ToMarkdown() string          // '{name: "Alice", age: 30}'
+func (BlContext) isBlValue() {}
+
+func Context(entries map[string]BlValue) BlContext // host constructor
+func (c BlContext) ToRecord() map[string]BlValue
+func (c BlContext) String() string
 ```
 
-## Key Ordering
+### Registrations (`contextOptions`, unexported)
 
-`BlContext` preserves insertion order. `keys()` and `values()` evaluate in insertion order. Equality is order-insensitive.
+```go
+func contextOptions() []expr.Option {
+    return []expr.Option{
+        expr.Function("getValue", getValueFn, new(func(BlContext, BlString) BlValue), new(func(BlContext, BlList) BlValue)),
+        expr.Function("getEntries", typed1(getEntriesFn), new(func(BlContext) BlList)),
+        expr.Function("contextPut", contextPutFn, new(func(BlContext, BlString, BlValue) BlContext), new(func(BlContext, BlList, BlValue) BlContext)),
+        expr.Function("contextMerge", typed1(contextMergeFn), new(func(BlList) BlContext)), // list of contexts
+        // ext
+        expr.Function("keys",    typed1(keysFn),    new(func(BlContext) BlList)),
+        expr.Function("values",  typed1(valuesFn),  new(func(BlContext) BlList)),
+        expr.Function("has",     typed2(hasFn),     new(func(BlContext, BlString) BlBoolean)),
+        expr.Function("size",    typed1(ctxSizeFn), new(func(BlContext) BlNumber)),
+        expr.Function("isEmpty", typed1(ctxIsEmptyFn), new(func(BlContext) BlBoolean)), // context overload
+        expr.Function("contextRemove", typed2(contextRemoveFn), new(func(BlContext, BlString) BlContext)),
+    }
+}
+```
 
-## Key Type
+**Operators.** Member access (`.`/`[]`) is lowered by the patcher to `getValue(ctx, "key")`,
+returning `Null` for a missing key; `=`/`!=` are order-insensitive. Context literals with
+forward-referencing entries (`{a: 2, b: a*2}`) compile to entries evaluated in order. Native Go maps
+wrap to `BlContext`; the engine also models the evaluation scope as a `BlContext`.
 
-Keys are always non-empty strings. Keys are case-sensitive.
+`[@test] ../../expr/context_test.go`
 
-## Merging
+---
 
-`merge(*others)` creates a new context containing all keys from `self` and all `others`. When the same key appears in multiple contexts, the **last** context's value wins (right-to-left precedence).
+## Edge cases
 
-## Expression Scope
-
-When blkit's evaluator evaluates an expression, the evaluation scope is modelled as a `BlContext`. Variable names in scope are keys; path expressions navigate nested `BlContext` values.
-
-## Edge Cases
-
-- `get()` on a missing key evaluates to `BlNull`.
-- `put()` with an empty string key produces a `BlTypeError` at evaluation time.
-- `remove()` on a non-existent key evaluates to the original context unchanged.
-- `put_all()` / `merge()` with an empty context is a no-op.
-- Keys with special characters require quoted key syntax in literal notation: `context["my key"]`.
+- Missing key (`.`/`[]`/`getValue`) → `null`.
+- `contextPut` with an empty-string key → `BlTypeError`.
+- `contextRemove` of an absent key → the context unchanged.
+- `contextMerge` / `contextPut` with an empty context → no-op.
+- Special-character keys require quoted/bracket syntax (`{"my key": 1}`, `c["my key"]`).

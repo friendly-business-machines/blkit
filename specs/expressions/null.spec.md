@@ -1,95 +1,138 @@
 ---
 name: BlNull
-description: blkit's null singleton — represents absence or unknown; extends BlExpr so logical operations are deferred and chainable
+description: The null type in the blkit expression language — a singleton meaning absence/unknown, with SQL-style propagation. Covers the null literal, propagation rules, null testing, and the Go layer (BlNull + expr registrations).
 targets:
   - ../../expr/null.go
 ---
 
-# BlNull
+# BlNull — the `null` type
 
-`BlNull` is blkit's null type — a singleton value representing the absence of a value or an unknown. It is the result of missing context keys, out-of-range list access, division by zero, and other operations that produce no meaningful result. It extends `BlExpr`, so `BlNull.INSTANCE` is itself a valid leaf node in any expression tree and logical operations return deferred `BlExpr` nodes.
+`null` represents the absence of a value or an unknown. It is the result of missing context keys,
+out-of-range list access, division by zero, and similar. The Go value type backing it is `BlNull`, a
+singleton.
 
-```go
-type BlNull struct { BlExpr }
+See [bl-expr.spec.md](bl-expr.spec.md) for the engine and three-valued logic.
 
-// Singleton — the only instance of BlNull
-// INSTANCE BlNull
+---
 
-// Type check — eager; always returns true
-func (n *BlNull) IsNull() bool { ... }
+## Literal
 
-// Logical operations — inherited from BlExpr (And, Or, Not)
-// See bl-expr.spec.md for signatures. Three-valued logic applies: Not(null) → null.
-
-// Equality — deferred; always evaluates to BlBoolean.FALSE (null ≠ null)
-func (n *BlNull) Equals(other BlExpr) BlExpr { ... }
-func (n *BlNull) NotEqual(other BlExpr) BlExpr { ... }
-
-// Eager host-language utility
-func (n *BlNull) String() string { ... }   // "null"
+```
+null      // → null
 ```
 
-## Singleton
+`[@test] ../../expr/null_test.go`
 
-`BlNull.INSTANCE` is the only value of this type. All operations that produce null must return this singleton. Implementations must not create multiple `BlNull` instances. `BlNull.INSTANCE.evaluate()` returns `BlNull.INSTANCE` (identity, as with all literal leaf nodes).
+---
 
-## `is_null()`
+## Propagation
 
-`is_null()` is an **eager** host-language utility (returns native `bool`), not a deferred expression. Use it in host code to check whether a concrete evaluation result is null:
-
-```go
-result := expr.Evaluate(context)
-if result.IsNull() {
-    // handle null
-}
-```
-
-To check for null **within an expression**, use `instance_of("Null")` (inherited from `BlExpr` and available on every typed variable factory). The choice of typed factory is irrelevant for this check — `InstanceOf` is universal:
-
-```go
-Bl.NumberVar("x").InstanceOf("Null")  // any typed factory works; the check is universal
-```
-
-## Null Propagation
-
-`BlNull` propagates through arithmetic, string concatenation, path expressions, and most other operations. Exceptions are the logical operators (`and_`, `or_`) which follow three-valued logic.
+`null` propagates through arithmetic, concatenation, path access, indexing, and most operations. The
+exceptions are the short-circuit boolean cases ([boolean.spec.md](boolean.spec.md)).
 
 | Operation | Result |
 |---|---|
 | `null + 1` | `null` |
-| `null * "hello"` | `null` |
-| `null.someKey` | `null` |
-| `null[1]` | `null` |
-| `null = null` | `false` (null is not equal to null) |
+| `null * "x"` | `null` |
+| `someContext.missingKey` | `null` |
+| `[1,2][9]` | `null` |
+| `null = null` | `false` (SQL-style: null is not equal to null) |
 | `null != null` | `false` |
-| `null instance of Null` | `true` |
+| `null instance of null` | `true` |
 | `true and null` | `null` |
 | `false and null` | `false` |
 | `true or null` | `true` |
 | `false or null` | `null` |
 
-## Null Equality
+`[@test] ../../expr/null_propagation_test.go`
 
-`BlNull` is **not** equal to itself: `null = null` evaluates to `BlBoolean.FALSE`. This mirrors SQL NULL semantics. To test for null, use `instance_of("Null")` in expressions or `is_null()` in host code.
+---
 
-## `instance of` Check
+## Testing for null
 
-The type name for null is `Null` (capital N). `value instance of Null` evaluates to `BlBoolean.TRUE` if and only if `value` is `BlNull.INSTANCE`.
+- **In an expression:** `x instance of null` → `true` iff `x` is null. The convenience built-in
+  `isNull(x)` **ext** returns the same boolean. Do **not** use `x = null` — equality with null is
+  always `false`.
+- **In host code:** the evaluated `BlValue` exposes `IsNull() bool`.
 
-## Producing Null
+```
+isNull(someContext.missingKey)   // → true
+isDefined(someContext.missingKey) // → false   (see boolean.spec.md)
+```
 
-The following operations produce `BlNull` at evaluation time:
+`[@test] ../../expr/null_testing_test.go`
 
-- Missing key in a `BlContext` or `ExecutionContext`
-- Out-of-range index access on a `BlList`
-- Division by zero
-- `sqrt()` of a negative number
-- `log()` of zero or a negative number
-- `power()` producing a complex result
-- Any arithmetic or path expression with a null operand
+---
 
-## Edge Cases
+## Producing null
 
-- `BlNull` cannot be stored as a `BlContext` value for a key whose contract (`InputContract`, `OutputContract`, or nested `ContextContract`) marks the field as required — a `DataContractValidationError` is thrown at write time.
-- Passing `BlNull.INSTANCE` to a factory that requires a non-null argument (e.g. `Bl.String(null)`) produces a `BlTypeError`.
-- `__str__()` returns the string `"null"` — the literal representation used throughout blkit's text rendering.
+Division by zero; out-of-range index; missing context key; `sqrt` of a negative; `ln`/`log` of
+zero-or-negative; `**` with a complex result; any arithmetic/path expression with a null operand.
+
+---
+
+## Migration mapping (legacy method-chained → string)
+
+| Legacy | New form |
+|---|---|
+| `BlNull.INSTANCE` | literal `null` |
+| `isNull` (eager host util) | `isNull(x)` **ext** / `x instance of null` in expressions; `IsNull()` in host code |
+| `instanceOf("Null")` | `x instance of null` (type name lowercased — see note) |
+| `equals` / `notEqual` | `=` / `!=` (both yield `false` against null) |
+| `String` | Go host accessor (`"null"`) |
+
+> **Divergence note.** The type name is lowercased to `null` (was `"Null"`), matching the
+> lowercase type-name convention used by `instance of` across the language
+> ([bl-expr.spec.md](bl-expr.spec.md)).
+
+---
+
+## Go implementation (expr extension)
+
+`BlNull` and the shared null helpers live in `expr/value.go` (alongside the `BlValue` interface — see
+[bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go)).
+
+### Value type & host API (exported)
+
+```go
+// BlNull is the singleton null value.
+type BlNull struct{}
+var Null = BlNull{}
+
+func (BlNull) Type() BlType { return BlTypeNull }
+func (BlNull) Equal(other BlValue) BlValue   // always BlBoolean(false), even vs Null
+func (BlNull) ToMarkdown() string            // "null"
+func (BlNull) isBlValue() {}
+
+func (BlNull) IsNull() bool   // host accessor; always true
+func (BlNull) String() string // "null"
+```
+
+### Propagation helper & registration
+
+```go
+// propagatesNull reports whether any arg is Null; operator/function impls call
+// it to short-circuit to Null (except the boolean cases in boolean.spec.md).
+func propagatesNull(args ...BlValue) bool
+
+func nullOptions() []expr.Option {
+    return []expr.Option{
+        expr.Function("isNull", typed1(isNullFn), new(func(BlValue) BlBoolean)), // ext
+    }
+}
+```
+
+All operations that produce null return the `Null` singleton. The engine bridge maps Go `nil` and
+absent input keys to `Null`; `instance of null` and `isNull(x)` test for it. Every `BlValue` exposes
+`IsNull()` for host callers.
+
+`[@test] ../../expr/null_test.go`
+
+---
+
+## Edge cases
+
+- `null = null` and `null != null` are both `false`.
+- Writing `null` to a context key whose contract marks it required → `DataContractValidationError`
+  at write time (see data specs).
+- Type name for `instance of` is `null` (lowercase).
