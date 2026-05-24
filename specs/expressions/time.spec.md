@@ -16,6 +16,10 @@ See [bl-expr.spec.md](bl-expr.spec.md) for the engine and component-access synta
 
 ## Literals / construction
 
+There is **no dedicated time literal**: time values are produced by the `time(...)` built-in — for
+example, the `time("14:30:00")` in `time("14:30:00").hour`. The constructor accepts an ISO 8601
+time string, hour/minute/second components, or another temporal value to extract from.
+
 ```
 time("14:30:00")              // local time
 time("14:30:00.500")          // fractional seconds

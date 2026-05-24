@@ -18,7 +18,10 @@ See [bl-expr.spec.md](bl-expr.spec.md) for the engine and component-access synta
 
 ## Literals / construction
 
-Constructed with the `duration(...)` built-in from an ISO 8601 string using only D/T designators:
+There is **no dedicated duration literal**: days-and-time duration values are produced by the
+`duration(...)` built-in — for example, the `duration("P1DT2H")` in
+`date("2025-03-28") + duration("P1DT2H")`. The constructor accepts an ISO 8601 string using only
+D/T designators:
 
 ```
 duration("P1DT2H30M")     // 1 day, 2 hours, 30 minutes

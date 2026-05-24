@@ -10,11 +10,14 @@ targets:
 `table` is a DMN **relation**: an ordered, immutable list of `context` rows that all share the same
 column keys (the "uniform-keys" invariant). The Go value type backing it is `BlTable`.
 
-**There is no dedicated table literal.** A table is, structurally, a `list` of uniformly-keyed
-`context`s — so list literals, indexing, filtering, and projection
-([list.spec.md](list.spec.md), [bl-expr.spec.md](bl-expr.spec.md)) all apply. The `table(...)`
-built-in wraps a list of contexts as a validated `BlTable`. See [context.spec.md](context.spec.md)
-and [list.spec.md](list.spec.md).
+A literal would be the syntactic form for writing a constant value of a type directly inside an
+expression (as `[1, 2, 3]` is for a list). **`table` has no dedicated form** of its own — a table
+is, structurally, a `list` of uniformly-keyed `context`s, so list literals, indexing, filtering,
+and projection ([list.spec.md](list.spec.md), [bl-expr.spec.md](bl-expr.spec.md)) all apply. The
+`table(...)` built-in wraps a list of contexts as a validated `BlTable` — for example, the
+`table([{region: "domestic", rate: 5.99}])` in
+`rowCount(table([{region: "domestic", rate: 5.99}]))`. See [context.spec.md](context.spec.md) and
+[list.spec.md](list.spec.md).
 
 ---
 

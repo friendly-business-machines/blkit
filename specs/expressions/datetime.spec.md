@@ -17,6 +17,11 @@ See [bl-expr.spec.md](bl-expr.spec.md) for the engine and component-access synta
 
 ## Literals / construction
 
+There is **no dedicated datetime literal**: datetime values are produced by the `datetime(...)`
+built-in — for example, the `datetime("2025-03-28T14:30:00Z")` in
+`datetime("2025-03-28T14:30:00Z").hour`. The constructor accepts an ISO 8601 combined string or a
+date/time pair.
+
 ```
 datetime("2025-03-28T14:30:00")            // local
 datetime("2025-03-28T14:30:00Z")           // UTC

@@ -17,6 +17,10 @@ See [bl-expr.spec.md](bl-expr.spec.md) for the engine and three-valued logic.
 
 ## Literal
 
+The **null literal** is the syntactic form used inside a blkit expression to write the null value —
+for example, the `null` in `if x = null then "missing" else x`. It is the only literal of this
+type.
+
 ```
 null      // → null
 ```

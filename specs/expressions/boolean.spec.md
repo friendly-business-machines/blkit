@@ -17,6 +17,10 @@ See [bl-expr.spec.md](bl-expr.spec.md) for the engine and operator precedence.
 
 ## Literals
 
+A **boolean literal** is the syntactic form used inside a blkit expression to write a constant
+boolean value — for example, the `true` in `if approved then true else false`. There are exactly
+two:
+
 ```
 true      // → true
 false     // → false

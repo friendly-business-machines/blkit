@@ -20,6 +20,10 @@ arithmetic**, much of which extends DMN FEEL (flagged **ext**). See
 
 ## Literals / construction
 
+There is **no dedicated date literal**: date values are produced by the `date(...)` built-in — for
+example, the `date("2025-03-28")` in `date("2025-03-28").year`. The constructor accepts an ISO
+8601 string, year/month/day components, or another temporal value to extract from.
+
 ```
 date("2025-03-28")               // timezone-naive
 date("2025-03-28+05:30")         // UTC offset

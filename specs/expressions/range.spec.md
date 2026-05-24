@@ -17,6 +17,10 @@ See [bl-expr.spec.md](bl-expr.spec.md) for the engine and component-access synta
 
 ## Literals
 
+A **range literal** is the syntactic form used inside a blkit expression to write a constant
+interval value — for example, the `[18..65]` in `age in [18..65]`. Each end is independently
+included (`[`/`]`) or excluded (`(`/`)`):
+
 | Syntax | Start | End | Meaning |
 |---|---|---|---|
 | `[a..b]` | included | included | `a ≤ x ≤ b` |

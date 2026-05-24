@@ -12,10 +12,13 @@ value (`date`, `datetime`, or a `range` of either) with an optional name. It mod
 maintenance windows, blackout periods, and similar schedules. The Go value type backing it is
 `BlCalendar`.
 
-**There is no calendar literal.** A calendar is produced by the `calendar(...)` built-in (or supplied
-host-side as an input variable) and then queried. All calendar built-ins are blkit extensions
-(**ext** — no DMN equivalent). It pairs with [date.spec.md](date.spec.md)'s business-day arithmetic,
-which consumes a calendar. See [range.spec.md](range.spec.md) for entry ranges.
+A literal would be the syntactic form for writing a constant value of a type directly inside an
+expression (as `[1, 2, 3]` is for a list). **`calendar` has no such form.** A calendar is produced
+by the `calendar(...)` built-in (or supplied host-side as an input variable) and then queried —
+for example, the `calendar([…])` in `isBusinessDay(date("2025-12-25"), calendar([…]))`. All
+calendar built-ins are blkit extensions (**ext** — no DMN equivalent). It pairs with
+[date.spec.md](date.spec.md)'s business-day arithmetic, which consumes a calendar. See
+[range.spec.md](range.spec.md) for entry ranges.
 
 ---
 

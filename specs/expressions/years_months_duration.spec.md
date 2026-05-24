@@ -18,7 +18,10 @@ See [bl-expr.spec.md](bl-expr.spec.md) for the engine and component-access synta
 
 ## Literals / construction
 
-Constructed with the `duration(...)` built-in from an ISO 8601 string using only Y/M designators:
+There is **no dedicated duration literal**: years-and-months duration values are produced by the
+`duration(...)` built-in — for example, the `duration("P1Y6M")` in
+`date("2025-03-28") + duration("P1Y6M")`. The constructor accepts an ISO 8601 string using only
+Y/M designators:
 
 ```
 duration("P1Y6M")     // 1 year, 6 months

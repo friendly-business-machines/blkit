@@ -18,6 +18,11 @@ language constructs; this spoke covers the function library and the Go layer.
 
 ## Literals & path access
 
+A **context literal** is the syntactic form used inside a blkit expression to write a constant
+context value — for example, the `{name: "Alice", age: 30}` in
+`greet({name: "Alice", age: 30})`. Literals are delimited by braces with comma-separated
+`key: value` entries.
+
 ```
 {}                                 // empty
 {name: "Alice", age: 30}           // unquoted keys

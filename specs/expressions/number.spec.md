@@ -18,6 +18,10 @@ null/error semantics referenced below.
 
 ## Literals
 
+A **number literal** is the syntactic form used inside a blkit expression to write a constant
+numeric value — for example, the `42` in `count(items) = 42`. Decimal and scientific forms are
+accepted; a leading `-` is the unary minus operator applied to a non-negative literal.
+
 ```
 42            // → 42
 3.14          // → 3.14
@@ -69,14 +73,14 @@ Standard DMN functions plus blkit extensions (**ext**, flagged — no DMN equiva
 | `floor(n[, scale])` | `floor(-1.56, 1)` | `-1.6` |
 | `ceiling(n[, scale])` | `ceiling(-1.56, 1)` | `-1.5` |
 | `round(n, scale)` **ext** | `round(2.345, 2)` | `2.35` (alias of `roundHalfUp`) |
-| `roundUp(n, scale)` | `roundUp(5.5, 0)` | `6` |
-| `roundDown(n, scale)` | `roundDown(5.5, 0)` | `5` |
-| `roundHalfUp(n, scale)` | `roundHalfUp(5.5, 0)` | `6` |
-| `roundHalfDown(n, scale)` | `roundHalfDown(5.5, 0)` | `5` |
+| `roundUp(n, scale)` | `roundUp(5.1, 0)` | `6` (any non-zero fraction rounds away from zero) |
+| `roundDown(n, scale)` | `roundDown(5.9, 0)` | `5` (always toward zero — truncation) |
+| `roundHalfUp(n, scale)` | `roundHalfUp(5.5, 0)` | `6` (halfway away from zero; `roundHalfUp(5.1, 0)` → `5`) |
+| `roundHalfDown(n, scale)` | `roundHalfDown(5.5, 0)` | `5` (halfway toward zero; `roundHalfDown(5.9, 0)` → `6`) |
 | `abs(n)` | `abs(-10)` | `10` |
 | `modulo(dividend, divisor)` | `modulo(-10, 3)` | `2` (floor division; sign follows divisor) |
 | `sqrt(n)` | `sqrt(16)` | `4` (negative → `null`) |
-| `exp(n)` | `exp(0)` | `1` |
+| `exp(n)` | `exp(1)` | `≈2.718281828` (Euler's number) |
 | `ln(n)` **ext** | `ln(2.718281828)` | `≈1` (natural log; 0/negative → `null`) |
 | `log(n[, base])` **ext** | `log(100)`, `log(8, 2)` | `2`, `3` (default base 10) |
 | `odd(n)` | `odd(5)` | `true` |
@@ -84,7 +88,6 @@ Standard DMN functions plus blkit extensions (**ext**, flagged — no DMN equiva
 | `isPositive(n)` **ext** | `isPositive(5)` | `true` |
 | `isNegative(n)` **ext** | `isNegative(-3)` | `true` |
 | `isZero(n)` **ext** | `isZero(0)` | `true` |
-| `isInteger(n)` **ext** | `isInteger(5.0)` | `true` |
 | `clamp(n, min, max)` **ext** | `clamp(150, 0, 100)` | `100` (`min > max` → `null`) |
 
 Aggregates over lists (`min`, `max`, `sum`, `mean`, `median`, `product`, `stddev`, `mode`) are in
@@ -132,7 +135,7 @@ Every capability of the legacy `BlNumber` method API is preserved:
 | `round` / `roundHalfUp` / `roundHalfDown` / `roundUp` / `roundDown` | same names as built-ins; plus standard `decimal(n, scale)` |
 | `sqrt` / `ln` / `log` / `exp` | `sqrt` / `ln` **ext** / `log` **ext** / `exp` |
 | `isOdd` / `isEven` | `odd(n)` / `even(n)` |
-| `isPositive` / `isNegative` / `isZero` / `isInteger` | same names **ext** |
+| `isPositive` / `isNegative` / `isZero` | same names **ext** |
 | `between` | `between a and b` operator |
 | `in` | `in` operator |
 | `before` / `after` / `coincides` / `during` / `starts` / `finishes` | interval-algebra built-ins ([range.spec.md](range.spec.md)) |
@@ -209,7 +212,7 @@ func numberOptions() []expr.Option {
         expr.Function("odd",      typed1(oddFn),      new(func(BlNumber) BlBoolean)),
         expr.Function("even",     typed1(evenFn),     new(func(BlNumber) BlBoolean)),
         expr.Function("isPositive", typed1(isPositiveFn), new(func(BlNumber) BlBoolean)),            // ext
-        // … isNegative, isZero, isInteger
+        // … isNegative, isZero
         expr.Function("clamp",    typed3(clampFn),    new(func(BlNumber, BlNumber, BlNumber) BlValue)), // ext
 
         // conversion

@@ -18,6 +18,10 @@ function library, and the Go layer.
 
 ## Literals, indexing, filter, projection
 
+A **list literal** is the syntactic form used inside a blkit expression to write a constant list
+value — for example, the `[1, 2, 3, 4]` in `count([1, 2, 3, 4])`. Literals are delimited by square
+brackets with comma-separated elements; elements may be any expression (and may mix types).
+
 ```
 [1, 2, 3, 4]                       // literal
 [1, 2, 3, 4][1]                    // → 1     (1-based)
