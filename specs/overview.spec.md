@@ -89,6 +89,15 @@ This design allows a single `Process` instance to be evaluated concurrently for 
 
 Projects built on blkit extend it by authoring a custom Go package implementing domain logic, algorithms, and third-party integrations. This package is a standard module dependency. `NativeFunctionTask` nodes in a process definition hold a direct reference to a Go function, which receives the `ExecutionContext` and returns a `BlValue`.
 
+## Key Go Dependencies
+
+| Package | Purpose |
+|---|---|
+| [`github.com/shopspring/decimal`](https://github.com/shopspring/decimal) | Arbitrary-precision decimal arithmetic backing `BlNumber`. Ensures exact results for decimal operations (`0.1 + 0.2 = 0.3`). |
+| [`github.com/expr-lang/expr`](https://github.com/expr-lang/expr) | Expression language engine underpinning `blkit.expr`. blkit extends it with its own type system (`BlValue`), operators, and built-in function registrations. |
+| [`github.com/apache/arrow/go/v17/arrow`](https://github.com/apache/arrow/go/v17) | Apache Arrow columnar format, used by `BlTable.ToArrow()` to export table values for interop with data-processing tools. |
+| [`github.com/stretchr/testify`](https://github.com/stretchr/testify) | Test-only. Provides richer assertions and suite lifecycle hooks on top of the standard `testing` package. |
+
 ## Influences
 
 blkit's design draws from established standards — BPMN 2.0 for process execution, DMN 1.4 for decision models, and FEEL for the expression language and type system — but it is not a conformance implementation of any of these standards. The API is designed to be practical and self-contained rather than spec-compliant.
