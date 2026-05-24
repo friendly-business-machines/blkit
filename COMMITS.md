@@ -30,7 +30,7 @@ Body paragraph(s) if needed.
 - A commit body is free-form and MAY consist of any number of newline separated paragraphs
 <!--- Custom rules: -->
 - Footers MUST NOT be included
-- Types other than `fix` and `feat` are allowed: `build`, `chore`, `ci`, `docs`, `style`, `refactor`, `perf`, `test`
+- Types other than `fix` and `feat` are allowed: `build`, `chore`, `ci`, `docs`, `style`, `refactor`, `perf`, `test`, `spec`, `plans`, `rules`, `skill`, `mcp`, `dev`
 - The type `docs` relates to Human-facing documentation (READMEs, architecture notes, contributor guides). Does not cover files that govern agent behaviour — use `rules` for those.
 <!--- Custom types: --->
 - Allowed type `spec`: Changes to specification documents that define intended behaviour
@@ -38,3 +38,4 @@ Body paragraph(s) if needed.
 - Allowed type `rules`: Changes to agent behaviour and constraint files (AGENTS.md, CLAUDE.md, .cursorrules, and any file @-included from them.)
 - Allowed type `skill`: Changes to reusable agent workflow definitions (SKILL.md files)
 - Allowed type `mcp`: Changes to MCP server configs, tool definitions, or external integrations
+- Allowed type `dev`: Changes to local development environment scaffolding that have no bearing on the production build or CI pipeline (i.e. devcontainer.json, Dockerfile.dev, docker-compose.dev.yml, Makefile etc)
