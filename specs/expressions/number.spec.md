@@ -119,29 +119,6 @@ A number is a *point*; the FEEL interval-algebra built-ins (`before`, `after`, `
 
 ---
 
-## Migration mapping (legacy method-chained → string)
-
-Every capability of the legacy `BlNumber` method API is preserved:
-
-| Legacy method | New form |
-|---|---|
-| `add` / `subtract` / `multiply` / `divide` | `+` / `-` / `*` / `/` |
-| `negate` | unary `-` |
-| `power` | `**` |
-| `remainder` / `modulo` | `modulo(a, b)` |
-| `abs` | `abs(n)` |
-| `clamp` | `clamp(n, min, max)` **ext** |
-| `floor` / `ceiling` | `floor(n[, scale])` / `ceiling(n[, scale])` |
-| `round` / `roundHalfUp` / `roundHalfDown` / `roundHalfEven` / `roundUp` / `roundDown` | same names as built-ins |
-| `sqrt` / `ln` / `log` / `exp` | `sqrt` / `ln` **ext** / `log` **ext** / `exp` |
-| `isOdd` / `isEven` | `odd(n)` / `even(n)` |
-| `isPositive` / `isNegative` / `isZero` | same names **ext** |
-| `between` | `between a and b` operator |
-| `in` | `in` operator |
-| `before` / `after` / `coincides` / `during` / `starts` / `finishes` | interval-algebra built-ins ([range.spec.md](range.spec.md)) |
-| `equals` / `notEqual` / `lessThan` / `lessThanOrEqual` / `greaterThan` / `greaterThanOrEqual` | `=` / `!=` / `<` / `<=` / `>` / `>=` |
-| `compareTo` / `toNativeInt` / `toNativeFloat` / `toDecimalString` / `String` | Go host accessors on `BlNumber` (below) |
-
 ---
 
 ## Go implementation (expr extension)
@@ -156,20 +133,29 @@ this section gives the concrete value type, host API, and registrations.
 // BlNumber wraps an arbitrary-precision decimal (backing type: github.com/shopspring/decimal).
 type BlNumber struct{ d decimal.Decimal }
 
+// BlValue interface — required by all Bl* value types.
 func (BlNumber) Type() BlType { return BlTypeNumber }
 func (n BlNumber) Equal(other BlValue) BlValue   // three-valued (BlBoolean/BlNull)
-func (n BlNumber) ToMarkdown() string
+func (n BlNumber) String() string
 func (BlNumber) isBlValue() {}
 
-// Host constructor — build inputs in Go (int, float64, or decimal string).
-func Number(v any) (BlNumber, error)
+// Host constructor — accepts any Go numeric type, bool (true→1, false→0),
+// decimal string, or shopspring/decimal.
+// float32/float64: returns error if v is NaN or Inf.
+// string: accepts plain decimals ("3.14", "-5", "1.5e3"), thousands
+//   separators ("1,000.50"), currency symbols ("$3.14", "£5.00",
+//   "€1,234.56"), and leading/trailing whitespace. Returns error if
+//   v cannot be parsed as a number after stripping these.
+type NumberInput interface {
+    int | int8 | int16 | int32 | int64 |
+    uint | uint8 | uint16 | uint32 | uint64 |
+    float32 | float64 |
+    bool | string | decimal.Decimal
+}
+func Number[T NumberInput](v T) (BlNumber, error)
 
-// Host accessors (consume an evaluated result) — destinations for the legacy eager utilities.
-func (n BlNumber) ToNativeInt() (int, error)        // truncates; overflow → error
-func (n BlNumber) ToNativeFloat() float64           // nearest IEEE-754 double
-func (n BlNumber) ToDecimalString(scale *int) string
-func (n BlNumber) CompareTo(other BlNumber) int     // -1 / 0 / 1
-func (n BlNumber) String() string
+// Host accessor (consume an evaluated result).
+func (n BlNumber) Decimal() decimal.Decimal         // underlying value; use shopspring/decimal API for further conversion
 ```
 
 ### Operator impl funcs (unexported)
