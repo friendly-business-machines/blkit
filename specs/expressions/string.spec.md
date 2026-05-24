@@ -17,13 +17,54 @@ See [bl-expr.spec.md](bl-expr.spec.md) for the engine and cross-cutting semantic
 
 ## Literals
 
-String literals use double quotes; standard escapes apply.
+A **string literal** is the syntactic form used inside a blkit expression to write a constant
+string value — for example, the `"café"` in `upperCase("café")`. Literals are delimited by
+double quotes.
+
+Non-ASCII characters may be written directly inside a literal (e.g. `"café"`, `"🎉"`); the
+expression text is interpreted as UTF-8. The supported escape sequences are:
+
+| Escape | Result |
+|---|---|
+| `\\` | backslash `\` |
+| `\"` | double quote `"` |
+| `\n` | newline (U+000A) |
+| `\r` | carriage return (U+000D) |
+| `\t` | tab (U+0009) |
+| `\uXXXX` | code point `U+XXXX` (exactly 4 hex digits; BMP only) |
+| `\U{XXXXXX}` | code point by hex value (1–6 hex digits, for any code point including > U+FFFF) |
+
+Any other `\x` sequence is a parse error. Forward slashes (`/`) are not special and do not need
+escaping.
 
 ```
-"hello"               // → "hello"
-"line1\nline2"        // → two lines
+"hello"               // → hello
+"line1\nline2"        // → line1
+                      //   line2
 "quote: \""           // → quote: "
-"naïve café"          // → "naïve café"   (Unicode preserved)
+"path: C:\\tmp"       // → path: C:\tmp
+"naïve café"          // → naïve café
+"\u00E9"              // → é
+"\U{1F389}"           // → 🎉
+```
+
+### Length of literal forms
+
+Length is measured in code points, so every escape — no matter how many source characters it
+spans — contributes exactly **one** code point to the resulting string. Directly-typed
+non-ASCII characters behave the same way: `"\u00E9"` and `"é"` denote the same one-code-point
+value.
+
+```
+stringLength("hello")          // → 5
+stringLength("a\nb")           // → 3    (\n is one code point)
+stringLength("\\")             // → 1    (one backslash)
+stringLength("\"")             // → 1    (one double quote)
+stringLength("\u00E9")         // → 1    (one code point, U+00E9 = é)
+stringLength("é")              // → 1    (typed directly — same value as above)
+stringLength("\U{1F389}")      // → 1    (one supplementary code point)
+stringLength("🎉")             // → 1
+stringLength("🎉a")            // → 2
 ```
 
 `[@test] ../../expr/string_test.go`
@@ -82,14 +123,49 @@ conversion built-in (see [§ Go implementation](#go-implementation-expr-extensio
 
 ## Regex dialect
 
-`matches`, `replace`, and `extract` use the **XML Schema regex dialect** (not PCRE):
+`matches`, `replace`, and `extract` use the **RE2 syntax** of Go's standard
+[`regexp`](https://pkg.go.dev/regexp/syntax) package:
 
-- No lookahead/lookbehind.
-- Unicode classes `\p{L}`, `\p{N}`, `\p{Z}`, etc.
-- Flags: `"i"` case-insensitive, `"m"` multiline, `"s"` dot-matches-newline, `"x"` ignore pattern
-  whitespace.
+- No lookahead/lookbehind and no backreferences (RE2 design).
+- Shorthand character classes: `\d` (ASCII digit `[0-9]`), `\w` (ASCII word character
+  `[A-Za-z0-9_]`), `\s` (whitespace ` `, `\t`, `\n`, `\r`, `\f`), and their negations `\D`, `\W`,
+  `\S`. For Unicode-aware letters/digits use the property classes below (`\p{L}`, `\p{N}`).
+- Unicode property classes: `\p{L}` (letter), `\p{N}` (number), `\p{Zs}` (space separator), etc.
+- POSIX classes inside `[…]`: `[[:alpha:]]`, `[[:digit:]]`, `[[:space:]]`, …
+- Flags: `"i"` case-insensitive, `"m"` multiline (`^`/`$` match line boundaries), `"s"`
+  dot-matches-newline. These map to RE2's inline flag groups `(?i)`, `(?m)`, `(?s)`, which may
+  also be written directly in the pattern.
 - A malformed pattern → `BlRegexError` at evaluation time.
-- `matches` requires the **whole string** to match; use `.*…*` or `contains`/`extract` for partials.
+- `matches` requires the **whole string** to match (the engine anchors the pattern with
+  `^(?:…)$` internally); use `contains` or `extract` for partial matching.
+- Replacement strings use `$1`, `$2`, … for numbered groups and `${name}` for named groups.
+
+> **Backslashes in the literal.** A regex metacharacter starting with `\` must be escaped at the
+> blkit string-literal layer (see [§ Literals](#literals)): write `"\\d"` to pass the pattern
+> `\d` to the regex engine, `"\\w"` for `\w`, `"\\."` for a literal dot, and so on. Inline-flag
+> groups like `(?i)` need no escaping.
+
+### Examples
+
+```
+matches("hello", "h.+o")                                        // → true
+matches("ABC", "[a-z]+", "i")                                   // → true   (flag)
+matches("Hello", "(?i)hello")                                   // → true   (inline flag)
+matches("foo\nbar", ".+", "s")                                  // → true   (dot matches newline)
+matches("café", "\\p{L}+")                                      // → true   (Unicode letter class)
+matches("page 42", "\\d+")                                      // → false  (whole-string, not partial)
+matches("42", "\\d+")                                           // → true
+
+replace("a-b-c", "-", "/")                                      // → "a/b/c"
+replace("2025-03-28", "(\\d{4})-(\\d{2})-(\\d{2})", "$3/$2/$1") // → "28/03/2025"
+replace("HELLO world", "[A-Z]+", "x")                           // → "x world"
+
+extract("id 12, 34", "\\d+")                                    // → ["12", "34"]
+extract("a1 b22 c333", "[a-z]\\d+")                             // → ["a1", "b22", "c333"]
+```
+
+`contains` is a literal substring test, not a regex — for partial-string regex matching, use
+`extract` (which returns `[]` when nothing matches) or wrap the pattern: `matches(s, ".*pat.*")`.
 
 `[@test] ../../expr/string_regex_test.go`
 
@@ -136,7 +212,8 @@ Lives in `expr/string.go`. Shared mechanics in
 ### Value type & host API (exported)
 
 ```go
-// BlString wraps an immutable, code-point-aware Go string.
+// BlString wraps a native Go string. BlString methods count positions and
+// length in Unicode code points (not bytes).
 type BlString struct{ s string }
 
 func (BlString) Type() BlType { return BlTypeString }
@@ -203,7 +280,8 @@ func stringOptions() []expr.Option {
 }
 ```
 
-The regex funcs (`matchesFn`/`replaceFn`/`extractFn`) compile XML-Schema patterns; a bad pattern →
+The regex funcs (`matchesFn`/`replaceFn`/`extractFn`) compile patterns via Go's `regexp` package
+(RE2 syntax); `matches` anchors with `^(?:…)$` before compiling. A bad pattern →
 `BlRegexError`. `indexOf`/`isEmpty`/`reverse`/`contains` are **overloaded** with their list/calendar
 forms (each registered once, with multiple signatures, in whichever spoke owns the canonical entry).
 Native Go `string` inputs wrap to `BlString`.
