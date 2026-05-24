@@ -69,13 +69,13 @@ Standard DMN functions plus blkit extensions (**ext**, flagged — no DMN equiva
 
 | Function | Example | Result |
 |---|---|---|
-| `decimal(n, scale)` | `decimal(1/3, 2)` | `0.33` (round half even) |
-| `floor(n[, scale])` | `floor(-1.56, 1)` | `-1.6` |
-| `ceiling(n[, scale])` | `ceiling(-1.56, 1)` | `-1.5` |
-| `round(n, scale)` **ext** | `round(2.345, 2)` | `2.35` (alias of `roundHalfUp`) |
-| `roundUp(n, scale)` | `roundUp(5.1, 0)` | `6` (any non-zero fraction rounds away from zero) |
-| `roundDown(n, scale)` | `roundDown(5.9, 0)` | `5` (always toward zero — truncation) |
-| `roundHalfUp(n, scale)` | `roundHalfUp(5.5, 0)` | `6` (halfway away from zero; `roundHalfUp(5.1, 0)` → `5`) |
+| `roundHalfEven(n, scale)` | `roundHalfEven(2.5, 0)` | `2` (ties round to the even neighbour; also known as banker's rounding) |
+| `floor(n[, scale])` | `floor(-1.56, 1)` | `-1.6` (always toward −∞) |
+| `ceiling(n[, scale])` | `ceiling(-1.56, 1)` | `-1.5` (always toward +∞) |
+| `round(n, scale)` **ext** | `round(2.345, 2)` | `2.35` (alias of `roundHalfUp`; Excel `ROUND`) |
+| `roundUp(n, scale)` | `roundUp(5.1, 0)` | `6` (always rounds away from zero; Excel `ROUNDUP`) |
+| `roundDown(n, scale)` | `roundDown(5.9, 0)` | `5` (always toward zero — truncation; Excel `ROUNDDOWN`) |
+| `roundHalfUp(n, scale)` | `roundHalfUp(5.5, 0)` | `6` (halfway away from zero; `roundHalfUp(5.1, 0)` → `5`; Excel `ROUND`) |
 | `roundHalfDown(n, scale)` | `roundHalfDown(5.5, 0)` | `5` (halfway toward zero; `roundHalfDown(5.9, 0)` → `6`) |
 | `abs(n)` | `abs(-10)` | `10` |
 | `modulo(dividend, divisor)` | `modulo(-10, 3)` | `2` (floor division; sign follows divisor) |
@@ -132,7 +132,7 @@ Every capability of the legacy `BlNumber` method API is preserved:
 | `abs` | `abs(n)` |
 | `clamp` | `clamp(n, min, max)` **ext** |
 | `floor` / `ceiling` | `floor(n[, scale])` / `ceiling(n[, scale])` |
-| `round` / `roundHalfUp` / `roundHalfDown` / `roundUp` / `roundDown` | same names as built-ins; plus standard `decimal(n, scale)` |
+| `round` / `roundHalfUp` / `roundHalfDown` / `roundHalfEven` / `roundUp` / `roundDown` | same names as built-ins |
 | `sqrt` / `ln` / `log` / `exp` | `sqrt` / `ln` **ext** / `log` **ext** / `exp` |
 | `isOdd` / `isEven` | `odd(n)` / `even(n)` |
 | `isPositive` / `isNegative` / `isZero` | same names **ext** |
@@ -197,7 +197,7 @@ func numberOptions() []expr.Option {
         // … subNumbers, mulNumbers, divNumbers, powNumber, negNumber, ltNumbers, …
 
         // library
-        expr.Function("decimal",  typed2(decimalFn),  new(func(BlNumber, BlNumber) BlNumber)),
+        expr.Function("roundHalfEven", typed2(roundHalfEvenFn), new(func(BlNumber, BlNumber) BlNumber)),
         expr.Function("floor",    floorFn,            new(func(BlNumber) BlNumber), new(func(BlNumber, BlNumber) BlNumber)),
         expr.Function("ceiling",  ceilingFn,          new(func(BlNumber) BlNumber), new(func(BlNumber, BlNumber) BlNumber)),
         expr.Function("round",    typed2(roundFn),    new(func(BlNumber, BlNumber) BlNumber)),       // ext (alias roundHalfUp)
@@ -242,7 +242,7 @@ thousands-separated string is rejected — use `number(...)`.
 - `sqrt` of `0` → `0`; of a negative → `null`.
 - `(-2) ** 0.5` → `null` (complex).
 - `clamp(n, min, max)` with `min > max` → `null`.
-- `modulo` / `decimal` / `divide` with a zero divisor → `null`, never an error.
+- `modulo` / `divide` with a zero divisor → `null`, never an error.
 - `round` is a strict alias of `roundHalfUp`.
 - `toNativeInt` truncates (does not round) and errors on overflow.
 - `3.0 = 3.00` → `true` (trailing zeros ignored).
