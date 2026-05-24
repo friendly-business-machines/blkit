@@ -36,6 +36,16 @@
   // Most impactful on Linux/macOS hosts; typically low/no-op impact on Windows hosts.
   "updateRemoteUserUID": true,
 
-  // Run a quick tool-version report each time VS Code attaches to the container.
-  "postAttachCommand": "bash .devcontainer/post-attach.sh"
+  // Bind-mount the host Docker daemon socket into the container (Docker-outside-of-Docker).
+  // This lets the Docker CLI in the container delegate builds/runs to the host daemon,
+  // so `docker build -f .devcontainer/Dockerfile .` works from inside the container.
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ],
+
+  // Reconcile the container's `docker` group GID with the host socket's actual group GID.
+  // The host daemon socket is owned by a `docker` group whose GID varies by host OS.
+  // Matching the GIDs lets the `vscode` user (a member of `docker`) access the socket
+  // without sudo. Runs every container start because the socket is re-exposed by the host daemon.
+  "postStartCommand": "sudo groupmod -g $(stat -c '%g' /var/run/docker.sock) docker"
 }

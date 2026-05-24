@@ -32,19 +32,11 @@ ARG USER_GID=${USER_UID}
 # - sudo: allow privileged actions from non-root `vscode` account.
 #
 # Language/toolchain package rationale:
-# - dotnet-sdk-8.0: .NET SDK for C# build/run (`dotnet`).
 # - golang: Go compiler/toolchain (`go`).
-# - openjdk-21-jdk: JDK (includes `javac` + `java`).
-# - nodejs + npm: Node runtime and package manager.
-# - python3: Python interpreter.
-# - rustc + cargo: Rust compiler and package/build tool.
-# - node-typescript: TypeScript compiler (`tsc`) from Ubuntu repositories.
 #
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        cargo \
         curl \
-        dotnet-sdk-8.0 \
         git \
         gh \
         gnupg \
@@ -53,16 +45,33 @@ RUN apt-get update \
         less \
         make \
         nano \
-        node-typescript \
-        nodejs \
-        npm \
-        openjdk-21-jdk \
         pass \
         pinentry-tty \
-        python3 \
-        rustc \
         sudo \
         wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Docker CLI (Docker-outside-of-Docker / DooD).
+# The Docker daemon runs on the host; only the CLI is needed in the container.
+# The host daemon socket is bind-mounted at /var/run/docker.sock via devcontainer.json.
+#
+# - docker-ce-cli: Docker command-line interface (client only, no daemon).
+# - docker-buildx-plugin: BuildKit-native `docker buildx build` support.
+#
+# Using Docker's official apt repository rather than Ubuntu's `docker.io` package,
+# which lags significantly behind upstream releases.
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+           -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && . /etc/os-release \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
+       | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        docker-ce-cli \
+        docker-buildx-plugin \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user/group and configure sudo.
@@ -70,8 +79,13 @@ RUN apt-get update \
 # - Passwordless sudo is intentional for developer convenience in ephemeral containers.
 # - Sudoers file permissions are set to 0440 as required by sudo.
 # - `GPG_TTY=$(tty)` helps `gpg`/`pinentry` and tools like `pass` talk to the active terminal.
+# - A `docker` group is created so the user can access the bind-mounted daemon socket
+#   without sudo. Its GID is reconciled with the host socket's GID at container start
+#   via postStartCommand in devcontainer.json.
 RUN groupadd --gid ${USER_GID} ${USERNAME} \
     && useradd --uid ${USER_UID} --gid ${USER_GID} -m ${USERNAME} \
+    && groupadd docker \
+    && usermod -aG docker ${USERNAME} \
     && echo 'export GPG_TTY=$(tty)' >> /home/${USERNAME}/.bashrc \
     && echo ${USERNAME} ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/${USERNAME} \
     && chmod 0440 /etc/sudoers.d/${USERNAME}
