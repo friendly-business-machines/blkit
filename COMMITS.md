@@ -31,3 +31,10 @@ Body paragraph(s) if needed.
 <!--- Custom rules: -->
 - Footers MUST NOT be included
 - Types other than `fix` and `feat` are allowed: `build`, `chore`, `ci`, `docs`, `style`, `refactor`, `perf`, `test`
+- The type `docs` relates to Human-facing documentation (READMEs, architecture notes, contributor guides). Does not cover files that govern agent behaviour — use `rules` for those.
+<!--- Custom types: --->
+- Allowed type `spec`: Changes to specification documents that define intended behaviour
+- Allowed type `plan`: Updates to task lists or implementation plans
+- Allowed type `rules`: Changes to agent behaviour and constraint files (AGENTS.md, CLAUDE.md, .cursorrules, and any file @-included from them.)
+- Allowed type `skill`: Changes to reusable agent workflow definitions (SKILL.md files)
+- Allowed type `mcp`: Changes to MCP server configs, tool definitions, or external integrations
