@@ -206,8 +206,13 @@ finds `addNumbers` in the `"+"` binding list, sees its signature matches, and di
 Each impl preserves decimal precision and propagates `BlNull`. The return type is `BlValue`
 (rather than `BlNumber`) for every operation that may legitimately yield `null` — division by
 zero, a complex `**` result, comparing against null. Unary negation cannot fail or produce null,
-so `negNumber` returns the tighter `BlNumber` type. Equality (`eqNumbers`) is registered per-type
-on the numeric path; the engine also has a cross-type fallback for `null = null` etc.
+so `negNumber` returns the tighter `BlNumber` type.
+
+Equality (`=` / `!=`) is **not** registered as a per-type operator impl here. The engine
+dispatches `=` / `!=` through the `Equal()` method on the `BlValue` interface, which every type
+implements with its own semantics (numeric equality ignores trailing zeros, string equality is
+case-sensitive code-point comparison, etc.). That single dispatch path handles null propagation
+and cross-type comparison uniformly.
 
 ```go
 func addNumbers(a, b BlNumber) BlValue   // "+"
@@ -220,8 +225,7 @@ func ltNumbers(a, b BlNumber) BlValue    // "<"
 func leNumbers(a, b BlNumber) BlValue    // "<="
 func gtNumbers(a, b BlNumber) BlValue    // ">"
 func geNumbers(a, b BlNumber) BlValue    // ">="
-func eqNumbers(a, b BlNumber) BlValue    // "="
-func neNumbers(a, b BlNumber) BlValue    // "!="
+// "=" and "!=" go through BlValue.Equal(); see BlNumber.Equal() above.
 ```
 
 These are written in clean typed form (`BlNumber → BlValue`) for readability and unit testing.
@@ -300,8 +304,7 @@ func numberOptions() []expr.Option {
         expr.Function("leNumbers",  typed2(leNumbers),  new(func(BlNumber, BlNumber) BlValue)),
         expr.Function("gtNumbers",  typed2(gtNumbers),  new(func(BlNumber, BlNumber) BlValue)),
         expr.Function("geNumbers",  typed2(geNumbers),  new(func(BlNumber, BlNumber) BlValue)),
-        expr.Function("eqNumbers",  typed2(eqNumbers),  new(func(BlNumber, BlNumber) BlValue)),
-        expr.Function("neNumbers",  typed2(neNumbers),  new(func(BlNumber, BlNumber) BlValue)),
+        // = and != dispatch via BlValue.Equal() — no per-type registration
 
         // library
         expr.Function("roundHalfEven", typed2(roundHalfEvenFn), new(func(BlNumber, BlNumber) BlNumber)),
