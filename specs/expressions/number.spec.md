@@ -129,6 +129,29 @@ this section gives the concrete value type, host API, and registrations.
 
 ### Value type & host API (exported)
 
+`BlNumber` is the immutable Go value type that represents a number inside the engine and at the
+host-code boundary. Its only field is private (`d`) so callers cannot mutate the underlying
+decimal — every operation in the library returns a fresh `BlNumber`.
+
+The exported surface has three parts:
+
+- **`BlValue` interface methods** — `Type()`, `Equal()`, `String()`, and the unexported
+  `isBlValue()` marker — required of every blkit value type so the engine can treat them
+  uniformly. `isBlValue()` is the sealing mechanism: because it's unexported, no type outside
+  this package can satisfy `BlValue`, preventing host code from inventing fake values that the
+  engine would then have to defend against. `String()` doubles as the `fmt.Stringer`
+  implementation, so `fmt.Println(n)` produces a readable form rather than the raw struct.
+- **`Number[T NumberInput](v T)`** — the generic host constructor. The `NumberInput` constraint
+  is the compile-time gate on what host code is allowed to pass in; anything outside the union
+  is rejected by the compiler rather than failing at runtime. The `error` return only fires at
+  runtime for the two cases the constraint cannot rule out: a `float32`/`float64` that holds
+  `NaN`/`Inf`, and a `string` that cannot be parsed after format-stripping. All other input
+  types (integers, `bool`, `decimal.Decimal`) are infallible — the conversion always succeeds.
+- **`Decimal()` accessor** — hands the underlying `shopspring/decimal` value back to host code.
+  This is the only conversion accessor needed because `shopspring/decimal` itself provides
+  `IntPart()`, `Float64()`, `StringFixed()`, `BigInt()` and so on — there's no point blkit
+  wrapping each of those.
+
 ```go
 // BlNumber wraps an arbitrary-precision decimal (backing type: github.com/shopspring/decimal).
 type BlNumber struct{ d decimal.Decimal }
@@ -158,10 +181,33 @@ func Number[T NumberInput](v T) (BlNumber, error)
 func (n BlNumber) Decimal() decimal.Decimal         // underlying value; use shopspring/decimal API for further conversion
 ```
 
-### Operator impl funcs (unexported)
+### Operator implementation functions (unexported)
 
-Bound to operator tokens centrally in `operatorBindings()` (the engine collects these names across
-spokes); each preserves decimal precision and propagates `BlNull`:
+`expr-lang/expr` has no knowledge of `BlNumber` and cannot apply Go's native `+`/`-`/`<`/etc. to
+blkit values. For every operator that should work on two numbers, blkit supplies a named Go
+function that performs the operation in `shopspring/decimal` and returns the result wrapped as a
+`BlValue`. The connection from operator token to function happens in two steps, neither of which
+is unique to `BlNumber`:
+
+1. The Registrations section below calls `expr.Function("addNumbers", typed2(addNumbers), …)`,
+   which makes the engine aware of the function under that exact string name and records its type
+   signature.
+2. A central `operatorBindings()` in [bl-expr.spec.md](bl-expr.spec.md#operator-bindings) then
+   calls `expr.Operator("+", "addNumbers", "concatStrings", "addDateYM", …)`, which tells the
+   engine "when you see `+` at parse time, try each of these registered functions in turn and
+   dispatch to whichever one's signature matches the operand types." This step is centralised in
+   one place because a single operator spans many types — `+` covers number addition, string
+   concatenation, date+duration, time+duration, and duration+duration — and `expr.Operator`
+   needs the full list of candidates for each operator in a single call.
+
+So when the parser encounters `a + b` and both operands type-check to `BlNumber`, the engine
+finds `addNumbers` in the `"+"` binding list, sees its signature matches, and dispatches to it.
+
+Each impl preserves decimal precision and propagates `BlNull`. The return type is `BlValue`
+(rather than `BlNumber`) for every operation that may legitimately yield `null` — division by
+zero, a complex `**` result, comparing against null. Unary negation cannot fail or produce null,
+so `negNumber` returns the tighter `BlNumber` type. Equality (`eqNumbers`) is registered per-type
+on the numeric path; the engine also has a cross-type fallback for `null = null` etc.
 
 ```go
 func addNumbers(a, b BlNumber) BlValue   // "+"
@@ -170,53 +216,126 @@ func mulNumbers(a, b BlNumber) BlValue   // "*"
 func divNumbers(a, b BlNumber) BlValue   // "/"  — divisor 0 → Null
 func powNumber(a, b BlNumber) BlValue    // "**" — complex result → Null
 func negNumber(n BlNumber) BlNumber      // unary "-" (patcher → negate)
-func ltNumbers(a, b BlNumber) BlValue    // "<" ; le/gt/ge/eq/ne likewise
+func ltNumbers(a, b BlNumber) BlValue    // "<"
+func leNumbers(a, b BlNumber) BlValue    // "<="
+func gtNumbers(a, b BlNumber) BlValue    // ">"
+func geNumbers(a, b BlNumber) BlValue    // ">="
+func eqNumbers(a, b BlNumber) BlValue    // "="
+func neNumbers(a, b BlNumber) BlValue    // "!="
+```
+
+These are written in clean typed form (`BlNumber → BlValue`) for readability and unit testing.
+The engine cannot consume them at this shape directly — they're wrapped by the `typed1`/`typed2`
+adapters in the registrations block below.
+
+### Backing implementations (unexported, suffix `Fn`)
+
+The library, round, and conversion functions are implemented as these typed Go functions. They
+are wrapped by `typed1`/`typed2`/`typed3` when registered with the engine in the next section.
+Variadic implementations (`floorFn`, `ceilingFn`, `logFn`, `numberFn`) instead implement the
+engine's `func(...any) (any, error)` shape directly because they accept optional arguments and
+cannot be expressed via a fixed-arity adapter.
+
+```go
+// Typed implementations — wrapped by typed1/typed2/typed3 at registration.
+func roundFn(n, scale BlNumber) BlNumber          // strict alias of roundHalfUpFn
+func roundUpFn(n, scale BlNumber) BlNumber
+func roundDownFn(n, scale BlNumber) BlNumber
+func roundHalfUpFn(n, scale BlNumber) BlNumber
+func roundHalfDownFn(n, scale BlNumber) BlNumber
+func roundHalfEvenFn(n, scale BlNumber) BlNumber
+func absFn(n BlNumber) BlNumber
+func moduloFn(a, b BlNumber) BlValue              // floor division; b==0 → Null
+func sqrtFn(n BlNumber) BlValue                   // n<0 → Null
+func expFn(n BlNumber) BlNumber
+func lnFn(n BlNumber) BlValue                     // n≤0 → Null
+func oddFn(n BlNumber) BlBoolean
+func evenFn(n BlNumber) BlBoolean
+func isPositiveFn(n BlNumber) BlBoolean
+func isNegativeFn(n BlNumber) BlBoolean
+func isZeroFn(n BlNumber) BlBoolean
+func clampFn(n, min, max BlNumber) BlValue        // min>max → Null
+
+// Variadic implementations — handle optional args themselves in expr's raw shape.
+func floorFn(args ...any) (any, error)            // 1- or 2-arg
+func ceilingFn(args ...any) (any, error)          // 1- or 2-arg
+func logFn(args ...any) (any, error)              // 1- or 2-arg (default base 10)
+func numberFn(args ...any) (any, error)           // 1- or 3-arg
 ```
 
 ### Registrations (`numberOptions`, unexported)
 
+`numberOptions()` returns the slice of `expr.Option` values the engine consumes during
+initialisation to learn about every number-related operator impl and library function. Each entry
+is built with `expr.Function(name, impl, typeHints...)`, where:
+
+- `name` is the identifier the parser will recognise in expressions (and that `operatorBindings()`
+  references for operator dispatch).
+- `impl` must have the signature `func(...any) (any, error)` — that is the only shape
+  [`expr-lang/expr`](https://github.com/expr-lang/expr) accepts. The `typed1` / `typed2` /
+  `typed3` adapters (defined in [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go))
+  wrap a typed implementation such as `func(BlNumber, BlNumber) BlValue` into that shape,
+  type-asserting each argument and boxing the result. The variadic implementations declared
+  above already satisfy the shape and are registered directly.
+- `typeHints` is a variadic list of `new(func(...) ...)` values. The engine reflects on them at
+  compile time to validate that callers supply the right argument types — they carry no runtime
+  cost. Multiple hints register the function as overloaded across arities (`floor(n)` and
+  `floor(n, scale)` are both valid).
+
+The registrations are grouped to reflect their role: operator impls (consumed by
+`operatorBindings()`), library functions (called directly by name from expressions), and
+conversions (`number`, `string`).
+
 ```go
 func numberOptions() []expr.Option {
     return []expr.Option{
-        // operator impls (named, so operatorBindings can reference them)
+        // operator impls — bound to operator tokens by operatorBindings()
         expr.Function("addNumbers", typed2(addNumbers), new(func(BlNumber, BlNumber) BlValue)),
-        // … subNumbers, mulNumbers, divNumbers, powNumber, negNumber, ltNumbers, …
+        expr.Function("subNumbers", typed2(subNumbers), new(func(BlNumber, BlNumber) BlValue)),
+        expr.Function("mulNumbers", typed2(mulNumbers), new(func(BlNumber, BlNumber) BlValue)),
+        expr.Function("divNumbers", typed2(divNumbers), new(func(BlNumber, BlNumber) BlValue)),
+        expr.Function("powNumber",  typed2(powNumber),  new(func(BlNumber, BlNumber) BlValue)),
+        expr.Function("negNumber",  typed1(negNumber),  new(func(BlNumber) BlNumber)),
+        expr.Function("ltNumbers",  typed2(ltNumbers),  new(func(BlNumber, BlNumber) BlValue)),
+        expr.Function("leNumbers",  typed2(leNumbers),  new(func(BlNumber, BlNumber) BlValue)),
+        expr.Function("gtNumbers",  typed2(gtNumbers),  new(func(BlNumber, BlNumber) BlValue)),
+        expr.Function("geNumbers",  typed2(geNumbers),  new(func(BlNumber, BlNumber) BlValue)),
+        expr.Function("eqNumbers",  typed2(eqNumbers),  new(func(BlNumber, BlNumber) BlValue)),
+        expr.Function("neNumbers",  typed2(neNumbers),  new(func(BlNumber, BlNumber) BlValue)),
 
         // library
         expr.Function("roundHalfEven", typed2(roundHalfEvenFn), new(func(BlNumber, BlNumber) BlNumber)),
-        expr.Function("floor",    floorFn,            new(func(BlNumber) BlNumber), new(func(BlNumber, BlNumber) BlNumber)),
-        expr.Function("ceiling",  ceilingFn,          new(func(BlNumber) BlNumber), new(func(BlNumber, BlNumber) BlNumber)),
-        expr.Function("round",    typed2(roundFn),    new(func(BlNumber, BlNumber) BlNumber)),       // ext (alias roundHalfUp)
-        expr.Function("roundUp",  typed2(roundUpFn),  new(func(BlNumber, BlNumber) BlNumber)),
-        // … roundDown, roundHalfUp, roundHalfDown
-        expr.Function("abs",      typed1(absFn),      new(func(BlNumber) BlNumber)),
-        expr.Function("modulo",   typed2(moduloFn),   new(func(BlNumber, BlNumber) BlValue)),
-        expr.Function("sqrt",     typed1(sqrtFn),     new(func(BlNumber) BlValue)),
-        expr.Function("exp",      typed1(expFn),      new(func(BlNumber) BlNumber)),
-        expr.Function("ln",       typed1(lnFn),       new(func(BlNumber) BlValue)),                  // ext
-        expr.Function("log",      logFn,              new(func(BlNumber) BlValue), new(func(BlNumber, BlNumber) BlValue)), // ext
-        expr.Function("odd",      typed1(oddFn),      new(func(BlNumber) BlBoolean)),
-        expr.Function("even",     typed1(evenFn),     new(func(BlNumber) BlBoolean)),
-        expr.Function("isPositive", typed1(isPositiveFn), new(func(BlNumber) BlBoolean)),            // ext
-        // … isNegative, isZero
-        expr.Function("clamp",    typed3(clampFn),    new(func(BlNumber, BlNumber, BlNumber) BlValue)), // ext
+        expr.Function("floor",         floorFn,                 new(func(BlNumber) BlNumber), new(func(BlNumber, BlNumber) BlNumber)),
+        expr.Function("ceiling",       ceilingFn,               new(func(BlNumber) BlNumber), new(func(BlNumber, BlNumber) BlNumber)),
+        expr.Function("round",         typed2(roundFn),         new(func(BlNumber, BlNumber) BlNumber)),
+        expr.Function("roundUp",       typed2(roundUpFn),       new(func(BlNumber, BlNumber) BlNumber)),
+        expr.Function("roundDown",     typed2(roundDownFn),     new(func(BlNumber, BlNumber) BlNumber)),
+        expr.Function("roundHalfUp",   typed2(roundHalfUpFn),   new(func(BlNumber, BlNumber) BlNumber)),
+        expr.Function("roundHalfDown", typed2(roundHalfDownFn), new(func(BlNumber, BlNumber) BlNumber)),
+        expr.Function("abs",           typed1(absFn),           new(func(BlNumber) BlNumber)),
+        expr.Function("modulo",        typed2(moduloFn),        new(func(BlNumber, BlNumber) BlValue)),
+        expr.Function("sqrt",          typed1(sqrtFn),          new(func(BlNumber) BlValue)),
+        expr.Function("exp",           typed1(expFn),           new(func(BlNumber) BlNumber)),
+        expr.Function("ln",            typed1(lnFn),            new(func(BlNumber) BlValue)),
+        expr.Function("log",           logFn,                   new(func(BlNumber) BlValue), new(func(BlNumber, BlNumber) BlValue)),
+        expr.Function("odd",           typed1(oddFn),           new(func(BlNumber) BlBoolean)),
+        expr.Function("even",          typed1(evenFn),          new(func(BlNumber) BlBoolean)),
+        expr.Function("isPositive",    typed1(isPositiveFn),    new(func(BlNumber) BlBoolean)),
+        expr.Function("isNegative",    typed1(isNegativeFn),    new(func(BlNumber) BlBoolean)),
+        expr.Function("isZero",        typed1(isZeroFn),        new(func(BlNumber) BlBoolean)),
+        expr.Function("clamp",         typed3(clampFn),         new(func(BlNumber, BlNumber, BlNumber) BlValue)),
 
         // conversion
-        expr.Function("number",   numberFn,           new(func(BlString, BlString, BlString) BlNumber)),
-        expr.Function("string",   stringFn,           new(func(BlValue) BlString)), // shared registration (see string.spec.md)
+        expr.Function("number", numberFn, new(func(BlString, BlString, BlString) BlNumber)),
+        expr.Function("string", stringFn, new(func(BlValue) BlString)), // shared registration; defined in string.spec.md
     }
 }
-
-// Backing impls (unexported, suffix Fn). typed1/typed2/typed3 are the adapters
-// from § Engine internals that supply expr's func(...any)(any,error) shape.
-func floorFn(args ...any) (any, error) { /* 1- or 2-arg */ }
-func moduloFn(a, b BlNumber) BlValue   { /* floor division; b==0 → Null */ }
-// …
 ```
 
-`number(from, groupingSeparator, decimalSeparator)` parses formatted text; `string(n)` renders.
-Native `int`/`float64`/decimal-`string` inputs are wrapped to `BlNumber` by the engine bridge; a
-thousands-separated string is rejected — use `number(...)`.
+`round` is a strict alias of `roundHalfUp`. `number(from, groupingSeparator, decimalSeparator)`
+parses formatted text; `string(n)` renders. Native `int`/`float64`/decimal-`string` inputs are
+wrapped to `BlNumber` by the engine bridge; a thousands-separated string is rejected — use
+`number(...)`.
 
 `[@test] ../../expr/number_test.go`
 
