@@ -306,22 +306,25 @@ See [calendar.spec.md](calendar.spec.md) for the calendar's `validFrom`/`validTo
 
 ## Re-zoning (**ext**)
 
-Two functions change the zone of a datetime while **preserving the instant** — the wall-clock
+Two functions change the zone of a value while **preserving the instant** — the wall-clock
 numbers shift to reflect the new zone. (To preserve the wall-clock numbers and drop the zone
 label instead, use [§ Zone stripping](#zone-stripping-ext).)
 
 | Function | Example | Result |
 |---|---|---|
-| `withOffset(dt, off)` | `withOffset(datetime("2025-03-28T14:30:00+01:00"), duration("PT2H"))` | `datetime("2025-03-28T15:30:00+02:00")` (same instant, new offset) |
+| `withOffset(v, off)` | `withOffset(datetime("2025-03-28T14:30:00+01:00"), duration("PT2H"))` | `datetime("2025-03-28T15:30:00+02:00")` (same instant, new offset) |
+| `withOffset(v, off)` | `withOffset(time("14:30:00Z"), duration("PT1H"))` | `time("15:30:00+01:00")` (same instant, new offset) |
 | `withTimezone(dt, zone)` | `withTimezone(datetime("2025-03-28T14:30:00Z"), "Europe/Paris")` | `datetime("2025-03-28T15:30:00[Europe/Paris]")` (same instant, new zone) |
 
-`withOffset` takes a `BlDaysTimeDuration`; `withTimezone` takes a `BlString` IANA name (unknown
-zone → `BlTypeError`). For re-zoning to UTC, pass `duration("PT0H")` to `withOffset`. Neither
-function is defined for naive datetimes (no source zone to convert *from*) — calling on a naive
-input returns `BlNull`.
+`withOffset` takes a `BlDaysTimeDuration` and accepts either a `BlTime` or a `BlDateTime` as
+its first argument, returning the same type. `withTimezone` takes a `BlString` IANA name
+(unknown zone → `BlTypeError`) and is `BlDateTime`-only — wall-clock-only times cannot meaningfully
+carry an IANA zone over time. For re-zoning to UTC, pass `duration("PT0H")` to `withOffset`.
+Neither function is defined for naive values (no source zone to convert *from*) — calling on a
+naive input returns `BlNull`.
 
-Only `BlDateTime` is supported; dates and times don't carry enough information for this
-operation.
+`BlDate` is not supported by either function — a date has no time-of-day to shift across a
+zone boundary.
 
 `[@test] ../../expr/datetime_rezoning_test.go`
 
@@ -504,7 +507,7 @@ fixed-arity adapter.
 ```go
 // Datetime-only typed implementations.
 func nowFn() BlDateTime
-func dtWithOffsetFn(dt BlDateTime, off BlDaysTimeDuration) BlDateTime
+func withOffsetFn(v, off any) any              // BlTime → BlTime, BlDateTime → BlDateTime; dispatch on first-arg type
 func withTimezoneFn(dt BlDateTime, zone BlString) BlDateTime         // unknown zone → BlTypeError
 
 // Datetime-only variadic implementation.
@@ -618,7 +621,9 @@ func datetimeOptions() []expr.Option {
         expr.Function("now",          nowFn,                  new(func() BlDateTime)),
 
         // re-zoning
-        expr.Function("withOffset",   typed2(dtWithOffsetFn), new(func(BlDateTime, BlDaysTimeDuration) BlDateTime)),
+        expr.Function("withOffset",   typed2(withOffsetFn),
+            new(func(BlTime, BlDaysTimeDuration) BlTime),
+            new(func(BlDateTime, BlDaysTimeDuration) BlDateTime)),
         expr.Function("withTimezone", typed2(withTimezoneFn), new(func(BlDateTime, BlString) BlDateTime)),
 
         // calendar utilities (shared with date) — single registration covers both BlDate and BlDateTime
