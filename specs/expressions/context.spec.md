@@ -43,7 +43,7 @@ Keys are non-empty, case-sensitive strings; insertion order is preserved.
 
 ## Built-in functions
 
-Standard DMN functions plus blkit extensions (**ext**).
+DMN-inspired functions plus blkit extensions (**ext**).
 
 | Function | Example | Result |
 |---|---|---|

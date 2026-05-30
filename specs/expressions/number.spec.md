@@ -64,7 +64,7 @@ accepted; a leading `-` is the unary minus operator applied to a non-negative li
 
 ## Built-in functions
 
-Standard DMN functions plus blkit extensions (**ext**, flagged — no DMN equivalent). Signatures use
+DMN-inspired functions plus blkit extensions (**ext**, flagged — no DMN equivalent). Signatures use
 `name(arg: type): returnType`. `scale` is a decimal-place count.
 
 | Function | Example | Result |

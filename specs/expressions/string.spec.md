@@ -88,7 +88,7 @@ Concatenation is **string-only**; to join a non-string, convert first: `"order-"
 
 ## Built-in functions
 
-Standard DMN functions plus blkit extensions (**ext** — no DMN equivalent). Positions are 1-indexed.
+DMN-inspired functions plus blkit extensions (**ext** — no DMN equivalent). Positions are 1-indexed.
 
 | Function | Example | Result |
 |---|---|---|
@@ -115,7 +115,7 @@ Standard DMN functions plus blkit extensions (**ext** — no DMN equivalent). Po
 | `padLeading(s, length[, padChar])` **ext** | `padLeading("7", 4, "0")` | `"0007"` |
 | `padTrailing(s, length[, padChar])` **ext** | `padTrailing("hi", 5, ".")` | `"hi..."` |
 | `repeat(s, times)` **ext** | `repeat("ab", 3)` | `"ababab"` |
-| `stringJoin(list[, delimiter[, prefix, suffix]])` | `stringJoin(["a","b"], ", ")` | `"a, b"` |
+| `stringJoin(list[, delimiter[, prefix, suffix]])` | `stringJoin(["a","b"], ", ")` | `"a, b"` — full docs in [list.spec.md](list.spec.md#built-in-functions) (lives there alongside the other list-reducing functions like `sum`/`min`/`max`) |
 
 Concatenation of many parts uses `+` chains or `stringJoin`. `string(from)` (any → string) is the
 conversion built-in (see [§ Go implementation](#go-implementation-expr-extension)).
@@ -293,7 +293,7 @@ adapters at registration time.
 The library and conversion functions are implemented as these typed Go functions. They are
 wrapped by `typed1`/`typed2`/`typed3` when registered with the engine in the next section.
 Variadic implementations (`substringFn`, `matchesFn`, `replaceFn`, `extractFn`, `padLeadingFn`,
-`padTrailingFn`, `stringJoinFn`) instead implement the engine's `func(...any) (any, error)` shape
+`padTrailingFn`) instead implement the engine's `func(...any) (any, error)` shape
 directly because they accept optional arguments and cannot be expressed via a fixed-arity adapter.
 
 ```go
@@ -324,7 +324,7 @@ func replaceFn(args ...any) (any, error)      // 3- or 4-arg (optional flags)
 func extractFn(args ...any) (any, error)      // 2- or 3-arg (optional flags)
 func padLeadingFn(args ...any) (any, error)   // 2- or 3-arg (optional padChar)
 func padTrailingFn(args ...any) (any, error)  // 2- or 3-arg (optional padChar)
-func stringJoinFn(args ...any) (any, error)   // 1-, 2-, or 4-arg
+// stringJoin's backing impl lives in list.spec.md — see § Backing implementations there.
 func stringConvFn(args ...any) (any, error)   // string(from) — accepts any BlValue
 ```
 
@@ -348,8 +348,7 @@ beyond what blkit already pulls in:
   [`strings.HasPrefix`](https://pkg.go.dev/strings#HasPrefix) / `HasSuffix`, `upperCaseFn`/
   `lowerCaseFn` → [`strings.ToUpper`](https://pkg.go.dev/strings#ToUpper) / `ToLower` (simple
   per-rune mapping; no locale-aware case folding), `repeatFn` →
-  [`strings.Repeat`](https://pkg.go.dev/strings#Repeat), `stringJoinFn` →
-  [`strings.Join`](https://pkg.go.dev/strings#Join).
+  [`strings.Repeat`](https://pkg.go.dev/strings#Repeat).
 - **`regexp`** for the regex funcs (`matchesFn`/`replaceFn`/`extractFn`) — compiled via Go's
   [`regexp`](https://pkg.go.dev/regexp) package (RE2 syntax); `matches` anchors with `^(?:…)$`
   before compiling. A bad pattern → `BlRegexError`. The multi-delimiter `split` form also routes
@@ -427,9 +426,8 @@ func stringOptions() []expr.Option {
         expr.Function("padTrailing",     padTrailingFn,             new(func(BlString, BlNumber) BlString),
                                                                     new(func(BlString, BlNumber, BlString) BlString)),
         expr.Function("repeat",          typed2(repeatFn),          new(func(BlString, BlNumber) BlString)),
-        expr.Function("stringJoin",      stringJoinFn,              new(func(BlList) BlString),
-                                                                    new(func(BlList, BlString) BlString),
-                                                                    new(func(BlList, BlString, BlString, BlString) BlString)),
+        // stringJoin is registered in list.spec.md (its first arg is a BlList, and it lives
+        // there alongside the other list-reducing functions like sum/min/max/zipStringJoin).
 
         // conversion
         expr.Function("string", stringConvFn, new(func(BlValue) BlString)), // string(from) — any BlValue → BlString

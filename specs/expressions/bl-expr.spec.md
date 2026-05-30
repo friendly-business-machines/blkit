@@ -385,7 +385,8 @@ list.
 for x in [1, 2, 3] return x * 2          // → [2, 4, 6]
 ```
 
-**Multiple iterators** produce the cartesian product, iterating the rightmost fastest:
+**Multiple iterators** pair each element of the first list with each element of the second
+(every combination), iterating the rightmost fastest:
 
 ```
 for x in [1, 2], y in [3, 4] return x * y    // → [3, 4, 6, 8]
@@ -422,6 +423,14 @@ every x in [1, 2, 3] satisfies x >= 1         // → true
 every x in [1, 2, 3] satisfies x > 2          // → false
 
 some order in orders satisfies order.total > 1000
+```
+
+**Multiple iterators** pair each element of the first list with each element of the second
+(same as `for`), and the condition is tested against every combination:
+
+```
+some x in [1, 2], y in [3, 4] satisfies x + y > 5     // → true   (2 + 4 > 5)
+every x in [1, 2], y in [3, 4] satisfies x + y >= 4   // → true   (every pair has sum ≥ 4)
 ```
 
 `[@test] ../../expr/quantified_test.go`
@@ -549,7 +558,7 @@ cases, and Go registration. This catalogue is the index:
 | Boolean | `not`, `isDefined`, `getOrElse` | [boolean.spec.md](boolean.spec.md) |
 | String | `substring`, `stringLength`, `upperCase`, `contains`, `matches`, `replace`, `split`, `stringJoin`, … | [string.spec.md](string.spec.md) |
 | Numeric | `decimal`, `floor`, `ceiling`, `round*`, `abs`, `modulo`, `sqrt`, `log`, `ln`, `exp`, `odd`, `even`, … | [number.spec.md](number.spec.md) |
-| List | `count`, `min`, `max`, `sum`, `mean`, `sublist`, `append`, `concatenate`, `union`, `distinctValues`, `flatten`, `sort`, … | [list.spec.md](list.spec.md) |
+| List | `count`, `min`, `max`, `sum`, `mean`, `sublist`, `append`, `concatenate`, `union`, `distinct`, `flatten`, `sort`, … | [list.spec.md](list.spec.md) |
 | Context | `getValue`, `getEntries`, `contextPut`, `contextMerge` | [context.spec.md](context.spec.md) |
 | Temporal | `now`, `today`, `lastDayOfMonth`, `addBusinessDays`, `is*`, … (calendar properties such as `.dayName`, `.monthName` are dot accessors, not function calls — see [date.spec.md § Calendar properties](date.spec.md#calendar-properties)) | [date](date.spec.md) / [time](time.spec.md) / [datetime](datetime.spec.md) |
 | Duration | `duration` components, `abs` | [days_time_duration](days_time_duration.spec.md) / [years_months_duration](years_months_duration.spec.md) |

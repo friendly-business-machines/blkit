@@ -76,7 +76,7 @@ day components ignored for `date`). Comparing a tz-aware date with a tz-naive on
 
 ## Built-in functions
 
-Standard DMN functions plus blkit extensions (**ext**). Day-of-week arguments are English full names
+DMN-inspired functions plus blkit extensions (**ext**). Day-of-week arguments are English full names
 (`"Monday"`…`"Sunday"`); month names likewise.
 
 ### Calendar properties
