@@ -131,33 +131,6 @@ time with `datetime(date, time)` ([datetime.spec.md](datetime.spec.md)).
 
 ---
 
-## Migration mapping (legacy method-chained → string)
-
-| Legacy | New form |
-|---|---|
-| `Bl.Date(y,m,d, opts)` | `date(y, m, d)` / `date("…")` (offset/zone via string) |
-| `Bl.ToDate(str)` / `Bl.DateFromDateTime(dt)` / `Bl.Today` | `date("…")` / `date(dt)` / `today()` |
-| `year`/`month`/`day` | `.year`/`.month`/`.day` |
-| `offset`/`timezone` | `.offset` **ext** / `.timezone` **ext** |
-| `dayOfWeek`/`dayOfYear`/`weekOfYear`/`monthOfYear` | same-named built-ins |
-| `add`/`subtract` | `+`/`-` (duration) |
-| `addBusinessDays`/`subtractBusinessDays` | same-named built-ins **ext** |
-| `diffYearsMonths`/`diffDaysTime` | `yearsAndMonthsDuration(a,b)` / `b - a` |
-| `weekdaysBetween`/`businessDaysBetween` | same-named built-ins **ext** |
-| `firstDayOfMonth`/`lastDayOfMonth`/`lastDayOfPrevMonth`/`firstDayOfNextMonth` | built-ins (`lastDayOfMonth` standard; rest **ext**) |
-| `firstDayOfWeekInMonth`/`lastDayOfWeekInMonth`/`nthDayOfWeekInMonth` | same-named built-ins **ext** |
-| `nextDayOfWeek`/`prevDayOfWeek`/`nextWeekday`/`prevWeekday`/`nextBusinessDay`/`prevBusinessDay` | same-named built-ins **ext** |
-| `isWeekday` / `isWeekend` | same-named built-ins **ext** |
-| `isHoliday(calendar)` | `isPublicHoliday(d, phCalendar)` **ext** (renamed) |
-| `equals`/`notEqual`/`before`/`after`/`beforeOrEqual`/`afterOrEqual` | `=` `!=` `<` `>` `<=` `>=` |
-| `between` / `in` | `between a and b` / `in` operators |
-| `coincides`/`starts`/`during`/`finishes` | interval-algebra built-ins ([range.spec.md](range.spec.md)) |
-| `withoutOffset`/`withoutTimezone`/`withoutOffsetOrTimezone` | same-named built-ins **ext** |
-| `atTime(t)` | `datetime(date, time)` |
-| `compareTo`/`String` | Go host accessors (below) |
-
----
-
 ## Go implementation (expr extension)
 
 Lives in `expr/date.go`. Shared mechanics in
@@ -165,74 +138,220 @@ Lives in `expr/date.go`. Shared mechanics in
 
 ### Value type & host API (exported)
 
-```go
-// BlDate stores a calendar date plus an optional UTC offset OR IANA zone (not both).
-type BlDate struct{ y, m, d int; offset *string; zone *string }
+`BlDate` is the immutable Go value type that represents a calendar date inside the engine and
+at the host-code boundary. It wraps a Go [`time.Time`](https://pkg.go.dev/time#Time) — Go has
+no separate date type, so `time.Time` is used by convention with the time portion set to
+`00:00:00.000000000` (midnight) and ignored by all `BlDate` operations — plus a `naive`
+boolean that distinguishes the timezone-naive case from a genuinely UTC-located one. Both
+fields are private so callers cannot mutate the underlying value; every operation in the
+library returns a fresh `BlDate`.
 
+Constructors normalise the time portion to midnight on input. Conversions in/out (e.g.
+`Time()` accessor returning the wrapped `time.Time`, or callers passing a `time.Time` into
+`Date(...)` whose time-of-day is non-zero) discard the time component; callers should not
+read the hour/minute/second fields of a `BlDate.Time()` value.
+
+The `naive` flag is needed because Go's `time.Time` always carries a non-nil `*time.Location`,
+so there is no built-in way to represent "a calendar date with no timezone interpretation".
+When `naive` is true, the `Location()` of the wrapped `time.Time` is `time.UTC` by convention
+and must be ignored. When `naive` is false, the `Location()` is meaningful and may be
+`time.UTC`, a fixed-offset zone from [`time.FixedZone`](https://pkg.go.dev/time#FixedZone), or
+an IANA zone loaded via [`time.LoadLocation`](https://pkg.go.dev/time#LoadLocation).
+
+The exported surface has three parts:
+
+- **`BlValue` interface methods** — `Type()`, `Equal()`, `String()`, and the unexported
+  `isBlValue()` marker — required of every blkit value type so the engine can treat them
+  uniformly. `Equal` compares wall-clock dates when both operands are naive, and compares the
+  underlying `time.Time` instants (date portion, equivalent location) when both are zoned;
+  mixing them returns `BlNull`. `String()` doubles as the `fmt.Stringer` implementation,
+  producing the canonical ISO 8601 / RFC 9557 form (e.g. `"2025-03-28"`,
+  `"2025-03-28+05:30"`, or `"2025-03-28[Europe/London]"`).
+- **`Date[T DateInput](v T)`** — the generic host constructor. `DateInput` accepts `string`
+  (parsed as ISO 8601 / RFC 9557 — `naive` is set based on whether a zone designator was
+  present), `time.Time` (the date portion is extracted; `naive` is always false because a
+  `time.Time` always carries a `Location`), or a `DateComponents` struct for explicit
+  component-by-component construction (`naive` is true if and only if both `Offset` and `Zone`
+  are absent). The `error` return fires for unparseable strings, invalid components
+  (month=13, day=32, etc.), or a `DateComponents` with both `Offset` and `Zone` set (they're
+  mutually exclusive). Host code wanting a naive result from a `time.Time` should pipe it
+  through `ToDateComponentsAsNaive` first.
+- **`Time()` accessor** — hands back the wrapped `time.Time` (with the date portion
+  meaningful, time portion conventionally 00:00:00). For non-naive values this is the full
+  representation. For naive values the host receives a `time.Time` with `Location() == time.UTC`,
+  which it MUST treat as wall-clock — callers that need to know which kind they have should
+  also call `IsNaive()`.
+- **`IsNaive()` accessor** — reports whether the value is timezone-naive.
+- **`Today()`** — convenience helper that returns the current date as a naive `BlDate` in the
+  system's local zone (uses `time.Now().Local()` and strips the time portion).
+
+```go
+type BlDate struct {
+    t     time.Time   // date portion meaningful; Location() carries offset or IANA zone when naive==false
+    naive bool        // true when no offset/zone was specified — Location() is ignored
+}
+
+// BlValue interface — required by all Bl* value types.
 func (BlDate) Type() BlType { return BlTypeDate }
-func (d BlDate) Equal(other BlValue) BlValue
-func (d BlDate) ToMarkdown() string
+func (d BlDate) Equal(other BlValue) BlValue   // wall-clock or zoned; cross-kind → Null
+func (d BlDate) String() string                // canonical ISO 8601 / RFC 9557
 func (BlDate) isBlValue() {}
 
-// Host constructors / accessors
-func Date(year, month, day int, opts ...DateOption) (BlDate, error) // WithOffset / WithTimezone
-func Today(tz ...string) BlDate
-func (d BlDate) CompareTo(other BlDate) int
-func (d BlDate) String() string  // ISO 8601
+// Host constructor — accepts an ISO 8601/RFC 9557 string, a Go time.Time, or component bundle.
+type DateComponents struct {
+    Year, Month, Day int
+    Offset *time.Duration   // optional; mutually exclusive with Zone
+    Zone   string           // optional; IANA name; mutually exclusive with Offset
+}
+type DateInput interface { string | time.Time | DateComponents }
+func Date[T DateInput](v T) (BlDate, error)
+
+// Decompose a time.Time into date components with Offset/Zone unset, so the
+// resulting DateComponents builds a naive BlDate when passed to Date. Use this
+// when host code has a time.Time but wants to drop its zone interpretation.
+func ToDateComponentsAsNaive(t time.Time) DateComponents
+
+// Convenience for current date.
+func Today() BlDate
+
+// Host accessors (consume an evaluated result).
+func (d BlDate) Time() time.Time               // wrapped time.Time; for naive values its Location() is UTC and must be ignored
+func (d BlDate) IsNaive() bool                 // true when timezone-naive
 ```
 
-### Operator impl funcs (unexported)
+### Operator implementation functions (unexported)
 
-```go
-func addDateYM(d BlDate, dur BlYearsMonthsDuration) BlDate      // "+" (day clamped)
-func addDateDT(d BlDate, dur BlDaysTimeDuration) BlDate         // "+" (whole days)
-func subDateDur(d BlDate, dur BlValue) BlValue                  // "-" (either duration)
-func subDates(a, b BlDate) BlDaysTimeDuration                   // "-" date−date
-func ltDates(a, b BlDate) BlValue                               // "<"; le/gt/ge; tz-aware vs naive → Null
-```
+`expr-lang/expr` has no knowledge of `BlDate` and cannot apply Go's native `+`/`-`/`<`/etc. to
+blkit values. For every operator that should work on dates, blkit supplies a named Go function
+that performs the operation and returns the result wrapped as a `BlValue`. The connection from
+operator token to function happens in two steps, neither of which is unique to `BlDate`:
 
-Bound to `+`/`-`/comparisons in `operatorBindings()`. `between`/`in` are patcher-lowered; `in`
+1. The Registrations section below calls `expr.Function("addDateDT", typed2(addDateDT), …)`,
+   which makes the engine aware of the function under that exact string name and records its
+   type signature.
+2. A central `operatorBindings()` in [bl-expr.spec.md](bl-expr.spec.md#operator-bindings) then
+   calls `expr.Operator("+", "addNumbers", "concatStrings", "addDateDT", "addDateYM", …)`,
+   which tells the engine "when you see `+` at parse time, try each of these registered
+   functions in turn and dispatch to whichever one's signature matches the operand types."
+   Centralised in one place because a single operator spans many types.
+
+So when the parser encounters `d + dur` and the operands type-check to `BlDate` +
+`BlDaysTimeDuration`, the engine finds `addDateDT` in the `"+"` binding list, sees its
+signature matches, and dispatches to it.
+
+Arithmetic impls return `BlDate` directly because they cannot yield null (day-clamping handles
+the only awkward case: `2025-01-31 + P1M → 2025-02-28`). Comparison impls return `BlValue`
+because cross-kind comparison (naive vs zoned/offset) yields `BlNull`.
+
+Equality (`=` / `!=`) is **not** registered as a per-type operator impl. The engine dispatches
+`=` / `!=` through the `Equal()` method on the `BlValue` interface, which `BlDate` implements
+above. That single dispatch path handles null propagation and cross-type comparison uniformly.
+
+`between` and `in` are patcher-lowered: `between` rewrites to a pair of comparisons; `in`
 dispatches to list/range membership or `calendarContainsFn` for a calendar operand.
 
+```go
+func addDateYM(d BlDate, dur BlYearsMonthsDuration) BlDate    // "+" d + YM duration (day clamped)
+func addDateDT(d BlDate, dur BlDaysTimeDuration)   BlDate     // "+" d + DT duration (whole days; sub-day components ignored)
+func subDateYM(d BlDate, dur BlYearsMonthsDuration) BlDate    // "-" d − YM duration (day clamped)
+func subDateDT(d BlDate, dur BlDaysTimeDuration)   BlDate     // "-" d − DT duration
+func subDates(a, b BlDate) BlDaysTimeDuration                 // "-" d − d
+func ltDates(a, b BlDate) BlValue                             // "<"  ; cross-kind → Null
+func leDates(a, b BlDate) BlValue                             // "<=" ; cross-kind → Null
+func gtDates(a, b BlDate) BlValue                             // ">"  ; cross-kind → Null
+func geDates(a, b BlDate) BlValue                             // ">=" ; cross-kind → Null
+// "=" and "!=" go through BlValue.Equal(); see BlDate.Equal() above.
+```
+
+These are written in clean typed form (`BlDate → BlValue`) for readability and unit testing.
+The engine cannot consume them at this shape directly — they're wrapped by the `typed1`/`typed2`
+adapters at registration time.
+
+### Backing implementations (unexported, suffix `Fn`)
+
+The constructor and today helper are implemented as these typed/variadic Go functions. They
+are wrapped by `typed1`/`typed2`/`typed3` when registered with the engine in the next section.
+The `dateFn` variadic shape is needed because the constructor accepts multiple input
+signatures.
+
+```go
+// Datetime-only typed implementations.
+func todayFn() BlDate
+
+// Variadic implementation — handles multiple input shapes in expr's raw shape.
+func dateFn(args ...any) (any, error)   // date("…") | date(y, m, d) | date(dt) extraction
+```
+
+`dateFn` parses ISO 8601 / RFC 9557 strings via Go's [`time.Parse`](https://pkg.go.dev/time#Parse);
+an unparseable string → `BlParseError`. Year/month/day component construction validates ranges
+(month 1–12, day valid for the month) and rejects invalid combinations with `BlTypeError` (no
+silent rollover). IANA zone lookups go through [`time.LoadLocation`](https://pkg.go.dev/time#LoadLocation);
+an unknown zone name → `BlTypeError`. Native Go `time.Time` (date portion) inputs wrap to
+`BlDate`.
+
+Component accessors (`.year`/`.month`/`.day`/`.offset`/`.timezone` and the calendar properties
+`.dayOfWeek`/`.dayOfWeekShort`/`.dayOfYear`/`.weekOfYear`/`.monthOfYear`/`.monthOfYearShort`/
+`.quarter`/`.yearQuarter`) are resolved by the component-access patcher described in
+[bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go) — they dispatch to
+internal accessor functions (`dateYearFn`, …) that are not registered as user-callable
+`expr.Function`s.
+
+Operator implementation functions (`addDateYM`, `addDateDT`, `subDateYM`, `subDateDT`,
+`subDates`, `ltDates`, `leDates`, `gtDates`, `geDates`) are documented in the previous section.
+
 ### Registrations (`dateOptions`, unexported)
+
+`dateOptions()` returns the slice of `expr.Option` values the engine consumes during
+initialisation to learn about every date-related operator impl and constructor function. Each
+entry is built with `expr.Function(name, impl, typeHints...)`, where:
+
+- `name` is the identifier the parser will recognise in expressions (and that
+  `operatorBindings()` references for operator dispatch).
+- `impl` must have the signature `func(...any) (any, error)` — that is the only shape
+  [`expr-lang/expr`](https://github.com/expr-lang/expr) accepts. The `typed1` / `typed2` /
+  `typed3` adapters (defined in [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go))
+  wrap a typed implementation such as `func(BlDate, BlDate) BlDaysTimeDuration` into that
+  shape, type-asserting each argument and boxing the result. The variadic implementation
+  (`dateFn`) already satisfies the shape and is registered directly.
+- `typeHints` is a variadic list of `new(func(...) ...)` values. The engine reflects on them
+  at compile time to validate that callers supply the right argument types — they carry no
+  runtime cost. Multiple hints register the function as overloaded across signatures.
+
+Date-only registrations are grouped by role: operator impls (consumed by `operatorBindings()`)
+and constructor/today. The bulk of date-usable functions (calendar utilities, business-day
+arithmetic, date difference, zone stripping, financial year, duration-typed difference) are
+**not** registered here — they accept both `BlDate` and `BlDateTime` and are registered once
+in [datetime.spec.md](datetime.spec.md) under a single `expr.Function` per name with both
+type signatures.
 
 ```go
 func dateOptions() []expr.Option {
     return []expr.Option{
-        // operator impls (named for operatorBindings)
+        // operator impls — bound to operator tokens by operatorBindings()
         expr.Function("addDateYM", typed2(addDateYM), new(func(BlDate, BlYearsMonthsDuration) BlDate)),
         expr.Function("addDateDT", typed2(addDateDT), new(func(BlDate, BlDaysTimeDuration) BlDate)),
+        expr.Function("subDateYM", typed2(subDateYM), new(func(BlDate, BlYearsMonthsDuration) BlDate)),
+        expr.Function("subDateDT", typed2(subDateDT), new(func(BlDate, BlDaysTimeDuration) BlDate)),
         expr.Function("subDates",  typed2(subDates),  new(func(BlDate, BlDate) BlDaysTimeDuration)),
-        // … subDateDur, ltDates, …
+        expr.Function("ltDates",   typed2(ltDates),   new(func(BlDate, BlDate) BlValue)),
+        expr.Function("leDates",   typed2(leDates),   new(func(BlDate, BlDate) BlValue)),
+        expr.Function("gtDates",   typed2(gtDates),   new(func(BlDate, BlDate) BlValue)),
+        expr.Function("geDates",   typed2(geDates),   new(func(BlDate, BlDate) BlValue)),
+        // = and != dispatch via BlValue.Equal() — no per-type registration
 
         // construction / conversion
         expr.Function("date",  dateFn,
-            new(func(BlString) BlDate),                 // date("…")
-            new(func(BlNumber, BlNumber, BlNumber) BlDate), // date(y, m, d)
-            new(func(BlDateTime) BlDate)),              // date(dt) extraction
+            new(func(BlString) BlDate),                       // date("…")
+            new(func(BlNumber, BlNumber, BlNumber) BlDate),   // date(y, m, d)
+            new(func(BlDateTime) BlDate)),                    // date(dt) extraction
         expr.Function("today", todayFn, new(func() BlDate)),
-        // yearsAndMonthsDuration and daysAndTimeDuration are registered in datetime.spec.md
-        // with both BlDate and BlDateTime signatures.
-
-        // calendar properties are accessed via dot syntax — the component-access patcher
-        // (bl-expr.spec.md § Engine internals) rewrites .dayOfWeek, .dayOfWeekShort, .dayOfYear,
-        // .weekOfYear, .monthOfYear, and .monthOfYearShort into calls to the internal accessor
-        // functions (dayOfWeekFn, …), which are not registered as user-callable expr.Functions.
-
-        // Calendar utilities, business-day arithmetic, date-difference, and zone-stripping
-        // functions that accept BOTH BlDate and BlDateTime are registered in datetime.spec.md
-        // (under a single expr.Function per name with both type signatures). See datetime.spec.md
-        // § Calendar utilities and the surrounding sections for the consolidated registration
-        // code.
     }
 }
 ```
 
-**Components.** `.year/.month/.day/.offset/.timezone` are resolved by the component-access patcher to
-internal accessor calls (`dateYearFn`, …). Iterating business-day funcs raise `BlCalendarRangeError`
-past the calendar's validity bounds only when `strictCalendarRange: true` is supplied (see
-[§ Calendar-range strictness](#calendar-range-strictness)). Native Go `time.Time` (date portion) inputs
-wrap to `BlDate`.
+Iterating business-day functions raise `BlCalendarRangeError` past the calendar's validity
+bounds only when `strictCalendarRange: true` is supplied (see
+[datetime.spec.md § Calendar-range strictness](datetime.spec.md#calendar-range-strictness)).
 
 `[@test] ../../expr/date_test.go`
 

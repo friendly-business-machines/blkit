@@ -394,7 +394,7 @@ The exported surface has three parts:
   was present), `time.Time` (Go's native combined type — see the [Key Go Dependencies](../overview.spec.md#key-go-dependencies)
   note that Go uses one `time.Time` type for date, time, and datetime; `naive` is always false
   for this path because a `time.Time` always carries a `Location` — host code wanting a naive
-  result from a `time.Time` should pipe it through `ToComponentsAsNaive` first), or a
+  result from a `time.Time` should pipe it through `ToDateTimeComponentsAsNaive` first), or a
   `DateTimeComponents` struct for explicit component-by-component construction (`naive` is true
   if and only if both `Offset` and `Zone` are absent). The `error` return fires for unparseable
   strings, invalid components (month=13, day=32, etc.), or a `DateTimeComponents` with both
@@ -432,7 +432,7 @@ func DateTime[T DateTimeInput](v T) (BlDateTime, error)
 // Decompose a time.Time into wall-clock components with Offset/Zone unset, so the
 // resulting DateTimeComponents builds a naive BlDateTime when passed to DateTime.
 // Use this when host code has a time.Time but wants to drop its zone interpretation.
-func ToComponentsAsNaive(t time.Time) DateTimeComponents
+func ToDateTimeComponentsAsNaive(t time.Time) DateTimeComponents
 
 // Convenience for current time.
 func Now() BlDateTime
