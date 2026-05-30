@@ -8,7 +8,10 @@ targets:
 # BlTime — the `time` type
 
 `time` is a time of day: hours, minutes, seconds (optionally fractional), with an optional UTC
-offset or IANA timezone. The Go value type backing it is `BlTime`.
+offset or IANA timezone. The textual form follows [ISO 8601](https://www.iso.org/iso-8601-date-and-time-format.html)
+for the time portion and [RFC 9557 (IXDTF)](https://datatracker.ietf.org/doc/html/rfc9557) for
+the `[Zone]` suffix used to attach an IANA timezone name. The Go value type backing it is
+`BlTime`.
 
 See [bl-expr.spec.md](bl-expr.spec.md) for the engine and component-access syntax.
 
@@ -25,14 +28,14 @@ time("14:30:00")              // local time
 time("14:30:00.500")          // fractional seconds
 time("14:30:00Z")             // UTC
 time("11:45:30+02:00")        // fixed offset
-time("14:30:00@Europe/Paris") // IANA timezone (DST-aware)
+time("14:30:00[Europe/Paris]") // IANA timezone (RFC 9557, DST-aware)
 time(23, 59, 0)               // from components
 time(now())                   // current time of day (from current datetime)
 time(datetime("2025-03-28T14:30:00"))  // extract time component
 ```
 
 blkit distinguishes a fixed **offset** (`+01:00`, not DST-aware), a named **timezone**
-(`@Europe/Paris`, DST-aware), and a **local** time (no UTC relationship).
+(`[Europe/Paris]`, DST-aware), and a **local** time (no UTC relationship).
 
 `[@test] ../../expr/time_test.go`
 
@@ -44,8 +47,8 @@ blkit distinguishes a fixed **offset** (`+01:00`, not DST-aware), a named **time
 time("11:45:30+02:00").hour         // → 11
 time("11:45:30+02:00").minute       // → 45
 time("11:45:30+02:00").second       // → 30
-time("11:45:30+02:00").timeOffset   // → duration("PT2H")   (ext)
-time("11:45:30@Europe/Paris").timezone  // → "Europe/Paris" (ext)
+time("11:45:30+02:00").offset       // → duration("PT2H")   (ext)
+time("11:45:30[Europe/Paris]").timezone  // → "Europe/Paris" (ext)
 ```
 
 `[@test] ../../expr/time_components_test.go`
@@ -58,6 +61,8 @@ time("11:45:30@Europe/Paris").timezone  // → "Europe/Paris" (ext)
 |---|---|---|---|
 | `+` `-` | add/subtract a days-time duration (wraps at midnight) | `time("23:00:00") + duration("PT2H")` | `time("01:00:00")` |
 | `< <= > >= = !=` | comparison | `time("14:30:00") < time("17:00:00")` | `true` |
+| `between a and b` | inclusive range | `time("12:00:00") between time("09:00:00") and time("17:00:00")` | `true` |
+| `in` | membership (list / range) | `now() in [time("09:00:00")..time("17:00:00")]` | `true`/`false` |
 | `withOffset(t, offset)` **ext** | same instant at a new offset | `withOffset(time("14:30:00Z"), duration("PT1H"))` | `time("15:30:00+01:00")` |
 
 Only a **days-time** duration may be applied (time has no year/month concept). The date component is
@@ -85,7 +90,7 @@ for day-tracking arithmetic.
 | `Bl.TimeNow` | `time(now())` |
 | `Bl.TimeFromDateTime(dt)` | `time(dt)` |
 | `hour` / `minute` / `second` | `.hour` / `.minute` / `.second` |
-| `offset` / `timezone` | `.timeOffset` **ext** / `.timezone` **ext** |
+| `offset` / `timezone` | `.offset` **ext** / `.timezone` **ext** |
 | `add` / `subtract` | `+` / `-` (days-time duration) |
 | `withOffset` | `withOffset(t, offset)` **ext** |
 | `equals` / `notEqual` / `before` / `after` / `beforeOrEqual` / `afterOrEqual` | `=` `!=` `<` `>` `<=` `>=` |
@@ -110,7 +115,7 @@ func (BlTime) isBlValue() {}
 
 func Time(hour, minute, second int, opts ...TimeOption) (BlTime, error) // WithOffset / WithTimezone
 func (t BlTime) CompareTo(other BlTime) int
-func (t BlTime) String() string  // "14:30:00" / "14:30:00+01:00" / "14:30:00@Europe/Paris"
+func (t BlTime) String() string  // "14:30:00" / "14:30:00+01:00" / "14:30:00[Europe/Paris]"
 ```
 
 ### Operator impl funcs (unexported)
@@ -139,7 +144,7 @@ func timeOptions() []expr.Option {
 }
 ```
 
-**Components.** `.hour/.minute/.second/.timeOffset/.timezone` via the component-access patcher.
+**Components.** `.hour/.minute/.second/.offset/.timezone` via the component-access patcher.
 Native Go `time.Time` (time-of-day) inputs wrap to `BlTime`. Only a `BlDaysTimeDuration` may be added
 (years-months → `BlTypeError`).
 

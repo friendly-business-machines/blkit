@@ -103,8 +103,11 @@ isPublicHoliday(date("2025-04-18"), ukHolidays)      // → true
 businessDaysBetween(date("2025-04-14"), date("2025-04-25"), ukHolidays)  // → 8
 ```
 
-Iteration outside `[validFrom, validTo]` raises `BlCalendarRangeError` unless the
-`ignoreRangeErrors` argument is set (see [date.spec.md](date.spec.md)).
+Iteration outside `[validFrom, validTo]` is silently tolerated by default — the calendar simply
+contributes no holiday information beyond its bounds. Callers that need a hard guarantee can
+opt in by passing `strictCalendarRange: true` to any iterating business-day function, which
+raises `BlCalendarRangeError` the moment iteration would step past the boundary (see
+[date.spec.md § Calendar-range strictness](date.spec.md#calendar-range-strictness)).
 
 ---
 
@@ -187,7 +190,8 @@ func calendarOptions() []expr.Option {
 ```
 
 `isPublicHoliday`/`isBusinessDay`/`addBusinessDays`/… ([date.spec.md](date.spec.md)) take a
-`BlCalendar` (named `phCalendar`) and raise `BlCalendarRangeError` past the validity bounds.
+`BlCalendar` (named `phCalendar`). Iterating variants raise `BlCalendarRangeError` past the
+validity bounds only when `strictCalendarRange: true` is supplied.
 **Operators.** `=`/`!=`. The engine bridge accepts a host-built `BlCalendar` directly as an input
 variable.
 

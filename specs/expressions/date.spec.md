@@ -7,9 +7,11 @@ targets:
 
 # BlDate — the `date` type
 
-`date` is a calendar date (year, month, day) with an optional UTC offset **or** IANA timezone (ISO
-8601 `YYYY-MM-DD`). The Go value type backing it is `BlDate`. A plain date is timezone-naive; only
-one of offset/timezone may be set.
+`date` is a calendar date (year, month, day) with an optional UTC offset **or** IANA timezone.
+The textual form follows [ISO 8601](https://www.iso.org/iso-8601-date-and-time-format.html)
+(`YYYY-MM-DD`) for the date portion and [RFC 9557 (IXDTF)](https://datatracker.ietf.org/doc/html/rfc9557)
+for the `[Zone]` suffix used to attach an IANA timezone name. The Go value type backing it is
+`BlDate`. A plain date is timezone-naive; only one of offset/timezone may be set.
 
 `date` carries blkit's richest built-in surface — including **business-day and calendar-aware
 arithmetic**, much of which extends DMN FEEL (flagged **ext**). See
@@ -47,7 +49,7 @@ Only the extended form is parsed; supplying both offset and timezone, or an inva
 date("2025-03-28+05:30").year      // → 2025
 date("2025-03-28").month           // → 3
 date("2025-03-28").day             // → 28
-date("2025-03-28+05:30").offset    // → "+05:30"  (ext; null if none)
+date("2025-03-28+05:30").offset    // → duration("PT5H30M")  (ext; null if none)
 date("2025-03-28[Europe/London]").timezone // → "Europe/London" (ext; null if none)
 ```
 
@@ -79,69 +81,42 @@ Standard DMN functions plus blkit extensions (**ext**). Day-of-week arguments ar
 
 ### Calendar properties
 
-| Function | Example | Result |
+Calendar properties are accessed via **dot syntax**, alongside the basic component accessors
+(`.year`, `.month`, etc.). There is no function-call form — `dayOfWeek(d)`, `monthOfYear(d)`,
+etc. are *not* registered as user-callable functions. The component-access patcher recognises
+these names on `BlDate` (and `BlDateTime`) operands and dispatches to the corresponding internal
+accessor.
+
+| Accessor | Example | Result |
 |---|---|---|
-| `dayOfWeek(d)` | `dayOfWeek(date("2025-03-24"))` | `"Monday"` |
-| `dayOfYear(d)` | `dayOfYear(date("2019-09-17"))` | `260` |
-| `weekOfYear(d)` | `weekOfYear(date("2019-09-17"))` | `38` (ISO 8601) |
-| `monthOfYear(d)` | `monthOfYear(date("2019-09-17"))` | `"September"` |
+| `.dayOfWeek` | `date("2025-03-24").dayOfWeek` | `"Monday"` |
+| `.dayOfWeekShort` **ext** | `date("2025-03-24").dayOfWeekShort` | `"Mon"` (3-letter English) |
+| `.dayOfYear` | `date("2019-09-17").dayOfYear` | `260` |
+| `.weekOfYear` | `date("2019-09-17").weekOfYear` | `38` (ISO 8601) |
+| `.monthOfYear` | `date("2019-09-17").monthOfYear` | `"September"` |
+| `.monthOfYearShort` **ext** | `date("2019-09-17").monthOfYearShort` | `"Sep"` (3-letter English) |
 
-### Classification (**ext**)
+### Calendar utilities, business-day arithmetic, date difference
 
-| Function | Example | Result |
-|---|---|---|
-| `isWeekday(d)` | `isWeekday(date("2025-03-24"))` | `true` |
-| `isWeekend(d)` | `isWeekend(date("2025-03-29"))` | `true` |
-| `isPublicHoliday(d, phCalendar)` | `isPublicHoliday(date("2025-04-18"), ukHolidays)` | `true` |
-| `isBusinessDay(d, phCalendar)` | `isBusinessDay(date("2025-04-18"), ukHolidays)` | `false` (weekday and not in `phCalendar`; Good Friday → false) |
+These function families accept either a `BlDate` or a `BlDateTime` and are documented in
+[datetime.spec.md](datetime.spec.md). They cover classification (`isWeekday`, `isWeekend`,
+`isBusinessDay`, `isPublicHoliday`), month boundaries (`firstDayOfMonth`, `lastDayOfMonth`,
+…), week-in-month navigation (`firstDayOfWeekInMonth`, …), day navigation (`nextWeekday`,
+`nextBusinessDay`, …), business-day arithmetic (`addBusinessDays`, `subtractBusinessDays`,
+`weekdaysBetween`, `businessDaysBetween`, `yearsAndMonthsDuration`), date difference
+(`daysBetween`, `monthsBetween`, `yearsBetween`), and zone stripping (`withoutOffset`,
+`withoutTimezone`, `withoutOffsetOrTimezone`).
 
-### Month boundaries
+The links below jump straight to the relevant section in `datetime.spec.md`:
 
-| Function | Example | Result |
-|---|---|---|
-| `lastDayOfMonth(d)` | `lastDayOfMonth(date("2024-02-10"))` | `date("2024-02-29")` |
-| `firstDayOfMonth(d)` **ext** | `firstDayOfMonth(date("2025-02-14"))` | `date("2025-02-01")` |
-| `lastDayOfPrevMonth(d)` **ext** | `lastDayOfPrevMonth(date("2025-01-01"))` | `date("2024-12-31")` |
-| `firstDayOfNextMonth(d)` **ext** | `firstDayOfNextMonth(date("2025-12-31"))` | `date("2026-01-01")` |
-
-### Week-in-month navigation (**ext**)
-
-| Function | Example | Result |
-|---|---|---|
-| `firstDayOfWeekInMonth(d, dow)` | `firstDayOfWeekInMonth(date("2025-03-15"), "Monday")` | `date("2025-03-03")` |
-| `lastDayOfWeekInMonth(d, dow)` | `lastDayOfWeekInMonth(date("2025-03-15"), "Friday")` | `date("2025-03-28")` |
-| `nthDayOfWeekInMonth(d, n, dow)` | `nthDayOfWeekInMonth(date("2025-03-15"), 2, "Monday")` | `date("2025-03-10")` (`n<0` from end; out of range → `null`) |
-
-### Day navigation (**ext**)
-
-| Function | Example | Result |
-|---|---|---|
-| `nextDayOfWeek(d, dow)` / `prevDayOfWeek(d, dow)` | `nextDayOfWeek(date("2025-03-24"), "Monday")` | `date("2025-03-31")` (strictly after) |
-| `nextWeekday(d)` / `prevWeekday(d)` | `nextWeekday(date("2025-03-28"))` | `date("2025-03-31")` (Fri → Mon) |
-| `nextBusinessDay(d, phCalendar)` / `prevBusinessDay(d, phCalendar)` | `nextBusinessDay(date("2025-04-17"), ukHolidays)` | `date("2025-04-22")` (skips weekend + holidays) |
-
-### Business-day arithmetic & difference (**ext**)
-
-| Function | Example | Result |
-|---|---|---|
-| `addBusinessDays(d, n, phCalendar[, ignoreRangeErrors])` | `addBusinessDays(date("2025-04-17"), 2, ukHolidays)` | `date("2025-04-23")` |
-| `subtractBusinessDays(d, n, phCalendar[, ignoreRangeErrors])` | `subtractBusinessDays(date("2025-04-23"), 2, ukHolidays)` | `date("2025-04-17")` |
-| `weekdaysBetween(a, b)` | `weekdaysBetween(date("2025-03-24"), date("2025-03-28"))` | `5` (inclusive; order-independent) |
-| `businessDaysBetween(a, b, phCalendar)` | `businessDaysBetween(date("2025-04-14"), date("2025-04-25"), ukHolidays)` | `8` |
-| `yearsAndMonthsDuration(a, b)` | `yearsAndMonthsDuration(date("2025-03-28"), date("2026-06-15"))` | `duration("P1Y2M")` |
-
-Out-of-`phCalendar`-range iteration raises `BlCalendarRangeError` unless `ignoreRangeErrors` is true
-(see [calendar.spec.md](calendar.spec.md)).
-
-### Zone stripping (**ext**)
-
-| Function | Example | Result |
-|---|---|---|
-| `withoutOffset(d)` | strips a UTC offset (no-op if none) | a date |
-| `withoutTimezone(d)` | strips an IANA timezone (no-op if none) | a date |
-| `withoutOffsetOrTimezone(d)` | strips both → plain naive date | a date |
-
-`[@test] ../../expr/date_functions_test.go`
+- [Classification](datetime.spec.md#classification-ext)
+- [Month boundaries](datetime.spec.md#month-boundaries)
+- [Week-in-month navigation](datetime.spec.md#week-in-month-navigation-ext)
+- [Day navigation](datetime.spec.md#day-navigation-ext)
+- [Business-day arithmetic & difference](datetime.spec.md#business-day-arithmetic--difference-ext)
+- [Date difference: days, months, years](datetime.spec.md#date-difference-days-months-years-ext)
+- [Calendar-range strictness](datetime.spec.md#calendar-range-strictness)
+- [Zone stripping](datetime.spec.md#zone-stripping-ext)
 
 ### Interval algebra & combination
 
@@ -232,61 +207,28 @@ func dateOptions() []expr.Option {
             new(func(BlNumber, BlNumber, BlNumber) BlDate), // date(y, m, d)
             new(func(BlDateTime) BlDate)),              // date(dt) extraction
         expr.Function("today", todayFn, new(func() BlDate)),
-        expr.Function("yearsAndMonthsDuration", typed2(yearsAndMonthsDurationFn),
-            new(func(BlDate, BlDate) BlYearsMonthsDuration)),
+        // yearsAndMonthsDuration and daysAndTimeDuration are registered in datetime.spec.md
+        // with both BlDate and BlDateTime signatures.
 
-        // calendar properties
-        expr.Function("dayOfWeek",   typed1(dayOfWeekFn),   new(func(BlDate) BlString), new(func(BlDateTime) BlString)),
-        expr.Function("dayOfYear",   typed1(dayOfYearFn),   new(func(BlDate) BlNumber), new(func(BlDateTime) BlNumber)),
-        expr.Function("weekOfYear",  typed1(weekOfYearFn),  new(func(BlDate) BlNumber), new(func(BlDateTime) BlNumber)),
-        expr.Function("monthOfYear", typed1(monthOfYearFn), new(func(BlDate) BlString), new(func(BlDateTime) BlString)),
-        expr.Function("lastDayOfMonth", typed1(lastDayOfMonthFn), new(func(BlDate) BlDate)),
+        // calendar properties are accessed via dot syntax — the component-access patcher
+        // (bl-expr.spec.md § Engine internals) rewrites .dayOfWeek, .dayOfWeekShort, .dayOfYear,
+        // .weekOfYear, .monthOfYear, and .monthOfYearShort into calls to the internal accessor
+        // functions (dayOfWeekFn, …), which are not registered as user-callable expr.Functions.
 
-        // ext: classification
-        expr.Function("isWeekday",       typed1(isWeekdayFn),       new(func(BlDate) BlBoolean)),
-        expr.Function("isWeekend",       typed1(isWeekendFn),       new(func(BlDate) BlBoolean)),
-        expr.Function("isPublicHoliday", typed2(isPublicHolidayFn), new(func(BlDate, BlCalendar) BlValue)),
-        expr.Function("isBusinessDay",   typed2(isBusinessDayFn),   new(func(BlDate, BlCalendar) BlValue)),
-
-        // ext: month boundary
-        expr.Function("firstDayOfMonth",     typed1(firstDayOfMonthFn),     new(func(BlDate) BlDate)),
-        expr.Function("lastDayOfPrevMonth",  typed1(lastDayOfPrevMonthFn),  new(func(BlDate) BlDate)),
-        expr.Function("firstDayOfNextMonth", typed1(firstDayOfNextMonthFn), new(func(BlDate) BlDate)),
-
-        // ext: week-in-month navigation
-        expr.Function("firstDayOfWeekInMonth", typed2(firstDOWInMonthFn), new(func(BlDate, BlString) BlDate)),
-        expr.Function("lastDayOfWeekInMonth",  typed2(lastDOWInMonthFn),  new(func(BlDate, BlString) BlDate)),
-        expr.Function("nthDayOfWeekInMonth",   typed3(nthDOWInMonthFn),   new(func(BlDate, BlNumber, BlString) BlValue)),
-
-        // ext: day navigation
-        expr.Function("nextDayOfWeek", typed2(nextDayOfWeekFn), new(func(BlDate, BlString) BlDate)),
-        expr.Function("prevDayOfWeek", typed2(prevDayOfWeekFn), new(func(BlDate, BlString) BlDate)),
-        expr.Function("nextWeekday",   typed1(nextWeekdayFn),   new(func(BlDate) BlDate)),
-        expr.Function("prevWeekday",   typed1(prevWeekdayFn),   new(func(BlDate) BlDate)),
-        expr.Function("nextBusinessDay", typed2(nextBusinessDayFn), new(func(BlDate, BlCalendar) BlDate)),
-        expr.Function("prevBusinessDay", typed2(prevBusinessDayFn), new(func(BlDate, BlCalendar) BlDate)),
-
-        // ext: business-day arithmetic & difference
-        expr.Function("addBusinessDays", addBusinessDaysFn,
-            new(func(BlDate, BlNumber, BlCalendar) BlDate),
-            new(func(BlDate, BlNumber, BlCalendar, bool) BlDate)),
-        expr.Function("subtractBusinessDays", subtractBusinessDaysFn,
-            new(func(BlDate, BlNumber, BlCalendar) BlDate),
-            new(func(BlDate, BlNumber, BlCalendar, bool) BlDate)),
-        expr.Function("weekdaysBetween",      typed2(weekdaysBetweenFn),     new(func(BlDate, BlDate) BlNumber)),
-        expr.Function("businessDaysBetween",  typed3(businessDaysBetweenFn), new(func(BlDate, BlDate, BlCalendar) BlNumber)),
-
-        // ext: zone stripping
-        expr.Function("withoutOffset",          typed1(withoutOffsetFn),          new(func(BlDate) BlDate)),
-        expr.Function("withoutTimezone",        typed1(withoutTimezoneFn),        new(func(BlDate) BlDate)),
-        expr.Function("withoutOffsetOrTimezone", typed1(withoutOffsetOrTimezoneFn), new(func(BlDate) BlDate)),
+        // Calendar utilities, business-day arithmetic, date-difference, and zone-stripping
+        // functions that accept BOTH BlDate and BlDateTime are registered in datetime.spec.md
+        // (under a single expr.Function per name with both type signatures). See datetime.spec.md
+        // § Calendar utilities and the surrounding sections for the consolidated registration
+        // code.
     }
 }
 ```
 
 **Components.** `.year/.month/.day/.offset/.timezone` are resolved by the component-access patcher to
-internal accessor calls (`dateYearFn`, …). Calendar-aware funcs raise `BlCalendarRangeError` past the
-calendar's validity bounds. Native Go `time.Time` (date portion) inputs wrap to `BlDate`.
+internal accessor calls (`dateYearFn`, …). Iterating business-day funcs raise `BlCalendarRangeError`
+past the calendar's validity bounds only when `strictCalendarRange: true` is supplied (see
+[§ Calendar-range strictness](#calendar-range-strictness)). Native Go `time.Time` (date portion) inputs
+wrap to `BlDate`.
 
 `[@test] ../../expr/date_test.go`
 
@@ -302,5 +244,3 @@ calendar's validity bounds. Native Go `time.Time` (date portion) inputs wrap to 
 - `nthDayOfWeekInMonth` with `n = 0` → `BlTypeError`; `|n|` beyond the month's occurrences → `null`.
 - Unrecognised day-of-week string (e.g. `"Mon"`) in navigation built-ins → `BlTypeError`.
 - Comparing tz-aware and tz-naive dates → `null` (no implicit coercion).
-- `withoutTimezone` on an offset-only date (and vice versa) is a no-op; use `withoutOffsetOrTimezone`
-  to strip both.

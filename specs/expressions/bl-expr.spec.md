@@ -474,7 +474,7 @@ date("2025-03-28").weekday         // → 5    (Friday; Monday = 1)
 
 time("11:45:30+02:00").hour        // → 11
 time("11:45:30+02:00").minute      // → 45
-time("11:45:30+02:00").timeOffset // → duration("PT2H")
+time("11:45:30+02:00").offset // → duration("PT2H")
 
 duration("P1DT2H3M4S").days        // → 1
 duration("P1DT2H3M4S").hours       // → 2
@@ -551,7 +551,7 @@ cases, and Go registration. This catalogue is the index:
 | Numeric | `decimal`, `floor`, `ceiling`, `round*`, `abs`, `modulo`, `sqrt`, `log`, `ln`, `exp`, `odd`, `even`, … | [number.spec.md](number.spec.md) |
 | List | `count`, `min`, `max`, `sum`, `mean`, `sublist`, `append`, `concatenate`, `union`, `distinctValues`, `flatten`, `sort`, … | [list.spec.md](list.spec.md) |
 | Context | `getValue`, `getEntries`, `contextPut`, `contextMerge` | [context.spec.md](context.spec.md) |
-| Temporal | `now`, `today`, `dayOfWeek`, `monthOfYear`, `lastDayOfMonth`, `is`, … | [date](date.spec.md) / [time](time.spec.md) / [datetime](datetime.spec.md) |
+| Temporal | `now`, `today`, `lastDayOfMonth`, `addBusinessDays`, `is*`, … (calendar properties such as `.dayOfWeek`, `.monthOfYear` are dot accessors, not function calls — see [date.spec.md § Calendar properties](date.spec.md#calendar-properties)) | [date](date.spec.md) / [time](time.spec.md) / [datetime](datetime.spec.md) |
 | Duration | `duration` components, `abs` | [days_time_duration](days_time_duration.spec.md) / [years_months_duration](years_months_duration.spec.md) |
 | Range (interval algebra) | `before`, `after`, `meets`, `overlaps`, `includes`, `during`, `starts`, `finishes`, `coincides` | [range.spec.md](range.spec.md) |
 | Table | `table`, `project`, `columns`, `rows`, `distinct` | [table.spec.md](table.spec.md) |
