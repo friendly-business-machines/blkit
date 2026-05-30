@@ -98,19 +98,22 @@ Standard DMN functions plus blkit extensions (**ext** — no DMN equivalent). Po
 | `substringAfter(s, match)` | `substringAfter("a-b", "-")` | `"b"` |
 | `upperCase(s)` / `lowerCase(s)` | `upperCase("aBc")` | `"ABC"` |
 | `trim(s)` | `trim("  hi  ")` | `"hi"` |
+| `trimLeading(s)` **ext** | `trimLeading("  hi  ")` | `"hi  "` |
+| `trimTrailing(s)` **ext** | `trimTrailing("  hi  ")` | `"  hi"` |
 | `contains(s, match)` | `contains("foobar", "oo")` | `true` (case-sensitive) |
 | `startsWith(s, match)` / `endsWith(s, match)` | `startsWith("foo", "fo")` | `true` |
 | `matches(s, pattern[, flags])` | `matches("ABC", "[a-z]+", "i")` | `true` (whole-string match) |
 | `replace(s, pattern, repl[, flags])` | `replace("a-b", "-", "/")` | `"a/b"` (`$1` group refs) |
 | `split(s, delimiter)` | `split("a,b,c", ",")` | `["a","b","c"]` |
+| `split(s, delimiters)` **ext** | `split("a,b;c", [",", ";"])` | `["a","b","c"]` (list-of-delimiters overload) |
 | `extract(s, pattern[, flags])` | `extract("id 12, 34", "[0-9]+")` | `["12","34"]` |
 | `isBlank(s)` | `isBlank("  ")` | `true` (empty or all-whitespace) |
 | `indexOf(s, match)` **ext** | `indexOf("hello", "l")` | `3` (1st position, or `null`) |
 | `isEmpty(s)` **ext** | `isEmpty("")` | `true` (zero length) |
 | `charAt(s, position)` **ext** | `charAt("hello", 1)` | `"h"` (out of range → `""`) |
 | `reverse(s)` **ext** | `reverse("abc")` | `"cba"` |
-| `padStart(s, length[, padChar])` **ext** | `padStart("7", 4, "0")` | `"0007"` |
-| `padEnd(s, length[, padChar])` **ext** | `padEnd("hi", 5, ".")` | `"hi..."` |
+| `padLeading(s, length[, padChar])` **ext** | `padLeading("7", 4, "0")` | `"0007"` |
+| `padTrailing(s, length[, padChar])` **ext** | `padTrailing("hi", 5, ".")` | `"hi..."` |
 | `repeat(s, times)` **ext** | `repeat("ab", 3)` | `"ababab"` |
 | `stringJoin(list[, delimiter[, prefix, suffix]])` | `stringJoin(["a","b"], ", ")` | `"a, b"` |
 
@@ -178,6 +181,14 @@ extract("a1 b22 c333", "[a-z]\\d+")                             // → ["a1", "b
 - Comparison is case-sensitive, code-point order.
 - `isBlank` treats any Unicode whitespace as blank; `isEmpty` is strictly zero-length.
 - `split` with leading/trailing/consecutive delimiters yields empty-string elements.
+- `split` with a list of delimiters scans left-to-right, **first match wins**: at each position
+  the engine checks each delimiter; if any match, it splits there and resumes scanning after the
+  match. When multiple delimiters match at the same position the longest one is chosen (so
+  `split("a--b", ["--", "-"])` → `["a", "b"]`, not `["a", "", "b"]`). Overlapping matches at
+  later positions are shadowed: `split("abcde", ["bc", "cd"])` → `["a", "de"]` because `"bc"`
+  matches at position 1 before the scan reaches the would-be `"cd"` match at position 2. An
+  empty delimiter inside the list → `BlTypeError`; an empty delimiter list → `[s]` (single
+  element, no splitting).
 
 `[@test] ../../expr/string_semantics_test.go`
 
@@ -281,8 +292,8 @@ adapters at registration time.
 
 The library and conversion functions are implemented as these typed Go functions. They are
 wrapped by `typed1`/`typed2`/`typed3` when registered with the engine in the next section.
-Variadic implementations (`substringFn`, `matchesFn`, `replaceFn`, `extractFn`, `padStartFn`,
-`padEndFn`, `stringJoinFn`) instead implement the engine's `func(...any) (any, error)` shape
+Variadic implementations (`substringFn`, `matchesFn`, `replaceFn`, `extractFn`, `padLeadingFn`,
+`padTrailingFn`, `stringJoinFn`) instead implement the engine's `func(...any) (any, error)` shape
 directly because they accept optional arguments and cannot be expressed via a fixed-arity adapter.
 
 ```go
@@ -293,10 +304,11 @@ func substringAfterFn(s, match BlString) BlString           // not found → ""
 func upperCaseFn(s BlString) BlString
 func lowerCaseFn(s BlString) BlString
 func trimFn(s BlString) BlString
+func trimLeadingFn(s BlString) BlString
+func trimTrailingFn(s BlString) BlString
 func containsFn(s, match BlString) BlBoolean                // overloaded; see calendar.spec.md
 func startsWithFn(s, match BlString) BlBoolean
 func endsWithFn(s, match BlString) BlBoolean
-func splitFn(s, delimiter BlString) BlList
 func isBlankFn(s BlString) BlBoolean
 func strIndexOfFn(s, match BlString) BlValue                // not found → Null; list overload in list.spec.md
 func strIsEmptyFn(s BlString) BlBoolean                     // list overload in list.spec.md
@@ -306,11 +318,12 @@ func repeatFn(s BlString, times BlNumber) BlString
 
 // Variadic implementations — handle optional args themselves in expr's raw shape.
 func substringFn(args ...any) (any, error)    // 2- or 3-arg
+func splitFn(args ...any) (any, error)        // delimiter is BlString or BlList of BlString
 func matchesFn(args ...any) (any, error)      // 2- or 3-arg (optional flags)
 func replaceFn(args ...any) (any, error)      // 3- or 4-arg (optional flags)
 func extractFn(args ...any) (any, error)      // 2- or 3-arg (optional flags)
-func padStartFn(args ...any) (any, error)     // 2- or 3-arg (optional padChar)
-func padEndFn(args ...any) (any, error)       // 2- or 3-arg (optional padChar)
+func padLeadingFn(args ...any) (any, error)   // 2- or 3-arg (optional padChar)
+func padTrailingFn(args ...any) (any, error)  // 2- or 3-arg (optional padChar)
 func stringJoinFn(args ...any) (any, error)   // 1-, 2-, or 4-arg
 func stringConvFn(args ...any) (any, error)   // string(from) — accepts any BlValue
 ```
@@ -364,6 +377,8 @@ func stringOptions() []expr.Option {
         expr.Function("upperCase",       typed1(upperCaseFn),       new(func(BlString) BlString)),
         expr.Function("lowerCase",       typed1(lowerCaseFn),       new(func(BlString) BlString)),
         expr.Function("trim",            typed1(trimFn),            new(func(BlString) BlString)),
+        expr.Function("trimLeading",     typed1(trimLeadingFn),     new(func(BlString) BlString)),
+        expr.Function("trimTrailing",    typed1(trimTrailingFn),    new(func(BlString) BlString)),
         expr.Function("contains",        typed2(containsFn),        new(func(BlString, BlString) BlBoolean)),
         expr.Function("startsWith",      typed2(startsWithFn),      new(func(BlString, BlString) BlBoolean)),
         expr.Function("endsWith",        typed2(endsWithFn),        new(func(BlString, BlString) BlBoolean)),
@@ -371,7 +386,8 @@ func stringOptions() []expr.Option {
                                                                     new(func(BlString, BlString, BlString) BlBoolean)),
         expr.Function("replace",         replaceFn,                 new(func(BlString, BlString, BlString) BlString),
                                                                     new(func(BlString, BlString, BlString, BlString) BlString)),
-        expr.Function("split",           typed2(splitFn),           new(func(BlString, BlString) BlList)),
+        expr.Function("split",           splitFn,                   new(func(BlString, BlString) BlList),
+                                                                    new(func(BlString, BlList) BlList)),
         expr.Function("extract",         extractFn,                 new(func(BlString, BlString) BlList),
                                                                     new(func(BlString, BlString, BlString) BlList)),
         expr.Function("isBlank",         typed1(isBlankFn),         new(func(BlString) BlBoolean)),
@@ -379,9 +395,9 @@ func stringOptions() []expr.Option {
         expr.Function("isEmpty",         typed1(strIsEmptyFn),      new(func(BlString) BlBoolean)),
         expr.Function("charAt",          typed2(charAtFn),          new(func(BlString, BlNumber) BlString)),
         expr.Function("reverse",         typed1(strReverseFn),      new(func(BlString) BlString)),
-        expr.Function("padStart",        padStartFn,                new(func(BlString, BlNumber) BlString),
+        expr.Function("padLeading",      padLeadingFn,              new(func(BlString, BlNumber) BlString),
                                                                     new(func(BlString, BlNumber, BlString) BlString)),
-        expr.Function("padEnd",          padEndFn,                  new(func(BlString, BlNumber) BlString),
+        expr.Function("padTrailing",     padTrailingFn,             new(func(BlString, BlNumber) BlString),
                                                                     new(func(BlString, BlNumber, BlString) BlString)),
         expr.Function("repeat",          typed2(repeatFn),          new(func(BlString, BlNumber) BlString)),
         expr.Function("stringJoin",      stringJoinFn,              new(func(BlList) BlString),
@@ -404,6 +420,6 @@ func stringOptions() []expr.Option {
 - `substringBefore`/`substringAfter` with delimiter absent → `""`.
 - `indexOf` not found → `null` (not `0`).
 - `extract` with no matches → `[]` (not `null`).
-- `padStart`/`padEnd` with a multi-code-point `padChar` → `BlTypeError`.
+- `padLeading`/`padTrailing` with a multi-code-point `padChar` → `BlTypeError`.
 - `repeat` with a negative count → `BlTypeError`.
 - `split("", "")` rules and empty-segment behaviour as above.
