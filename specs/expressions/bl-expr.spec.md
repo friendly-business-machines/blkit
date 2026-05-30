@@ -551,7 +551,7 @@ cases, and Go registration. This catalogue is the index:
 | Numeric | `decimal`, `floor`, `ceiling`, `round*`, `abs`, `modulo`, `sqrt`, `log`, `ln`, `exp`, `odd`, `even`, … | [number.spec.md](number.spec.md) |
 | List | `count`, `min`, `max`, `sum`, `mean`, `sublist`, `append`, `concatenate`, `union`, `distinctValues`, `flatten`, `sort`, … | [list.spec.md](list.spec.md) |
 | Context | `getValue`, `getEntries`, `contextPut`, `contextMerge` | [context.spec.md](context.spec.md) |
-| Temporal | `now`, `today`, `lastDayOfMonth`, `addBusinessDays`, `is*`, … (calendar properties such as `.dayOfWeek`, `.monthOfYear` are dot accessors, not function calls — see [date.spec.md § Calendar properties](date.spec.md#calendar-properties)) | [date](date.spec.md) / [time](time.spec.md) / [datetime](datetime.spec.md) |
+| Temporal | `now`, `today`, `lastDayOfMonth`, `addBusinessDays`, `is*`, … (calendar properties such as `.dayName`, `.monthName` are dot accessors, not function calls — see [date.spec.md § Calendar properties](date.spec.md#calendar-properties)) | [date](date.spec.md) / [time](time.spec.md) / [datetime](datetime.spec.md) |
 | Duration | `duration` components, `abs` | [days_time_duration](days_time_duration.spec.md) / [years_months_duration](years_months_duration.spec.md) |
 | Range (interval algebra) | `before`, `after`, `meets`, `overlaps`, `includes`, `during`, `starts`, `finishes`, `coincides` | [range.spec.md](range.spec.md) |
 | Table | `table`, `project`, `columns`, `rows`, `distinct` | [table.spec.md](table.spec.md) |
@@ -634,7 +634,7 @@ All code lives in the repo-root **`expr`** package (Go module path
   constructors (`Number`, `Date`, `Today`, …) and accessors (`ToNativeFloat`, `ToNativeString`,
   `CompareTo`, …); the engine surface (`Bl`, `BlExpr`, `BlEnv`, `BlValue`, `BlType`); and the error
   types.
-- **Unexported** (package-internal): built-in implementation funcs (suffix `Fn`, e.g. `dayOfWeekFn`);
+- **Unexported** (package-internal): built-in implementation funcs (suffix `Fn`, e.g. `dayNameFn`);
   operator implementation funcs (e.g. `addNumbers`, `ltDates`); each type's `…Options()` assembler;
   the patcher; and the bridge helpers (`wrap`/`unwrap`).
 
@@ -754,7 +754,7 @@ type exprFn = func(args ...any) (any, error)
 // dateOptions is unexported; the engine calls it from buildOptions.
 func dateOptions() []expr.Option {
     return []expr.Option{
-        expr.Function("dayOfWeek", dayOfWeekFn,
+        expr.Function("dayName", dayNameFn,
             new(func(BlDate) BlString), new(func(BlDateTime) BlString)),
         expr.Function("addBusinessDays", addBusinessDaysFn,
             new(func(BlDate, BlNumber, BlCalendar) BlDate),
@@ -764,7 +764,7 @@ func dateOptions() []expr.Option {
 }
 
 // Backing impl (unexported, suffix Fn), in expr's calling convention:
-func dayOfWeekFn(args ...any) (any, error) { /* type-asserts args, returns BlValue */ }
+func dayNameFn(args ...any) (any, error) { /* type-asserts args, returns BlValue */ }
 ```
 
 A small set of generic adapters (`typed1`, `typed2`, `typed3`, `variadic`) wrap statically-typed Go
@@ -865,8 +865,8 @@ behaviour, and the rationale.
   parsing ambiguity (longest-match names colliding with the `and`/`or` keywords), matches
   conventional programming identifiers, and lets the grammar sit directly on `expr`'s lexer.
 - **lowerCamelCase built-in names.** As a direct consequence of the no-spaces rule, every multi-word
-  FEEL function name is spelled in lowerCamelCase: `string length` → `stringLength`, `day of week` →
-  `dayOfWeek`, `years and months duration` → `yearsAndMonthsDuration`, and `date and time` →
+  FEEL function name is spelled in lowerCamelCase: `string length` → `stringLength`, `day of year` →
+  `dayOfYear`, `years and months duration` → `yearsAndMonthsDuration`, and `date and time` →
   `datetime` (a recognised compound, kept whole). *Rationale:* lowerCamelCase is the convention used
   by `expr`'s own built-ins (`hasPrefix`, `sortBy`, `toJSON`) and matches the casing of the host Go
   `Bl*` methods, so blkit functions read as native on both layers. The catalogue and the spokes use

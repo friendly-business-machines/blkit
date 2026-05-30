@@ -44,7 +44,7 @@ The `T` separator is required; space-separated forms are rejected.
 ## Component access & calendar properties
 
 All calendar properties are accessed via **dot syntax**. There is no function-call form
-(`dayOfWeek(dt)` etc. are not registered as user-callable functions). The component-access
+(`dayName(dt)` etc. are not registered as user-callable functions). The component-access
 patcher recognises these names on `BlDateTime` operands and dispatches to the corresponding
 internal accessor.
 
@@ -57,12 +57,14 @@ datetime("2025-03-28T14:30:00+01:00").minute           // → 30
 datetime("2025-03-28T14:30:00+01:00").second           // → 0
 datetime("2025-03-28T14:30:00+01:00").offset           // → duration("PT1H")             (ext)
 datetime("2025-03-28T14:30:00[Europe/Paris]").timezone // → "Europe/Paris"               (ext)
-datetime("2019-09-17T00:00:00").dayOfWeek              // → "Tuesday"
-datetime("2019-09-17T00:00:00").dayOfWeekShort         // → "Tue"                        (ext)
+datetime("2019-09-17T00:00:00").dayName              // → "Tuesday"
+datetime("2019-09-17T00:00:00").dayNameShort         // → "Tue"                        (ext)
 datetime("2019-09-17T00:00:00").dayOfYear              // → 260
-datetime("2019-09-17T00:00:00").weekOfYear             // → 38                           (ISO 8601)
-datetime("2019-09-17T00:00:00").monthOfYear            // → "September"
-datetime("2019-09-17T00:00:00").monthOfYearShort       // → "Sep"                        (ext)
+datetime("2019-09-17T00:00:00").weekOfYear             // → 38                           (ext; simple Jan-1 anchor)
+datetime("2025-12-29T00:00:00").isoWeekOfYear          // → 1                            (ISO 8601 — week 1 of 2026)
+datetime("2025-12-29T00:00:00").isoYearWeek            // → "2026W1"                     (ext; combined ISO year+week, parallel to .yearQuarter)
+datetime("2019-09-17T00:00:00").monthName            // → "September"
+datetime("2019-09-17T00:00:00").monthNameShort       // → "Sep"                        (ext)
 datetime("2025-09-17T00:00:00").quarter                // → 3                            (ext; 1–4 calendar quarter)
 datetime("2025-09-17T00:00:00").yearQuarter            // → "2025Q3"                     (ext)
 ```
@@ -564,8 +566,8 @@ arithmetic runs.
 `datetimeFn` parses ISO 8601 strings via Go's [`time.Parse`](https://pkg.go.dev/time#Parse) using
 `time.RFC3339`-compatible layouts; an unparseable string → `BlParseError`. IANA zone lookups go
 through [`time.LoadLocation`](https://pkg.go.dev/time#LoadLocation); an unknown zone name →
-`BlTypeError`. Calendar-property dot accessors (`.dayOfWeek`, `.dayOfWeekShort`, `.dayOfYear`,
-`.weekOfYear`, `.monthOfYear`, `.monthOfYearShort`) are resolved by the component-access
+`BlTypeError`. Calendar-property dot accessors (`.dayName`, `.dayNameShort`, `.dayOfYear`,
+`.weekOfYear`, `.isoWeekOfYear`, `.isoYearWeek`, `.monthName`, `.monthNameShort`) are resolved by the component-access
 patcher in [bl-expr.spec.md](bl-expr.spec.md#engine-internals-go) and dispatched to internal
 accessors defined in [date.spec.md](date.spec.md); `date(dt)`/`time(dt)` extraction is
 overloaded with the constructor entries in [date.spec.md](date.spec.md) / [time.spec.md](time.spec.md).

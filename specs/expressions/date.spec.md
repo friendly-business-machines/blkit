@@ -82,19 +82,21 @@ Standard DMN functions plus blkit extensions (**ext**). Day-of-week arguments ar
 ### Calendar properties
 
 Calendar properties are accessed via **dot syntax**, alongside the basic component accessors
-(`.year`, `.month`, etc.). There is no function-call form — `dayOfWeek(d)`, `monthOfYear(d)`,
+(`.year`, `.month`, etc.). There is no function-call form — `dayName(d)`, `monthName(d)`,
 etc. are *not* registered as user-callable functions. The component-access patcher recognises
 these names on `BlDate` (and `BlDateTime`) operands and dispatches to the corresponding internal
 accessor.
 
 | Accessor | Example | Result |
 |---|---|---|
-| `.dayOfWeek` | `date("2025-03-24").dayOfWeek` | `"Monday"` |
-| `.dayOfWeekShort` **ext** | `date("2025-03-24").dayOfWeekShort` | `"Mon"` (3-letter English) |
+| `.dayName` | `date("2025-03-24").dayName` | `"Monday"` |
+| `.dayNameShort` **ext** | `date("2025-03-24").dayNameShort` | `"Mon"` (3-letter English) |
 | `.dayOfYear` | `date("2019-09-17").dayOfYear` | `260` |
-| `.weekOfYear` | `date("2019-09-17").weekOfYear` | `38` (ISO 8601) |
-| `.monthOfYear` | `date("2019-09-17").monthOfYear` | `"September"` |
-| `.monthOfYearShort` **ext** | `date("2019-09-17").monthOfYearShort` | `"Sep"` (3-letter English) |
+| `.weekOfYear` **ext** | `date("2019-09-17").weekOfYear` | `38` (simple Jan-1 anchor: week 1 = Jan 1–7, week 2 = Jan 8–14, …; always 1–53; always matches `.year`) |
+| `.isoWeekOfYear` | `date("2025-12-29").isoWeekOfYear` | `1` (ISO 8601: week 1 = week containing the year's first Thursday; may belong to the adjacent calendar year — `date("2025-12-29")` is in ISO week 1 of 2026) |
+| `.isoYearWeek` **ext** | `date("2025-12-29").isoYearWeek` | `"2026W1"` (combined ISO year + week identifier, year-then-unit format matching `.yearQuarter`. Use this when you need a single unambiguous label for an ISO week — the year part can differ from `.year` near year boundaries, so the combined form is the safe identifier.) |
+| `.monthName` | `date("2019-09-17").monthName` | `"September"` |
+| `.monthNameShort` **ext** | `date("2019-09-17").monthNameShort` | `"Sep"` (3-letter English) |
 | `.quarter` **ext** | `date("2025-09-17").quarter` | `3` (1–4 calendar quarter) |
 | `.yearQuarter` **ext** | `date("2025-09-17").yearQuarter` | `"2025Q3"` |
 
@@ -290,7 +292,7 @@ an unknown zone name → `BlTypeError`. Native Go `time.Time` (date portion) inp
 `BlDate`.
 
 Component accessors (`.year`/`.month`/`.day`/`.offset`/`.timezone` and the calendar properties
-`.dayOfWeek`/`.dayOfWeekShort`/`.dayOfYear`/`.weekOfYear`/`.monthOfYear`/`.monthOfYearShort`/
+`.dayName`/`.dayNameShort`/`.dayOfYear`/`.weekOfYear`/`.isoWeekOfYear`/`.isoYearWeek`/`.monthName`/`.monthNameShort`/
 `.quarter`/`.yearQuarter`) are resolved by the component-access patcher described in
 [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go) — they dispatch to
 internal accessor functions (`dateYearFn`, …) that are not registered as user-callable
