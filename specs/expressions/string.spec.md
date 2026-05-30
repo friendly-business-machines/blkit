@@ -328,8 +328,35 @@ func stringJoinFn(args ...any) (any, error)   // 1-, 2-, or 4-arg
 func stringConvFn(args ...any) (any, error)   // string(from) — accepts any BlValue
 ```
 
-The regex funcs (`matchesFn`/`replaceFn`/`extractFn`) compile patterns via Go's `regexp` package
-(RE2 syntax); `matches` anchors with `^(?:…)$` before compiling. A bad pattern → `BlRegexError`.
+All implementations are built on the Go standard library; no third-party packages are required
+beyond what blkit already pulls in:
+
+- **`unicode/utf8`** for code-point operations — `stringLengthFn` uses
+  [`utf8.RuneCountInString`](https://pkg.go.dev/unicode/utf8#RuneCountInString); `charAtFn` and
+  `substringFn` walk runes with [`utf8.DecodeRuneInString`](https://pkg.go.dev/unicode/utf8#DecodeRuneInString)
+  to convert blkit's 1-indexed code-point positions to byte offsets without allocating an
+  intermediate `[]rune`.
+- **`unicode.IsSpace`** for whitespace predicates — `trimFn` uses
+  [`strings.TrimSpace`](https://pkg.go.dev/strings#TrimSpace) (defined in terms of
+  `unicode.IsSpace`); `trimLeadingFn` / `trimTrailingFn` use
+  [`strings.TrimLeftFunc`](https://pkg.go.dev/strings#TrimLeftFunc) /
+  [`strings.TrimRightFunc`](https://pkg.go.dev/strings#TrimRightFunc) with
+  [`unicode.IsSpace`](https://pkg.go.dev/unicode#IsSpace); `isBlankFn` checks
+  `strings.IndexFunc(s, notSpace) == -1`.
+- **`strings`** for prefix/suffix/contains/case/repeat — `containsFn` →
+  [`strings.Contains`](https://pkg.go.dev/strings#Contains), `startsWithFn`/`endsWithFn` →
+  [`strings.HasPrefix`](https://pkg.go.dev/strings#HasPrefix) / `HasSuffix`, `upperCaseFn`/
+  `lowerCaseFn` → [`strings.ToUpper`](https://pkg.go.dev/strings#ToUpper) / `ToLower` (simple
+  per-rune mapping; no locale-aware case folding), `repeatFn` →
+  [`strings.Repeat`](https://pkg.go.dev/strings#Repeat), `stringJoinFn` →
+  [`strings.Join`](https://pkg.go.dev/strings#Join).
+- **`regexp`** for the regex funcs (`matchesFn`/`replaceFn`/`extractFn`) — compiled via Go's
+  [`regexp`](https://pkg.go.dev/regexp) package (RE2 syntax); `matches` anchors with `^(?:…)$`
+  before compiling. A bad pattern → `BlRegexError`. The multi-delimiter `split` form also routes
+  through `regexp`: delimiters are sorted longest-first and concatenated with `|` into a single
+  alternation, giving the left-to-right / longest-match-wins semantics for free (RE2's
+  leftmost-first matching picks the first listed alternative at each position).
+
 `indexOf`/`isEmpty`/`reverse`/`contains` are overloaded with their list/calendar forms; each is
 registered once with multiple signatures, in whichever spec owns the canonical entry. Native Go
 `string` inputs wrap to `BlString`.
