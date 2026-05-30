@@ -95,6 +95,8 @@ accessor.
 | `.weekOfYear` | `date("2019-09-17").weekOfYear` | `38` (ISO 8601) |
 | `.monthOfYear` | `date("2019-09-17").monthOfYear` | `"September"` |
 | `.monthOfYearShort` **ext** | `date("2019-09-17").monthOfYearShort` | `"Sep"` (3-letter English) |
+| `.quarter` **ext** | `date("2025-09-17").quarter` | `3` (1–4 calendar quarter) |
+| `.yearQuarter` **ext** | `date("2025-09-17").yearQuarter` | `"2025Q3"` |
 
 ### Calendar utilities, business-day arithmetic, date difference
 
@@ -104,8 +106,9 @@ These function families accept either a `BlDate` or a `BlDateTime` and are docum
 …), week-in-month navigation (`firstDayOfWeekInMonth`, …), day navigation (`nextWeekday`,
 `nextBusinessDay`, …), business-day arithmetic (`addBusinessDays`, `subtractBusinessDays`,
 `weekdaysBetween`, `businessDaysBetween`, `yearsAndMonthsDuration`), date difference
-(`daysBetween`, `monthsBetween`, `yearsBetween`), and zone stripping (`withoutOffset`,
-`withoutTimezone`, `withoutOffsetOrTimezone`).
+(`daysBetween`, `monthsBetween`, `yearsBetween`), financial year (`financialYear`,
+`financialYearQuarter`), and zone stripping (`withoutOffset`, `withoutTimezone`,
+`withoutOffsetOrTimezone`).
 
 The links below jump straight to the relevant section in `datetime.spec.md`:
 
@@ -115,6 +118,7 @@ The links below jump straight to the relevant section in `datetime.spec.md`:
 - [Day navigation](datetime.spec.md#day-navigation-ext)
 - [Business-day arithmetic & difference](datetime.spec.md#business-day-arithmetic--difference-ext)
 - [Date difference: days, months, years](datetime.spec.md#date-difference-days-months-years-ext)
+- [Financial year](datetime.spec.md#financial-year-ext)
 - [Calendar-range strictness](datetime.spec.md#calendar-range-strictness)
 - [Zone stripping](datetime.spec.md#zone-stripping-ext)
 

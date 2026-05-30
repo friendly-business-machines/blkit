@@ -63,6 +63,8 @@ datetime("2019-09-17T00:00:00").dayOfYear              // → 260
 datetime("2019-09-17T00:00:00").weekOfYear             // → 38                           (ISO 8601)
 datetime("2019-09-17T00:00:00").monthOfYear            // → "September"
 datetime("2019-09-17T00:00:00").monthOfYearShort       // → "Sep"                        (ext)
+datetime("2025-09-17T00:00:00").quarter                // → 3                            (ext; 1–4 calendar quarter)
+datetime("2025-09-17T00:00:00").yearQuarter            // → "2025Q3"                     (ext)
 ```
 
 `date` and `time` extraction stay as function calls — they're type conversions, not properties,
@@ -222,6 +224,62 @@ A mismatch in zone-kind between two datetime operands (one local, one zoned/offs
 same rule as for `<`/`>` comparisons.
 
 `[@test] ../../expr/date_difference_test.go`
+
+---
+
+## Financial year (**ext**)
+
+Two functions return the **financial year** (also called fiscal year or tax year) and the
+financial-year quarter that a date or datetime falls in. Financial years vary by jurisdiction;
+the `basis` argument selects which convention to use.
+
+| Function | Example | Result |
+|---|---|---|
+| `financialYear(v, basis)` | `financialYear(date("2024-08-01"), "AU")` | `"FY2025"` (AU FY runs July → June; labelled by year it ends in) |
+| `financialYearQuarter(v, basis)` | `financialYearQuarter(date("2024-08-01"), "AU")` | `"FY2025Q1"` |
+
+### Basis argument
+
+`basis` accepts one of two forms:
+
+- **A `BlNumber` 1–12** — the calendar month in which the financial year starts. For example,
+  `7` means a July-start fiscal year (Australian convention).
+- **A `BlString` jurisdiction code** — convenient shorthand for well-known jurisdictions:
+
+| Code | Jurisdiction | Start | Notes |
+|---|---|---|---|
+| `"AU"` | Australia | July 1 | |
+| `"UK"` | United Kingdom | April 6 | Personal tax year; the "April 6" quirk is preserved |
+| `"US"` | US Federal | October 1 | Federal fiscal year |
+| `"IN"` | India | April 1 | |
+| `"JP"` | Japan | April 1 | |
+| `"CA"` | Canada | April 1 | Federal |
+| `"NZ"` | New Zealand | April 1 | |
+
+A `basis` outside `1`–`12` or an unrecognised jurisdiction string → `BlTypeError`.
+
+### Labelling convention
+
+The financial year is **labelled by the calendar year it ends in** — the standard convention in
+AU, US, UK, and Canada. For a July-start FY:
+
+```
+financialYear(date("2024-06-30"), "AU")   // → "FY2024"  (FY 2024 ends today)
+financialYear(date("2024-07-01"), "AU")   // → "FY2025"  (FY 2025 begins today)
+```
+
+Both functions return strings prefixed with `"FY"`. `financialYear` returns `"FY<year>"`;
+`financialYearQuarter` returns `"FY<year>Q<quarter>"`. `<year>` is the four-digit financial
+year (labelled by the calendar year it ends in). `<quarter>` is 1–4 within the financial year
+(Q1 starts on the FY start date, Q4 ends on the day before the next FY start).
+
+```
+financialYearQuarter(date("2024-08-01"), "AU")   // → "FY2025Q1"  (AU FY 2025 Q1: Jul–Sep)
+financialYearQuarter(date("2025-01-15"), "AU")   // → "FY2025Q3"  (AU FY 2025 Q3: Jan–Mar)
+financialYearQuarter(date("2024-08-01"), 7)      // → "FY2025Q1"  (numeric basis equivalent)
+```
+
+`[@test] ../../expr/financial_year_test.go`
 
 ---
 
@@ -492,6 +550,10 @@ func withoutOffsetOrTimezoneFn(v any) any
 // Duration-typed difference — dispatch on input type. Both args must be the same type.
 func yearsAndMonthsDurationFn(a, b any) BlYearsMonthsDuration   // both BlDate or both BlDateTime
 func daysAndTimeDurationFn(a, b any) BlDaysTimeDuration         // both BlDate or both BlDateTime; equivalent to b - a
+
+// Financial year — dispatch on first-arg type (BlDate or BlDateTime); basis is BlNumber or BlString.
+func financialYearFn(v, basis any) BlString                     // returns "FY<year>" (labelled by year it ends in)
+func financialYearQuarterFn(v, basis any) BlString              // returns "FY<year>Q<quarter>"
 ```
 
 `v any` in the calendar-utility signatures means "either `BlDate` or `BlDateTime`" — the
@@ -648,6 +710,18 @@ func datetimeOptions() []expr.Option {
         expr.Function("daysAndTimeDuration", typed2(daysAndTimeDurationFn),
             new(func(BlDate, BlDate) BlDaysTimeDuration),
             new(func(BlDateTime, BlDateTime) BlDaysTimeDuration)),
+
+        // financial year (shared with date) — basis may be numeric start month or jurisdiction code
+        expr.Function("financialYear", financialYearFn,
+            new(func(BlDate, BlNumber) BlString),
+            new(func(BlDate, BlString) BlString),
+            new(func(BlDateTime, BlNumber) BlString),
+            new(func(BlDateTime, BlString) BlString)),
+        expr.Function("financialYearQuarter", financialYearQuarterFn,
+            new(func(BlDate, BlNumber) BlString),
+            new(func(BlDate, BlString) BlString),
+            new(func(BlDateTime, BlNumber) BlString),
+            new(func(BlDateTime, BlString) BlString)),
     }
 }
 ```
