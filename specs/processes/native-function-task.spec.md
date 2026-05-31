@@ -116,7 +116,7 @@ func (t *NativeFunctionTask[Inputs, Outputs]) Evaluate(ctx *ExecutionContext, ex
 The `Inputs` type parameter declares the task's typed inputs.
 
 - **Every exported field is an input.** Unexported fields are ignored.
-- **Field types must implement `BlValue`** (`BlNumber`, `BlString`, `BlBoolean`, `BlList`, `BlContext`, `BlDateTime`, `BlDaysTimeDuration`, etc.). A field whose type does not implement `BlValue` produces a `ProcessDefinitionError` at construction time.
+- **Field types must implement `BlValue`** (`BlNumber`, `BlString`, `BlBoolean`, `BlList`, `BlDictionary`, `BlDateTime`, `BlDaysTimeDuration`, etc.). A field whose type does not implement `BlValue` produces a `ProcessDefinitionError` at construction time.
 - **Field name is the literal Go field name.** No transformation — `LoanAmount` is bound as `LoanAmount`.
 - **Duplicate field names** within the same struct produce a `ProcessDefinitionError`.
 - **`Inputs` may be empty** (`struct{}` or a type with no exported fields). A task that genuinely reads nothing declares an empty struct; the `InputBindings` closure returns an empty slice. This differs from `Outputs`, which requires at least one field.
@@ -157,7 +157,7 @@ The bindings are purely a **construction-time wiring artifact**: they encode "wh
 The `Outputs` type parameter declares the task's typed outputs. The rules match [`DecisionNode` § Outputs structs](../decision-tasks/decision-node.spec.md#outputs-structs):
 
 - **Every exported field is an output.** Unexported fields are ignored.
-- **Field types must implement `BlValue`** (`BlNumber`, `BlString`, `BlBoolean`, `BlList`, `BlContext`, `BlDateTime`, `BlDaysTimeDuration`, etc.). A field whose type does not implement `BlValue` produces a `ProcessDefinitionError` at construction time.
+- **Field types must implement `BlValue`** (`BlNumber`, `BlString`, `BlBoolean`, `BlList`, `BlDictionary`, `BlDateTime`, `BlDaysTimeDuration`, etc.). A field whose type does not implement `BlValue` produces a `ProcessDefinitionError` at construction time.
 - **Field name is the literal Go field name.** No transformation — `LoanAmount` records as `LoanAmount`, consumers read it as `ctx.Get("<task-id>.LoanAmount")`.
 - **At least one exported field** is required. An `Outputs` struct with no exported fields produces a `ProcessDefinitionError` — a task must declare at least one output. If the function genuinely emits no useful value, declare a single-field struct (e.g. `Status BlString`) so the recorded transaction has a meaningful field name.
 - **Duplicate field names** within the same struct produce a `ProcessDefinitionError`.
@@ -277,7 +277,7 @@ Bindings can also reference the process's `StartEvent` input fields via the star
 package validation
 
 type ValidateApplicationInputs struct {
-    Applicant  BlContext
+    Applicant  BlDictionary
     LoanAmount BlNumber
 }
 

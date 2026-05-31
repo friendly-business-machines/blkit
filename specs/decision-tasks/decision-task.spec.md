@@ -98,7 +98,7 @@ type DecisionResult struct {
     Outputs map[string]BlValue
 
     // All evaluated node results — keyed by node Id, including intermediaries.
-    // Multi-output nodes' values are BlContexts keyed by the per-field output
+    // Multi-output nodes' values are BlDictionaries keyed by the per-field output
     // names declared on each node's outputs struct.
     AllResults map[string]BlValue
 
@@ -218,7 +218,7 @@ var processB = NewProcess("loan-app-b", "2.0", ProcessOpts{
 Each concrete decision node is built via its generic constructor (`NewDecisionTable`, `NewLiteralExpression`, etc. — see [decision-node.spec.md](decision-node.spec.md)). Nodes are package-scope `var` declarations; downstream nodes reference upstream outputs through typed `.Outputs.X` fields. The constructor functions used in the previous spec revision are gone.
 
 ```go
-var applicantSchema = NewContextContract(
+var applicantSchema = NewDictionaryContract(
     RequiredField("age", BlNumber),
     RequiredField("income", BlNumber),
 )
@@ -321,7 +321,7 @@ When `Evaluate(input)` runs:
 
 1. Iterate `DecisionGraph.DecisionNodes` in stored order (already topologically sorted by `NewDecisionTask`).
 2. The first nodes have no node-to-node dependencies and receive only the caller-provided `input` variables.
-3. Each node's output is stored in the evaluation context under its `Id`. Multi-output nodes' results are `BlContext` values keyed by the per-field output names declared on their outputs struct.
+3. Each node's output is stored in the evaluation context under its `Id`. Multi-output nodes' results are `BlDictionary` values keyed by the per-field output names declared on their outputs struct.
 4. Downstream nodes receive the accumulated context (caller inputs + upstream outputs).
 5. All nodes are evaluated, regardless of whether they appear in the output contract.
 6. The `DecisionResult` contains the full results, with `Outputs` filtered to fields declared in `OutputContract`.

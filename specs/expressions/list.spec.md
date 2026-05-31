@@ -76,7 +76,7 @@ Behaviour by input shape:
 | Empty list | `[]` |
 
 Projection composes naturally with the aggregates and the rest of the list library. Assume
-the following data is in scope (`orders` and `customers` are each a `BlList` of `BlContext`,
+the following data is in scope (`orders` and `customers` are each a `BlList` of `BlDictionary`,
 equivalently a `BlTable`):
 
 ```

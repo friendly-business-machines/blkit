@@ -76,7 +76,7 @@ func DateTimeInput(label string, expression BlDateTime) DateTimeInputColumn
 func DaysTimeInput(label string, expression BlDaysTimeDuration) DaysTimeInputColumn
 func YearsMonthsInput(label string, expression BlYearsMonthsDuration) YearsMonthsInputColumn
 func ListInput(label string, expression BlList) ListInputColumn
-func ContextInput(label string, expression BlContext, schema *ContextContract) ContextInputColumn
+func DictionaryInput(label string, expression BlDictionary, schema *DictionaryContract) DictionaryInputColumn
 ```
 
 Each concrete `*InputColumn` type embeds the matching `Bl*` interface — `NumberInputColumn` embeds `BlNumber`, `StringInputColumn` embeds `BlString`, etc. — so the column value can be used directly inside rule predicates without an extra `.Ref` hop.

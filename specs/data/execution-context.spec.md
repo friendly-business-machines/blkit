@@ -50,7 +50,7 @@ func (c *ExecutionContext) CurrentCommit() int { ... }
 // Projections that fold the log into current state. Reads honor visibility — Pending and Aborted
 // transactions are excluded, and committed transactions in unfinished sub-process scopes are excluded
 // from readers outside those scopes.
-func (c *ExecutionContext) Get(path ...string) any               // no args: full nested BlContext mirroring the NodeID hierarchy. One arg ("node_id.key" or deeper): drill in.
+func (c *ExecutionContext) Get(path ...string) any               // no args: full nested BlDictionary mirroring the NodeID hierarchy. One arg ("node_id.key" or deeper): drill in.
 func (c *ExecutionContext) Latest() []Transaction                // one entry per NodeID — its latest committed transaction visible to this scope
 
 // Read-only view filtered to transactions with CommitNumber ≤ commit. All reads on the view are time-travelled.
@@ -120,12 +120,12 @@ After the example above, `ctx.CurrentCommit()` returns `4`.
 Reads are **projections** of the log. `Get` is the primary projection — it folds the log into the current state, returning either the whole state or a value at a specific path.
 
 ```go
-// Whole current state — a nested BlContext mirroring the NodeID hierarchy
+// Whole current state — a nested BlDictionary mirroring the NodeID hierarchy
 state := ctx.Get()
-//   BlContext{
-//     "start":    BlContext{"applicant_name": "Alice", "loan_amount": 250000},
-//     "validate": BlContext{"is_valid": true, ...},
-//     "review":   BlContext{"review_status": "approved", ...},
+//   BlDictionary{
+//     "start":    BlDictionary{"applicant_name": "Alice", "loan_amount": 250000},
+//     "validate": BlDictionary{"is_valid": true, ...},
+//     "review":   BlDictionary{"review_status": "approved", ...},
 //   }
 
 // Drill in by dotted path
@@ -135,15 +135,15 @@ status := ctx.Get("review.review_status")          // "approved"
 
 ### Whole-state projection (no args)
 
-`Get()` (no args) returns the latest state as a single `BlContext` whose structure mirrors the NodeID hierarchy:
+`Get()` (no args) returns the latest state as a single `BlDictionary` whose structure mirrors the NodeID hierarchy:
 
-- Each top-level key is a NodeID segment; dotted NodeIDs become nested `BlContext`s along their dotted path.
-- Each leaf node's value is its latest `Transaction.Values`, surfaced as a `BlContext`.
+- Each top-level key is a NodeID segment; dotted NodeIDs become nested `BlDictionary`s along their dotted path.
+- Each leaf node's value is its latest `Transaction.Values`, surfaced as a `BlDictionary`.
 - Sub-process variables appear nested under the SubProcessTask's NodeID — `verify-step.check-docs`'s values are reachable as `state["verify-step"]["check-docs"]`.
 
 ### Drill-in projection (one arg)
 
-`Get(path)` splits `path` on `.` and tries every (node_id, remainder) split, **longest node_id first**. For each candidate, if a transaction with that `NodeID` exists, it resolves the remainder against the latest such transaction's `Values` map (drilling into nested `BlContext` values for further segments). The first split that resolves wins. If nothing matches, `Get` returns `nil` / `None`.
+`Get(path)` splits `path` on `.` and tries every (node_id, remainder) split, **longest node_id first**. For each candidate, if a transaction with that `NodeID` exists, it resolves the remainder against the latest such transaction's `Values` map (drilling into nested `BlDictionary` values for further segments). The first split that resolves wins. If nothing matches, `Get` returns `nil` / `None`.
 
 ### `Latest()` for provenance
 
@@ -418,7 +418,7 @@ A `risk-check` task with `MultiInstanceConfig(collection=..., element_variable="
 ```
 
 ```go
-ctx.Get("risk-check.result")                  // BlList of 3 BlContexts (latest accumulated)
+ctx.Get("risk-check.result")                  // BlList of 3 BlDictionaries (latest accumulated)
 ```
 
 All iteration transactions are preserved in `Transactions()` for audit purposes.
@@ -431,7 +431,7 @@ All values stored in transaction `Values` are `Bl` values:
 
 - Primitives: `BlString`, `BlNumber`, `BlBoolean`, `BlNull`
 - Dates and times: `BlDate`, `BlTime`, `BlDateTime`, `BlDuration`
-- Collections: `BlList`, `BlContext`, `BlTable` (a list of uniformly-keyed `BlContext` rows; see [table.spec.md](../expressions/table.spec.md))
+- Collections: `BlList`, `BlDictionary`, `BlTable` (a list of uniformly-keyed `BlDictionary` rows; see [table.spec.md](../expressions/table.spec.md))
 - Ranges: `BlRange`
 
 ---
@@ -476,14 +476,14 @@ Output:
   review_status: BlString = "error"
 ```
 
-Loopback iterations appear as multiple transactions for the same `node_id`. For nested values (`BlContext`, `BlList`), the output uses indented `Bl` literal syntax:
+Loopback iterations appear as multiple transactions for the same `node_id`. For nested values (`BlDictionary`, `BlList`), the output uses indented `Bl` literal syntax:
 
 ```
 #1 [start] (a3f8c1d2, 2026-04-03T10:00:00Z)
-  applicant: BlContext = {
+  applicant: BlDictionary = {
     name: BlString = "Alice",
     age: BlNumber = 34,
-    address: BlContext = {
+    address: BlDictionary = {
       city: BlString = "Melbourne",
       country: BlString = "AU"
     }
@@ -504,7 +504,7 @@ fmt.Println(ctx.ToMarkdown())
 - A top-level `# ExecutionContext` heading.
 - A metadata bullet list: `process_id`, `process_instance_id`, `parent_process_instance_id` (if set), and `current_commit`.
 - One section per node that has at least one visible transaction. The heading level reflects the node's depth in the NodeID hierarchy (`##` for top-level nodes, `###` for one level deep, etc.).
-- Under each section, the node's latest committed `Values` rendered as a bullet list of `key: Bl-literal` lines. Nested `BlContext` / `BlList` values render as indented `Bl` literals across multiple lines.
+- Under each section, the node's latest committed `Values` rendered as a bullet list of `key: Bl-literal` lines. Nested `BlDictionary` / `BlList` values render as indented `Bl` literals across multiple lines.
 - A node with no values of its own (e.g. a `SubProcessTask` that just orchestrates children) appears as a heading followed directly by its child sections.
 
 #### Ordering
@@ -579,7 +579,7 @@ The `verify-step` heading has no values directly under it because the SubProcess
 
 #### Example — nested values
 
-For a node whose values include nested `BlContext` / `BlList`:
+For a node whose values include nested `BlDictionary` / `BlList`:
 
 ```
 ## start
@@ -615,7 +615,7 @@ When a value is a [`BlTable`](../expressions/table.spec.md), it renders as a pro
 - total: 64.48
 ```
 
-A scalar value, list, or context still renders inline (or with `Bl`-literal indentation for nested cases). Only `BlTable` values get table rendering — a plain `BlList[BlContext]` that hasn't been promoted to a `BlTable` falls back to the `Bl`-literal form.
+A scalar value, list, or context still renders inline (or with `Bl`-literal indentation for nested cases). Only `BlTable` values get table rendering — a plain `BlList[BlDictionary]` that hasn't been promoted to a `BlTable` falls back to the `Bl`-literal form.
 
 #### Example — loopbacks and loops
 
@@ -649,16 +649,16 @@ The context exposes read-only metadata. Each scope reports its own metadata; the
 - `AsOf(commit)` with `commit` ≥ `CurrentCommit()` returns a view equivalent to the live context (read-only). With `commit ≤ 0`, it returns a view over an empty log.
 - `AsOf(commit)` returns a read-only view: calling `Record()` on it produces a `ContextReadOnlyError`. Callers that need to extend the log do so on the live context.
 - `AsOf` and `Scope` compose in either order — `ctx.AsOf(n).Scope(p)` and `ctx.Scope(p).AsOf(n)` produce equivalent views.
-- `Get()` (no args) returns an empty `BlContext` when the log is empty. `Latest()` returns an empty list.
+- `Get()` (no args) returns an empty `BlDictionary` when the log is empty. `Latest()` returns an empty list.
 - `Get()` (no args) and `Get(path)` always project from the latest transaction per NodeID. Superseded transactions (loopbacks, loop iterations, multi-instance iterations) are not surfaced — use `Transactions()` to see them.
-- A node whose latest transaction's `Values` is empty appears in `Get()`'s nested context as an empty `BlContext` under its NodeID path.
-- If two NodeIDs collide on the projection path — e.g. a node `verify-step` records its own values *and* a sub-node `verify-step.check-docs` exists — the parent NodeID's keys and the child NodeID's nested context share the same `BlContext` level. A key collision (the parent's `Values` contains `"check-docs"` *and* a child node has NodeID `verify-step.check-docs`) is invalid; `Get()` resolves the nested NodeID path and the parent's colliding key is masked. In practice, `SubProcessTask` nodes do not Record their own values, so this collision does not arise.
+- A node whose latest transaction's `Values` is empty appears in `Get()`'s nested context as an empty `BlDictionary` under its NodeID path.
+- If two NodeIDs collide on the projection path — e.g. a node `verify-step` records its own values *and* a sub-node `verify-step.check-docs` exists — the parent NodeID's keys and the child NodeID's nested context share the same `BlDictionary` level. A key collision (the parent's `Values` contains `"check-docs"` *and* a child node has NodeID `verify-step.check-docs`) is invalid; `Get()` resolves the nested NodeID path and the parent's colliding key is masked. In practice, `SubProcessTask` nodes do not Record their own values, so this collision does not arise.
 - `to_string()` on an empty context returns an empty string.
 - `process_instance_id` is unique per scope. Each call to `store.NewExecutionState(...)` produces a distinct `process_instance_id` for the root scope. Each sub-process scope also gets its own unique `process_instance_id`.
 - `parent_process_instance_id` is `None` at the root; for a sub-process scope, it is the `process_instance_id` of the scope that contains the `SubProcessTask` which created it.
 - The start node's NodeID is the `StartId` passed to `store.NewExecutionState(...)` (by convention, `"start"` for processes with a single start node).
 - `Scope(prefix)` returns a view backed by the same underlying log. Writes inside the scope are visible to ancestor scopes (with the scope prefix prepended to NodeIDs); reads inside the scope are restricted to NodeIDs equal to `prefix` or beginning with `prefix + "."`.
 - `Scope(prefix)` chains: `ctx.Scope("a").Scope("b")` is equivalent to `ctx.Scope("a.b")`. Each level in the chain reports its own metadata.
-- `get()` with a multi-segment path tries every `(node_id, remainder)` split, longest node_id first. The first split for which a transaction's `NodeID` matches and the remainder resolves against its `Values` map wins. This handles both nested sub-process NodeIDs and drilling into `BlContext` values.
+- `get()` with a multi-segment path tries every `(node_id, remainder)` split, longest node_id first. The first split for which a transaction's `NodeID` matches and the remainder resolves against its `Values` map wins. This handles both nested sub-process NodeIDs and drilling into `BlDictionary` values.
 - Loopback, loop, and multi-instance iterations each produce their own `Transaction` with a distinct `execution_id` and timestamp. `Get()` returns the value from the latest one. All transactions remain in the log.
 - Keys within a transaction's `Values` map should be simple names (no dots). Dotted nesting is conveyed by the `NodeID`, not by embedding dots in keys; reserving dots for `NodeID` boundaries keeps `Get` resolution unambiguous.

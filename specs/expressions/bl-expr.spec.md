@@ -87,7 +87,7 @@ Every value belongs to one of the following types. Each has a literal or constru
 | days-time duration | `BlDaysTimeDuration` | `duration(...)` | `duration("P4DT12H")` |
 | years-months duration | `BlYearsMonthsDuration` | `duration(...)` | `duration("P1Y6M")` |
 | list | `BlList` | `[ ... ]` | `[1, 2, 3]` |
-| context | `BlContext` | `{ ... }` | `{name: "Alice", age: 30}` |
+| dictionary | `BlDictionary` | `{ ... }` | `{name: "Alice", age: 30}` |
 | range | `BlRange` | interval notation | `[1..10]`, `(1..10)`, `[1..10)` |
 | null | `BlNull` | keyword | `null` |
 
@@ -363,7 +363,7 @@ an out-of-range index yields `null`.
 
 ### Projection
 
-Accessing a field on a list of contexts projects that field across every element.
+Accessing a field on a list of dictionaries projects that field across every element.
 
 ```
 [{name: "Alice", age: 30}, {name: "Bob", age: 34}].name   // → ["Alice", "Bob"]
@@ -437,22 +437,22 @@ every x in [1, 2], y in [3, 4] satisfies x + y >= 4   // → true   (every pair 
 
 ---
 
-## Contexts
+## Dictionaries
 
-A context is an ordered map of named entries. Keys may be unquoted names or strings; values may be
+A dictionary is an ordered map of named entries. Keys may be unquoted names or strings; values may be
 any type. Later entries can reference earlier ones in the same literal.
 
 ```
-{}                                 // → empty context
+{}                                 // → empty dictionary
 {a: 1, b: 2}                       // → {a: 1, b: 2}
 {"a": 1, "b": 2}                   // → {a: 1, b: 2}   (quoted keys)
-{a: 1, b: {c: 2}}                  // → nested context
+{a: 1, b: {c: 2}}                  // → nested dictionary
 {a: 2, b: a * 2}                   // → {a: 2, b: 4}   (b references a)
 ```
 
 ### Path access
 
-The dot operator navigates into a context. Chains traverse nested contexts; a missing key yields
+The dot operator navigates into a dictionary. Chains traverse nested dictionaries; a missing key yields
 `null`.
 
 ```
@@ -462,17 +462,17 @@ The dot operator navigates into a context. Chains traverse nested contexts; a mi
 applicant.address.postcode         // navigate input variables
 ```
 
-See [context.spec.md](context.spec.md). Context manipulation uses the
-[§ Context functions](#context-functions).
+See [dictionary.spec.md](dictionary.spec.md). Dictionary manipulation uses the
+[§ Dictionary functions](#dictionary-functions).
 
-`[@test] ../../expr/contexts_test.go`
+`[@test] ../../expr/dictionaries_test.go`
 
 ---
 
 ## Accessing components
 
 The dot operator also reads named **components** of temporal, duration, and range values — not just
-context entries. This is the standard FEEL way to pull a field out of a date, time, duration, or
+dictionary entries. This is the standard FEEL way to pull a field out of a date, time, duration, or
 range.
 
 ```
@@ -559,7 +559,7 @@ cases, and Go registration. This catalogue is the index:
 | String | `substring`, `stringLength`, `upperCase`, `contains`, `matches`, `replace`, `split`, `stringJoin`, … | [string.spec.md](string.spec.md) |
 | Numeric | `decimal`, `floor`, `ceiling`, `round*`, `abs`, `modulo`, `sqrt`, `log`, `ln`, `exp`, `odd`, `even`, … | [number.spec.md](number.spec.md) |
 | List | `count`, `min`, `max`, `sum`, `mean`, `sublist`, `append`, `concatenate`, `union`, `distinct`, `flatten`, `sort`, … | [list.spec.md](list.spec.md) |
-| Context | `getValue`, `getEntries`, `contextPut`, `contextMerge` | [context.spec.md](context.spec.md) |
+| Dictionary | `getValue`, `getEntries`, `dictionaryPut`, `dictionaryMerge` | [dictionary.spec.md](dictionary.spec.md) |
 | Temporal | `now`, `today`, `lastDayOfMonth`, `addBusinessDays`, `is*`, … (calendar properties such as `.dayName`, `.monthName` are dot accessors, not function calls — see [date.spec.md § Calendar properties](date.spec.md#calendar-properties)) | [date](date.spec.md) / [time](time.spec.md) / [datetime](datetime.spec.md) |
 | Duration | `duration` components, `abs` | [days_time_duration](days_time_duration.spec.md) / [years_months_duration](years_months_duration.spec.md) |
 | Range (interval algebra) | `before`, `after`, `meets`, `overlaps`, `includes`, `during`, `starts`, `finishes`, `coincides` | [range.spec.md](range.spec.md) |
@@ -603,7 +603,7 @@ a or b and c          // → a or (b and c)
 - **`null` propagation** — most operations involving `null` produce `null`
   ([null.spec.md](null.spec.md)); the exceptions are the short-circuit boolean cases (see
   [§ Boolean logic](#boolean-logic)).
-- **Missing context key** → `null`, not an error.
+- **Missing dictionary key** → `null`, not an error.
 - **Division by zero** → `null`.
 - **Parse / type-check errors** — malformed syntax, an unknown variable (when a `BlEnv` is given),
   or a static type mismatch — are returned by `Bl.Expr` as a `BlParseError`.
@@ -674,7 +674,7 @@ const (
     BlTypeNumber; BlTypeString; BlTypeBoolean
     BlTypeDate; BlTypeTime; BlTypeDateTime
     BlTypeDaysTimeDuration; BlTypeYearsMonthsDuration
-    BlTypeList; BlTypeContext; BlTypeRange; BlTypeTable; BlTypeCalendar
+    BlTypeList; BlTypeDictionary; BlTypeRange; BlTypeTable; BlTypeCalendar
     BlTypeAny
 )
 ```
@@ -741,7 +741,7 @@ func unwrap(v BlValue) any          // Bl* → native (used by ToMarkdown / host
 | `string` | `BlString` |
 | `bool` | `BlBoolean` |
 | `[]any` | `BlList` |
-| `map[string]any` | `BlContext` |
+| `map[string]any` | `BlDictionary` |
 | `time.Time` | `BlDate` / `BlDateTime` (per precision) |
 | `time.Duration` | `BlDaysTimeDuration` |
 | `nil` / absent input key | `Null` |
@@ -824,8 +824,8 @@ FEEL constructs absent from `expr`'s grammar are produced by an `expr` patcher (
 - `for…return`, `some/every…satisfies`, `if…then…else`;
 - the boolean connectives `and`/`or` and unary `-` (above);
 - **component access** — `x.year`, `d.minutes`, `r.start` resolve to accessor-function calls
-  (`dateYear(x)`, …) because `Bl*` values are opaque structs, not reflectable maps; context member
-  access (`ctx.key`) lowers to `getValue(ctx, "key")`.
+  (`dateYear(x)`, …) because `Bl*` values are opaque structs, not reflectable maps; dictionary member
+  access (`d.key`) lowers to `getValue(d, "key")`.
 
 Forbidding spaces in identifiers (see [§ Relationship to FEEL](#relationship-to-feel-and-future-direction))
 removes what would otherwise be the hardest rewrite — multi-word names colliding with `and`/`or` —
@@ -905,6 +905,6 @@ behaviour, and the rationale.
 - An expression that evaluates to `null` is a valid result.
 - `Bl.Eval` needs no input for expressions that reference no variables (`1 + 1`,
   `date("2025-01-01")`).
-- A list index out of range returns `null`; a missing context key returns `null`.
+- A list index out of range returns `null`; a missing dictionary key returns `null`.
 
 `[@test] ../../expr/edge_cases_test.go`

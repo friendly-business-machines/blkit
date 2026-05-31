@@ -42,7 +42,7 @@ type EligibilityOutputs struct {
 Rules for the outputs struct:
 
 - **Every exported field is an output.** No filter — the caller put it there, so it is an output.
-- A field's static type must implement `BlValue` (`BlString`, `BlNumber`, `BlBoolean`, `BlDate`, `BlTime`, `BlDateTime`, `BlDaysTimeDuration`, `BlYearsMonthsDuration`, `BlList`, `BlContext`, `BlRange`, `BlCalendar`). A non-`BlValue` field type is a `DecisionDefinitionError` at construction time.
+- A field's static type must implement `BlValue` (`BlString`, `BlNumber`, `BlBoolean`, `BlDate`, `BlTime`, `BlDateTime`, `BlDaysTimeDuration`, `BlYearsMonthsDuration`, `BlList`, `BlDictionary`, `BlRange`, `BlCalendar`). A non-`BlValue` field type is a `DecisionDefinitionError` at construction time.
 - The column name defaults to the lowercase field name; override with a `bl:"name"` struct tag.
 - Single-output nodes use an outputs struct with exactly one field. Multi-output nodes use one field per output column.
 
@@ -125,7 +125,7 @@ These fields live on each concrete node's struct and are exposed through the int
 A `DecisionNode` is evaluated by calling `Evaluate(input)`:
 
 - **Single-output case** (outputs struct has exactly one field): returns that field's `BlValue` directly.
-- **Multi-output case**: returns a `BlContext` keyed by the declared output names.
+- **Multi-output case**: returns a `BlDictionary` keyed by the declared output names.
 
 Within a `DecisionTask`, the runtime evaluates nodes in topologically sorted dependency order and stores each node's result in the evaluation context under the node's `Id`.
 

@@ -398,7 +398,7 @@ type RequestInputTask struct {
     // the payload that accompanies the InstanceEventInputRequest. Typical use:
     // describe to the recipient what is being requested (form schema, prompt
     // text, current case state, etc.).
-    RequestPayload BlExpr // resolves to a BlContext
+    RequestPayload BlExpr // resolves to a BlDictionary
 
     // Optional contract validated against the response payload before it is
     // written to the ExecutionContext. Validation failure raises a task error
@@ -575,7 +575,7 @@ The task executes once, then the loop condition is evaluated against the updated
 // Validate each applicant in a list. MultiInstance binds the per-iteration
 // item to the Applicant input via Bl.MultiInstanceItem().
 type ValidateApplicantInputs struct {
-    Applicant BlContext
+    Applicant BlDictionary
 }
 type ValidateApplicantOutputs struct {
     IsValid BlBoolean
@@ -585,7 +585,7 @@ var validate = NewNativeFunctionTask(NativeFunctionTaskOpts[ValidateApplicantInp
     Name: "Validate Applicant",
     InputBindings: func(in ValidateApplicantInputs) []ParameterBinding {
         return []ParameterBinding{
-            Bind(in.Applicant, Bl.MultiInstanceItem[BlContext]()),
+            Bind(in.Applicant, Bl.MultiInstanceItem[BlDictionary]()),
         }
     },
     Fn: func(in *ValidateApplicantInputs) (ValidateApplicantOutputs, error) { /* body */ },

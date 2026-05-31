@@ -297,7 +297,7 @@ riskConditions := NewGatewayConditions(
 
 // Boundary events
 start := Start("start", "Start", NewInputContract(
-    RequiredField("applicant", BlContext),
+    RequiredField("applicant", BlDictionary),
     RequiredField("loan_amount", BlNumber),
 ))
 done := End("done", "Done")
@@ -405,11 +405,11 @@ decisionConditions := NewGatewayConditions(
 
 // Boundary events — each entrypoint declares its own input shape
 newApp := Start("new", "New Application", NewInputContract(
-    RequiredField("applicant", BlContext),
+    RequiredField("applicant", BlDictionary),
     RequiredField("loan_amount", BlNumber),
 ))
 reassess := Start("reassess", "Re-assessment", NewInputContract(
-    RequiredField("applicant", BlContext),
+    RequiredField("applicant", BlDictionary),
     RequiredField("risk_level", BlString),
 ))
 approved := End("approved", "Loan Approved")

@@ -27,7 +27,7 @@ All blkit classes are organised into sub-namespaces:
 
 - `blkit.processes` — process execution classes (`Process`, `ProcessGraph`, `StartEvent`, `EndEvent`, gateway nodes, tasks)
 - `blkit.decisions` — decision classes (`DecisionTask`, `DecisionTable`, `LiteralExpression`, `BoxedContext`, `Relation`, `Invocation`, `BusinessKnowledgeModel`)
-- `blkit.expr` — typed value system and expression factory (`Bl`, `BlNumber`, `BlString`, `BlExpr`, `BlContext`, `BlList`, etc.)
+- `blkit.expr` — typed value system and expression factory (`Bl`, `BlNumber`, `BlString`, `BlExpr`, `BlDictionary`, `BlList`, etc.)
 - `blkit.data` — data contracts, execution context, and the pluggable state store (`InputContract`, `OutputContract`, `ExecutionContext`, `ExecutionHistory`, `StateStore`)
 - `blkit.messagegateway` — producer-side typed client SDK (`MessageGateway` interface, `RedisMessageGateway`, `NATSMessageGateway`, `InMemoryMessageGateway`) for submitting process runs, delivering messages, and observing events from outside the worker pool
 - `blkit.restserver` — HTTP REST server with Server-Sent Events that exposes processes registered on a `MessageGateway`. Optionally embeds a worker in the same binary.

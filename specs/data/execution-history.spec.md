@@ -847,14 +847,14 @@ All loop iterations share the same `execution_id` — they are part of a single 
 For a process `start → send → end`, where `send` runs once per recipient in a collection:
 
 ```go
-type SendInputs struct{ Recipient BlContext }
+type SendInputs struct{ Recipient BlDictionary }
 type SendOutputs struct{ Delivered BlBoolean }
 
 var send = NewNativeFunctionTask(NativeFunctionTaskOpts[SendInputs, SendOutputs]{
     Id: "send", Name: "Send Notification",
     InputBindings: func(in SendInputs) []ParameterBinding {
         return []ParameterBinding{
-            Bind(in.Recipient, Bl.MultiInstanceItem[BlContext]()),
+            Bind(in.Recipient, Bl.MultiInstanceItem[BlDictionary]()),
         }
     },
     Fn: func(in *SendInputs) (SendOutputs, error) { /* body */ },

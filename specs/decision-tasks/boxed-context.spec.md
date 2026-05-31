@@ -9,7 +9,7 @@ targets:
 
 A `BoxedContext` is a `DecisionNode` defined by a set of named entries. Each entry binds an output name to a value expression. Entries can reference other entries' typed handles; the constructor topologically sorts entries by their inter-entry dependencies.
 
-`BoxedContext` is generic over an outputs struct (see [decision-node.spec.md](decision-node.spec.md)). Every exported field on the outputs struct is one entry on the context. The node evaluates to a `BlContext` keyed by the entry names.
+`BoxedContext` is generic over an outputs struct (see [decision-node.spec.md](decision-node.spec.md)). Every exported field on the outputs struct is one entry on the dictionary. The node evaluates to a `BlDictionary` keyed by the entry names.
 
 > A `BoxedContext` is always multi-output. For a single-value computation with named intermediate bindings, use a `LiteralExpression` with intermediate Go vars instead.
 
@@ -83,7 +83,7 @@ result, err := monthlyBreakdown.Evaluate(map[string]any{
     "rate":        Bl.Number(0.06),
     "term":        Bl.Number(12),
 })
-// result is BlContext: {principal: 10000, interest: 600, total: 10600}
+// result is BlDictionary: {principal: 10000, interest: 600, total: 10600}
 //
 // Access typed values downstream:
 // monthlyBreakdown.Outputs.Principal — BlNumber handle
@@ -99,8 +99,8 @@ Here `loanAmount`, `rate`, and `term` are typed `BlNumber` handles from upstream
 The entry list is already topologically sorted by `NewBoxedContext`. At evaluation time:
 
 1. Each entry's expression is evaluated against the input variables plus the accumulated entry results.
-2. The entry's result is stored in the local context under its name (the lowercased outputs-struct field name, or the `bl:"name"` tag).
-3. After all entries are evaluated, the result is a `BlContext` keyed by entry names.
+2. The entry's result is stored in the local dictionary under its name (the lowercased outputs-struct field name, or the `bl:"name"` tag).
+3. After all entries are evaluated, the result is a `BlDictionary` keyed by entry names.
 
 Cycles in the entry graph are rejected at construction time and never observed during evaluation.
 

@@ -152,7 +152,7 @@ The CBOR encoding maps `Bl` types to CBOR as follows:
 | `BlDateTime` | Tagged map (blkit tag) with date and time components |
 | `BlDuration` | Tagged map (blkit tag) with years, months, days, hours, minutes, seconds |
 | `BlList` | Array of `Bl` values |
-| `BlContext` | Map of string keys to `Bl` values |
+| `BlDictionary` | Map of string keys to `Bl` values |
 | `BlRange` | Tagged map (blkit tag) with start, end, and inclusive flags |
 
 `Bl` types with blkit-specific attributes (e.g. `BlDate` with offset and timezone) use blkit-defined semantic tags from CBOR's private-use range, encoding the full set of attributes as a CBOR map. This ensures lossless round-tripping of all `Bl` values regardless of custom attributes.

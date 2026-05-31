@@ -203,15 +203,15 @@ When invoked:
 1. Each entry in `InputMapping` is evaluated against the BKM's parameter handles to produce the referenced task's input map.
 2. The `DecisionTask` is evaluated with those inputs.
 3. If the referenced task has a single declared output, that output's `BlValue` is returned directly.
-4. If the referenced task has multiple declared outputs, a `BlContext` of all outputs (keyed by output name) is returned.
+4. If the referenced task has multiple declared outputs, a `BlDictionary` of all outputs (keyed by output name) is returned.
 
 ```go
 type CreditBKMParameters struct {
-    Applicant       BlContext
+    Applicant       BlDictionary
     RequestedAmount BlNumber
 }
 
-var creditBKM = NewBusinessKnowledgeModel[CreditBKMParameters, BlContext](BKMOpts[CreditBKMParameters, BlContext]{
+var creditBKM = NewBusinessKnowledgeModel[CreditBKMParameters, BlDictionary](BKMOpts[CreditBKMParameters, BlDictionary]{
     Id:   "credit_bkm",
     Name: "Credit Risk Check",
     DecisionTask: (&DecisionTaskReference{Task: creditModel}).

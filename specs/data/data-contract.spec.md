@@ -1,6 +1,6 @@
 ---
 name: Input/Output Contracts
-description: Typed input and output contracts (InputContract, OutputContract) — declare allowed and required data attributes and their types for process start/end events and decision model inputs/outputs, with ContextContract, ListContract, and TableContract for nested structured types
+description: Typed input and output contracts (InputContract, OutputContract) — declare allowed and required data attributes and their types for process start/end events and decision model inputs/outputs, with DictionaryContract, ListContract, and TableContract for nested structured types
 targets:
   - ../data/data_contract.go
 ---
@@ -12,7 +12,7 @@ targets:
 - An **`InputContract`** describes inbound data. It is attached to a `StartEvent` (mandatory; validated at submission) and to a `DecisionTask` (optional; validated at evaluation entry).
 - An **`OutputContract`** describes outbound data. It is attached to an `EndEvent` (optional; validated at completion) and to a `DecisionTask` (optional; validated at evaluation exit).
 
-The two types are structurally identical but distinct so that the wrong direction is a Go type error, not a runtime check. Fields reference `Bl` type classes directly rather than type name strings, giving compile-time safety in typed languages. For structured or collection types, `ContextContract`, `ListContract`, and `TableContract` provide nested type constraints.
+The two types are structurally identical but distinct so that the wrong direction is a Go type error, not a runtime check. Fields reference `Bl` type classes directly rather than type name strings, giving compile-time safety in typed languages. For structured or collection types, `DictionaryContract`, `ListContract`, and `TableContract` provide nested type constraints.
 
 ```go
 type InputContract struct {
@@ -38,10 +38,10 @@ type ContractField struct {
 func RequiredField(name string, fieldType FieldType) ContractField
 func OptionalField(name string, fieldType FieldType) ContractField
 
-// FieldType is: BlType | ContextContract | ListContract | TableContract
+// FieldType is: BlType | DictionaryContract | ListContract | TableContract
 ```
 
-`BlType` is any of the `Bl` value type classes (`BlNumber`, `BlString`, `BlBoolean`, `BlDate`, `BlTime`, `BlDateTime`, `BlYearsMonthsDuration`, `BlDaysTimeDuration`, `BlList`, `BlContext`, `BlRange`, `BlCalendar`).
+`BlType` is any of the `Bl` value type classes (`BlNumber`, `BlString`, `BlBoolean`, `BlDate`, `BlTime`, `BlDateTime`, `BlYearsMonthsDuration`, `BlDaysTimeDuration`, `BlList`, `BlDictionary`, `BlRange`, `BlCalendar`).
 
 ---
 
@@ -49,27 +49,27 @@ func OptionalField(name string, fieldType FieldType) ContractField
 
 For fields that hold structured or collection values, three contract types provide nested type constraints. These are direction-agnostic — they describe value shape and can appear inside an `InputContract`, an `OutputContract`, or any nested contract.
 
-### ContextContract
+### DictionaryContract
 
-A `ContextContract` declares a structured value — a `BlContext` with named, typed fields. At runtime, the value must be a `BlContext` whose keys and value types conform to the declared fields.
+A `DictionaryContract` declares a structured value — a `BlDictionary` with named, typed fields. At runtime, the value must be a `BlDictionary` whose keys and value types conform to the declared fields.
 
 ```go
-type ContextContract struct {
+type DictionaryContract struct {
     Fields []ContractField
 }
 
-func NewContextContract(fields ...ContractField) *ContextContract
+func NewDictionaryContract(fields ...ContractField) *DictionaryContract
 ```
 
 ```go
-addressContract := NewContextContract(
+addressContract := NewDictionaryContract(
     RequiredField("street", BlString),
     RequiredField("city", BlString),
     RequiredField("postal_code", BlString),
     RequiredField("country", BlString),
 )
 
-applicantContract := NewContextContract(
+applicantContract := NewDictionaryContract(
     RequiredField("name", BlString),
     RequiredField("age", BlNumber),
     RequiredField("income", BlNumber),
@@ -79,7 +79,7 @@ applicantContract := NewContextContract(
 
 ### ListContract
 
-A `ListContract` declares a typed list — a `BlList` where every element conforms to a specified type. The element type can be a `BlType`, `ContextContract`, `ListContract`, or `TableContract`.
+A `ListContract` declares a typed list — a `BlList` where every element conforms to a specified type. The element type can be a `BlType`, `DictionaryContract`, `ListContract`, or `TableContract`.
 
 ```go
 type ListContract struct {
@@ -93,13 +93,13 @@ func NewListContract(elementType FieldType) *ListContract
 // List of numbers
 scoresContract := NewListContract(BlNumber)
 
-// List of structured contexts
+// List of structured dictionaries
 addressesContract := NewListContract(addressContract)
 ```
 
 ### TableContract
 
-A `TableContract` declares a relation — a [`BlTable`](../expressions/table.spec.md) (an ordered list of uniformly-keyed `BlContext` rows) where each row conforms to the declared columns.
+A `TableContract` declares a relation — a [`BlTable`](../expressions/table.spec.md) (an ordered list of uniformly-keyed `BlDictionary` rows) where each row conforms to the declared columns.
 
 ```go
 type TableContract struct {
@@ -117,7 +117,7 @@ lineItemsContract := NewTableContract(
 )
 ```
 
-A `TableContract` constrains values to be `BlTable` instances whose columns match the declared fields. It is conceptually similar to `ListContract.create(ContextContract.create(*fields))`, but binds to the typed `BlTable` value (with its uniform-keys invariant) rather than a loose `BlList[BlContext]`.
+A `TableContract` constrains values to be `BlTable` instances whose columns match the declared fields. It is conceptually similar to `ListContract.create(DictionaryContract.create(*fields))`, but binds to the typed `BlTable` value (with its uniform-keys invariant) rather than a loose `BlList[BlDictionary]`.
 
 ---
 
@@ -272,7 +272,7 @@ When an `OutputContract` is set, `model.Validate()` additionally checks:
 
 Nested types are validated recursively:
 
-- `ContextContract` — each field is checked for presence (required/optional) and type conformance.
+- `DictionaryContract` — each field is checked for presence (required/optional) and type conformance.
 - `ListContract` — the value must be a `BlList`, and every element is checked against the declared `element_type`.
 - `TableContract` — the value must be a `BlTable`, and each row is checked against the declared fields.
 
@@ -288,10 +288,10 @@ Nested types are validated recursively:
 - `DataContractValidationError` at submission time prevents the process from running — the submission is rejected synchronously (the start-command is never published to the broker).
 - `DataContractValidationError` at completion time causes the process to fail — the failure is recorded as `PROCESS_FAILED` in the `ExecutionHistory` with the error attached.
 - A field typed as `BlList` (the class, not a `ListContract`) declares that the value must be a list, but does not constrain the element type. Use `ListContract` for element-level type constraints.
-- A field typed as `BlContext` (the class, not a `ContextContract`) declares that the value must be a context, but does not constrain its keys or value types. Use `ContextContract` for structural constraints on context values.
+- A field typed as `BlDictionary` (the class, not a `DictionaryContract`) declares that the value must be a dictionary, but does not constrain its keys or value types. Use `DictionaryContract` for structural constraints on dictionary values.
 - `BlNull` is not a valid field type — a field that may be absent should be declared as `optional`. At evaluation time, a missing input resolves to `BlNull` regardless of contract.
 - A single `*InputContract` may be shared by reference across multiple `StartEvent`s with identical input shapes; the same applies to `*OutputContract` across multiple `EndEvent`s. Contracts are read-only after construction, so sharing is safe.
-- `NewContextContract()` with no fields is valid — it constrains the value to be a `BlContext` but imposes no field requirements.
+- `NewDictionaryContract()` with no fields is valid — it constrains the value to be a `BlDictionary` but imposes no field requirements.
 - `NewListContract(elementType)` with a nested `ListContract` is valid — represents a list of lists.
 - `NewTableContract()` with no fields is valid — it constrains the value to be a `BlTable` but imposes no column requirements.
-- Duplicate field names in a `ContextContract` or `TableContract` produce a `DataContractValidationError` at definition time.
+- Duplicate field names in a `DictionaryContract` or `TableContract` produce a `DataContractValidationError` at definition time.
