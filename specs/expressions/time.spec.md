@@ -47,7 +47,7 @@ blkit distinguishes a fixed **offset** (`+01:00`, not DST-aware), a named **time
 time("11:45:30+02:00").hour         // → 11
 time("11:45:30+02:00").minute       // → 45
 time("11:45:30+02:00").second       // → 30
-time("11:45:30+02:00").offset       // → duration("PT2H")   (ext)
+time("11:45:30+02:00").offset       // → dtDuration("PT2H")   (ext)
 time("11:45:30[Europe/Paris]").timezone  // → "Europe/Paris" (ext)
 ```
 
@@ -59,7 +59,7 @@ time("11:45:30[Europe/Paris]").timezone  // → "Europe/Paris" (ext)
 
 | Operator | Meaning | Example | Result |
 |---|---|---|---|
-| `+` `-` | add/subtract a days-time duration (wraps at midnight) | `time("23:00:00") + duration("PT2H")` | `time("01:00:00")` |
+| `+` `-` | add/subtract a days-time duration (wraps at midnight) | `time("23:00:00") + dtDuration("PT2H")` | `time("01:00:00")` |
 | `< <= > >= = !=` | comparison | `time("14:30:00") < time("17:00:00")` | `true` |
 | `between a and b` | inclusive range | `time("12:00:00") between time("09:00:00") and time("17:00:00")` | `true` |
 | `in` | membership (list / range) | `now() in [time("09:00:00")..time("17:00:00")]` | `true`/`false` |
@@ -189,7 +189,7 @@ So when the parser encounters `t + dur` and the operands type-check to `BlTime` 
 signature matches, and dispatches to it.
 
 Arithmetic impls return `BlTime` directly because they cannot yield null (midnight wrap
-handles any overflow case: `time("23:00:00") + duration("PT2H") → time("01:00:00")`, day
+handles any overflow case: `time("23:00:00") + dtDuration("PT2H") → time("01:00:00")`, day
 advance discarded). Comparison impls return `BlValue` because cross-kind comparison (naive vs
 zoned/offset) yields `BlNull`.
 

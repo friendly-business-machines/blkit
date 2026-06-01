@@ -49,7 +49,7 @@ Only the extended form is parsed; supplying both offset and timezone, or an inva
 date("2025-03-28+05:30").year      // → 2025
 date("2025-03-28").month           // → 3
 date("2025-03-28").day             // → 28
-date("2025-03-28+05:30").offset    // → duration("PT5H30M")  (ext; null if none)
+date("2025-03-28+05:30").offset    // → dtDuration("PT5H30M")  (ext; null if none)
 date("2025-03-28[Europe/London]").timezone // → "Europe/London" (ext; null if none)
 ```
 
@@ -61,8 +61,8 @@ date("2025-03-28[Europe/London]").timezone // → "Europe/London" (ext; null if 
 
 | Operator | Meaning | Example | Result |
 |---|---|---|---|
-| `+` `-` (duration) | add/subtract a duration (day clamped for years-months) | `date("2025-01-31") + duration("P1M")` | `date("2025-02-28")` |
-| `-` (date) | days-time difference | `date("2025-03-28") - date("2025-01-01")` | `duration("P86D")` |
+| `+` `-` (duration) | add/subtract a duration (day clamped for years-months) | `date("2025-01-31") + ymDuration("P1M")` | `date("2025-02-28")` |
+| `-` (date) | days-time difference | `date("2025-03-28") - date("2025-01-01")` | `dtDuration("P86D")` |
 | `< <= > >= = !=` | comparison | `date("2025-01-01") < date("2025-06-01")` | `true` |
 | `between a and b` | inclusive range | `date("2025-03-15") between date("2025-01-01") and date("2025-12-31")` | `true` |
 | `in` | membership (list / range / calendar) | `date("2025-04-18") in ukHolidays` | `true` |
@@ -107,7 +107,7 @@ These function families accept either a `BlDate` or a `BlDateTime` and are docum
 `isBusinessDay`, `isPublicHoliday`), month boundaries (`firstDayOfMonth`, `lastDayOfMonth`,
 …), week-in-month navigation (`firstDayOfWeekInMonth`, …), day navigation (`nextWeekday`,
 `nextBusinessDay`, …), business-day arithmetic (`addBusinessDays`, `subtractBusinessDays`,
-`weekdaysBetween`, `businessDaysBetween`, `yearsAndMonthsDuration`), date difference
+`weekdaysBetween`, `businessDaysBetween`, `ymDurationBetween`), date difference
 (`daysBetween`, `monthsBetween`, `yearsBetween`), financial year (`financialYear`,
 `financialYearQuarter`), and zone stripping (`withoutOffset`, `withoutTimezone`,
 `withoutOffsetOrTimezone`).

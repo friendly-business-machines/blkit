@@ -227,7 +227,7 @@ You can mix forms (e.g. single delim with per-list prefix/suffix, or vice versa)
 
 | Function | Supported types | Example | Result |
 |---|---|---|---|
-| `sum(l)` | `number` \| `duration` | `sum([duration("PT1H"), duration("PT2H")])` | `duration("PT3H")` |
+| `sum(l)` | `number` \| `duration` | `sum([dtDuration("PT1H"), dtDuration("PT2H")])` | `dtDuration("PT3H")` |
 | `product(l)` | `number` | `product([2,3,4])` | `24` |
 | `min(l)` | comparable (see note) | `min([3,1,2])` | `1` |
 | `max(l)` | comparable (see note) | `max([1,2,3])` | `3` |

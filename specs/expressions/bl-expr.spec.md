@@ -84,8 +84,8 @@ Every value belongs to one of the following types. Each has a literal or constru
 | date | `BlDate` | `date(...)` | `date("2025-03-28")` |
 | time | `BlTime` | `time(...)` | `time("11:45:30")`, `time("11:45:30+02:00")` |
 | date-time | `BlDateTime` | `datetime(...)` | `datetime("2025-03-28T11:45:30")` |
-| days-time duration | `BlDaysTimeDuration` | `duration(...)` | `duration("P4DT12H")` |
-| years-months duration | `BlYearsMonthsDuration` | `duration(...)` | `duration("P1Y6M")` |
+| days-time duration | `BlDaysTimeDuration` | `dtDuration(...)` | `dtDuration("P4DT12H")` |
+| years-months duration | `BlYearsMonthsDuration` | `ymDuration(...)` | `ymDuration("P1Y6M")` |
 | list | `BlList` | `[ ... ]` | `[1, 2, 3]` |
 | dictionary | `BlDictionary` | `{ ... }` | `{name: "Alice", age: 30}` |
 | range | `BlRange` | interval notation | `[1..10]`, `(1..10)`, `[1..10)` |
@@ -132,8 +132,8 @@ date("2025-03-28")                       // → a date
 date(2025, 3, 28)                        // → a date
 time("11:45:30+02:00")                   // → a time with offset
 datetime("2025-03-28T11:45:30")          // → a date-time
-duration("P4DT12H")                      // → days-time duration (4 days, 12 hours)
-duration("P1Y6M")                        // → years-months duration (1 year, 6 months)
+dtDuration("P4DT12H")                      // → days-time duration (4 days, 12 hours)
+ymDuration("P1Y6M")                        // → years-months duration (1 year, 6 months)
 ```
 
 ---
@@ -199,8 +199,8 @@ precision preserved. `+` and `-` also apply to temporal/duration combinations.
 2 ** 8                             // → 256
 -(7)                               // → -7
 
-date("2025-01-01") + duration("P1Y")    // → date("2026-01-01")
-duration("P1D") + duration("PT12H")      // → duration("P1DT12H")
+date("2025-01-01") + ymDuration("P1Y")    // → date("2026-01-01")
+dtDuration("P1D") + dtDuration("PT12H")      // → dtDuration("P1DT12H")
 ```
 
 `null` propagates: `null + 1 // → null`. Division by zero yields `null`.
@@ -511,13 +511,13 @@ date("2025-03-28").weekday         // → 5    (Friday; Monday = 1)
 
 time("11:45:30+02:00").hour        // → 11
 time("11:45:30+02:00").minute      // → 45
-time("11:45:30+02:00").offset // → duration("PT2H")
+time("11:45:30+02:00").offset // → dtDuration("PT2H")
 
-duration("P1DT2H3M4S").days        // → 1
-duration("P1DT2H3M4S").hours       // → 2
-duration("P1DT2H3M4S").minutes     // → 3
-duration("P1Y6M").years            // → 1
-duration("P1Y6M").months           // → 6
+dtDuration("P1DT2H3M4S").days        // → 1
+dtDuration("P1DT2H3M4S").hours       // → 2
+dtDuration("P1DT2H3M4S").minutes     // → 3
+ymDuration("P1Y6M").years            // → 1
+ymDuration("P1Y6M").months           // → 6
 
 [1..10].start                      // → 1
 [1..10].end                        // → 10
@@ -582,7 +582,7 @@ cases, and Go registration. This catalogue is the index:
 
 | Group | Representative functions | Spoke |
 |---|---|---|
-| Conversion | `string`, `number`, `date`, `time`, `datetime`, `duration`, `yearsAndMonthsDuration` | the target type's spoke ([number](number.spec.md), [string](string.spec.md), [date](date.spec.md), …) |
+| Conversion | `string`, `number`, `date`, `time`, `datetime`, `duration` | the target type's spoke ([number](number.spec.md), [string](string.spec.md), [date](date.spec.md), …) |
 | Boolean | `not` | [boolean.spec.md](boolean.spec.md) |
 | Null | `isNull`, `getOrElse` | [null.spec.md](null.spec.md) |
 | Resolution | `isDefined` | this spec ([§ Name resolution](#name-resolution-isdefined)) |
@@ -591,7 +591,7 @@ cases, and Go registration. This catalogue is the index:
 | List | `count`, `min`, `max`, `sum`, `mean`, `sublist`, `append`, `concatenate`, `union`, `distinct`, `flatten`, `sort`, … | [list.spec.md](list.spec.md) |
 | Dictionary | `getValue`, `getEntries`, `dictionaryPut`, `dictionaryMerge` | [dictionary.spec.md](dictionary.spec.md) |
 | Temporal | `now`, `today`, `lastDayOfMonth`, `addBusinessDays`, `is*`, … (calendar properties such as `.dayName`, `.monthName` are dot accessors, not function calls — see [date.spec.md § Calendar properties](date.spec.md#calendar-properties)) | [date](date.spec.md) / [time](time.spec.md) / [datetime](datetime.spec.md) |
-| Duration | `duration` components, `abs` | [days_time_duration](days_time_duration.spec.md) / [years_months_duration](years_months_duration.spec.md) |
+| Duration | `ymDuration`, `dtDuration`, `ymDurationBetween`, `dtDurationBetween`, components, `abs`, `isNegative`, `round*` (overloaded) | [days_time_duration](days_time_duration.spec.md) / [years_months_duration](years_months_duration.spec.md) |
 | Range (interval algebra) | `before`, `after`, `meets`, `overlaps`, `includes`, `during`, `starts`, `finishes`, `coincides` | [range.spec.md](range.spec.md) |
 | Table | `table`, `project`, `columns`, `rows`, `distinct` | [table.spec.md](table.spec.md) |
 | Calendar | `calendar`, containment / overlap / business-day queries | [calendar.spec.md](calendar.spec.md) |
@@ -905,11 +905,23 @@ behaviour, and the rationale.
   conventional programming identifiers, and lets the grammar sit directly on `expr`'s lexer.
 - **lowerCamelCase built-in names.** As a direct consequence of the no-spaces rule, every multi-word
   FEEL function name is spelled in lowerCamelCase: `string length` → `stringLength`, `day of year` →
-  `dayOfYear`, `years and months duration` → `yearsAndMonthsDuration`, and `date and time` →
-  `datetime` (a recognised compound, kept whole). *Rationale:* lowerCamelCase is the convention used
-  by `expr`'s own built-ins (`hasPrefix`, `sortBy`, `toJSON`) and matches the casing of the host Go
-  `Bl*` methods, so blkit functions read as native on both layers. The catalogue and the spokes use
-  these spellings.
+  `dayOfYear`, and `date and time` → `datetime` (a recognised compound, kept whole). *Rationale:*
+  lowerCamelCase is the convention used by `expr`'s own built-ins (`hasPrefix`, `sortBy`, `toJSON`)
+  and matches the casing of the host Go `Bl*` methods, so blkit functions read as native on both
+  layers. The catalogue and the spokes use these spellings.
+- **Renamed for clarity.** A handful of FEEL function names are renamed where the literal
+  lowerCamelCase translation reads awkwardly or hides the function's role:
+  - FEEL's `years and months duration(from, to)` becomes `ymDurationBetween(from, to)` — the
+    `Between` suffix makes the date-difference role explicit and matches the parallel
+    `dtDurationBetween` for the sibling duration type.
+  - FEEL's polymorphic `duration(string)` (which returns either kind depending on the literal's
+    designators) is split into typed sibling constructors **`ymDuration(string)`** and
+    **`dtDuration(string)`**. Each accepts only its kind's designators and has a single typed
+    return, so downstream usage is statically checkable; a wrong-kind string is a
+    `BlParseError`. This avoids the runtime-dispatch cost of a polymorphic constructor for a
+    case (variable input strings) that's rare in practice.
+
+  The catalogue and spokes use the renamed forms.
 
 **Open decisions:**
 

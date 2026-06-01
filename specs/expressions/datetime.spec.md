@@ -55,7 +55,7 @@ datetime("2025-03-28T14:30:00+01:00").day              // → 28
 datetime("2025-03-28T14:30:00+01:00").hour             // → 14
 datetime("2025-03-28T14:30:00+01:00").minute           // → 30
 datetime("2025-03-28T14:30:00+01:00").second           // → 0
-datetime("2025-03-28T14:30:00+01:00").offset           // → duration("PT1H")             (ext)
+datetime("2025-03-28T14:30:00+01:00").offset           // → dtDuration("PT1H")             (ext)
 datetime("2025-03-28T14:30:00[Europe/Paris]").timezone // → "Europe/Paris"               (ext)
 datetime("2019-09-17T00:00:00").dayName              // → "Tuesday"
 datetime("2019-09-17T00:00:00").dayNameShort         // → "Tue"                        (ext)
@@ -85,7 +85,7 @@ and they share names with the constructors:
 
 | Operator | Meaning | Example | Result |
 |---|---|---|---|
-| `+` `-` (duration) | add/subtract a duration | `datetime("2025-01-31T12:00:00") + duration("P1M")` | `datetime("2025-02-28T12:00:00")` (day clamped) |
+| `+` `-` (duration) | add/subtract a duration | `datetime("2025-01-31T12:00:00") + ymDuration("P1M")` | `datetime("2025-02-28T12:00:00")` (day clamped) |
 | `-` (datetime) | days-time difference | `dt2 - dt1` | a days-time `duration` |
 | `< <= > >= = !=` | comparison | `submittedAt <= deadline` | `true`/`false` |
 | `between a and b` | inclusive range | `submittedAt between startDt and endDt` | `true`/`false` |
@@ -93,9 +93,9 @@ and they share names with the constructors:
 
 - A **years-months** duration adjusts year/month (day clamped), leaving the time; a **days-time**
   duration adds precisely, carrying across date boundaries. Both preserve the original zone/offset.
-- Mixed arithmetic chains two operations: `dt + duration("P1Y") + duration("P10D")`.
-- Duration-returning differences via named functions (`yearsAndMonthsDuration`,
-  `daysAndTimeDuration`) are documented under [§ Business-day arithmetic & difference](#business-day-arithmetic--difference-ext).
+- Mixed arithmetic chains two operations: `dt + ymDuration("P1Y") + dtDuration("P10D")`.
+- Duration-returning differences via named functions (`ymDurationBetween`,
+  `dtDurationBetween`) are documented under [§ Business-day arithmetic & difference](#business-day-arithmetic--difference-ext).
 
 `[@test] ../../expr/datetime_ops_test.go`
 
@@ -166,8 +166,8 @@ skip the dates marked in the calendar.
 | `subtractBusinessDays(v, n[, phCalendar[, strictCalendarRange]])` | `subtractBusinessDays(date("2025-04-23"), 2, ukHolidays)` | `date("2025-04-17")` |
 | `weekdaysBetween(a, b)` | `weekdaysBetween(date("2025-03-24"), date("2025-03-28"))` | `5` (inclusive; order-independent) |
 | `businessDaysBetween(a, b[, phCalendar[, strictCalendarRange]])` | `businessDaysBetween(date("2025-04-14"), date("2025-04-25"), ukHolidays)` | `8`. Without `phCalendar`: weekdays in range |
-| `yearsAndMonthsDuration(a, b)` | `yearsAndMonthsDuration(date("2025-03-28"), date("2026-06-15"))` | `duration("P1Y2M")` |
-| `daysAndTimeDuration(a, b)` | `daysAndTimeDuration(date("2025-01-01"), date("2025-03-28"))` | `duration("P86D")` (equivalent to `b - a`) |
+| `ymDurationBetween(a, b)` | `ymDurationBetween(date("2025-03-28"), date("2026-06-15"))` | `ymDuration("P1Y2M")` |
+| `dtDurationBetween(a, b)` | `dtDurationBetween(date("2025-01-01"), date("2025-03-28"))` | `dtDuration("P86D")` (equivalent to `b - a`) |
 
 For `BlDateTime` inputs, arithmetic functions preserve time-of-day and zone; difference
 functions ignore sub-day differences (use `daysBetween` with `includeTime: true` if you want
@@ -312,14 +312,14 @@ label instead, use [§ Zone stripping](#zone-stripping-ext).)
 
 | Function | Example | Result |
 |---|---|---|
-| `withOffset(v, off)` | `withOffset(datetime("2025-03-28T14:30:00+01:00"), duration("PT2H"))` | `datetime("2025-03-28T15:30:00+02:00")` (same instant, new offset) |
-| `withOffset(v, off)` | `withOffset(time("14:30:00Z"), duration("PT1H"))` | `time("15:30:00+01:00")` (same instant, new offset) |
+| `withOffset(v, off)` | `withOffset(datetime("2025-03-28T14:30:00+01:00"), dtDuration("PT2H"))` | `datetime("2025-03-28T15:30:00+02:00")` (same instant, new offset) |
+| `withOffset(v, off)` | `withOffset(time("14:30:00Z"), dtDuration("PT1H"))` | `time("15:30:00+01:00")` (same instant, new offset) |
 | `withTimezone(dt, zone)` | `withTimezone(datetime("2025-03-28T14:30:00Z"), "Europe/Paris")` | `datetime("2025-03-28T15:30:00[Europe/Paris]")` (same instant, new zone) |
 
 `withOffset` takes a `BlDaysTimeDuration` and accepts either a `BlTime` or a `BlDateTime` as
 its first argument, returning the same type. `withTimezone` takes a `BlString` IANA name
 (unknown zone → `BlTypeError`) and is `BlDateTime`-only — wall-clock-only times cannot meaningfully
-carry an IANA zone over time. For re-zoning to UTC, pass `duration("PT0H")` to `withOffset`.
+carry an IANA zone over time. For re-zoning to UTC, pass `dtDuration("PT0H")` to `withOffset`.
 Neither function is defined for naive values (no source zone to convert *from*) — calling on a
 naive input returns `BlNull`.
 
@@ -335,7 +335,7 @@ zone boundary.
 Three functions strip zone metadata from a date or datetime, returning a naive (timezone-naive)
 value. The wall-clock numbers are preserved — these operations drop the zone *label* without
 shifting the moment. Use [§ Re-zoning](#re-zoning-ext) first (e.g.
-`withOffset(dt, duration("PT0H"))`) if you want UTC-equivalent strip-then-convert semantics
+`withOffset(dt, dtDuration("PT0H"))`) if you want UTC-equivalent strip-then-convert semantics
 instead.
 
 | Function | Example | Result |
@@ -553,8 +553,8 @@ func withoutTimezoneFn(v any) any
 func withoutOffsetOrTimezoneFn(v any) any
 
 // Duration-typed difference — dispatch on input type. Both args must be the same type.
-func yearsAndMonthsDurationFn(a, b any) BlYearsMonthsDuration   // both BlDate or both BlDateTime
-func daysAndTimeDurationFn(a, b any) BlDaysTimeDuration         // both BlDate or both BlDateTime; equivalent to b - a
+func ymDurationBetweenFn(a, b any) BlYearsMonthsDuration   // both BlDate or both BlDateTime
+func dtDurationBetweenFn(a, b any) BlDaysTimeDuration         // both BlDate or both BlDateTime; equivalent to b - a
 
 // Financial year — dispatch on first-arg type (BlDate or BlDateTime); basis is BlNumber or BlString.
 func financialYearFn(v, basis any) BlString                     // returns "FY<year>" (labelled by year it ends in)
@@ -711,10 +711,10 @@ func datetimeOptions() []expr.Option {
         expr.Function("withoutOffsetOrTimezone", typed1(withoutOffsetOrTimezoneFn), new(func(BlDate) BlDate), new(func(BlDateTime) BlDateTime)),
 
         // duration-typed difference (shared with date)
-        expr.Function("yearsAndMonthsDuration", typed2(yearsAndMonthsDurationFn),
+        expr.Function("ymDurationBetween", typed2(ymDurationBetweenFn),
             new(func(BlDate, BlDate) BlYearsMonthsDuration),
             new(func(BlDateTime, BlDateTime) BlYearsMonthsDuration)),
-        expr.Function("daysAndTimeDuration", typed2(daysAndTimeDurationFn),
+        expr.Function("dtDurationBetween", typed2(dtDurationBetweenFn),
             new(func(BlDate, BlDate) BlDaysTimeDuration),
             new(func(BlDateTime, BlDateTime) BlDaysTimeDuration)),
 
@@ -751,6 +751,6 @@ not via `expr.Function`.
 
 - `now()` depends on the system clock; use explicit construction for deterministic tests.
 - `re-zoning` (`withOffset`/`withTimezone`) preserves the instant. To re-zone to UTC, use
-  `withOffset(dt, duration("PT0H"))`.
+  `withOffset(dt, dtDuration("PT0H"))`.
 - `dt2 - dt1` is negative when `dt2` precedes `dt1`.
-- `duration("P1M")` added to `2025-01-31T23:59:59` → `2025-02-28T23:59:59` (day clamped).
+- `ymDuration("P1M")` added to `2025-01-31T23:59:59` → `2025-02-28T23:59:59` (day clamped).

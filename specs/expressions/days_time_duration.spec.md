@@ -18,21 +18,24 @@ See [bl-expr.spec.md](bl-expr.spec.md) for the engine and component-access synta
 
 ## Literals / construction
 
-There is **no dedicated duration literal**: days-and-time duration values are produced by the
-`duration(...)` built-in — for example, the `duration("P1DT2H")` in
-`date("2025-03-28") + duration("P1DT2H")`. The constructor accepts an ISO 8601 string using only
-D/T designators:
+There is **no dedicated duration literal** — days-and-time duration values are produced by the
+`dtDuration(...)` built-in. For example, the `dtDuration("P1DT2H")` in
+`date("2025-03-28") + dtDuration("P1DT2H")`. The constructor accepts an ISO 8601 string using
+only D/T designators:
 
 ```
-duration("P1DT2H30M")     // 1 day, 2 hours, 30 minutes
-duration("PT90M")         // → normalises to 1h30m
-duration("PT1.5S")        // fractional seconds
-duration("-PT1H")         // negative
-duration("P1Y")           // → BlParseError (year designator not allowed here)
+dtDuration("P1DT2H30M")     // 1 day, 2 hours, 30 minutes
+dtDuration("PT90M")         // → normalises to 1h30m
+dtDuration("PT1.5S")        // fractional seconds
+dtDuration("-PT1H")         // negative
+dtDuration("P1Y")           // → BlParseError (year/month designators not allowed here)
 ```
 
-`duration(from)` returns a `BlDaysTimeDuration` when the string uses only D/T designators, and a
-`BlYearsMonthsDuration` when it uses only Y/M.
+`dtDuration` is paired with `ymDuration` ([years_months_duration.spec.md](years_months_duration.spec.md))
+for the sibling years-months duration. The two are separate functions — the typed return makes
+downstream usage statically checkable, where a single polymorphic `duration(string)` would force
+the call site to inspect the runtime type — and a Y/M string passed to `dtDuration` (or vice
+versa) is a `BlParseError`.
 
 `[@test] ../../expr/days_time_duration_test.go`
 
@@ -43,11 +46,11 @@ duration("P1Y")           // → BlParseError (year designator not allowed here)
 Read components with the dot operator; values are `number`:
 
 ```
-duration("P2DT3H45M10S").days       // → 2
-duration("P2DT3H45M10S").hours      // → 3
-duration("P2DT3H45M10S").minutes    // → 45
-duration("P2DT3H45M10S").seconds    // → 10
-duration("P2DT3H45M10S").totalSeconds  // → 186310   (ext: signed total)
+dtDuration("P2DT3H45M10S").days       // → 2
+dtDuration("P2DT3H45M10S").hours      // → 3
+dtDuration("P2DT3H45M10S").minutes    // → 45
+dtDuration("P2DT3H45M10S").seconds    // → 10
+dtDuration("P2DT3H45M10S").totalSeconds  // → 186310   (ext: signed total)
 ```
 
 `[@test] ../../expr/days_time_duration_components_test.go`
@@ -58,12 +61,12 @@ duration("P2DT3H45M10S").totalSeconds  // → 186310   (ext: signed total)
 
 | Form | Meaning | Example | Result |
 |---|---|---|---|
-| `+` `-` | add / subtract durations | `duration("P1D") + duration("PT12H")` | `duration("P1DT12H")` |
-| unary `-` | negate | `-duration("P2DT3H")` | `duration("-P2DT3H")` |
-| `*` `/` | scale by a number | `duration("PT1H") * 2.5` | `duration("PT2H30M")` |
-| `< <= > >= = !=` | compare (by total seconds) | `duration("PT60S") = duration("PT1M")` | `true` |
-| `abs(d)` | absolute value | `abs(duration("-PT5H"))` | `duration("PT5H")` |
-| `isNegative(d)` **ext** | sign test | `isNegative(duration("-PT1H"))` | `true` |
+| `+` `-` | add / subtract durations | `dtDuration("P1D") + dtDuration("PT12H")` | `dtDuration("P1DT12H")` |
+| unary `-` | negate | `-dtDuration("P2DT3H")` | `dtDuration("-P2DT3H")` |
+| `*` `/` | scale by a number | `dtDuration("PT1H") * 2.5` | `dtDuration("PT2H30M")` |
+| `< <= > >= = !=` | compare (by total seconds) | `dtDuration("PT60S") = dtDuration("PT1M")` | `true` |
+| `abs(d)` | absolute value | `abs(dtDuration("-PT5H"))` | `dtDuration("PT5H")` |
+| `isNegative(d)` **ext** | sign test | `isNegative(dtDuration("-PT1H"))` | `true` |
 
 `+`/`-` also apply between a duration and a `date`/`time`/`datetime` (see those spokes). Division by
 zero → `null`. Adding a years-months duration → `BlTypeError`.
@@ -74,28 +77,11 @@ zero → `null`. Adding a years-months duration → `BlTypeError`.
 
 ## Semantics & behaviour
 
-- Components normalise (seconds → minutes → hours → days); `duration("PT90M") = duration("PT1H30M")`.
+- Components normalise (seconds → minutes → hours → days); `dtDuration("PT90M") = dtDuration("PT1H30M")`.
 - Comparison and equality are by **total seconds**; structurally different but equal-total durations
   are equal.
 - Multiplication may produce fractional seconds (precision preserved); division by zero → `null`.
 - Zero duration is not negative.
-
----
-
-## Migration mapping (legacy method-chained → string)
-
-| Legacy | New form |
-|---|---|
-| `Bl.DaysTime(d,h,m,s)` / `Bl.DaysTimeFromSeconds` | Go host constructors (below); expressions use `duration("…")` |
-| `Bl.ToDaysTime(str)` | `duration("…")` built-in |
-| `days` / `hours` / `minutes` / `seconds` | `.days` / `.hours` / `.minutes` / `.seconds` |
-| `totalSeconds` | `.totalSeconds` **ext** |
-| `isNegative` | `isNegative(d)` **ext** |
-| `negate` / `abs` | unary `-` / `abs(d)` |
-| `add` / `subtract` | `+` / `-` |
-| `multiply` / `divide` | `*` / `/` (by a number) |
-| `equals` / `notEqual` / `lessThan` / `lessThanOrEqual` / `greaterThan` / `greaterThanOrEqual` | `=` `!=` `<` `<=` `>` `>=` |
-| `compareTo` / `String` | Go host accessors (below) |
 
 ---
 
@@ -145,9 +131,9 @@ func daysTimeDurationOptions() []expr.Option {
         expr.Function("divDuration",  typed2(divDuration),  new(func(BlDaysTimeDuration, BlNumber) BlValue)),
         // … subDuration, negDuration, ltDuration, le/gt/ge
 
-        // `duration(from)` is registered once (here) with both result kinds; it returns a
-        // BlDaysTimeDuration for D/T strings and a BlYearsMonthsDuration for Y/M strings.
-        expr.Function("duration", durationFn, new(func(BlString) BlValue)),
+        // constructor — D/T-only parser; sibling ymDuration lives in years_months_duration.spec.md
+        expr.Function("dtDuration", typed1(dtDurationFn), new(func(BlString) BlDaysTimeDuration)),
+
         expr.Function("abs",        typed1(absDurationFn), new(func(BlDaysTimeDuration) BlDaysTimeDuration)), // abs overloads numeric in number.go
         expr.Function("isNegative", typed1(isNegativeFn),  new(func(BlDaysTimeDuration) BlBoolean)),          // ext (YM overload too)
     }
@@ -164,7 +150,7 @@ Native Go `time.Duration` inputs wrap to `BlDaysTimeDuration`. Mixing with a yea
 
 ## Edge cases
 
-- `duration("P1Y…")` (year/month designators) → `BlParseError` for this type.
+- `ymDuration("P1Y…")` (year/month designators) → `BlParseError` for this type.
 - Division by a zero factor → `null`.
 - Fractional seconds accepted (`PT1.5S`); fractional minutes/hours are not.
 - Zero duration: `isNegative` → `false`.
