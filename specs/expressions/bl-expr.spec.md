@@ -156,6 +156,34 @@ declared is a parse error (see [§ Errors and null](#errors-and-null)).
 
 `[@test] ../../expr/variables_test.go`
 
+### Name resolution: `isDefined`
+
+`isDefined(x)` is a built-in that reports whether the engine could resolve `x` to a value. It
+returns `true` when `x` resolves (including when it resolves to `BlNull`) and `false` only when
+the name is unbound at evaluation time. It is the only way for an expression to distinguish "the
+caller supplied this name with a null value" from "the caller supplied no value at all."
+
+```
+isDefined(applicant)             // → true if `applicant` is bound, even if its value is null
+isDefined(applicant.middleName)  // → true (path access on a bound dictionary always resolves;
+                                 //   a missing key resolves to BlNull, which is still "defined")
+isDefined(undeclaredName)        // → false (only when there is no binding)
+```
+
+`isDefined` operates at the resolution layer, not the value layer — to test whether a value *is*
+`BlNull` once resolved, use `isNull(x)` ([null.spec.md § Testing for null](null.spec.md#testing-for-null)).
+To supply a fallback when a value resolves to `BlNull`, use `getOrElse(x, default)`
+([null.spec.md § Default for null](null.spec.md#default-for-null)).
+
+Because `isDefined` distinguishes "unbound name" from "bound to anything (including `BlNull`)", it
+cannot be expressed as a normal `BlValue → BlValue` impl — by the time a normal impl runs, the
+argument has already been resolved and unbound names are a parse error. Instead, the engine's AST
+patcher (see [§ Patchers](#patchers-ast-rewriting)) intercepts `isDefined(name)` calls before
+resolution and rewrites them to a lookup against the input map plus declared `BlEnv` bindings.
+The impl is registered in `engine.go` alongside the other engine-level options.
+
+`[@test] ../../expr/is_defined_test.go`
+
 ---
 
 ## Arithmetic
@@ -555,7 +583,9 @@ cases, and Go registration. This catalogue is the index:
 | Group | Representative functions | Spoke |
 |---|---|---|
 | Conversion | `string`, `number`, `date`, `time`, `datetime`, `duration`, `yearsAndMonthsDuration` | the target type's spoke ([number](number.spec.md), [string](string.spec.md), [date](date.spec.md), …) |
-| Boolean | `not`, `isDefined`, `getOrElse` | [boolean.spec.md](boolean.spec.md) |
+| Boolean | `not` | [boolean.spec.md](boolean.spec.md) |
+| Null | `isNull`, `getOrElse` | [null.spec.md](null.spec.md) |
+| Resolution | `isDefined` | this spec ([§ Name resolution](#name-resolution-isdefined)) |
 | String | `substring`, `stringLength`, `upperCase`, `contains`, `matches`, `replace`, `split`, `stringJoin`, … | [string.spec.md](string.spec.md) |
 | Numeric | `decimal`, `floor`, `ceiling`, `round*`, `abs`, `modulo`, `sqrt`, `log`, `ln`, `exp`, `odd`, `even`, … | [number.spec.md](number.spec.md) |
 | List | `count`, `min`, `max`, `sum`, `mean`, `sublist`, `append`, `concatenate`, `union`, `distinct`, `flatten`, `sort`, … | [list.spec.md](list.spec.md) |

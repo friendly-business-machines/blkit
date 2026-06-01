@@ -60,11 +60,30 @@ exceptions are the short-circuit boolean cases ([boolean.spec.md](boolean.spec.m
 - **In host code:** the evaluated `BlValue` exposes `IsNull() bool`.
 
 ```
-isNull(someContext.missingKey)   // → true
-isDefined(someContext.missingKey) // → false   (see boolean.spec.md)
+isNull(someDictionary.missingKey)   // → true
 ```
 
 `[@test] ../../expr/null_testing_test.go`
+
+---
+
+## Default for null
+
+`getOrElse(value, default)` returns `default` when `value` is `BlNull`, otherwise returns `value`
+unchanged. It is the canonical null fallback — preferred over an explicit `if isNull(x) then d
+else x`, which is more verbose and re-evaluates `x` twice.
+
+```
+getOrElse(null, 1)                   // → 1
+getOrElse(42, 1)                     // → 42
+getOrElse(applicant.middleName, "")  // → "" if the key is missing or null
+```
+
+`getOrElse` is a blkit extension (**ext**); it accepts any `BlValue` for both arguments. Note that
+it only fires on `BlNull` — a defined-but-empty value (the empty string `""`, the empty list `[]`)
+is returned as-is.
+
+`[@test] ../../expr/null_getorelse_test.go`
 
 ---
 
@@ -121,9 +140,14 @@ func propagatesNull(args ...BlValue) bool
 
 func nullOptions() []expr.Option {
     return []expr.Option{
-        expr.Function("isNull", typed1(isNullFn), new(func(BlValue) BlBoolean)), // ext
+        expr.Function("isNull",    typed1(isNullFn),    new(func(BlValue) BlBoolean)),               // ext
+        expr.Function("getOrElse", typed2(getOrElseFn), new(func(BlValue, BlValue) BlValue)),        // ext
     }
 }
+
+// Backing impls (unexported, suffix Fn).
+func isNullFn(v BlValue) BlBoolean                     // true iff v is BlNull
+func getOrElseFn(v BlValue, fallback BlValue) BlValue  // fallback when v is BlNull, else v
 ```
 
 All operations that produce null return the `Null` singleton. The engine bridge maps Go `nil` and

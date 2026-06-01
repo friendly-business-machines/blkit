@@ -1,6 +1,6 @@
 ---
 name: BlBoolean
-description: The boolean type in the blkit expression language — true/false with three-valued (null-propagating) logic. Covers the boolean literals, the and/or/not operators, the boolean built-ins, and the Go layer (BlBoolean + expr registrations).
+description: The boolean type in the blkit expression language — true/false with three-valued (null-propagating) logic. Covers boolean literals, the and/or/not operators, the boolean built-ins, and the Go layer (BlBoolean + expr registrations).
 targets:
   - ../../expr/boolean.go
 ---
@@ -8,10 +8,10 @@ targets:
 # BlBoolean — the `boolean` type
 
 `boolean` has two values, `true` and `false`, and participates in **three-valued logic** where
-`null` propagates through logical operations (SQL-style). The Go value type backing it is
-`BlBoolean`.
+`null` propagates through logical operations (SQL-style — `null` represents "unknown" rather than
+being a third boolean value). The Go value type backing it is `BlBoolean`.
 
-See [bl-expr.spec.md](bl-expr.spec.md) for the engine and operator precedence.
+See [bl-expr.spec.md](bl-expr.spec.md) for engine internals and operator precedence.
 
 ---
 
@@ -19,14 +19,20 @@ See [bl-expr.spec.md](bl-expr.spec.md) for the engine and operator precedence.
 
 A **boolean literal** is the syntactic form used inside a blkit expression to write a constant
 boolean value — for example, the `true` in `if approved then true else false`. There are exactly
-two:
+two literals; the canonical form is lowercase, but the parser accepts any casing:
 
 ```
-true      // → true
-false     // → false
+true, True, TRUE                   // → true
+false, False, FALSE                // → false
 ```
 
-Case-sensitive: `True`/`TRUE` are not boolean literals.
+Lowercase is canonical — `BlBoolean.String()` always emits `"true"` / `"false"`, and the
+recommended style for hand-written expressions is lowercase. The mixed-case forms are accepted to
+ease porting from SQL-style dialects and to remove a small foot-gun for users who type `True`
+out of habit; they do not introduce a third or fourth literal value. Because case variants are
+reserved as boolean literals, a variable named `True`, `TRUE`, etc. is **not** addressable — host
+input keys that collide with a boolean literal in any casing produce a `BlParseError` at
+expression compile time.
 
 `[@test] ../../expr/boolean_test.go`
 
@@ -38,24 +44,36 @@ Case-sensitive: `True`/`TRUE` are not boolean literals.
 |---|---|---|---|
 | `and` | logical and (three-valued) | `true and false` | `false` |
 | `or` | logical or (three-valued) | `true or false` | `true` |
-| `not(x)` | logical negation | `not(true)` | `false` |
+| `not(x)` | logical negation (function form) | `not(true)` | `false` |
 | `=` `!=` | equality | `true = true` | `true` |
 
-There is **no truthy/falsy coercion**: non-boolean operands to `and`/`or`/`not` evaluate to `null`.
+Booleans have **no truthy/falsy coercion**: a non-boolean operand to `and` / `or` / `not` produces
+`null` rather than being converted. Booleans have no arithmetic operators (`+`/`-`/etc.), no
+ordering operators (`<`/`<=`/`>`/`>=`), and no `in` operator.
+
+`and` and `or` are **patcher-lowered** to internal function calls (`blAnd` / `blOr`) rather than
+bound through `expr.Operator`, because their three-valued behaviour can't be expressed as an
+overload of a Go boolean operator — see
+[§ Logical operator implementations](#logical-operator-implementations-unexported).
 
 ### Three-valued logic
 
+`null` represents an unknown boolean — propagation matches SQL semantics:
+
 | `a` | `b` | `a and b` | `a or b` |
 |---|---|---|---|
-| `true` | `true` | `true` | `true` |
-| `true` | `false` | `false` | `true` |
-| `true` | `null` | `null` | `true` |
+| `true`  | `true`  | `true`  | `true`  |
+| `true`  | `false` | `false` | `true`  |
+| `true`  | `null`  | `null`  | `true`  |
+| `false` | `true`  | `false` | `true`  |
 | `false` | `false` | `false` | `false` |
-| `false` | `null` | `false` | `null` |
-| `null` | `null` | `null` | `null` |
+| `false` | `null`  | `false` | `null`  |
+| `null`  | `true`  | `null`  | `true`  |
+| `null`  | `false` | `false` | `null`  |
+| `null`  | `null`  | `null`  | `null`  |
 
-Short-circuits: `false and null → false`, `true or null → true`. `not(null) → null`. Equality with
-`null` is `false`, never `null` (see [null.spec.md](null.spec.md)).
+Short-circuits: `false and X → false` (X never evaluated), `true or X → true`. `not(null) → null`.
+Equality with `null` yields `false`, never `null` (see [null.spec.md](null.spec.md)).
 
 `[@test] ../../expr/boolean_logic_test.go`
 
@@ -65,23 +83,14 @@ Short-circuits: `false and null → false`, `true or null → true`. `not(null) 
 
 | Function | Example | Result |
 |---|---|---|
-| `not(b)` | `not(2 = 4)` | `true` |
-| `isDefined(value)` | `isDefined(null)` | `true` (the value exists; it is null) |
-| `getOrElse(value, default)` | `getOrElse(null, 1)` | `1` |
+| `not(b)` | `not(2 = 4)` | `true` (logical negation; `not(null) → null`) |
+
+Related null-handling helpers live alongside the type they introspect:
+[`isDefined`](bl-expr.spec.md#name-resolution-isdefined) (name-resolution, in
+[bl-expr.spec.md](bl-expr.spec.md)) and [`getOrElse`](null.spec.md#default-for-null) (null
+fallback, in [null.spec.md](null.spec.md)).
 
 `[@test] ../../expr/boolean_functions_test.go`
-
----
-
-## Migration mapping (legacy method-chained → string)
-
-| Legacy | New form |
-|---|---|
-| `BlBoolean.TRUE` / `BlBoolean.FALSE` | literals `true` / `false` |
-| `and` / `or` (inherited) | `and` / `or` operators |
-| `not_` (inherited) | `not(x)` operator/built-in |
-| `equals` / `notEqual` | `=` / `!=` |
-| `toNativeBoolean` / `String` | Go host accessors on `BlBoolean` (below) |
 
 ---
 
@@ -92,54 +101,101 @@ Lives in `expr/boolean.go`. Shared mechanics in
 
 ### Value type & host API (exported)
 
+`BlBoolean` is the immutable Go value type that represents a boolean inside the engine and at the
+host-code boundary. Its only field is private (`b`) so callers cannot mutate the underlying value —
+every operation in the library returns a fresh `BlBoolean`. There is **no third "unknown" enum
+value**: an unknown boolean is modelled as `BlNull` (see [null.spec.md](null.spec.md)), which
+propagates through the three-valued logic table.
+
+The exported surface has three parts:
+
+- **`BlValue` interface methods** — `Type()`, `Equal()`, `String()`, and the unexported
+  `isBlValue()` marker — required of every blkit value type so the engine can treat them
+  uniformly. `Equal` is structural (`true = true`, `false = false`); cross-type equality returns
+  `false`, never `null` (see [null.spec.md](null.spec.md)). `String()` doubles as the
+  `fmt.Stringer` implementation, producing `"true"` or `"false"`.
+- **`Boolean(b)`** — the host constructor, accepting a Go `bool`. The conversion is infallible;
+  to model an unknown boolean from host code, pass `BlNull` (not a `*bool`).
+- **`Native()` accessor** — hands the underlying Go `bool` back to host code. From there, Go's
+  native `&&` / `||` / `!` are all that's needed.
+
 ```go
-// BlBoolean wraps a Go bool. (BlNull, not a third enum value, models "unknown".)
+// BlBoolean wraps a native Go bool. BlNull, not a third enum value, models "unknown".
 type BlBoolean struct{ b bool }
 
+// BlValue interface — required by all Bl* value types.
 func (BlBoolean) Type() BlType { return BlTypeBoolean }
 func (b BlBoolean) Equal(other BlValue) BlValue
-func (b BlBoolean) ToMarkdown() string
+func (b BlBoolean) String() string                // "true" / "false"
 func (BlBoolean) isBlValue() {}
 
-func Boolean(b bool) BlBoolean      // host constructor
-func (b BlBoolean) ToNativeBool() bool
-func (b BlBoolean) String() string  // "true" / "false"
+// Host constructor.
+func Boolean(b bool) BlBoolean
+
+// Host accessor (consume an evaluated result).
+func (b BlBoolean) Native() bool                  // underlying Go bool
 ```
 
-### Logic & registrations
+### Logical operator implementations (unexported)
 
-**Logic.** The three-valued connectives are plain Go functions defined in this spoke's target
-(`expr/boolean.go`):
+`and` and `or` cannot be wired with `expr.Operator` — that mechanism overloads binary arithmetic /
+comparison operators, not the short-circuit logical operators, and our operands are wrapped
+`BlValue`s (possibly `BlNull`) rather than Go `bool`s. Instead, the engine's AST patcher (see
+[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-ast-rewriting)) rewrites `a and b` and
+`a or b` into calls to internal functions `blAnd(a, b)` and `blOr(a, b)`. Both implement the
+three-valued logic table above; a non-boolean operand produces `BlNull`.
+
+`not` is different: the source-level form is already a function call (`not(x)`), so it's registered
+directly under its plain name as an `expr.Function` rather than going through the patcher.
+
+Equality (`=` / `!=`) is **not** registered as a per-type operator impl — it dispatches through the
+`BlValue.Equal()` interface method (see [§ Value type & host
+API](#value-type--host-api-exported)). That single dispatch path handles null propagation and
+cross-type comparison uniformly.
 
 ```go
-func blAnd(a, b BlValue) BlValue   // three-valued; false short-circuits to false
-func blOr(a, b BlValue) BlValue    // three-valued; true short-circuits to true
-func blNot(x BlValue) BlValue      // not(null) → null
+// Patcher targets — registered under names blAnd / blOr; not source-callable.
+func blAndFn(a, b BlValue) BlValue   // three-valued; false short-circuits to false
+func blOrFn(a, b BlValue) BlValue    // three-valued; true short-circuits to true
+
+// Source-callable — registered under name "not".
+func notFn(x BlValue) BlValue        // not(null) → null; non-boolean → null
 ```
 
-`and`/`or` **cannot** be wired with `expr.Operator` — that overloads binary arithmetic/comparison,
-not the short-circuit logical operators, and our operands are wrapped `Bl*` values (possibly
-`BlNull`) rather than Go `bool`. Instead the engine's AST patcher
-([bl-expr.spec.md](bl-expr.spec.md#patchers-ast-rewriting)) rewrites `a and b` / `a or b` into
-`blAnd(a, b)` / `blOr(a, b)`. `not` is exposed to source as the `expr.Function` `not`, backed by
-`blNot`. All three implement the three-valued table above; a non-boolean operand → `BlNull`.
+### Registrations (`booleanOptions`, unexported)
 
-**Registrations (`booleanOptions`, unexported).**
+`booleanOptions()` returns the slice of `expr.Option` values the engine consumes during
+initialisation to learn about the boolean library. Each entry is built with
+`expr.Function(name, impl, typeHints...)`, where:
+
+- `name` is the identifier the parser will recognise in expressions (for `not`), or that the
+  patcher emits when lowering `and` / `or` (`blAnd`, `blOr`).
+- `impl` must have the signature `func(...any) (any, error)` — that is the only shape
+  [`expr-lang/expr`](https://github.com/expr-lang/expr) accepts. The `typed1` / `typed2` adapters
+  (defined in [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go)) wrap a
+  typed implementation such as `func(BlValue, BlValue) BlValue` into that shape, type-asserting
+  each argument and boxing the result.
+- `typeHints` is a variadic list of `new(func(...) ...)` values. The engine reflects on them at
+  compile time to validate that callers supply the right argument types — they carry no runtime
+  cost.
+
+The registrations are grouped by role: the patcher targets (consumed by the AST patcher when
+lowering `and` / `or`) and the source-callable functions.
 
 ```go
 func booleanOptions() []expr.Option {
     return []expr.Option{
-        expr.Function("blAnd", typed2(blAnd), new(func(BlValue, BlValue) BlValue)), // patcher targets
-        expr.Function("blOr",  typed2(blOr),  new(func(BlValue, BlValue) BlValue)),
-        expr.Function("not",       typed1(blNot),       new(func(BlValue) BlValue)),
-        expr.Function("isDefined", typed1(isDefinedFn), new(func(BlValue) BlBoolean)),
-        expr.Function("getOrElse", typed2(getOrElseFn), new(func(BlValue, BlValue) BlValue)),
+        // patcher targets — emitted when the AST patcher rewrites `a and b` / `a or b`
+        expr.Function("blAnd",     typed2(blAndFn),     new(func(BlValue, BlValue) BlValue)),
+        expr.Function("blOr",      typed2(blOrFn),      new(func(BlValue, BlValue) BlValue)),
+
+        // source-callable
+        expr.Function("not",       typed1(notFn),       new(func(BlValue) BlValue)),
     }
 }
 ```
 
-`blAnd`/`blOr` are the patcher's rewrite targets for `and`/`or` (not operator-bound — see above);
-`not` is the source-callable function. Native Go `bool` inputs wrap to `BlBoolean`.
+Native Go `bool` inputs wrap to `BlBoolean` via the engine's input bridge.
 
 `[@test] ../../expr/boolean_test.go`
 
@@ -147,6 +203,9 @@ func booleanOptions() []expr.Option {
 
 ## Edge cases
 
-- No truthy/falsy coercion; logical ops on non-booleans → `null`.
-- `true`/`false` are case-sensitive.
-- Equality against `null` → `false` (never `null`).
+- No truthy/falsy coercion — a non-boolean operand to `and` / `or` / `not` → `null`, not a
+  coerced boolean.
+- Boolean literals are case-insensitive on input (`true`, `True`, `TRUE` all parse to the same value); lowercase is canonical on output. Host input keys that match any casing of `true` / `false` are rejected at compile time.
+- Equality against `null` → `false` (never `null`); cross-type equality (`true = 1`) → `false`.
+- Short-circuit evaluation: `false and X` and `true or X` never evaluate `X`, so a side-effecting
+  or error-producing right-hand operand is skipped.
