@@ -173,6 +173,15 @@ For `BlDateTime` inputs, arithmetic functions preserve time-of-day and zone; dif
 functions ignore sub-day differences (use `daysBetween` with `includeTime: true` if you want
 sub-day precision).
 
+**Same-kind operands.** `ymDurationBetween` and `dtDurationBetween` (and the
+`*Between` family above) require both operands to be the **same** temporal kind — either both
+`BlDate` or both `BlDateTime`. A mixed call such as
+`dtDurationBetween(date("2025-01-01"), datetime("2025-03-28T12:00:00"))` is a type error
+(`BlParseError` when compiled with a `BlEnv`, or `BlTypeError` at evaluation). To compare across
+kinds, convert one operand explicitly: `datetime(d)` lifts a `BlDate` to midnight-of-that-day
+`BlDateTime`, and the conversion functions in [date.spec.md](date.spec.md) /
+[datetime.spec.md § Conversion](#conversion) project a `BlDateTime` down to a `BlDate`.
+
 `[@test] ../../expr/business_days_test.go`
 
 ---

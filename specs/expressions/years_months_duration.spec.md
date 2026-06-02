@@ -51,12 +51,18 @@ the call site to inspect the runtime type — and a D/T string passed to `ymDura
 versa) is a `BlParseError`.
 
 The companion built-in `ymDurationBetween(from, to)` computes the years-months span between
-two dates:
+two dates or datetimes (registered in [datetime.spec.md](datetime.spec.md), which owns the
+operand types):
 
 ```
 ymDurationBetween(date("2011-12-22"), date("2013-08-24"))   // → ymDuration("P1Y8M")
 ymDurationBetween(date("2025-06-01"), date("2024-06-01"))   // → ymDuration("-P1Y")  (signed)
 ```
+
+Both operands must be the **same** temporal kind — either both `BlDate` or both `BlDateTime`. A
+mixed `(date, datetime)` call is a type error; convert one operand explicitly via `datetime(d)`
+or `date(dt)` first. See [datetime.spec.md § Business-day arithmetic & difference](datetime.spec.md#business-day-arithmetic--difference-ext)
+for the registered overloads.
 
 `[@test] ../../expr/years_months_duration_test.go`
 
@@ -69,18 +75,26 @@ Field-style access reads the normalised components:
 ```
 ymDuration("P2Y7M").years            // → 2
 ymDuration("P2Y7M").months           // → 7
-ymDuration("P2Y7M").totalMonths      // → 31      (ext: signed years*12 + months)
-ymDuration("-P2Y7M").years           // → -2      (sign carried on the year component)
+ymDuration("P2Y7M").totalMonths      // → 31         (ext: signed years*12 + months)
+ymDuration("P2Y7M").totalYears       // → 2.58333... (ext: signed; possibly fractional)
+ymDuration("-P2Y7M").years           // → -2         (sign carried on the year component)
 ymDuration("-P2Y7M").months          // → -7
-ymDuration("P0Y15M").years           // → 1       (normalised — see § Semantics)
+ymDuration("-P2Y7M").totalYears      // → -2.58333... (sign carries through totals)
+ymDuration("P0Y15M").years           // → 1          (normalised — see § Semantics)
 ymDuration("P0Y15M").months          // → 3
 ymDuration("P1Y0.25M").years         // → 1
-ymDuration("P1Y0.25M").months        // → 0.25    (fractional remainder is preserved)
+ymDuration("P1Y0.25M").months        // → 0.25       (fractional remainder is preserved)
 ymDuration("P1Y0.25M").totalMonths   // → 12.25
+ymDuration("P24M").totalYears        // → 2          (totals divide exactly when they can)
 ```
 
+The two `total*` accessors (**ext**) both return the signed exact decimal total expressed in
+the named unit — `totalMonths`, and `totalYears = totalMonths / 12`. They preserve full
+arbitrary-precision decimal (no float rounding), so a duration constructed from a fractional
+input round-trips exactly through the matching total.
+
 Component access is **patcher-lowered** to function calls (`durationYears(d)`,
-`durationMonths(d)`, `durationTotalMonths(d)`); see
+`durationMonths(d)`, `durationTotalMonths(d)`, `durationTotalYears(d)`); see
 [bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-ast-rewriting).
 
 `[@test] ../../expr/years_months_duration_components_test.go`
@@ -302,6 +316,7 @@ are wrapped by `typed1` / `typed2` when registered with the engine in the next s
 func durationYearsYMFn(d BlYearsMonthsDuration) BlNumber          // overload; D/T overload in days_time_duration.spec.md
 func durationMonthsYMFn(d BlYearsMonthsDuration) BlNumber         // overload
 func durationTotalMonthsFn(d BlYearsMonthsDuration) BlNumber      // ext; signed
+func durationTotalYearsFn(d BlYearsMonthsDuration) BlNumber       // ext; totalMonths / 12
 
 // Library functions.
 func ymDurationBetweenFn(from, to BlDate) BlYearsMonthsDuration  // signed; also overloads on BlDateTime in datetime.spec.md
@@ -368,10 +383,11 @@ func yearsMonthsDurationOptions() []expr.Option {
         expr.Function("geYMDuration",    typed2(geYMDuration),    new(func(BlYearsMonthsDuration, BlYearsMonthsDuration) BlValue)),
         // = and != dispatch via BlValue.Equal() — no per-type registration
 
-        // component-access impls — emitted by the patcher when lowering .years / .months / .totalMonths
+        // component-access impls — emitted by the patcher when lowering .years / .months / .totalMonths / .totalYears
         expr.Function("durationYears",       typed1(durationYearsYMFn),     new(func(BlYearsMonthsDuration) BlNumber)),
         expr.Function("durationMonths",      typed1(durationMonthsYMFn),    new(func(BlYearsMonthsDuration) BlNumber)),
         expr.Function("durationTotalMonths", typed1(durationTotalMonthsFn), new(func(BlYearsMonthsDuration) BlNumber)),
+        expr.Function("durationTotalYears",  typed1(durationTotalYearsFn),  new(func(BlYearsMonthsDuration) BlNumber)),  // ext
 
         // constructor — Y/M-only parser; sibling dtDuration lives in days_time_duration.spec.md
         expr.Function("ymDuration", typed1(ymDurationFn), new(func(BlString) BlYearsMonthsDuration)),

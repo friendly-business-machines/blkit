@@ -821,14 +821,15 @@ func operatorBindings() []expr.Option {
     return []expr.Option{
         expr.Operator("+",  "addNumbers", "concatStrings",
                             "addDateYM", "addDateDT", "addDateTimeDur",
-                            "addTimeDur", "addDuration"),
+                            "addTimeDur", "addYMDuration", "addDTDuration"),
         expr.Operator("-",  "subNumbers", "subDates", "subDateTimes",
-                            "subDateDur", "subDateTimeDur", "subDuration"),
-        expr.Operator("*",  "mulNumbers", "scaleDuration"),
-        expr.Operator("/",  "divNumbers", "divDuration"),
+                            "subDateDur", "subDateTimeDur",
+                            "subYMDuration", "subDTDuration"),
+        expr.Operator("*",  "mulNumbers", "scaleYMDuration", "scaleDTDuration"),
+        expr.Operator("/",  "divNumbers", "divYMDuration", "divDTDuration"),
         expr.Operator("**", "powNumber"),
         expr.Operator("<",  "ltNumbers", "ltStrings", "ltDates", "ltDateTimes",
-                            "ltTimes", "ltDuration"),
+                            "ltTimes", "ltYMDuration", "ltDTDuration"),
         // <=, >, >=, ==, != likewise
     }
 }

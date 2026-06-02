@@ -70,6 +70,22 @@ date("2025-03-28[Europe/London]").timezone // → "Europe/London" (ext; null if 
 A years-months duration adjusts year/month (day clamped); a days-time duration adds whole days (sub-
 day components ignored for `date`). Comparing a tz-aware date with a tz-naive one → `null`.
 
+**Date subtraction across zones.** When both operands are naive `BlDate`s, `b - a` is calendar
+arithmetic — whole days. When both operands are zoned (offset or IANA timezone), each is
+projected to **midnight in its own zone**, and the result is the UTC-instant gap between those
+projections. This can yield a sub-day duration when zones differ:
+
+```
+date("2025-03-28+05:30") - date("2025-03-28-05:00")  // → dtDuration("-PT10H30M")
+date("2025-03-29+05:30") - date("2025-03-28-05:00")  // → dtDuration("PT13H30M")
+date("2025-03-28")       - date("2025-01-01")        // → dtDuration("P86D")  (naive — whole days)
+```
+
+A mismatch (one naive, one zoned) → `BlNull`, mirroring the comparison rule above. Across an
+IANA-zone DST transition the projected midnights can be 23 or 25 hours apart in the affected
+24-hour window; see [days_time_duration.spec.md § Construction](days_time_duration.spec.md#construction)
+for worked examples on the equivalent `dtDurationBetween` form.
+
 `[@test] ../../expr/date_operators_test.go`
 
 ---
