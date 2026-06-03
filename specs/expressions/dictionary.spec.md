@@ -24,6 +24,7 @@ constant dictionary value — for example, the `{name: "Alice", age: 30}` in
 with comma-separated `key: value` entries.
 
 ```
+// expression-language
 {}                                 // empty
 {name: "Alice", age: 30}           // unquoted keys
 {"my key": 1}                      // quoted keys (special characters)
@@ -115,6 +116,7 @@ The exported surface has four parts:
   the dictionary in order via `for _, k := range d.Keys() { v := d.Native()[k]; ... }`.
 
 ```go
+// host-side (Go)
 type BlDictionary struct {
     keys []string             // insertion-ordered key list
     m    map[string]BlValue   // value lookup
@@ -146,6 +148,7 @@ The library functions are implemented as these typed/variadic Go functions, wrap
 `typed1`/`typed2`/`typed3` at registration time:
 
 ```go
+// host-side (Go)
 // Typed implementations — wrapped by typed1/typed2 at registration.
 func getEntriesFn(d BlDictionary) BlList                            // → list of {key, value} dictionaries
 func dictionaryMergeFn(l BlList) BlDictionary                       // accepts a BlList of BlDictionary; later dictionaries win on key collision
@@ -189,6 +192,7 @@ initialisation to learn about the dictionary library. Each entry is built with
 The registrations are grouped by role: the core dictionary operations and ext additions.
 
 ```go
+// host-side (Go)
 func dictionaryOptions() []expr.Option {
     return []expr.Option{
         // core dictionary operations

@@ -22,6 +22,7 @@ boolean value — for example, the `true` in `if approved then true else false`.
 two literals; the canonical form is lowercase, but the parser accepts any casing:
 
 ```
+// expression-language
 true, True, TRUE                   // → true
 false, False, FALSE                // → false
 ```
@@ -120,6 +121,7 @@ The exported surface has three parts:
   native `&&` / `||` / `!` are all that's needed.
 
 ```go
+// host-side (Go)
 // BlBoolean wraps a native Go bool. BlNull, not a third enum value, models "unknown".
 type BlBoolean struct{ b bool }
 
@@ -154,6 +156,7 @@ API](#value-type--host-api-exported)). That single dispatch path handles null pr
 cross-type comparison uniformly.
 
 ```go
+// host-side (Go)
 // Patcher targets — registered under names blAnd / blOr; not source-callable.
 func blAndFn(a, b BlValue) BlValue   // three-valued; false short-circuits to false
 func blOrFn(a, b BlValue) BlValue    // three-valued; true short-circuits to true
@@ -183,6 +186,7 @@ The registrations are grouped by role: the patcher targets (consumed by the AST 
 lowering `and` / `or`) and the source-callable functions.
 
 ```go
+// host-side (Go)
 func booleanOptions() []expr.Option {
     return []expr.Option{
         // patcher targets — emitted when the AST patcher rewrites `a and b` / `a or b`

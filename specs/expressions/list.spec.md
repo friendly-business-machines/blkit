@@ -23,6 +23,7 @@ value — for example, the `[1, 2, 3, 4]` in `count([1, 2, 3, 4])`. Literals are
 brackets with comma-separated elements; elements may be any expression (and may mix types).
 
 ```
+// expression-language
 [1, 2, 3, 4]                          // literal
 [1, 2, 3, 4][1]                       // → 1     (1-based)
 [1, 2, 3, 4][-1]                      // → 4     (from end; out of range → null)
@@ -57,6 +58,7 @@ When you apply field access (`.fieldName`) to a **list of contexts**, the engine
 field across every element and returns a list of the corresponding values:
 
 ```
+// expression-language
 [{name:"A"}, {name:"B"}].name         // → ["A", "B"]
 orders.amount                         // → list of amounts, one per order
 ```
@@ -80,6 +82,7 @@ the following data is in scope (`orders` and `customers` are each a `BlList` of 
 equivalently a `BlTable`):
 
 ```
+// expression-language
 orders = [
     {id: 1, amount: 100, quantity: 2, region: "NA"},
     {id: 2, amount: 150, quantity: 1, region: "EU"},
@@ -95,6 +98,7 @@ customers = [
 Then:
 
 ```
+// expression-language
 sum(orders.amount)                                       // → 325       (total revenue)
 count(customers[item.active = true])                     // → 2         (active customer count — filter, then count)
 distinct(orders.region)                                  // → ["NA","EU"]   (unique regions)
@@ -164,6 +168,7 @@ DMN-inspired functions plus blkit extensions (**ext**). Positions are 1-based.
 This means there's no direct way to insert a single list as one element — `insertBefore([1,4], 2, [2,3])` will spread, giving `[1,2,3,4]`, not `[1, [2,3], 4]`. To insert a list as one element, wrap it in another list so the engine spreads the outer list:
 
 ```
+// expression-language
 insertBefore([1, 4], 2, [[2, 3]])    // → [1, [2, 3], 4]   (outer list spread, inner kept as one element)
 ```
 
@@ -173,6 +178,7 @@ insertBefore([1, 4], 2, [[2, 3]])    // → [1, [2, 3], 4]   (outer list spread,
 each element is the concatenation of the corresponding-position elements from each input list.
 
 ```
+// expression-language
 zipStringJoin([["a","b","c"], ["1","2","3"]])           // → ["a1", "b2", "c3"]
 zipStringJoin([["a","b","c"], ["1","2","3"]], "-")      // → ["a-1", "b-2", "c-3"]
 ```
@@ -192,6 +198,7 @@ zipStringJoin([["a","b","c"], ["1","2","3"]], "-")      // → ["a-1", "b-2", "c
   gap. Wrong length → `BlTypeError`.
 
 ```
+// expression-language
 zipStringJoin(["a", "b", "c"], "-")                     // single delim → "a-b-c"
 zipStringJoin(["a", "b", "c"], ["-", ":"])              // per-gap delims → "a-b:c"
 ```
@@ -205,6 +212,7 @@ zipStringJoin(["a", "b", "c"], ["-", ":"])              // per-gap delims → "a
   trailing side. Wrong length → `BlTypeError`.
 
 ```
+// expression-language
 // Single prefix/suffix: overall wrap
 zipStringJoin(["a", "b", "c"], "-", "[", "]")
 // → "[a-b-c]"
@@ -277,6 +285,7 @@ that type. Summary:
 **Worked string example** — code-point order has some characteristics worth knowing:
 
 ```
+// expression-language
 min(["banana", "apple", "cherry"])   // → "apple"
 min(["banana", "Apple"])             // → "Apple"   (uppercase A = U+0041 < lowercase b = U+0062)
 min(["app", "apple"])                // → "app"     (shorter wins when it's a prefix)
@@ -321,6 +330,7 @@ The exported surface has three parts:
   operations are available.
 
 ```go
+// host-side (Go)
 type BlList struct{ items []BlValue }   // immutable; items is private and never mutated
 
 // BlValue interface — required by all Bl* value types.
@@ -349,6 +359,7 @@ The library functions are implemented as these typed/variadic Go functions, wrap
 `typed1`/`typed2`/`typed3`/`variadic` at registration time:
 
 ```go
+// host-side (Go)
 // Typed implementations — wrapped by typed1/typed2/typed3 at registration.
 func countFn(l BlList) BlNumber
 func listIsEmptyFn(l BlList) BlBoolean                            // overloads string/context/range
@@ -418,6 +429,7 @@ The registrations are grouped by role: the core list operations, aggregation, an
 additions.
 
 ```go
+// host-side (Go)
 func listOptions() []expr.Option {
     return []expr.Option{
         // core list operations

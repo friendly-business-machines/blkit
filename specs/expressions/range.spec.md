@@ -32,6 +32,7 @@ Ranges work over any comparable type — numbers, strings (code-point order), an
 (chronological):
 
 ```
+// expression-language
 [1..10]                                    // numeric
 [date("2025-01-01")..date("2025-12-31"))   // dates, end-exclusive
 ```
@@ -39,6 +40,7 @@ Ranges work over any comparable type — numbers, strings (code-point order), an
 **Unbounded ends** use `null` as an endpoint (`null` start = −∞, `null` end = +∞):
 
 ```
+// expression-language
 [18..null)     // "18 or older"
 (null..0)      // "negative"
 ```
@@ -173,6 +175,7 @@ The exported surface has three parts:
   unbounded side); the inclusion accessors return Go `bool`.
 
 ```go
+// host-side (Go)
 // Either endpoint may be BlNull (unbounded). Closed boundary with BlNull → BlTypeError.
 type BlRange struct {
     start, end                BlValue
@@ -215,6 +218,7 @@ The interval-algebra and constructor functions are implemented as these typed/va
 functions, wrapped by `typed1`/`typed2` at registration time:
 
 ```go
+// host-side (Go)
 // Constructor target (called by the range patcher, not by user-written expressions directly).
 func newRangeFn(start, end any, startIncluded, endIncluded bool) any   // returns BlRange or BlTypeError
 
@@ -269,6 +273,7 @@ where:
   `during` accepts both `(point, range)` and `(range, range)` forms).
 
 ```go
+// host-side (Go)
 func rangeOptions() []expr.Option {
     return []expr.Option{
         // patcher target — not normally called directly from user expressions

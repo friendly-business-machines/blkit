@@ -23,6 +23,7 @@ numeric value — for example, the `42` in `count(items) = 42`. Decimal and scie
 accepted; a leading `-` is the unary minus operator applied to a non-negative literal.
 
 ```
+// expression-language
 42            // → 42
 3.14          // → 3.14
 -5            // → -5
@@ -153,6 +154,7 @@ The exported surface has three parts:
   wrapping each of those.
 
 ```go
+// host-side (Go)
 // BlNumber wraps an arbitrary-precision decimal (backing type: github.com/shopspring/decimal).
 type BlNumber struct{ d decimal.Decimal }
 
@@ -215,6 +217,7 @@ case-sensitive code-point comparison, etc.). That single dispatch path handles n
 and cross-type comparison uniformly.
 
 ```go
+// host-side (Go)
 func addNumbers(a, b BlNumber) BlValue   // "+"
 func subNumbers(a, b BlNumber) BlValue   // "-"
 func mulNumbers(a, b BlNumber) BlValue   // "*"
@@ -241,6 +244,7 @@ engine's `func(...any) (any, error)` shape directly because they accept optional
 cannot be expressed via a fixed-arity adapter.
 
 ```go
+// host-side (Go)
 // Typed implementations — wrapped by typed1/typed2/typed3 at registration.
 func roundFn(n, scale BlNumber) BlNumber          // strict alias of roundHalfUpFn
 func roundUpFn(n, scale BlNumber) BlNumber
@@ -291,6 +295,7 @@ The registrations are grouped to reflect their role: operator impls (consumed by
 conversions (`number`, `string`).
 
 ```go
+// host-side (Go)
 func numberOptions() []expr.Option {
     return []expr.Option{
         // operator impls — bound to operator tokens by operatorBindings()

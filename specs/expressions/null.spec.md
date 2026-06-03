@@ -22,6 +22,7 @@ for example, the `null` in `if x = null then "missing" else x`. It is the only l
 type.
 
 ```
+// expression-language
 null      // → null
 ```
 
@@ -60,6 +61,7 @@ exceptions are the short-circuit boolean cases ([boolean.spec.md](boolean.spec.m
 - **In host code:** the evaluated `BlValue` exposes `IsNull() bool`.
 
 ```
+// expression-language
 isNull(someDictionary.missingKey)   // → true
 ```
 
@@ -74,6 +76,7 @@ unchanged. It is the canonical null fallback — preferred over an explicit `if 
 else x`, which is more verbose and re-evaluates `x` twice.
 
 ```
+// expression-language
 getOrElse(null, 1)                   // → 1
 getOrElse(42, 1)                     // → 42
 getOrElse(applicant.middleName, "")  // → "" if the key is missing or null
@@ -118,6 +121,7 @@ zero-or-negative; `**` with a complex result; any arithmetic/path expression wit
 ### Value type & host API (exported)
 
 ```go
+// host-side (Go)
 // BlNull is the singleton null value.
 type BlNull struct{}
 var Null = BlNull{}
@@ -134,6 +138,7 @@ func (BlNull) String() string // "null"
 ### Propagation helper & registration
 
 ```go
+// host-side (Go)
 // propagatesNull reports whether any arg is Null; operator/function impls call
 // it to short-circuit to Null (except the boolean cases in boolean.spec.md).
 func propagatesNull(args ...BlValue) bool

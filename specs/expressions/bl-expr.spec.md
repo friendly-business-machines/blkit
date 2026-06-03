@@ -32,6 +32,7 @@ same source syntax (e.g. a `BlNumber` renders as `42`, a `BlString` as `"foo"`).
 ## Using the engine
 
 ```go
+// host-side (Go)
 // Expr compiles a source string once, optionally type-checking it against a
 // declared environment. The returned BlExpr can be evaluated repeatedly.
 func (Bl) Expr(source string, env BlEnv) (BlExpr, error)
@@ -58,6 +59,7 @@ is a `BlValue` (see [§ Engine internals](#engine-internals-go) for the bridging
 accessors). There are no `Bl.Number(…)`-style expression factories.
 
 ```go
+// host-side (Go)
 var env = BlEnv{"age": BlTypeNumber, "income": BlTypeNumber}
 var eligible, _ = Bl.Expr("age >= 18 and income > 50000", env)
 
@@ -102,6 +104,7 @@ Every value belongs to one of the following types. Each has a literal or constru
 ### Numbers
 
 ```
+// expression-language
 42            // → 42
 3.14          // → 3.14
 -5            // → -5
@@ -117,6 +120,7 @@ String literals use double quotes. Strings are immutable Unicode sequences
 ([string.spec.md](string.spec.md)).
 
 ```
+// expression-language
 "hello"               // → "hello"
 "line1\nline2"        // → two lines
 "quote: \""           // → quote: "
@@ -128,6 +132,7 @@ Temporal values are created with constructor functions, accepting either an ISO 
 numeric components (see [§ Conversion functions](#conversion-functions)).
 
 ```
+// expression-language
 date("2025-03-28")                       // → a date
 date(2025, 3, 28)                        // → a date
 time("11:45:30+02:00")                   // → a time with offset
@@ -146,6 +151,7 @@ from FEEL, which allows multi-word names with embedded spaces; it also applies t
 names. See [§ Relationship to FEEL](#relationship-to-feel-and-future-direction).)
 
 ```
+// expression-language
 age                   // value of the `age` variable
 loanAmount * 12       // identifier used in arithmetic
 ```
@@ -164,6 +170,7 @@ the name is unbound at evaluation time. It is the only way for an expression to 
 caller supplied this name with a null value" from "the caller supplied no value at all."
 
 ```
+// expression-language
 isDefined(applicant)             // → true if `applicant` is bound, even if its value is null
 isDefined(applicant.middleName)  // → true (path access on a bound dictionary always resolves;
                                  //   a missing key resolves to BlNull, which is still "defined")
@@ -192,6 +199,7 @@ The operators `+`, `-`, `*`, `/`, `**` (exponent), and unary `-` operate on numb
 precision preserved. `+` and `-` also apply to temporal/duration combinations.
 
 ```
+// expression-language
 2 + 3                              // → 5
 10 - 4                             // → 6
 3 * 4                              // → 12
@@ -216,6 +224,7 @@ values; `=` and `!=` apply to all types. `x between a and b` is shorthand for `x
 The result is a `BlBoolean` (or `null` when operands are incomparable).
 
 ```
+// expression-language
 5 < 10                             // → true
 10 >= 10                           // → true
 "abc" = "abc"                      // → true
@@ -234,6 +243,7 @@ date("2025-01-01") < date("2025-06-01")   // → true
 definite result is returned even when the other operand is `null`.
 
 ```
+// expression-language
 true and false                    // → false
 true or false                     // → true
 not(true)                         // → false
@@ -254,6 +264,7 @@ Strings concatenate with `+`. Concatenation is **string-only**: to join a non-st
 it first with `string(...)`.
 
 ```
+// expression-language
 "foo" + "bar"                     // → "foobar"
 "order-" + string(123)            // → "order-123"
 ```
@@ -261,6 +272,7 @@ it first with `string(...)`.
 Inspection and transformation use the [§ String functions](#string-functions).
 
 ```
+// expression-language
 upperCase("aBc")                 // → "ABC"
 contains("foobar", "oob")         // → true
 substring("foobar", 3, 2)         // → "ob"
@@ -277,6 +289,7 @@ condition takes the `else` branch. The two branches may have different types; th
 their union.
 
 ```
+// expression-language
 if 5 < 10 then "low" else "high"           // → "low"
 if 12 < 10 then "low" else "high"          // → "high"
 if null then "low" else "high"             // → "high"
@@ -287,6 +300,7 @@ if age >= 18 then "adult" else "minor"     // depends on `age`
 Conditionals nest:
 
 ```
+// expression-language
 if score >= 750 then "prime"
 else if score >= 650 then "standard"
 else "subprime"
@@ -303,6 +317,7 @@ used for membership tests (with `in`) and the [§ Range functions](#range-functi
 [range.spec.md](range.spec.md).
 
 ```
+// expression-language
 [1..10]      // 1 to 10, both inclusive
 (1..10)      // 1 to 10, both exclusive
 [1..10)      // 1 inclusive, 10 exclusive
@@ -312,6 +327,7 @@ used for membership tests (with `in`) and the [§ Range functions](#range-functi
 Ranges work over numbers and ordered temporal values:
 
 ```
+// expression-language
 [date("2025-01-01")..date("2025-12-31")]
 ```
 
@@ -325,6 +341,7 @@ Ranges work over numbers and ordered temporal values:
 calendar.
 
 ```
+// expression-language
 5 in [1, 2, 3, 4, 5]               // → true
 3 in [1..10]                       // → true
 10 in [1..10)                      // → false   (upper bound exclusive)
@@ -361,6 +378,7 @@ supplied implicitly.
 | `-` | always (wildcard) | `-` |
 
 ```
+// expression-language
 < 10                  // input < 10
 [18..65]              // 18 <= input <= 65
 "low", "medium"       // input = "low" or input = "medium"
@@ -381,6 +399,7 @@ Lists are ordered and heterogeneous. Indexing is **1-based**; negative indexes c
 an out-of-range index yields `null`.
 
 ```
+// expression-language
 [1, 2, 3, 4]                       // → [1, 2, 3, 4]
 [1, 2, 3, 4][1]                    // → 1     (first element)
 [1, 2, 3, 4][-1]                   // → 4     (last element)
@@ -394,6 +413,7 @@ an out-of-range index yields `null`.
 `item`.
 
 ```
+// expression-language
 [1, 2, 3, 4][item > 2]             // → [3, 4]
 [1, 2, 3, 4][even(item)]           // → [2, 4]
 ```
@@ -403,6 +423,7 @@ an out-of-range index yields `null`.
 Accessing a field on a list of dictionaries projects that field across every element.
 
 ```
+// expression-language
 [{name: "Alice", age: 30}, {name: "Bob", age: 34}].name   // → ["Alice", "Bob"]
 [{name: "Alice", age: 30}, {name: "Bob", age: 34}].age     // → [30, 34]
 ```
@@ -419,6 +440,7 @@ List operations are covered by the [§ List functions](#list-functions).
 list.
 
 ```
+// expression-language
 for x in [1, 2, 3] return x * 2          // → [2, 4, 6]
 ```
 
@@ -426,12 +448,14 @@ for x in [1, 2, 3] return x * 2          // → [2, 4, 6]
 (every combination), iterating the rightmost fastest:
 
 ```
+// expression-language
 for x in [1, 2], y in [3, 4] return x * y    // → [3, 4, 6, 8]
 ```
 
 A loop may iterate a numeric range:
 
 ```
+// expression-language
 for x in 0..8 return 2 ** x              // → [1, 2, 4, 8, 16, 32, 64, 128, 256]
 ```
 
@@ -439,6 +463,7 @@ The keyword **`partial`** refers to the list of results accumulated so far, enab
 computations:
 
 ```
+// expression-language
 for i in 1..10 return if i <= 2 then 1 else partial[-1] + partial[-2]
 // → [1, 1, 2, 3, 5, 8, 13, 21, 34, 55]   (Fibonacci)
 ```
@@ -455,6 +480,7 @@ Each loop result is a `BlList`.
 satisfies c` is `true` when `c` holds for all of them.
 
 ```
+// expression-language
 some x in [1, 2, 3] satisfies x > 2           // → true
 every x in [1, 2, 3] satisfies x >= 1         // → true
 every x in [1, 2, 3] satisfies x > 2          // → false
@@ -466,6 +492,7 @@ some order in orders satisfies order.total > 1000
 (same as `for`), and the condition is tested against every combination:
 
 ```
+// expression-language
 some x in [1, 2], y in [3, 4] satisfies x + y > 5     // → true   (2 + 4 > 5)
 every x in [1, 2], y in [3, 4] satisfies x + y >= 4   // → true   (every pair has sum ≥ 4)
 ```
@@ -480,6 +507,7 @@ A dictionary is an ordered map of named entries. Keys may be unquoted names or s
 any type. Later entries can reference earlier ones in the same literal.
 
 ```
+// expression-language
 {}                                 // → empty dictionary
 {a: 1, b: 2}                       // → {a: 1, b: 2}
 {"a": 1, "b": 2}                   // → {a: 1, b: 2}   (quoted keys)
@@ -493,6 +521,7 @@ The dot operator navigates into a dictionary. Chains traverse nested dictionarie
 `null`.
 
 ```
+// expression-language
 {a: 2}.a                           // → 2
 {a: {b: 3}}.a.b                    // → 3
 {a: 1}.b                           // → null
@@ -513,6 +542,7 @@ dictionary entries. This is the standard FEEL way to pull a field out of a date,
 range.
 
 ```
+// expression-language
 date("2025-03-28").year            // → 2025
 date("2025-03-28").month           // → 3
 date("2025-03-28").day             // → 28
@@ -546,6 +576,7 @@ Functions (built-ins or in-scope functions) are invoked with **positional** or *
 arguments.
 
 ```
+// expression-language
 substring("foobar", 3, 2)                                  // positional → "ob"
 substring(string: "foobar", startPosition: 3, length: 2)  // named → "ob"
 ```
@@ -555,6 +586,7 @@ substring(string: "foobar", startPosition: 3, length: 2)  // named → "ob"
 FEEL inline functions have the form `function(params) body`:
 
 ```
+// expression-language
 function(x, y) x + y
 sort([3, 1, 2], function(a, b) a < b)      // → [1, 2, 3]
 ```
@@ -574,6 +606,7 @@ sort([3, 1, 2], function(a, b) a < b)      // → [1, 2, 3]
 [§ Data types](#data-types). Returns a `BlBoolean`.
 
 ```
+// expression-language
 42 instance of number              // → true
 "x" instance of number             // → false
 date("2025-01-01") instance of date    // → true
@@ -628,6 +661,7 @@ From lowest to highest binding:
 Parentheses `( )` group sub-expressions explicitly.
 
 ```
+// expression-language
 2 + 3 * 4             // → 14    (* binds tighter than +)
 (2 + 3) * 4           // → 20
 a or b and c          // → a or (b and c)
@@ -689,6 +723,7 @@ All code lives in the repo-root **`expr`** package (Go module path
 ### Engine entry points (`engine.go`)
 
 ```go
+// host-side (Go)
 // Bl is the package entry namespace (a zero-size value), so callers write
 // expr.Bl.Expr(...) / expr.Bl.Eval(...).
 type blEngine struct{}
@@ -725,6 +760,7 @@ const (
 values, runs the program on the sandboxed VM, and unwraps the result.
 
 ```go
+// host-side (Go)
 func (blEngine) Expr(source string, env BlEnv) (BlExpr, error) {
     program, err := expr.Compile(normalise(source), buildOptions(env)...)
     if err != nil {
@@ -751,6 +787,7 @@ func buildOptions(env BlEnv) []expr.Option {
 Every `Bl*` value type implements `BlValue`, so they pass through the VM as `any`:
 
 ```go
+// host-side (Go)
 type BlValue interface {
     Type() BlType           // the language type tag
     Equal(other BlValue) BlValue // three-valued: BlBoolean or BlNull (see null.spec.md)
@@ -771,6 +808,7 @@ types in their spokes, not on the interface.
 `wrap` converts host inputs to `Bl*`; `unwrap` is the inverse for results that cross back out.
 
 ```go
+// host-side (Go)
 func wrap(v any) (BlValue, error)   // native Go → Bl*
 func unwrap(v BlValue) any          // Bl* → native (used by ToMarkdown / host code)
 ```
@@ -797,6 +835,7 @@ typed signatures used by the checker (multiple = overloads). Each spoke's `…Op
 registrations:
 
 ```go
+// host-side (Go)
 // expr's required impl shape:
 type exprFn = func(args ...any) (any, error)
 
@@ -827,6 +866,7 @@ via `expr.Function`) are tried by operand type. Binding is centralised in `opera
 one operator spans many types; each spoke contributes the named funcs.
 
 ```go
+// host-side (Go)
 func operatorBindings() []expr.Option {
     return []expr.Option{
         expr.Operator("+",  "addNumbers", "concatStrings",
@@ -878,6 +918,7 @@ and lets identifiers ride directly on `expr`'s lexer.
 references are type-checked at parse time. Errors:
 
 ```go
+// host-side (Go)
 type BlParseError struct { Source string; Err error } // from Bl.Expr (parse/type-check)
 type BlTypeError  struct { /* op, types */ }           // from Evaluate (runtime type mismatch)
 type BlRegexError struct { Pattern string; Err error } // bad regex in matches/replace/extract

@@ -27,6 +27,7 @@ example, the `date("2025-03-28")` in `date("2025-03-28").year`. The constructor 
 8601 string, year/month/day components, or another temporal value to extract from.
 
 ```
+// expression-language
 date("2025-03-28")               // timezone-naive
 date("2025-03-28+05:30")         // UTC offset
 date("2025-03-28Z")              // UTC (offset +00:00)
@@ -46,6 +47,7 @@ Only the extended form is parsed; supplying both offset and timezone, or an inva
 ## Component access
 
 ```
+// expression-language
 date("2025-03-28+05:30").year      // → 2025
 date("2025-03-28").month           // → 3
 date("2025-03-28").day             // → 28
@@ -76,6 +78,7 @@ projected to **midnight in its own zone**, and the result is the UTC-instant gap
 projections. This can yield a sub-day duration when zones differ:
 
 ```
+// expression-language
 date("2025-03-28+05:30") - date("2025-03-28-05:00")  // → dtDuration("-PT10H30M")
 date("2025-03-29+05:30") - date("2025-03-28-05:00")  // → dtDuration("PT13H30M")
 date("2025-03-28")       - date("2025-01-01")        // → dtDuration("P86D")  (naive — whole days)
@@ -204,6 +207,7 @@ The exported surface has three parts:
   system's local zone (uses `time.Now().Local()` and strips the time portion).
 
 ```go
+// host-side (Go)
 type BlDate struct {
     t     time.Time   // date portion meaningful; Location() carries offset or IANA zone when naive==false
     naive bool        // true when no offset/zone was specified — Location() is ignored
@@ -269,6 +273,7 @@ above. That single dispatch path handles null propagation and cross-type compari
 dispatches to list/range membership or `calendarContainsFn` for a calendar operand.
 
 ```go
+// host-side (Go)
 func addDateYM(d BlDate, dur BlYearsMonthsDuration) BlDate    // "+" d + YM duration (day clamped)
 func addDateDT(d BlDate, dur BlDaysTimeDuration)   BlDate     // "+" d + DT duration (whole days; sub-day components ignored)
 func subDateYM(d BlDate, dur BlYearsMonthsDuration) BlDate    // "-" d − YM duration (day clamped)
@@ -293,6 +298,7 @@ The `dateFn` variadic shape is needed because the constructor accepts multiple i
 signatures.
 
 ```go
+// host-side (Go)
 // Datetime-only typed implementations.
 func todayFn() BlDate
 
@@ -343,6 +349,7 @@ in [datetime.spec.md](datetime.spec.md) under a single `expr.Function` per name 
 type signatures.
 
 ```go
+// host-side (Go)
 func dateOptions() []expr.Option {
     return []expr.Option{
         // operator impls — bound to operator tokens by operatorBindings()

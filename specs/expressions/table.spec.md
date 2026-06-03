@@ -24,6 +24,7 @@ and projection ([list.spec.md](list.spec.md), [bl-expr.spec.md](bl-expr.spec.md)
 ## Construction & access
 
 ```
+// expression-language
 // A list of uniformly-keyed dictionaries is the table's data:
 [{region: "domestic", rate: 5.99}, {region: "europe", rate: 15.99}]
 
@@ -113,6 +114,7 @@ Lives in `expr/table.go`. Shared mechanics in
 invariant. Implements `BlValue` (and is list-compatible).
 
 ```go
+// host-side (Go)
 type BlTable struct{ columns []string; rows []BlDictionary }
 
 func (BlTable) Type() BlType { return BlTypeTable }
@@ -136,6 +138,7 @@ func (t BlTable) ToArrow() (arrow.Record, error)  // github.com/apache/arrow/go/
 ### Registrations (`tableOptions`, unexported)
 
 ```go
+// host-side (Go)
 func tableOptions() []expr.Option {
     return []expr.Option{ // all ext
         expr.Function("table",     typed1(tableFn),     new(func(BlList) BlTable)), // validates uniform keys

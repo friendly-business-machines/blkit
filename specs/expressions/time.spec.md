@@ -24,6 +24,7 @@ example, the `time("14:30:00")` in `time("14:30:00").hour`. The constructor acce
 time string, hour/minute/second components, or another temporal value to extract from.
 
 ```
+// expression-language
 time("14:30:00")              // local time
 time("14:30:00.500")          // fractional seconds
 time("14:30:00Z")             // UTC
@@ -44,6 +45,7 @@ blkit distinguishes a fixed **offset** (`+01:00`, not DST-aware), a named **time
 ## Component access
 
 ```
+// expression-language
 time("11:45:30+02:00").hour         // → 11
 time("11:45:30+02:00").minute       // → 45
 time("11:45:30+02:00").second       // → 30
@@ -137,6 +139,7 @@ The exported surface has three parts:
 - **`IsNaive()` accessor** — reports whether the value is timezone-naive.
 
 ```go
+// host-side (Go)
 type BlTime struct {
     t     time.Time   // time portion meaningful; Location() carries offset or IANA zone when naive==false
     naive bool        // true when no offset/zone was specified — Location() is ignored
@@ -201,6 +204,7 @@ above. That single dispatch path handles null propagation and cross-type compari
 dispatches to list/range membership.
 
 ```go
+// host-side (Go)
 func addTimeDur(t BlTime, dur BlDaysTimeDuration) BlTime  // "+" t + DT duration (wraps at midnight)
 func subTimeDur(t BlTime, dur BlDaysTimeDuration) BlTime  // "-" t − DT duration (wraps at midnight)
 func ltTimes(a, b BlTime) BlValue                          // "<"  ; cross-kind → Null
@@ -221,6 +225,7 @@ The constructor is implemented as a variadic Go function (multiple input signatu
 from a datetime.
 
 ```go
+// host-side (Go)
 // Variadic implementation — handles multiple input shapes in expr's raw shape.
 func timeFn(args ...any) (any, error)   // time("…") | time(h, m, s) | time(dt) extraction
 ```
@@ -267,6 +272,7 @@ and the constructor. Re-zoning (`withOffset`) accepts both `BlTime` and `BlDateT
 registered once in [datetime.spec.md](datetime.spec.md) with both type signatures.
 
 ```go
+// host-side (Go)
 func timeOptions() []expr.Option {
     return []expr.Option{
         // operator impls — bound to operator tokens by operatorBindings()

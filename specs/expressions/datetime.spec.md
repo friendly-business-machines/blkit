@@ -27,6 +27,7 @@ built-in — for example, the `datetime("2025-03-28T14:30:00Z")` in
 date/time pair.
 
 ```
+// expression-language
 datetime("2025-03-28T14:30:00")            // local
 datetime("2025-03-28T14:30:00Z")           // UTC
 datetime("2025-03-28T14:30:00+01:00")      // offset
@@ -49,6 +50,7 @@ patcher recognises these names on `BlDateTime` operands and dispatches to the co
 internal accessor.
 
 ```
+// expression-language
 datetime("2025-03-28T14:30:00+01:00").year             // → 2025
 datetime("2025-03-28T14:30:00+01:00").month            // → 3
 datetime("2025-03-28T14:30:00+01:00").day              // → 28
@@ -275,6 +277,7 @@ The financial year is **labelled by the calendar year it ends in** — the stand
 AU, US, UK, and Canada. For a July-start FY:
 
 ```
+// expression-language
 financialYear(date("2024-06-30"), "AU")   // → "FY2024"  (FY 2024 ends today)
 financialYear(date("2024-07-01"), "AU")   // → "FY2025"  (FY 2025 begins today)
 ```
@@ -285,6 +288,7 @@ year (labelled by the calendar year it ends in). `<quarter>` is 1–4 within the
 (Q1 starts on the FY start date, Q4 ends on the day before the next FY start).
 
 ```
+// expression-language
 financialYearQuarter(date("2024-08-01"), "AU")   // → "FY2025Q1"  (AU FY 2025 Q1: Jul–Sep)
 financialYearQuarter(date("2025-01-15"), "AU")   // → "FY2025Q3"  (AU FY 2025 Q3: Jan–Mar)
 financialYearQuarter(date("2024-08-01"), 7)      // → "FY2025Q1"  (numeric basis equivalent)
@@ -423,6 +427,7 @@ The exported surface has three parts:
   `time.Now()`).
 
 ```go
+// host-side (Go)
 type BlDateTime struct {
     t     time.Time   // Location() carries offset or IANA zone when naive==false
     naive bool        // true when no offset/zone was specified — Location() is ignored
@@ -489,6 +494,7 @@ implements above. That single dispatch path handles null propagation and cross-t
 uniformly.
 
 ```go
+// host-side (Go)
 func addDateTimeYM(dt BlDateTime, dur BlYearsMonthsDuration) BlDateTime // "+" dt + YM duration (day clamped)
 func addDateTimeDT(dt BlDateTime, dur BlDaysTimeDuration)   BlDateTime  // "+" dt + DT duration
 func subDateTimeYM(dt BlDateTime, dur BlYearsMonthsDuration) BlDateTime // "-" dt − YM duration (day clamped)
@@ -514,6 +520,7 @@ shape directly because they accept multiple input forms that cannot be expressed
 fixed-arity adapter.
 
 ```go
+// host-side (Go)
 // Datetime-only typed implementations.
 func nowFn() BlDateTime
 func withOffsetFn(v, off any) any              // BlTime → BlTime, BlDateTime → BlDateTime; dispatch on first-arg type
@@ -609,6 +616,7 @@ The registrations are grouped to reflect their role: operator impls (consumed by
 re-zoning helpers.
 
 ```go
+// host-side (Go)
 func datetimeOptions() []expr.Option {
     return []expr.Option{
         // operator impls — bound to operator tokens by operatorBindings()

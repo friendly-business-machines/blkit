@@ -25,6 +25,7 @@ the `ymDuration(...)` built-in. For example, the `ymDuration("P1Y6M")` in
 date. The constructor accepts an ISO 8601 string using only Y/M designators:
 
 ```
+// expression-language
 ymDuration("P1Y6M")                  // 1 year, 6 months
 ymDuration("P1Y")                    // 1 year
 ymDuration("P6M")                    // 6 months
@@ -55,6 +56,7 @@ two dates or datetimes (registered in [datetime.spec.md](datetime.spec.md), whic
 operand types):
 
 ```
+// expression-language
 ymDurationBetween(date("2011-12-22"), date("2013-08-24"))   // → ymDuration("P1Y8M")
 ymDurationBetween(date("2025-06-01"), date("2024-06-01"))   // → ymDuration("-P1Y")  (signed)
 ```
@@ -73,6 +75,7 @@ for the registered overloads.
 Field-style access reads the normalised components:
 
 ```
+// expression-language
 ymDuration("P2Y7M").years            // → 2
 ymDuration("P2Y7M").months           // → 7
 ymDuration("P2Y7M").totalMonths      // → 31         (ext: signed years*12 + months)
@@ -162,6 +165,7 @@ returns `q * step`. The duration being rounded can be negative; rounding directi
 a negative input more negative). Common uses:
 
 ```
+// expression-language
 round(ymDuration("P14M"), ymDuration("P1Y"))           // → ymDuration("P1Y") (nearest year)
 round(ymDuration("P14M"), ymDuration("P3M"))           // → ymDuration("P1Y3M") (nearest quarter)
 round(ymDuration("P14M"), ymDuration("P6M"))           // → ymDuration("P1Y") (nearest half-year)
@@ -240,6 +244,7 @@ The exported surface has three parts:
   signed exact decimal total used for all arithmetic and comparison.
 
 ```go
+// host-side (Go)
 // BlYearsMonthsDuration wraps a signed arbitrary-precision decimal count of total months.
 type BlYearsMonthsDuration struct{ months decimal.Decimal }
 
@@ -290,6 +295,7 @@ Equality (`=` / `!=`) is **not** registered as a per-type operator impl. The eng
 handles null propagation and cross-type comparison uniformly.
 
 ```go
+// host-side (Go)
 func addYMDuration(a, b BlYearsMonthsDuration) BlYearsMonthsDuration              // "+"
 func subYMDuration(a, b BlYearsMonthsDuration) BlYearsMonthsDuration              // "-"
 func negYMDuration(d BlYearsMonthsDuration) BlYearsMonthsDuration                 // unary "-"
@@ -312,6 +318,7 @@ The library and component-accessor functions are implemented as these typed Go f
 are wrapped by `typed1` / `typed2` when registered with the engine in the next section.
 
 ```go
+// host-side (Go)
 // Component accessors — emitted by the component-access patcher.
 func durationYearsYMFn(d BlYearsMonthsDuration) BlNumber          // overload; D/T overload in days_time_duration.spec.md
 func durationMonthsYMFn(d BlYearsMonthsDuration) BlNumber         // overload
@@ -369,6 +376,7 @@ The registrations are grouped by role: operator impls (consumed by `operatorBind
 component-accessor impls (emitted by the patcher), and the library functions.
 
 ```go
+// host-side (Go)
 func yearsMonthsDurationOptions() []expr.Option {
     return []expr.Option{
         // operator impls — bound to operator tokens by operatorBindings()

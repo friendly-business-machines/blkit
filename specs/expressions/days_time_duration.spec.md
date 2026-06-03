@@ -24,6 +24,7 @@ There is **no dedicated duration literal** — days-and-time duration values are
 date. The constructor accepts an ISO 8601 string using only D/T designators:
 
 ```
+// expression-language
 dtDuration("P1DT2H30M")            // 1 day, 2 hours, 30 minutes
 dtDuration("PT90M")                // → dtDuration("PT1H30M") (minute overflow normalises on input)
 dtDuration("PT3600S")              // → dtDuration("PT1H")
@@ -54,6 +55,7 @@ dates or datetimes (registered in [datetime.spec.md](datetime.spec.md), which ow
 types):
 
 ```
+// expression-language
 dtDurationBetween(date("2025-01-01"), date("2025-03-28"))                   // → dtDuration("P86D")
 dtDurationBetween(datetime("2025-01-01T00:00:00"), datetime("2025-01-01T12:30:00"))  // → dtDuration("PT12H30M")
 ```
@@ -63,6 +65,7 @@ and the result is the UTC-instant gap between those projections — so the same 
 two different zones can yield a non-zero, sub-day duration:
 
 ```
+// expression-language
 // Same calendar date, different offsets — UTC midnights are 10h30m apart:
 dtDurationBetween(date("2025-03-28-05:00"), date("2025-03-28+05:30"))
 // → dtDuration("-PT10H30M")    (the +05:30 midnight is 10.5h earlier in UTC)
@@ -85,6 +88,7 @@ identical wall-clock readings in different zones are different instants, and the
 reflects that:
 
 ```
+// expression-language
 // Identical wall-clock noons in two zones — different instants:
 dtDurationBetween(
     datetime("2025-03-28T12:00:00+01:00"),       // 11:00 UTC
@@ -107,6 +111,7 @@ Two **naive** (timezone-less) `BlDateTime`s use **wall-clock** subtraction inste
 adjustment is performed:
 
 ```
+// expression-language
 dtDurationBetween(
     datetime("2025-03-28T08:00:00"),
     datetime("2025-03-28T12:00:00"))             // → dtDuration("PT4H")
@@ -134,6 +139,7 @@ for the registered overloads.
 Field-style access reads the normalised components:
 
 ```
+// expression-language
 dtDuration("P2DT3H45M10S").days          // → 2
 dtDuration("P2DT3H45M10S").hours         // → 3
 dtDuration("P2DT3H45M10S").minutes       // → 45
@@ -229,6 +235,7 @@ sign (e.g. `roundUp(dtDuration("-PT37M"), dtDuration("PT15M"))` → `dtDuration(
 "away from zero" makes a negative input more negative). Common uses:
 
 ```
+// expression-language
 round(dtDuration("PT1H37M"), dtDuration("PT1H"))     // → dtDuration("PT2H") (nearest hour)
 round(dtDuration("PT1H37M"), dtDuration("PT15M"))    // → dtDuration("PT1H30M") (nearest 15 min)
 round(dtDuration("PT1H37M"), dtDuration("PT1M"))     // → dtDuration("PT1H37M") (nearest minute)
@@ -313,6 +320,7 @@ The exported surface has three parts:
   `TotalSeconds()` before calling).
 
 ```go
+// host-side (Go)
 // BlDaysTimeDuration wraps a signed arbitrary-precision decimal count of total seconds.
 type BlDaysTimeDuration struct{ secs decimal.Decimal }
 
@@ -366,6 +374,7 @@ implements above (compare by total seconds). That single dispatch path handles n
 and cross-type comparison uniformly.
 
 ```go
+// host-side (Go)
 func addDTDuration(a, b BlDaysTimeDuration) BlDaysTimeDuration              // "+"
 func subDTDuration(a, b BlDaysTimeDuration) BlDaysTimeDuration              // "-"
 func negDTDuration(d BlDaysTimeDuration) BlDaysTimeDuration                 // unary "-"
@@ -388,6 +397,7 @@ The library and component-accessor functions are implemented as these typed Go f
 are wrapped by `typed1` / `typed2` when registered with the engine in the next section.
 
 ```go
+// host-side (Go)
 // Constructor.
 func dtDurationFn(s BlString) (BlDaysTimeDuration, error)   // D/T-only parser; Y/M designators → BlParseError
 
@@ -445,6 +455,7 @@ The registrations are grouped by role: operator impls (consumed by `operatorBind
 component-accessor impls (emitted by the patcher), the constructor, and the library functions.
 
 ```go
+// host-side (Go)
 func daysTimeDurationOptions() []expr.Option {
     return []expr.Option{
         // operator impls — bound to operator tokens by operatorBindings()
