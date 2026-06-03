@@ -61,7 +61,7 @@ accessors). There are no `Bl.Number(…)`-style expression factories.
 var env = BlEnv{"age": BlTypeNumber, "income": BlTypeNumber}
 var eligible, _ = Bl.Expr("age >= 18 and income > 50000", env)
 
-result, err := eligible.Evaluate(map[string]any{
+var result, _ = eligible.Evaluate(map[string]any{
     "age":    21,
     "income": 60000,
 })
@@ -321,14 +321,23 @@ Ranges work over numbers and ordered temporal values:
 
 ## Membership: the `in` operator
 
-`x in y` tests whether `x` is a member of a list or falls within a range.
+`x in y` tests whether `x` is a member of a list, falls within a range, or is covered by a
+calendar.
 
 ```
 5 in [1, 2, 3, 4, 5]               // → true
 3 in [1..10]                       // → true
 10 in [1..10)                      // → false   (upper bound exclusive)
 "US" in ["US", "CA", "MX"]         // → true
+date("2025-12-25") in ukHolidays   // → true   (calendar membership; see calendar.spec.md)
 ```
+
+For a `BlCalendar` right operand, `point in calendar` is **patcher-lowered** to
+`contains(calendar, point)` and inherits its semantics — see
+[calendar.spec.md § Operators](calendar.spec.md#operators) for the zone-kind and
+cross-temporal-kind rules. The left operand for calendar membership must be a `BlDate` or
+`BlDateTime`; a range left operand → `BlTypeError` (use the explicit
+`overlaps(c, r)` / `entriesIn(c, r)` for range-on-calendar queries).
 
 `[@test] ../../expr/membership_test.go`
 
@@ -586,7 +595,7 @@ cases, and Go registration. This catalogue is the index:
 | Boolean | `not` | [boolean.spec.md](boolean.spec.md) |
 | Null | `isNull`, `getOrElse` | [null.spec.md](null.spec.md) |
 | Resolution | `isDefined` | this spec ([§ Name resolution](#name-resolution-isdefined)) |
-| String | `substring`, `stringLength`, `upperCase`, `contains`, `matches`, `replace`, `split`, `stringJoin`, … | [string.spec.md](string.spec.md) |
+| String | `substring`, `stringLength`, `upperCase`, `contains`, `matches`, `replace`, `split`, `stringJoin`, `pattern` (precompiled `BlRegex`), … | [string.spec.md](string.spec.md) |
 | Numeric | `decimal`, `floor`, `ceiling`, `round*`, `abs`, `modulo`, `sqrt`, `log`, `ln`, `exp`, `odd`, `even`, … | [number.spec.md](number.spec.md) |
 | List | `count`, `min`, `max`, `sum`, `mean`, `sublist`, `append`, `concatenate`, `union`, `distinct`, `flatten`, `sort`, … | [list.spec.md](list.spec.md) |
 | Dictionary | `getValue`, `getEntries`, `dictionaryPut`, `dictionaryMerge` | [dictionary.spec.md](dictionary.spec.md) |
@@ -594,7 +603,7 @@ cases, and Go registration. This catalogue is the index:
 | Duration | `ymDuration`, `dtDuration`, `ymDurationBetween`, `dtDurationBetween`, components, `abs`, `isNegative`, `round*` (overloaded) | [days_time_duration](days_time_duration.spec.md) / [years_months_duration](years_months_duration.spec.md) |
 | Range (interval algebra) | `before`, `after`, `meets`, `overlaps`, `includes`, `during`, `starts`, `finishes`, `coincides` | [range.spec.md](range.spec.md) |
 | Table | `table`, `project`, `columns`, `rows`, `distinct` | [table.spec.md](table.spec.md) |
-| Calendar | `calendar`, containment / overlap / business-day queries | [calendar.spec.md](calendar.spec.md) |
+| Calendar (host-constructed) | `entries`, `find`, `contains`, `overlaps`, `entriesFor`, `entriesIn`, `validFrom` / `validTo` / `validRange`, `calendarDrop` / `calendarKeep` / `calendarMerge` | [calendar.spec.md](calendar.spec.md) |
 
 Multi-word names are lowerCamelCase ([§ Relationship to FEEL](#relationship-to-feel-and-future-direction)).
 Built-ins that exceed the DMN standard (blkit extensions, e.g. `clamp`, `padStart`, `addBusinessDays`)
@@ -705,6 +714,7 @@ const (
     BlTypeDate; BlTypeTime; BlTypeDateTime
     BlTypeDaysTimeDuration; BlTypeYearsMonthsDuration
     BlTypeList; BlTypeDictionary; BlTypeRange; BlTypeTable; BlTypeCalendar
+    BlTypeRegex
     BlTypeAny
 )
 ```

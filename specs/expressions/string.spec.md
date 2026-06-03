@@ -151,6 +151,7 @@ conversion built-in (see [§ Go implementation](#go-implementation-expr-extensio
 ### Examples
 
 ```
+// expression-language
 matches("hello", "h.+o")                                        // → true
 matches("ABC", "[a-z]+", "i")                                   // → true   (flag)
 matches("Hello", "(?i)hello")                                   // → true   (inline flag)
@@ -171,6 +172,58 @@ extract("a1 b22 c333", "[a-z]\\d+")                             // → ["a1", "b
 `extract` (which returns `[]` when nothing matches) or wrap the pattern: `matches(s, ".*pat.*")`.
 
 `[@test] ../../expr/string_regex_test.go`
+
+---
+
+## Precompiled patterns (`pattern(s)` / `BlRegex`)
+
+`pattern(s)` compiles a regex source string into a **`BlRegex`** — a first-class blkit value
+that carries a compiled RE2 program. The dialect is identical to inline strings (see
+[§ Regex dialect](#regex-dialect)); a malformed source → `BlRegexError` at the `pattern(...)`
+call site rather than at the use site. The three regex built-ins (`matches`, `replace`,
+`extract`) accept either a `BlString` source pattern or a `BlRegex` value in the pattern slot:
+
+```
+// expression-language — inline source string is compiled on every call site.
+matches("hello", "h.+o")                                          // → true
+
+// expression-language — inline pattern(...) builds a BlRegex value used right away.
+// Useful when you need flags-only-via-inline syntax or want to pass the same regex to
+// multiple consumers within one expression.
+matches("alice@example.com",
+    pattern("[\\w.+-]+@[\\w-]+\\.[\\w.-]+"))                      // → true
+extract("a@b.com, c@d.org",
+    pattern("[\\w.+-]+@[\\w-]+\\.[\\w.-]+"))                      // → ["a@b.com", "c@d.org"]
+matches("Hi there", pattern("(?i)^hi.*"))                         // → true   (case-insensitive flag inline)
+```
+
+For genuine **cross-call reuse** (compile once, evaluate many times against different inputs),
+build the `BlRegex` host-side via the Go constructor and supply it as an input variable:
+
+```go
+// host-side (Go) — compile once.
+var emailRe, _ = Pattern(`[\w.+-]+@[\w-]+\.[\w.-]+`)
+
+// Then hand emailRe to the engine as an input variable; expressions reference it by name.
+var result, _ = Bl.Eval(`matches(addr, emailRe)`,
+    map[string]any{"addr": "alice@example.com", "emailRe": emailRe})
+```
+
+`pattern(s)` accepts only a single argument — the source string. Flags (`"i"`, `"m"`, `"s"`)
+that the three-argument forms of `matches` / `replace` / `extract` accept must be written
+inline as `(?i)` / `(?m)` / `(?s)` groups inside the source. A `BlRegex` passed to the
+three-argument form of `matches(s, p, flags)` — where the precompiled pattern already encodes
+its flags — → `BlTypeError`.
+
+Two `BlRegex` values compare equal iff their source strings are equal (structural equality on
+the source, not on the compiled program).
+
+`pattern(s)` is a blkit extension (**ext**); the inline-string forms remain the FEEL-compatible
+path. `BlRegex` is also accepted as a target type by
+[calendar.spec.md § calendarDrop](calendar.spec.md#calendardropc-target) (and the symmetric
+`calendarKeep`), where it dispatches to regex-based name matching against calendar entries.
+
+`[@test] ../../expr/string_pattern_test.go`
 
 ---
 
@@ -242,6 +295,26 @@ func String[T StringInput](v T) BlString
 
 // Host accessor (consume an evaluated result).
 func (s BlString) Native() string                // underlying Go string
+
+// BlRegex is the precompiled-regex value type — produced by pattern(s) and accepted in the
+// pattern slot of matches/replace/extract and as a target type by calendarDrop/calendarKeep.
+type BlRegex struct {
+    source   string
+    compiled *regexp.Regexp // built at construction; never nil for a valid BlRegex
+}
+
+// BlValue interface — required by all Bl* value types.
+func (BlRegex) Type() BlType { return BlTypeRegex }
+func (r BlRegex) Equal(other BlValue) BlValue   // equal iff source strings are equal
+func (r BlRegex) String() string                // returns the original source string
+func (BlRegex) isBlValue() {}
+
+// Host constructor — compiles immediately; a malformed source returns BlRegexError.
+func Pattern(source string) (BlRegex, error)
+
+// Host accessors (consume an evaluated result).
+func (r BlRegex) Source() string                // the original source string
+func (r BlRegex) Native() *regexp.Regexp        // the compiled program; do not mutate
 ```
 
 ### Operator implementation functions (unexported)
@@ -319,9 +392,10 @@ func repeatFn(s BlString, times BlNumber) BlString
 // Variadic implementations — handle optional args themselves in expr's raw shape.
 func substringFn(args ...any) (any, error)    // 2- or 3-arg
 func splitFn(args ...any) (any, error)        // delimiter is BlString or BlList of BlString
-func matchesFn(args ...any) (any, error)      // 2- or 3-arg (optional flags)
-func replaceFn(args ...any) (any, error)      // 3- or 4-arg (optional flags)
-func extractFn(args ...any) (any, error)      // 2- or 3-arg (optional flags)
+func matchesFn(args ...any) (any, error)      // 2- or 3-arg; pattern slot accepts BlString or BlRegex (3-arg form rejects BlRegex)
+func replaceFn(args ...any) (any, error)      // 3- or 4-arg; pattern slot accepts BlString or BlRegex (4-arg form rejects BlRegex)
+func extractFn(args ...any) (any, error)      // 2- or 3-arg; pattern slot accepts BlString or BlRegex (3-arg form rejects BlRegex)
+func patternFn(s BlString) (BlRegex, error)   // ext; compiles s into a BlRegex (BlRegexError on malformed source)
 func padLeadingFn(args ...any) (any, error)   // 2- or 3-arg (optional padChar)
 func padTrailingFn(args ...any) (any, error)  // 2- or 3-arg (optional padChar)
 // stringJoin's backing impl lives in list.spec.md — see § Backing implementations there.
@@ -409,13 +483,17 @@ func stringOptions() []expr.Option {
         expr.Function("startsWith",      typed2(startsWithFn),      new(func(BlString, BlString) BlBoolean)),
         expr.Function("endsWith",        typed2(endsWithFn),        new(func(BlString, BlString) BlBoolean)),
         expr.Function("matches",         matchesFn,                 new(func(BlString, BlString) BlBoolean),
-                                                                    new(func(BlString, BlString, BlString) BlBoolean)),
+                                                                    new(func(BlString, BlString, BlString) BlBoolean),
+                                                                    new(func(BlString, BlRegex)  BlBoolean)),
         expr.Function("replace",         replaceFn,                 new(func(BlString, BlString, BlString) BlString),
-                                                                    new(func(BlString, BlString, BlString, BlString) BlString)),
+                                                                    new(func(BlString, BlString, BlString, BlString) BlString),
+                                                                    new(func(BlString, BlRegex,  BlString) BlString)),
         expr.Function("split",           splitFn,                   new(func(BlString, BlString) BlList),
                                                                     new(func(BlString, BlList) BlList)),
         expr.Function("extract",         extractFn,                 new(func(BlString, BlString) BlList),
-                                                                    new(func(BlString, BlString, BlString) BlList)),
+                                                                    new(func(BlString, BlString, BlString) BlList),
+                                                                    new(func(BlString, BlRegex)  BlList)),
+        expr.Function("pattern",         typed1(patternFn),         new(func(BlString) BlRegex)),  // ext
         expr.Function("isBlank",         typed1(isBlankFn),         new(func(BlString) BlBoolean)),
         expr.Function("indexOf",         typed2(strIndexOfFn),      new(func(BlString, BlString) BlValue)),
         expr.Function("isEmpty",         typed1(strIsEmptyFn),      new(func(BlString) BlBoolean)),
