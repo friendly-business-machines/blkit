@@ -109,6 +109,34 @@ sum(for o in orders return o.amount * o.quantity)        // → 575       (per-r
 
 ---
 
+## Construction (host-side)
+
+Host Go code builds a list with the variadic `List(items ...BlValue)` constructor. It's
+infallible — every input shape is valid; `List()` with no arguments yields the empty list, and
+existing Go slices spread in via `List(slice...)`. Element order is preserved exactly (lists
+are order-sensitive at the language level — see [§ Operators](#operators)).
+
+```go
+// host-side (Go)
+// Build a list directly from BlValue arguments.
+var scores = List(Number(85), Number(92), Number(78))
+
+// Spread an existing slice of BlValues.
+var names  = []BlValue{String("Alice"), String("Bob"), String("Charlie")}
+var roster = List(names...)
+
+// Empty list — degenerate but valid.
+var empty  = List()
+```
+
+`List(...)` returns a `BlList` directly (no error path). For the alternative of letting the
+engine bridge wrap a native Go slice automatically when the list is supplied as an input
+variable, see [bl-expr.spec.md § Bridging native ↔ Bl*](bl-expr.spec.md#bridging-native--bl-valuego);
+when the host already holds `BlValue`s, `List(...)` is preferred since it avoids the
+round-trip through the bridge.
+
+---
+
 ## Operators
 
 | Operator | Meaning | Example | Result |
@@ -367,7 +395,8 @@ The exported surface has three parts:
 - **`List(items ...BlValue)`** — the host constructor. Variadic so callers can write
   `List(v1, v2, v3)` directly or `List(slice...)` to spread an existing slice. Infallible:
   there's no input shape that can fail at construction. Native Go slices passed in via the
-  engine bridge are also wrapped to `BlList`.
+  engine bridge are also wrapped to `BlList`. See [§ Construction
+  (host-side)](#construction-host-side) for the worked example.
 - **`Native()` accessor** — returns a defensive copy of the underlying `[]BlValue`. Callers
   may mutate the returned slice without affecting the `BlList`. From there, normal Go slice
   operations are available.
