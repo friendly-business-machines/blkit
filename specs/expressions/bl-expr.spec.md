@@ -335,6 +335,48 @@ Ranges work over numbers and ordered temporal values:
 
 ---
 
+## Sequences: the `:` operator
+
+`start:end` materialises a numeric **`BlList`** running from `start` to `end` inclusive in
+steps of `1` — a strict-list counterpart to the range `[start..end]` (which stays as a
+`BlRange` for containment / interval-algebra purposes). The shorthand is sugar for
+`seq(start, end, 1)`; the parser lowers `start:end` to `seq(start, end, 1)` at patch time, so
+the two forms are exactly equivalent. For a non-default step (or for clarity in dense
+expressions), call `seq(start, end, step)` explicitly. Full semantics — auto-reverse on
+`start > end`, fractional steps, the zero-step rejection — live in
+[list.spec.md § Sequence constructor](list.spec.md#sequence-constructor-seq-and-the--operator).
+
+```
+// expression-language
+5:10                 // → [5, 6, 7, 8, 9, 10]
+10:5                 // → [10, 9, 8, 7, 6, 5]    (auto-reversed)
+1.5:3.5              // → [1.5, 2.5, 3.5]        (fractional)
+-2:2                 // → [-2, -1, 0, 1, 2]      (unary minus binds tightest, so this is (-2):2)
+seq(0, 1, 0.25)      // → [0, 0.25, 0.5, 0.75, 1]   (non-default step requires seq)
+```
+
+**Precedence.** `:` binds tighter than `+` / `-` but looser than `*` / `/`, so
+`1+2:5*2` parses as `(1+2):(5*2)` → `[3, 4, 5, 6, 7, 8, 9, 10]`. It matches the position of
+the range constructor `..` in the precedence ladder (see [§ Operator
+precedence](#operator-precedence)).
+
+**Dictionary literals.** `:` is also the dictionary key/value separator inside `{...}`. To
+avoid ambiguity, a bare sequence `start:end` is **not allowed in dictionary value
+positions** — the first `:` after a key is always the dict separator, and any further `:`
+inside that value is a parse error. Use `seq(start, end)` (or parenthesise:
+`{a: (5:10)}`) when you need a sequence as a dictionary value.
+
+```
+// expression-language
+{a: seq(5, 10)}              // OK — explicit function call
+{a: (5:10)}                  // OK — parenthesised sequence expression
+{a: 5:10}                    // BlParseError — bare `:` in a dict value position
+```
+
+`[@test] ../../expr/sequences_test.go`
+
+---
+
 ## Membership: the `in` operator
 
 `x in y` tests whether `x` is a member of a list, falls within a range, or is covered by a
@@ -630,7 +672,7 @@ cases, and Go registration. This catalogue is the index:
 | Resolution | `isDefined` | this spec ([§ Name resolution](#name-resolution-isdefined)) |
 | String | `substring`, `stringLength`, `upperCase`, `contains`, `matches`, `replace`, `split`, `stringJoin`, `pattern` (precompiled `BlRegex`), … | [string.spec.md](string.spec.md) |
 | Numeric | `decimal`, `floor`, `ceiling`, `round*`, `abs`, `modulo`, `sqrt`, `log`, `ln`, `exp`, `odd`, `even`, … | [number.spec.md](number.spec.md) |
-| List | `count`, `min`, `max`, `sum`, `mean`, `sublist`, `append`, `concatenate`, `union`, `distinct`, `flatten`, `sort`, … | [list.spec.md](list.spec.md) |
+| List | `count`, `min`, `max`, `sum`, `mean`, `sublist`, `append`, `concatenate`, `union`, `distinct`, `flatten`, `sort`, `seq` (and the `:` sequence operator), … | [list.spec.md](list.spec.md) |
 | Dictionary | `getValue`, `getEntries`, `dictionaryPut`, `dictionaryMerge` | [dictionary.spec.md](dictionary.spec.md) |
 | Temporal | `now`, `today`, `lastDayOfMonth`, `addBusinessDays`, `is*`, … (calendar properties such as `.dayName`, `.monthName` are dot accessors, not function calls — see [date.spec.md § Calendar properties](date.spec.md#calendar-properties)) | [date](date.spec.md) / [time](time.spec.md) / [datetime](datetime.spec.md) |
 | Duration | `ymDuration`, `dtDuration`, `ymDurationBetween`, `dtDurationBetween`, components, `abs`, `isNegative`, `round*` (overloaded) | [days_time_duration](days_time_duration.spec.md) / [years_months_duration](years_months_duration.spec.md) |
@@ -653,10 +695,11 @@ From lowest to highest binding:
 2. `and`
 3. comparison — `< <= > >= = !=`, `between`, `in`, `instance of`
 4. additive — `+`, `-`
-5. multiplicative — `*`, `/`
-6. exponent — `**`
-7. unary — `-`, `not(...)`
-8. postfix — path (`.`), filter/index (`[ ]`), invocation (`( )`)
+5. sequence — `:` (see [§ Sequences](#sequences-the--operator))
+6. multiplicative — `*`, `/`
+7. exponent — `**`
+8. unary — `-`, `not(...)`
+9. postfix — path (`.`), filter/index (`[ ]`), invocation (`( )`)
 
 Parentheses `( )` group sub-expressions explicitly.
 
@@ -665,6 +708,7 @@ Parentheses `( )` group sub-expressions explicitly.
 2 + 3 * 4             // → 14    (* binds tighter than +)
 (2 + 3) * 4           // → 20
 a or b and c          // → a or (b and c)
+1 + 2:5 * 2           // → [3, 4, 5, 6, 7, 8, 9, 10]   (: between additive and multiplicative)
 ```
 
 `[@test] ../../expr/precedence_test.go`
@@ -906,7 +950,11 @@ FEEL constructs absent from `expr`'s grammar are produced by an `expr` patcher (
 - the boolean connectives `and`/`or` and unary `-` (above);
 - **component access** — `x.year`, `d.minutes`, `r.start` resolve to accessor-function calls
   (`dateYear(x)`, …) because `Bl*` values are opaque structs, not reflectable maps; dictionary member
-  access (`d.key`) lowers to `getValue(d, "key")`.
+  access (`d.key`) lowers to `getValue(d, "key")`;
+- the **sequence operator** `start:end` lowers to `seq(start, end, 1)` (see
+  [§ Sequences](#sequences-the--operator)); the patcher also enforces the "no bare `:` in a
+  dictionary value position" rule by rejecting any `:` it finds inside a dict-literal value
+  expression that isn't parenthesised.
 
 Forbidding spaces in identifiers (see [§ Relationship to FEEL](#relationship-to-feel-and-future-direction))
 removes what would otherwise be the hardest rewrite — multi-word names colliding with `and`/`or` —

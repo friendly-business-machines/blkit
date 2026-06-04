@@ -157,6 +157,7 @@ DMN-inspired functions plus blkit extensions (**ext**). Positions are 1-based.
 | `sort(l, precedes)` | `sort([3,1,2], function(x,y) x < y)` | `[1, 2, 3]` |
 | `stringJoin(l[, sep[, prefix, suffix]])` | `stringJoin(["a","b"], ", ")` | `"a, b"` |
 | `zipStringJoin(lists[, delim[, prefix, suffix]])` **ext** | `zipStringJoin([["a","b","c"],["1","2","3"]], "-")` | `["a-1","b-2","c-3"]` |
+| `seq(start, end[, step])` **ext** | `seq(5, 10)` | `[5, 6, 7, 8, 9, 10]` (materialised numeric sequence) |
 
 ### Inserting a single list as one element
 
@@ -230,6 +231,48 @@ You can mix forms (e.g. single delim with per-list prefix/suffix, or vice versa)
 - `zipStringJoin([])` (no inner lists) → `[]`
 - `zipStringJoin([[]])` (one empty inner list) → `[]`
 - `zipStringJoin([list])` (one inner list, no concat happens) → `list` itself
+
+### Sequence constructor: `seq` and the `:` operator
+
+`seq(start, end[, step])` (**ext**) materialises a numeric sequence as a `BlList`. Both `start`
+and `end` are inclusive; `step` defaults to `1`. The shorthand `start:end` syntax (see
+[bl-expr.spec.md § Sequences](bl-expr.spec.md#sequences-the--operator)) is parser-lowered to
+`seq(start, end, 1)`, so the two forms are exactly equivalent for the default-step case.
+
+```
+// expression-language
+seq(5, 10)                          // → [5, 6, 7, 8, 9, 10]
+5:10                                // → [5, 6, 7, 8, 9, 10] (sugar for seq(5, 10, 1))
+seq(0, 10, 2)                       // → [0, 2, 4, 6, 8, 10]
+seq(1, 1)                           // → [1]                (single-element sequence)
+seq(10, 5)                          // → [10, 9, 8, 7, 6, 5] (auto-reversed when start > end with positive step)
+10:5                                // → [10, 9, 8, 7, 6, 5]
+seq(1.5, 3.5)                       // → [1.5, 2.5, 3.5]    (fractional start/end with default step 1)
+seq(0, 1, 0.25)                     // → [0, 0.25, 0.5, 0.75, 1]
+```
+
+**Auto-reverse.** When `start > end` and `step` is positive, `seq` auto-reverses internally —
+the result steps downward from `start` to `end` by `step`. Explicitly passing a negative `step`
+produces the same descending result for `start > end`. Reversing a sequence built this way
+yields the ascending form (`reverse(10:5)` → `[5, 6, 7, 8, 9, 10]`).
+
+**Step constraints.** `step` must be a non-zero `BlNumber`. A `step` of `0` → `BlTypeError` (no
+progress would be made and the sequence would be infinite). A `step` with the wrong sign for a
+non-reversed sequence (e.g. `seq(5, 10, -1)`) is treated as **auto-direction**: the function
+inspects the relative ordering of `start` and `end` and uses `abs(step)` in the appropriate
+direction. So `seq(5, 10, -1)` → `[5, 6, 7, 8, 9, 10]`, identical to `seq(5, 10, 1)`.
+
+**Fractional steps** are supported and preserved exactly (no float rounding) — `seq(0, 1, 0.1)`
+yields exactly 11 elements with no precision loss, matching blkit's arbitrary-precision
+`BlNumber` semantics. When `(end - start)` is not an exact multiple of `step`, the last element
+is the largest value not exceeding `end` (for ascending) / not less than `end` (for descending);
+`end` itself is included only when it falls exactly on the step grid (e.g. `seq(0, 0.95, 0.1)`
+→ `[0, 0.1, 0.2, …, 0.9]`, stopping before `0.95`).
+
+**Non-numeric arguments** → `BlTypeError`. The function is integer-friendly but not
+integer-only — any `BlNumber` is acceptable.
+
+`[@test] ../../expr/list_seq_test.go`
 
 ### Aggregation
 
@@ -396,6 +439,7 @@ func removeFn(args ...any) (any, error)         // (l, pos BlNumber) | (l, pred 
 func listReplaceFn(args ...any) (any, error)    // (l, pos BlNumber, item) | (l, pred BlFunc, item) — predicate form is ext
 func insertBeforeFn(args ...any) (any, error)   // (l, pos, item) inserts single; (l, pos, items BlList) spreads — 1-based; out-of-range → BlTypeError
 func insertAfterFn(args ...any) (any, error)    // ext; (l, pos, item) inserts single; (l, pos, items BlList) spreads — 1-based; pos = count(l) appends; out-of-range → BlTypeError
+func seqFn(args ...any) (any, error)            // ext; (start, end) | (start, end, step) — materialises BlList[BlNumber]; auto-direction; zero step → BlTypeError
 ```
 
 `BlFunc` is the engine's value type for an inline `function(...) …` comparator/predicate (see
@@ -486,6 +530,9 @@ func listOptions() []expr.Option {
             new(func(BlList) BlList),                                                              // no delim/prefix/suffix
             new(func(BlList, BlValue) BlList),                                                     // delim only (BlString or BlList)
             new(func(BlList, BlValue, BlValue, BlValue) BlList)),                                  // delim + prefix + suffix (each BlString or BlList)
+        expr.Function("seq",             seqFn,
+            new(func(BlNumber, BlNumber) BlList),                                                  // default step = 1
+            new(func(BlNumber, BlNumber, BlNumber) BlList)),                                       // ext; also the patcher's lowering target for `start:end`
     }
 }
 ```
@@ -503,3 +550,8 @@ Native Go slices wrap to `BlList` via the engine's input bridge.
 - `remove` at an out-of-range position → the list unchanged.
 - `sort` with a non-strict-weak-ordering comparator → undefined order.
 - numeric aggregates over an empty/non-numeric list → `null`.
+- `seq(start, end[, step])` with `step = 0` → `BlTypeError`. `step` of the wrong sign for the
+  start→end direction is treated as auto-direction (`abs(step)` applied in the correct
+  direction). Non-numeric `start` / `end` / `step` → `BlTypeError`. Fractional step preserves
+  exact decimal precision (no float rounding); when `(end - start)` is not an exact multiple
+  of `step`, `end` is excluded.
