@@ -54,8 +54,8 @@ collision when filtering over a list of lists — use the `for` form with a retu
 
 ### List projection (`.fieldName`)
 
-When you apply field access (`.fieldName`) to a **list of contexts**, the engine projects the
-field across every element and returns a list of the corresponding values:
+When you apply field access (`.fieldName`) to a **list of dictionaries**, the engine projects
+the field across every element and returns a list of the corresponding values:
 
 ```
 // expression-language
@@ -70,11 +70,11 @@ Behaviour by input shape:
 
 | Input | `.fieldName` returns |
 |---|---|
-| Single context with the field | the field's value (normal field access) |
-| Single context without the field | `null` |
-| List of contexts, every element has the field | list of values |
-| List of contexts, some elements missing the field | list with `null` for missing fields, e.g. `[{name:"A"},{age:30}].name` → `["A", null]` |
-| List containing non-context elements | `BlTypeError` (the projection is only defined for contexts) |
+| Single dictionary with the field | the field's value (normal field access) |
+| Single dictionary without the field | `null` |
+| List of dictionaries, every element has the field | list of values |
+| List of dictionaries, some elements missing the field | list with `null` for missing fields, e.g. `[{name:"A"},{age:30}].name` → `["A", null]` |
+| List containing non-dictionary elements | `BlTypeError` (the projection is only defined for dictionaries) |
 | Empty list | `[]` |
 
 Projection composes naturally with the aggregates and the rest of the list library. Assume
@@ -257,7 +257,7 @@ they require multiplication or squaring, which isn't defined for durations.
 
 **Comparable types.** `min(l)` and `max(l)` accept any list whose elements all share one of
 the orderable types: `number`, `string`, `date`, `time`, `datetime`,
-`duration` (days-time), or `duration` (years-months). `boolean`, `null`, `list`, `context`,
+`duration` (days-time), or `duration` (years-months). `boolean`, `null`, `list`, `dictionary`,
 `table`, `range`, and `calendar` are **not** comparable (they support only `=`/`!=`, not
 `<`/`<=`/`>`/`>=`).
 
@@ -362,7 +362,7 @@ The library functions are implemented as these typed/variadic Go functions, wrap
 // host-side (Go)
 // Typed implementations — wrapped by typed1/typed2/typed3 at registration.
 func countFn(l BlList) BlNumber
-func listIsEmptyFn(l BlList) BlBoolean                            // overloads string/context/range
+func listIsEmptyFn(l BlList) BlBoolean                            // overloads string/dictionary/range
 func listContainsFn(l BlList, e BlValue) BlBoolean
 func listIndexOfFn(l BlList, match BlValue) BlList                // list overload of indexOf (string overload in string.spec.md)
 func listReverseFn(l BlList) BlList                               // list overload of reverse
@@ -434,7 +434,7 @@ func listOptions() []expr.Option {
     return []expr.Option{
         // core list operations
         expr.Function("count",         typed1(countFn),         new(func(BlList) BlNumber)),
-        expr.Function("isEmpty",       typed1(listIsEmptyFn),   new(func(BlList) BlBoolean)),       // overloads string/context/range
+        expr.Function("isEmpty",       typed1(listIsEmptyFn),   new(func(BlList) BlBoolean)),       // overloads string/dictionary/range
         expr.Function("listContains",  typed2(listContainsFn),  new(func(BlList, BlValue) BlBoolean)),
         expr.Function("indexOf",       typed2(listIndexOfFn),   new(func(BlList, BlValue) BlList)), // list overload; string overload in string.spec.md
         expr.Function("sublist",       sublistFn,
