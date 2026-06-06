@@ -34,12 +34,12 @@ same source syntax (e.g. a `BlNumber` renders as `42`, a `BlString` as `"foo"`).
 ```go
 // host-side (Go)
 // Expr compiles a source string once, optionally type-checking it against a
-// declared environment. The returned BlExpr can be evaluated repeatedly.
-func (Bl) Expr(source string, env BlEnv) (BlExpr, error)
+// declared schema. The returned BlExpr can be evaluated repeatedly.
+func (Bl) Expr(source string, schema BlSchema) (BlExpr, error)
 
-// BlEnv declares the variable names and types an expression may reference, so
-// type errors surface at parse time. Pass nil to skip static checking.
-type BlEnv map[string]BlType
+// BlSchema declares the variable names and types an expression may reference, so
+// type errors surface at parse time. Pass nil to skip static checking. See
+// schema.spec.md for the full type definition.
 
 // BlExpr is a compiled source-text expression.
 type BlExpr interface {
@@ -56,8 +56,11 @@ accessors). There are no `Bl.Number(…)`-style expression factories.
 
 ```go
 // host-side (Go)
-var env = BlEnv{"age": BlTypeNumber, "income": BlTypeNumber}
-var eligible, _ = Bl.Expr("age >= 18 and income > 50000", env)
+var schema, _ = Schema(
+    BlField{Name: "age",    Type: BlTypeNumber},
+    BlField{Name: "income", Type: BlTypeNumber},
+)
+var eligible, _ = Bl.Expr("age >= 18 and income > 50000", schema)
 
 var result, _ = eligible.Evaluate(map[string]any{
     "age":    21,
@@ -153,8 +156,8 @@ loanAmount * 12       // identifier used in arithmetic
 ```
 
 Variables are supplied at evaluation time via the `input` map and, when an expression is compiled
-with a `BlEnv`, are type-checked at parse time. A reference to a name that is neither in scope nor
-declared is a parse error (see [§ Errors and null](#errors-and-null)).
+with a `BlSchema`, are type-checked at parse time. A reference to a name that is neither in scope
+nor declared is a parse error (see [§ Errors and null](#errors-and-null)).
 
 `[@test] ../../expr/variables_test.go`
 
@@ -182,7 +185,7 @@ Because `isDefined` distinguishes "unbound name" from "bound to anything (includ
 cannot be expressed as a normal `BlValue → BlValue` impl — by the time a normal impl runs, the
 argument has already been resolved and unbound names are a parse error. Instead, the engine's AST
 patcher (see [§ Patchers](#patchers-ast-rewriting)) intercepts `isDefined(name)` calls before
-resolution and rewrites them to a lookup against the input map plus declared `BlEnv` bindings.
+resolution and rewrites them to a lookup against the input map plus declared `BlSchema` bindings.
 The impl is registered in `engine.go` alongside the other engine-level options.
 
 `[@test] ../../expr/is_defined_test.go`
@@ -514,8 +517,8 @@ booleans are combined per the table's hit policy.
 `expr-lang/expr` pipeline `Bl.Expr` uses, with two extra steps in front: a **source
 normaliser** rewrites the unary-test forms into ordinary expressions referencing `?` (e.g.
 `< 10` → `? < 10`, `2, 3` → `? = 2 or ? = 3`, `-` → `true`, `[18..65]` → `? in [18..65]`,
-`contains(?, "urgent")` left as-is), and a **typed environment** of `BlEnv{"?": inputType}`
-is supplied to the parse / patch / type-check / compile chain. The result is functionally a
+`contains(?, "urgent")` left as-is), and a single-field `BlSchema` declaring `?` with type
+`inputType` is supplied to the parse / patch / type-check / compile chain. The result is functionally a
 `BlExpr` whose evaluation receives `?` from `Test(input)` rather than from a host
 `map[string]any`. The separate public entry point exists so the test grammar (the
 left-implicit and comma-disjunction forms above) doesn't have to be valid plain-expression
@@ -839,7 +842,7 @@ a or b and c          // → a or (b and c)
   [§ Boolean logic](#boolean-logic)).
 - **Missing dictionary key** → `null`, not an error.
 - **Division by zero** → `null`.
-- **Parse / type-check errors** — malformed syntax, an unknown variable (when a `BlEnv` is given),
+- **Parse / type-check errors** — malformed syntax, an unknown variable (when a `BlSchema` is given),
   or a static type mismatch — are returned by `Bl.Expr` as a `BlParseError`.
   `[@test] ../../expr/parse_error_test.go`
 - **Evaluation errors** — a type mismatch only detectable with concrete inputs (e.g. comparing
@@ -864,7 +867,7 @@ All code lives in the repo-root **`expr`** package (Go module path
 
 | File | Contents |
 |---|---|
-| `expr/engine.go` | The `Bl` entry namespace, `Bl.Expr`, `BlExpr`, `BlEnv`, `BlType`; the option-assembly, operator binding, patcher install, and the input/output bridge. |
+| `expr/engine.go` | The `Bl` entry namespace, `Bl.Expr`, `BlExpr`, `BlType`; the option-assembly, operator binding, patcher install, and the input/output bridge. `BlSchema` lives in `expr/schema.go`. |
 | `expr/value.go` | The `BlValue` interface, the `BlNull` singleton, and shared helpers (null propagation, equality, wrapping). |
 | `expr/errors.go` | `BlParseError`, `BlTypeError`, `BlRegexError`, `BlCalendarRangeError`. |
 | `expr/patch.go` | The `ast.Visitor` patcher(s) for FEEL-only syntax. |
@@ -875,8 +878,8 @@ All code lives in the repo-root **`expr`** package (Go module path
 
 - **Exported** (the public API): the value types (`BlNumber`, `BlString`, …); their host
   constructors (`Number`, `Date`, `Today`, …) and accessors (`ToNativeFloat`, `ToNativeString`,
-  `CompareTo`, …); the engine surface (`Bl`, `BlExpr`, `BlEnv`, `BlValue`, `BlType`); and the error
-  types.
+  `CompareTo`, …); the engine surface (`Bl`, `BlExpr`, `BlSchema`, `BlValue`, `BlType`); and the
+  error types.
 - **Unexported** (package-internal): built-in implementation funcs (suffix `Fn`, e.g. `dayNameFn`);
   operator implementation funcs (e.g. `addNumbers`, `ltDates`); each type's `…Options()` assembler;
   the patcher; and the bridge helpers (`wrap`/`unwrap`).
@@ -890,7 +893,7 @@ All code lives in the repo-root **`expr`** package (Go module path
 type blEngine struct{}
 var Bl blEngine
 
-func (blEngine) Expr(source string, env BlEnv) (BlExpr, error)
+func (blEngine) Expr(source string, schema BlSchema) (BlExpr, error)
 
 // BlExpr is a compiled expression (wraps a *vm.Program).
 type BlExpr interface {
@@ -898,7 +901,7 @@ type BlExpr interface {
     Source() string
 }
 
-type BlEnv map[string]BlType
+// BlSchema declares parse-time variable names and types. See schema.spec.md.
 
 // BlType identifies a language type for parse-time checking and `instance of`.
 type BlType int
@@ -915,13 +918,13 @@ const (
 
 **Pipeline.** `Bl.Expr` runs: **normalise** (source-level fixups `expr`'s lexer needs — see Operators)
 → **parse** (`expr`'s parser) → **patch** (`expr.Patch`, rewrite FEEL-only syntax) → **type-check**
-(against the `BlEnv`) → **compile** to a `*vm.Program`. `Evaluate` wraps the input map into `Bl*`
+(against the `BlSchema`) → **compile** to a `*vm.Program`. `Evaluate` wraps the input map into `Bl*`
 values, runs the program on the sandboxed VM, and unwraps the result.
 
 ```go
 // host-side (Go)
-func (blEngine) Expr(source string, env BlEnv) (BlExpr, error) {
-    program, err := expr.Compile(normalise(source), buildOptions(env)...)
+func (blEngine) Expr(source string, schema BlSchema) (BlExpr, error) {
+    program, err := expr.Compile(normalise(source), buildOptions(schema)...)
     if err != nil {
         return nil, &BlParseError{Source: source, Err: err}
     }
@@ -930,8 +933,8 @@ func (blEngine) Expr(source string, env BlEnv) (BlExpr, error) {
 
 // buildOptions assembles every spoke's registrations, the operator bindings,
 // the patcher, and the typed environment.
-func buildOptions(env BlEnv) []expr.Option {
-    opts := []expr.Option{expr.Env(envType(env))}
+func buildOptions(schema BlSchema) []expr.Option {
+    opts := []expr.Option{expr.Env(envType(schema))}
     for _, reg := range typeRegistrations { // numberOptions, stringOptions, dateOptions, …
         opts = append(opts, reg()...)
     }
@@ -1077,8 +1080,10 @@ and lets identifiers ride directly on `expr`'s lexer.
 
 ### Environment & errors
 
-`BlEnv` is translated to an `expr.Env` (a `map[string]any` of zero-value `Bl*` exemplars per type) so
-references are type-checked at parse time. Errors:
+`BlSchema` is translated to an `expr.Env` (a `map[string]any` of zero-value `Bl*` exemplars per
+field) so references are type-checked at parse time. Nested `Fields` are walked recursively so
+that member-access expressions (`applicant.address.postalCode`) type-check against the declared
+shape. Errors:
 
 ```go
 // host-side (Go)

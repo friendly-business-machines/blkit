@@ -65,8 +65,8 @@ var applicant, _ = Dictionary(map[string]BlValue{
 })
 
 // Hand it to the engine as an input variable.
-var eligible, _ = Bl.Expr(`applicant.age >= 18 and applicant.income > 50000`,
-    BlEnv{"applicant": BlTypeDictionary})
+var schema, _ = Schema(BlField{Name: "applicant", Type: BlTypeDictionary})
+var eligible, _ = Bl.Expr(`applicant.age >= 18 and applicant.income > 50000`, schema)
 var result, _ = eligible.Evaluate(map[string]any{"applicant": applicant})
 // result is BlBoolean(true)
 ```
