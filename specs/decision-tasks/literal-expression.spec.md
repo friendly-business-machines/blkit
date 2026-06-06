@@ -114,7 +114,7 @@ The outputs struct's single field declares the expected output type. The body's 
 
 ## Markdown Rendering
 
-`ToMarkdown()` returns a markdown string showing the node name, the referenced input variables, and the body rendered via `BlExpr.ToMarkdown()`.
+`ToMarkdown()` returns a markdown string showing the node name, the referenced input variables, and the body rendered via `BlExpr.String()`.
 
 ```go
 fmt.Println(monthlyPayment.ToMarkdown())

@@ -37,9 +37,6 @@ same source syntax (e.g. a `BlNumber` renders as `42`, a `BlString` as `"foo"`).
 // declared environment. The returned BlExpr can be evaluated repeatedly.
 func (Bl) Expr(source string, env BlEnv) (BlExpr, error)
 
-// Eval parses and evaluates in one call. Prefer Expr when reusing an expression.
-func (Bl) Eval(source string, input map[string]any) (BlValue, error)
-
 // BlEnv declares the variable names and types an expression may reference, so
 // type errors surface at parse time. Pass nil to skip static checking.
 type BlEnv map[string]BlType
@@ -48,7 +45,6 @@ type BlEnv map[string]BlType
 type BlExpr interface {
     Evaluate(input map[string]any) (BlValue, error)
     Source() string
-    ToMarkdown() string
 }
 ```
 
@@ -429,6 +425,102 @@ contains(?, "urgent") // the input string contains "urgent"
 -                     // matches anything
 ```
 
+### The `?` placeholder
+
+Inside a unary test, `?` is the **implicit input** — the value the test is being evaluated
+against. Simple tests like `< 10` or `"valid"` use the input implicitly (the engine inserts
+the comparison or equality), but when the test body needs to call a built-in on the input,
+`?` is the addressable name:
+
+```
+// expression-language
+contains(?, "urgent")               // input.contains("urgent")
+endsWith(?, "@blkit.io")            // input.endsWith("@blkit.io")
+?.year >= 2025                      // input is a date; check its year
+isPublicHoliday(?, ukHolidays)      // input is a date; check against a calendar
+```
+
+For implicit-input forms (`< 10`, `"valid"`, `[18..65]`, etc.), writing `?` explicitly is
+redundant — `< 10` and `? < 10` are equivalent. Use `?` when the input needs to be passed as
+a function argument or accessed via a path / component.
+
+### Host-side usage
+
+Host Go code compiles a unary test once and evaluates it against many inputs — typical
+pattern when a decision-table row's cells are checked against repeated input data. The host
+API mirrors `Bl.Expr` but adds an `inputType` parameter so the engine can
+type-check the test body at parse time (e.g. `< 10` is only valid when the input is a
+`BlNumber`).
+
+```go
+// host-side (Go)
+
+// Bl.UnaryTest compiles a unary-test source string. inputType is the type the
+// implicit ? will hold at evaluation time; the engine uses it to type-check the
+// test body. Pass BlTypeAny for inputs whose type isn't known statically (e.g.
+// when the test must accept the wildcard "-" against any value).
+func (Bl) UnaryTest(source string, inputType BlType) (BlUnaryTest, error)
+
+// BlUnaryTest is a compiled unary-test expression, evaluated repeatedly against
+// different inputs.
+type BlUnaryTest interface {
+    Test(input BlValue) (BlBoolean, error)   // → true / false / null
+    Source() string                          // the original source string
+}
+```
+
+Worked example:
+
+```go
+// host-side (Go) — compile-once, test-many.
+var atLeast18, _ = Bl.UnaryTest(">= 18", BlTypeNumber)
+var isUrgent,  _ = Bl.UnaryTest(`contains(?, "urgent")`, BlTypeString)
+var inRange,   _ = Bl.UnaryTest("[18..65]", BlTypeNumber)
+var wildcard,  _ = Bl.UnaryTest("-", BlTypeAny)
+
+// Test against typed inputs. The result is a BlBoolean (true / false) on success,
+// or BlNull if the comparison would propagate null (e.g. numeric ordering against
+// a missing operand — see null.spec.md § Propagation).
+var n21, _    = Number(21)
+var ok,  _    = atLeast18.Test(n21)                              // → BlBoolean(true)
+var noteIn    = String("urgent notice")
+var ok2, _    = isUrgent.Test(noteIn)                            // → BlBoolean(true)
+var n70, _    = Number(70)
+var ok3, _    = inRange.Test(n70)                                // → BlBoolean(false)
+var ok4, _    = wildcard.Test(n70)                               // → BlBoolean(true) — wildcard matches anything
+var ok5, _    = wildcard.Test(Null())                            // → BlBoolean(true) — even Null
+```
+
+The fallible cases:
+
+- **Parse-time errors** — `Bl.UnaryTest` returns `(nil, BlParseError)` if the source string
+  isn't a valid unary test. Common causes: unknown identifier, malformed range, type mismatch
+  between the test body and the declared `inputType` (e.g. `>= 18` with `BlTypeString`).
+- **Evaluation-time errors** — `Test(input)` returns `(zero-value, BlTypeError)` if the
+  supplied `input`'s type doesn't match the compiled `inputType`. This shouldn't happen with
+  correct host code, but the runtime check catches mismatches (e.g. an input wrongly bridged
+  from a `map[string]any` value).
+- **`BlNull` results** — a test against a null input returns `BlNull`, not an error.
+  Wildcards (`-`) explicitly return `true` for null; all other tests propagate null per the
+  standard rules (see [null.spec.md](null.spec.md)).
+
+The decision-table runtime ([decision-table.spec.md](../decision-tasks/decision-table.spec.md))
+uses this API internally: at table-construction time, each cell's unary-test source is
+compiled once via `Bl.UnaryTest` and the resulting `BlUnaryTest` is cached on the cell. At
+evaluation time, the column-input value is fed through `Test(input)`, and the per-cell
+booleans are combined per the table's hit policy.
+
+**Relationship to `Bl.Expr`.** `Bl.UnaryTest` is internally implemented on top of the same
+`expr-lang/expr` pipeline `Bl.Expr` uses, with two extra steps in front: a **source
+normaliser** rewrites the unary-test forms into ordinary expressions referencing `?` (e.g.
+`< 10` → `? < 10`, `2, 3` → `? = 2 or ? = 3`, `-` → `true`, `[18..65]` → `? in [18..65]`,
+`contains(?, "urgent")` left as-is), and a **typed environment** of `BlEnv{"?": inputType}`
+is supplied to the parse / patch / type-check / compile chain. The result is functionally a
+`BlExpr` whose evaluation receives `?` from `Test(input)` rather than from a host
+`map[string]any`. The separate public entry point exists so the test grammar (the
+left-implicit and comma-disjunction forms above) doesn't have to be valid plain-expression
+syntax — those forms only parse in unary-test mode.
+
 `[@test] ../../expr/unary_tests_test.go`
 
 ---
@@ -772,7 +864,7 @@ All code lives in the repo-root **`expr`** package (Go module path
 
 | File | Contents |
 |---|---|
-| `expr/engine.go` | The `Bl` entry namespace, `Bl.Expr`/`Bl.Eval`, `BlExpr`, `BlEnv`, `BlType`; the option-assembly, operator binding, patcher install, and the input/output bridge. |
+| `expr/engine.go` | The `Bl` entry namespace, `Bl.Expr`, `BlExpr`, `BlEnv`, `BlType`; the option-assembly, operator binding, patcher install, and the input/output bridge. |
 | `expr/value.go` | The `BlValue` interface, the `BlNull` singleton, and shared helpers (null propagation, equality, wrapping). |
 | `expr/errors.go` | `BlParseError`, `BlTypeError`, `BlRegexError`, `BlCalendarRangeError`. |
 | `expr/patch.go` | The `ast.Visitor` patcher(s) for FEEL-only syntax. |
@@ -794,18 +886,16 @@ All code lives in the repo-root **`expr`** package (Go module path
 ```go
 // host-side (Go)
 // Bl is the package entry namespace (a zero-size value), so callers write
-// expr.Bl.Expr(...) / expr.Bl.Eval(...).
+// expr.Bl.Expr(...).
 type blEngine struct{}
 var Bl blEngine
 
 func (blEngine) Expr(source string, env BlEnv) (BlExpr, error)
-func (blEngine) Eval(source string, input map[string]any) (BlValue, error)
 
 // BlExpr is a compiled expression (wraps a *vm.Program).
 type BlExpr interface {
     Evaluate(input map[string]any) (BlValue, error)
     Source() string
-    ToMarkdown() string
 }
 
 type BlEnv map[string]BlType
@@ -858,15 +948,15 @@ Every `Bl*` value type implements `BlValue`, so they pass through the VM as `any
 ```go
 // host-side (Go)
 type BlValue interface {
-    Type() BlType           // the language type tag
+    Type() BlType                // the language type tag
     Equal(other BlValue) BlValue // three-valued: BlBoolean or BlNull (see null.spec.md)
-    ToMarkdown() string     // literal-notation rendering
-    isBlValue()             // sealing method — only this package's types implement BlValue
+    String() string              // canonical literal-form rendering
+    isBlValue()                  // sealing method — only this package's types implement BlValue
 }
 
-// The null singleton (see null.spec.md).
+// The null value (see null.spec.md).
 type BlNull struct{}
-var Null = BlNull{}
+func Null() BlNull
 ```
 
 Type-specific host accessors (`ToNativeFloat`, `Hour`, `ToArray`, …) are declared on the concrete
@@ -879,7 +969,7 @@ types in their spokes, not on the interface.
 ```go
 // host-side (Go)
 func wrap(v any) (BlValue, error)   // native Go → Bl*
-func unwrap(v BlValue) any          // Bl* → native (used by ToMarkdown / host code)
+func unwrap(v BlValue) any          // Bl* → native (used by host code)
 ```
 
 | Native Go input | Wrapped as |
@@ -1068,8 +1158,8 @@ behaviour, and the rationale.
 
 - An empty source string is a `BlParseError`.
 - An expression that evaluates to `null` is a valid result.
-- `Bl.Eval` needs no input for expressions that reference no variables (`1 + 1`,
-  `date("2025-01-01")`).
+- A compiled `BlExpr` needs no input for expressions that reference no variables (`1 + 1`,
+  `date("2025-01-01")`) — pass `nil` to `Evaluate`.
 - A list index out of range returns `null`; a missing dictionary key returns `null`.
 
 `[@test] ../../expr/edge_cases_test.go`

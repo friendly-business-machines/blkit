@@ -184,7 +184,7 @@ wrapped-`Bl*` forms:
   fractional.
 
 Native Go `time.Duration` inputs also wrap to `BlDaysTimeDuration` automatically via the
-engine input bridge when supplied as an input variable to `Bl.Eval`.
+engine input bridge when supplied as an input variable to `BlExpr.Evaluate`.
 
 ```go
 // host-side (Go)

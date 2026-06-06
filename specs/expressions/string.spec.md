@@ -239,7 +239,9 @@ build the `BlRegex` host-side via the Go constructor and supply it as an input v
 var emailRe, _ = Pattern(`[\w.+-]+@[\w-]+\.[\w.-]+`)
 
 // Then hand emailRe to the engine as an input variable; expressions reference it by name.
-var result, _ = Bl.Eval(`matches(addr, emailRe)`,
+var matchEmail, _ = Bl.Expr(`matches(addr, emailRe)`,
+    BlEnv{"addr": BlTypeString, "emailRe": BlTypePattern})
+var result, _ = matchEmail.Evaluate(
     map[string]any{"addr": "alice@example.com", "emailRe": emailRe})
 ```
 

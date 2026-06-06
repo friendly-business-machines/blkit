@@ -69,8 +69,9 @@ var applicant, _ = Dictionary(map[string]BlValue{
 ```
 
 The same `BlNull` value can also reach the engine **via the input bridge** when the host
-passes a raw `map[string]any` straight to `Bl.Eval` — no explicit `Null()` call is needed at
-that layer because the bridge resolves several "absence" shapes to `BlNull` automatically:
+passes a raw `map[string]any` straight to `BlExpr.Evaluate` — no explicit `Null()` call is
+needed at that layer because the bridge resolves several "absence" shapes to `BlNull`
+automatically:
 
 - A Go `nil` value in the input map → `BlNull`.
 - A key absent from the input map → `BlNull` on access.

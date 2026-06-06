@@ -61,7 +61,9 @@ var ukHolidays, _ = Calendar(
     WithValidity(blRange(blDate("2025-01-01"), blDate("2025-12-31"))))
 
 // Hand it to the engine as an input variable.
-var result, _ = Bl.Eval(`isPublicHoliday(applicantDate, ukHolidays)`,
+var checkHoliday, _ = Bl.Expr(`isPublicHoliday(applicantDate, ukHolidays)`,
+    BlEnv{"applicantDate": BlTypeString, "ukHolidays": BlTypeCalendar})
+var result, _ = checkHoliday.Evaluate(
     map[string]any{"applicantDate": "2025-12-25", "ukHolidays": ukHolidays})
 ```
 
