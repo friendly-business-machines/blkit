@@ -633,10 +633,35 @@ function(x, y) x + y
 sort([3, 1, 2], function(a, b) a < b)      // → [1, 2, 3]
 ```
 
-> **Scope note.** User-defined inline functions are a candidate for **deferral** in v1 (sandboxing
-> and typing implications). If excluded initially, `sort` and similar higher-order builtins accept a
-> restricted comparator form. This is the one open scoping decision; see
-> [§ Relationship to FEEL](#relationship-to-feel-and-future-direction).
+Inline functions are a v1 feature; the engine's `BlFunc` value type is consumed by every
+higher-order built-in in the library (`sort`, the predicate forms of `remove` /
+`listReplace`, etc.). To keep the semantics simple and the engine surface auditable, blkit
+restricts the form to a minimal subset of what FEEL allows:
+
+- **Anonymous only.** The syntactic form is always `function(params) body`. There is no
+  named-function-definition form (no `let f = function(...) ...`, no top-level `fun`
+  declarations) — FEEL itself doesn't have one. Functions exist purely as anonymous values
+  inside expressions.
+- **First-class as values, but not addressable by name.** A function value can be passed as
+  an argument to a higher-order built-in, stored as a dictionary value, or returned from an
+  `if`/`for`/`some` expression. It cannot be looked up by name from outside the expression
+  (host code that wants a callable should register an `expr.Function` instead — see [§
+  Registering built-in functions](#registering-built-in-functions)).
+- **No recursion.** The body cannot reference the function itself — there's no name to refer
+  to, since the function is anonymous, and the engine does not insert an implicit
+  self-reference. For recursive-style computation, use the bounded `for i in 1..n return …`
+  form ([§ Loops: for … return](#loops-for--return)), which accumulates results
+  iteratively and inherits the engine's step limit.
+- **Pure, bounded execution.** The body sees only its parameters and the surrounding lexical
+  scope; it has no I/O, no access to host state, no mutable references. The function shares
+  the engine VM's existing step / stack / recursion limits (see [§ Environment &
+  errors](#environment--errors)), so a runaway body terminates with a `BlEvalError` rather
+  than hanging.
+
+These constraints fall out naturally from `expr-lang/expr`'s sandboxed VM model — the engine
+already disallows I/O, host calls, and arbitrary recursion at the VM layer. The restrictions
+above are stated for clarity at the language-spec level so callers understand the surface
+they're getting, not to add engine work.
 
 `[@test] ../../expr/functions_test.go`
 
@@ -1025,8 +1050,6 @@ behaviour, and the rationale.
 
 **Open decisions:**
 
-- Whether user-defined inline functions (see [§ Function invocation](#function-invocation)) are part
-  of the baseline or deferred.
 - Which vendor extensions (the non-standard built-ins flagged in the spokes, e.g. `dateAdd`,
   `intersection`) are in scope.
 
