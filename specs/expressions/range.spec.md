@@ -49,6 +49,38 @@ Ranges work over any comparable type — numbers, strings (code-point order), an
 
 ---
 
+## Construction (host-side)
+
+Host Go code constructs a `BlRange` via the `Range(start, end BlValue, startIncluded,
+endIncluded bool) (BlRange, error)` constructor. The endpoints may be any comparable
+`BlValue` (numbers, strings, temporal values) or `Null()` for unbounded sides. A closed
+boundary paired with an unbounded endpoint, or cross-type endpoints, returns an error.
+
+```go
+// host-side (Go)
+// Closed-closed numeric range.
+var adultAges, _ = Range(Number(18), Number(120), true, true)
+
+// Half-open (closed-open) — typical "from X up to but not including Y".
+var quarter, _ = Range(Number(0), Number(0.25), true, false)
+
+// Unbounded upper end — use Null() for the open side and false for inclusion.
+var workingAge, _ = Range(Number(18), Null(), true, false)
+
+// Date range — endpoints must be the same type.
+var d1, _   = Date("2025-01-01")
+var d2, _   = Date("2025-12-31")
+var yr2025, _ = Range(d1, d2, true, true)
+```
+
+`Range(...)` returns `(BlRange, error)`. Error cases: cross-type endpoints (e.g. `Number`
+start with `Date` end), a closed boundary on an unbounded endpoint (e.g. `Range(Number(5),
+Null(), true, true)`), and non-comparable endpoint types. See [§ Edge cases](#edge-cases) for
+the full list and [§ Empty-range semantics](#empty-range-semantics) for what happens when
+`start > end` is technically valid construction but produces an empty range.
+
+---
+
 ## Operators
 
 | Operator | Meaning | Example | Result |

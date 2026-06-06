@@ -36,6 +36,8 @@ dtDuration("PT0S")                 // zero
 dtDuration("P1.5D")                // → dtDuration("P1DT12H") (fractional day reduces to whole hours)
 dtDuration("PT1.5H")               // → dtDuration("PT1H30M")
 dtDuration("PT0.5H30S")            // → dtDuration("PT30M30S") (fractions accepted on any designator)
+dtDuration("p1dt2h30m")            // → dtDuration("P1DT2H30M") (designators are case-insensitive on input)
+dtDuration("P1DT2h30m")            // → dtDuration("P1DT2H30M")
 dtDuration("P1Y")                  // → BlParseError (year/month designators not allowed here)
 ```
 
@@ -43,6 +45,12 @@ blkit accepts a decimal fraction on any of the `D`/`H`/`M`/`S` designators — t
 relaxation of ISO 8601, which permits a fraction only on the smallest unit used. Fractional
 components combine as `days*86400 + hours*3600 + minutes*60 + seconds` into the internal total,
 stored exactly using arbitrary-precision decimal (no float rounding).
+
+The designator letters `P` / `T` / `D` / `H` / `M` / `S` are **case-insensitive on input**
+(`P1DT2H30M`, `p1dt2h30m`, `P1DT2h30M`, etc. all parse identically) — also a deliberate
+relaxation of ISO 8601, matching the case-insensitive parsing rule used for the `true` /
+`false` and `null` literals, and the parallel ymDuration rule. Canonical output (`String()`)
+always emits uppercase designators.
 
 `dtDuration` is paired with `ymDuration`
 ([years_months_duration.spec.md](years_months_duration.spec.md)) for the sibling years-months
@@ -131,6 +139,107 @@ via `datetime(d)` or `date(dt)` first. See
 for the registered overloads.
 
 `[@test] ../../expr/days_time_duration_test.go`
+
+---
+
+## Construction (host-side)
+
+Host Go code constructs a `BlDaysTimeDuration` via the generic
+`DTDuration[T DTDurationInput](v T) (BlDaysTimeDuration, error)` constructor.
+`DTDurationInput` accepts the natural Go shapes for a days-time value, plus the
+wrapped-`Bl*` forms:
+
+- **`string`** / **`BlString`** — two parse paths, dispatched on the first non-sign character
+  (case-insensitive): if the string starts with `P` / `-P` / `+P` (or `p` / `-p` / `+p`),
+  it's parsed as an **ISO 8601 duration** with D/T designators only (`"P1DT2H"`, `"PT1.5S"`,
+  `"-PT90S"`, `"p1dt2h"`, …) — Y/M designators are rejected, since those belong to
+  `BlYearsMonthsDuration` (see
+  [years_months_duration.spec.md](years_months_duration.spec.md)). All designator letters
+  (`P` / `T` / `D` / `H` / `M` / `S`) are case-insensitive on input; canonical output is
+  uppercase. Any other string is parsed as a **decimal number of total seconds** (`"1.5"`,
+  `"-60"`, `"0.000000001"`, …), exactly as if the caller had wrapped it in
+  `decimal.NewFromString(...)` themselves. An unparseable string errors.
+- **Integer types** (`int`, `int8`–`int64`, `uint`, `uint8`–`uint64`) — interpreted as the
+  total seconds. `DTDuration(60)` is one minute; `DTDuration(86400)` is one day.
+- **`float32`** / **`float64`** — total seconds; `NaN` / `Inf` errors. Convenient for
+  callers already holding a `float64` (e.g. `goDur.Seconds()`) but subject to float-precision
+  limits; prefer `decimal.Decimal` when precision matters.
+- **`decimal.Decimal`** / **`BlNumber`** — exact decimal total seconds, the preferred form
+  when fractional precision matters (matches the internal storage and preserves
+  sub-nanosecond seconds without float rounding). `BlNumber` is just the engine's wrapped
+  form of `decimal.Decimal`.
+- **`time.Duration`** — a Go `time.Duration` (nanosecond-precision integer); converted to
+  exact seconds.
+- **`DHMS(days, hours, minutes, seconds)`** — generic constructor function for explicit
+  components when the caller doesn't want to compute
+  `days*86400 + hours*3600 + minutes*60 + seconds` themselves. Each argument is independently
+  constrained by `DHMSNumberInput`, which accepts any Go integer type, `float32` / `float64`
+  (`NaN` / `Inf` errors), `decimal.Decimal`, a numeric string (parsed via
+  `decimal.NewFromString`), `BlNumber`, or `BlString` (treated as the numeric-string
+  path). Different types across the four arguments are fine. Type-checking happens at
+  compile time via the constraint; there is **no struct-literal form** because Go's type
+  system can't express "this field is one of these unrelated types" without `any`, and `any`
+  would defeat the compile-time check. Components are not range-restricted (`DHMS(0, 25, 0, 0)`
+  is fine; the constructor normalises into the canonical split), and any argument may be
+  fractional.
+
+Native Go `time.Duration` inputs also wrap to `BlDaysTimeDuration` automatically via the
+engine input bridge when supplied as an input variable to `Bl.Eval`.
+
+```go
+// host-side (Go)
+// ISO 8601 string — convenient when the value comes from config or persistence.
+var meeting,  _ = DTDuration("PT1H30M")
+var weekend,  _ = DTDuration("P2D")
+var lowered,  _ = DTDuration("p1dt2h")            // designators are case-insensitive on input
+var bad,    err = DTDuration("P1Y6M")             // err != nil — Y/M designators not allowed
+
+// Integer total seconds.
+var oneMin,   _ = DTDuration(60)
+var oneDay,   _ = DTDuration(86400)
+
+// Float64 total seconds — convenient but subject to float precision.
+var floatS,   _ = DTDuration(1.5)                  // 1.5 seconds
+
+// String of a decimal number — parsed as total seconds. Equivalent to wrapping in
+// decimal.NewFromString yourself but reads cleaner.
+var fromStr,  _ = DTDuration("1.5")
+
+// Exact fractional total via decimal.Decimal — useful when the value already exists as a
+// decimal.
+var dec1,     _ = decimal.NewFromString("1.5")
+var precise,  _ = DTDuration(dec1)
+var dec2,     _ = decimal.NewFromString("0.000000001")
+var nano,     _ = DTDuration(dec2)
+
+// From a Go time.Duration.
+var goDur       = 2*time.Hour + 30*time.Minute
+var fromGoDur, _ = DTDuration(goDur)
+
+// From an engine value — BlNumber and BlString accepted directly.
+var dec3,     _ = decimal.NewFromString("60")
+var n,        _ = Number(dec3)
+var fromBlN,  _ = DTDuration(n)                                            // 60 seconds = 1 minute
+var s,        _ = String("PT1H30M")
+var fromBlS,  _ = DTDuration(s)                                            // parsed via the ISO 8601 path
+
+// Explicit components — the generic DHMS(...) constructor type-checks each argument at compile
+// time. Mixed types across the four arguments are fine; each is independently constrained.
+var split,    _ = DTDuration(DHMS(1, 2, 30, 0))                              // 1d 2h 30m
+var dec4,     _ = decimal.NewFromString("1.5")
+var partial,  _ = DTDuration(DHMS(0, 0, 0, dec4))                            // 1.5s exact
+var fromStrs, _ = DTDuration(DHMS("1", "2", "30", "0"))                      // integer-valued numeric strings
+var fromDecStrs, _ = DTDuration(DHMS("1.5", "2.5", "30.25", "0.001"))        // decimal-valued numeric strings (each parsed via decimal.NewFromString)
+var mixed,    _ = DTDuration(DHMS(1, 2, "30", 0))                            // mixed types
+var fromBls,  _ = DTDuration(DHMS(n, n, n, n))                               // BlNumber for each
+```
+
+`DTDuration(...)` returns `(BlDaysTimeDuration, error)`. The error path fires for an
+unparseable or wrong-kind ISO 8601 `string` / `BlString`, and for a `float32` / `float64`
+holding `NaN` / `Inf`. Integer / `decimal.Decimal` / `BlNumber` / `time.Duration` / `DHMS(...)`
+inputs are infallible. For details on the underlying `decimal.Decimal` total-seconds storage
+and the `Native()` / `Days()` / `Hours()` / `Minutes()` / `Seconds()` / `TotalSeconds()`
+accessors, see [§ Value type & host API](#value-type--host-api-exported).
 
 ---
 
@@ -299,15 +408,18 @@ The exported surface has three parts:
   doubles as the `fmt.Stringer` implementation, producing the canonical ISO 8601 form: integer
   split `"P1DT2H30M"` when the total has no sub-second fraction, fractional smallest-unit form
   (`"PT1.5S"`, `"PT30.5M"`) otherwise, `"-PT90S"` for negatives, and `"PT0S"` for zero.
-- **`DaysTime(days, hours, minutes, seconds int)` /
-  `DaysTimeFromTotalSeconds(totalSeconds decimal.Decimal)`** — the host constructors. `DaysTime`
-  is the integer-component convenience form; inputs are not range-restricted, and the
-  constructor normalises by summing into the internal total.
-  `DaysTimeFromTotalSeconds` accepts an exact decimal total, including fractional values — host
-  code that needs `PT1.5S` constructs it as
-  `DaysTimeFromTotalSeconds(decimal.NewFromFloat(1.5))` or equivalent. The older `float64`-only
-  `DaysTimeFromSeconds(totalSeconds float64) BlDaysTimeDuration` form remains for ergonomics,
-  but `DaysTimeFromTotalSeconds` should be preferred when precision matters.
+- **`DTDuration[T DTDurationInput](v T) (BlDaysTimeDuration, error)`** — the generic host
+  constructor. The `DTDurationInput` constraint accepts a `string` / `BlString`
+  (dispatched on the first non-sign character: leading `P` → ISO 8601 with D/T designators
+  only; otherwise → decimal number of total seconds), every Go integer type (total seconds),
+  `float32` / `float64` (total seconds; `NaN` / `Inf` error), `decimal.Decimal` / `BlNumber`
+  (exact total seconds, possibly fractional — preferred when precision matters),
+  `time.Duration`, and `DHMS(days, hours, minutes, seconds)` (a generic constructor function
+  returning explicit components; each argument is independently constrained by
+  `DHMSNumberInput` and type-checked at compile time). See [§ Construction
+  (host-side)](#construction-host-side) for the worked example. The `error` return fires
+  only for an unparseable / wrong-kind ISO 8601 `string` / `BlString` or a `NaN` / `Inf`
+  float; the other input shapes are infallible.
 - **`Days()` / `Hours()` / `Minutes()` / `Seconds()` / `TotalSeconds()` accessors** — hand the
   normalised components and the signed total back to host code. `Days()` returns the integer
   days portion (truncated toward zero) with sign; `Hours()` returns the hours remainder
@@ -330,10 +442,51 @@ func (d BlDaysTimeDuration) Equal(other BlValue) BlValue   // exact decimal comp
 func (d BlDaysTimeDuration) String() string                // "P1DT2H30M" / "PT1.5S" / "-PT90S" / "PT0S"
 func (BlDaysTimeDuration) isBlValue() {}
 
-// Host constructors.
-func DaysTime(days, hours, minutes, seconds int) BlDaysTimeDuration                  // integer convenience
-func DaysTimeFromSeconds(totalSeconds float64) BlDaysTimeDuration                    // float64 convenience
-func DaysTimeFromTotalSeconds(totalSeconds decimal.Decimal) BlDaysTimeDuration       // fractional total (preferred for precision)
+// Host constructor — accepts:
+//   - string / BlString:    "P..." parses as ISO 8601 (D/T only; designators case-insensitive
+//                            on input — "p1dt2h" works too); anything else parses as a
+//                            decimal-number total-seconds string ("1.5", "-60", …).
+//   - any Go integer:        total seconds.
+//   - float32 / float64:     total seconds; NaN / Inf error.
+//   - decimal.Decimal:       exact total seconds (preferred for fractional precision).
+//   - BlNumber:               engine-wrapped decimal; treated identically to decimal.Decimal.
+//   - time.Duration:         a Go time.Duration; converted to exact seconds.
+//   - dhmsComponents (built via DHMS(d, h, m, s)):
+//                             explicit (days, hours, minutes, seconds); each argument is
+//                             independently type-checked against DHMSNumberInput at compile
+//                             time. Arguments may carry different types.
+
+// DHMSNumberInput is the per-argument constraint for the DHMS components constructor: any Go
+// numeric type, a numeric string, decimal.Decimal, BlNumber, or BlString.
+type DHMSNumberInput interface {
+    int | int8 | int16 | int32 | int64 |
+    uint | uint8 | uint16 | uint32 | uint64 |
+    float32 | float64 |
+    decimal.Decimal |
+    string |
+    BlNumber |
+    BlString
+}
+
+// dhmsComponents is the opaque value produced by DHMS(...). It can only be constructed via the
+// typed DHMS function, which guarantees the field values come from the accepted set.
+type dhmsComponents struct {
+    days, hours, minutes, seconds any   // typed at construction via DHMSNumberInput
+}
+
+// Generic typed constructor — type parameters inferred from the argument types.
+func DHMS[D, H, M, S DHMSNumberInput](days D, hours H, minutes M, seconds S) dhmsComponents
+
+type DTDurationInput interface {
+    string | BlString |
+    int | int8 | int16 | int32 | int64 |
+    uint | uint8 | uint16 | uint32 | uint64 |
+    float32 | float64 |
+    decimal.Decimal | BlNumber |
+    time.Duration |
+    dhmsComponents
+}
+func DTDuration[T DTDurationInput](v T) (BlDaysTimeDuration, error)
 
 // Host accessors (consume an evaluated result).
 func (d BlDaysTimeDuration) Days() int                       // integer days; truncated toward zero; sign carries

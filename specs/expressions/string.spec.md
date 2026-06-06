@@ -71,6 +71,40 @@ stringLength("🎉a")            // → 2
 
 ---
 
+## Construction (host-side)
+
+Host Go code constructs a `BlString` via the generic `String[T StringInput](v T) (BlString,
+error)` constructor. The `StringInput` constraint accepts `string` or `[]byte`. A `string`
+input is infallible (a Go `string` has no encoding contract to violate, so it can't fail). A
+`[]byte` is interpreted as UTF-8 and validated; the `error` return fires when the bytes
+contain invalid UTF-8 (random binary data, Latin-1 text, a truncated multi-byte sequence,
+etc.).
+
+```go
+// host-side (Go)
+// From a Go string — infallible.
+var greeting, _ = String("hello")
+
+// From a valid-UTF-8 []byte.
+var bytes      = []byte{0x68, 0x65, 0x6C, 0x6C, 0x6F}     // "hello"
+var greet2, _  = String(bytes)
+
+// From invalid bytes — error.
+var bad        = []byte{0x68, 0xFF, 0xFE}                 // 0xFF / 0xFE aren't valid UTF-8 leading bytes
+var _, err     = String(bad)                              // err != nil — invalid UTF-8
+
+// Other Go types are deliberately rejected at compile time — convert explicitly first.
+// e.g. for a number, use strconv.Itoa or fmt.Sprintf before passing to String:
+var label, _   = String(fmt.Sprintf("score: %d", 42))     // → "score: 42"
+```
+
+Other Go types — numbers, booleans, dates, etc. — are deliberately rejected at compile time:
+their textual representation is a formatting decision the host should make explicitly via
+`strconv` / `fmt` / `time.Time.Format` / etc., or via the expression-language `string(from)`
+built-in if the conversion belongs inside an expression.
+
+---
+
 ## Operators
 
 | Operator | Meaning | Example | Result |
@@ -267,13 +301,17 @@ The exported surface has three parts:
   engine would then have to defend against. `String()` doubles as the `fmt.Stringer`
   implementation, so `fmt.Println(s)` produces the underlying text rather than the raw struct.
   `Equal` performs case-sensitive code-point comparison.
-- **`String[T StringInput](v T)`** — the generic host constructor. The `StringInput` constraint
-  accepts `string` or `[]byte`; a `[]byte` is interpreted as UTF-8 (invalid byte sequences are
-  replaced with `U+FFFD`, matching Go's standard conversion). No error return — both inputs are
-  infallible. Other Go types are deliberately rejected at compile time: textual representation
-  of numbers, booleans, dates, etc. is a formatting decision the host should make explicitly
-  (`strconv.Itoa`, `fmt.Sprintf`, `t.Format(...)`), or via the expression-language `string(from)`
-  built-in if the conversion belongs inside an expression.
+- **`String[T StringInput](v T) (BlString, error)`** — the generic host constructor. The
+  `StringInput` constraint accepts `string` or `[]byte`. A `string` input is infallible (a Go
+  `string` carries no encoding contract, so it can't fail). A `[]byte` input is interpreted as
+  UTF-8 and validated; the `error` return fires when the bytes contain invalid UTF-8 sequences
+  (raw binary, non-UTF-8 encodings like Latin-1, truncated multi-byte sequences, etc.) — the
+  host is responsible for the encoding contract on `[]byte`, and the validation happens at the
+  construction boundary rather than producing a string with replacement characters. Other Go
+  types are deliberately rejected at compile time: textual representation of numbers,
+  booleans, dates, etc. is a formatting decision the host should make explicitly
+  (`strconv.Itoa`, `fmt.Sprintf`, `t.Format(...)`), or via the expression-language
+  `string(from)` built-in if the conversion belongs inside an expression.
 - **`Native()` accessor** — hands the underlying Go `string` back to host code. From there, Go's
   standard library provides all needed operations (comparison via `<`/`==`, length, indexing,
   slicing, etc.), so this is the only accessor required.
@@ -289,9 +327,10 @@ func (s BlString) Equal(other BlValue) BlValue   // case-sensitive code-point co
 func (s BlString) String() string
 func (BlString) isBlValue() {}
 
-// Host constructor — accepts a Go string or a UTF-8 []byte.
+// Host constructor — accepts a Go string (infallible) or a UTF-8 []byte (validated).
+// string input never errors; []byte returns an error when the bytes contain invalid UTF-8.
 type StringInput interface { string | []byte }
-func String[T StringInput](v T) BlString
+func String[T StringInput](v T) (BlString, error)
 
 // Host accessor (consume an evaluated result).
 func (s BlString) Native() string                // underlying Go string

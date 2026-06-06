@@ -39,6 +39,50 @@ expression compile time.
 
 ---
 
+## Construction (host-side)
+
+Host Go code constructs a `BlBoolean` via the generic `Boolean[T BooleanInput](v T)
+(BlBoolean, error)` constructor. `BooleanInput` accepts a Go `bool` (direct), every Go integer
+type (`int`, `int8`–`int64`, `uint`, `uint8`–`uint64` — `0` → `false`, any non-zero → `true`,
+matching the C convention), or a `string` (case-insensitive `"true"` / `"false"`, mirroring
+the case-insensitive literal-parsing rule in [§ Literals](#literals)). `bool` and integer
+inputs are infallible; the `error` return only fires for a `string` whose value is not a
+recognised boolean literal in any casing.
+
+```go
+// host-side (Go)
+// Direct construction from a Go bool — infallible.
+var approved, _ = Boolean(true)
+var rejected, _ = Boolean(false)
+
+// From an integer — C convention: 0 → false, non-zero → true. Infallible.
+var flag,  _ = Boolean(1)               // → BlBoolean(true)
+var noFlag, _ = Boolean(0)              // → BlBoolean(false)
+
+// From a string — case-insensitive; an unrecognised string returns an error.
+var fromConf,  _ = Boolean("true")      // → BlBoolean(true)
+var fromMixed, _ = Boolean("True")      // → BlBoolean(true)   (case-insensitive)
+var fromSQL,   _ = Boolean("FALSE")     // → BlBoolean(false)
+var bad,   err   = Boolean("yes")       // err != nil — "yes" is not a recognised literal
+
+// To model an unknown boolean from host code, pass Null() rather than constructing a BlBoolean.
+var hasConsent BlValue
+if maybeConsent != nil {
+    hasConsent, _ = Boolean(*maybeConsent)
+} else {
+    hasConsent = Null()
+}
+```
+
+`Boolean(...)` returns `(BlBoolean, error)`. Failure mode: a `string` input that doesn't
+match a case-variant of `"true"` or `"false"` — `Boolean("yes")`, `Boolean("1")`, and
+`Boolean("")` all error. Integer-shaped strings like `"1"` and `"0"` are intentionally
+rejected so the string path mirrors the language's literal-parsing rule; convert the string
+to an integer first if you want `0` / non-zero coercion. For details on how unknown booleans
+propagate through three-valued logic, see [§ Three-valued logic](#three-valued-logic).
+
+---
+
 ## Operators
 
 | Operator | Meaning | Example | Result |
@@ -115,8 +159,15 @@ The exported surface has three parts:
   uniformly. `Equal` is structural (`true = true`, `false = false`); cross-type equality returns
   `false`, never `null` (see [null.spec.md](null.spec.md)). `String()` doubles as the
   `fmt.Stringer` implementation, producing `"true"` or `"false"`.
-- **`Boolean(b)`** — the host constructor, accepting a Go `bool`. The conversion is infallible;
-  to model an unknown boolean from host code, pass `BlNull` (not a `*bool`).
+- **`Boolean[T BooleanInput](v T)`** — the generic host constructor. The `BooleanInput`
+  constraint accepts `bool` (direct), every Go integer type (`int`, `int8`–`int64`, `uint`,
+  `uint8`–`uint64` — `0` → `false`, any non-zero → `true`), and `string` (case-insensitive
+  `"true"` / `"false"` — see [§ Literals](#literals) for the matching case-insensitive parsing
+  rule used for source-text literals). All other Go types are rejected at compile time. The
+  `error` return only fires at runtime for a `string` whose value is not a recognised boolean
+  literal in any casing; integer and `bool` inputs are infallible. To model an unknown boolean
+  from host code, pass `Null()` (not a `*bool`) — see
+  [null.spec.md § Construction (host-side)](null.spec.md#construction-host-side).
 - **`Native()` accessor** — hands the underlying Go `bool` back to host code. From there, Go's
   native `&&` / `||` / `!` are all that's needed.
 
@@ -131,8 +182,16 @@ func (b BlBoolean) Equal(other BlValue) BlValue
 func (b BlBoolean) String() string                // "true" / "false"
 func (BlBoolean) isBlValue() {}
 
-// Host constructor.
-func Boolean(b bool) BlBoolean
+// Host constructor — accepts bool, any Go integer type, or a case-insensitive "true"/"false" string.
+// Integer inputs use the C convention: 0 → false, any non-zero → true.
+// String inputs match the case-insensitive boolean literal parser (see § Literals).
+type BooleanInput interface {
+    bool |
+    int | int8 | int16 | int32 | int64 |
+    uint | uint8 | uint16 | uint32 | uint64 |
+    string
+}
+func Boolean[T BooleanInput](v T) (BlBoolean, error)
 
 // Host accessor (consume an evaluated result).
 func (b BlBoolean) Native() bool                  // underlying Go bool

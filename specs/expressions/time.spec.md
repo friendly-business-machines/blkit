@@ -57,6 +57,41 @@ time("11:45:30[Europe/Paris]").timezone  // → "Europe/Paris" (ext)
 
 ---
 
+## Construction (host-side)
+
+Host Go code constructs a `BlTime` via the generic `Time[T TimeInput](v T) (BlTime, error)`
+constructor. `TimeInput` accepts a `string` (parsed as ISO 8601 / RFC 9557 — the zone-or-naive
+kind is set based on whether a zone designator was present), a `time.Time` (the time portion
+is extracted; the result is always zoned because a `time.Time` always carries a `Location`),
+or a `TimeComponents` struct for explicit component-by-component construction. To build a
+naive `BlTime` from a `time.Time`, route through `ToTimeComponentsAsNaive(t)` first.
+
+```go
+// host-side (Go)
+// Most common: an ISO 8601 string.
+var morning, _ = Time("09:00:00")                       // naive
+var london,  _ = Time("11:45:30+01:00")                 // zoned, offset
+var paris,   _ = Time("11:45:30[Europe/Paris]")         // zoned, IANA zone
+
+// From a time.Time — the time-of-day portion is extracted; the result is zoned.
+var now      = time.Now()
+var nowTime, _ = Time(now)
+
+// From a time.Time but stripping the zone (host wants a wall-clock time, no zone).
+var wallClock, _ = Time(ToTimeComponentsAsNaive(now))
+
+// From explicit components.
+var noon, _ = Time(TimeComponents{Hour: 12, Minute: 0, Second: 0})
+```
+
+`Time(...)` returns `(BlTime, error)`. The error path fires for unparseable strings, invalid
+components (`Hour ≥ 24`, `Minute ≥ 60`, etc.), or a `TimeComponents` with both `Offset` and
+`Zone` set (they're mutually exclusive). The full `TimeInput` constraint, the `TimeComponents`
+struct, and the `ToTimeComponentsAsNaive` helper are documented in [§ Value type & host
+API](#value-type--host-api-exported).
+
+---
+
 ## Operators
 
 | Operator | Meaning | Example | Result |

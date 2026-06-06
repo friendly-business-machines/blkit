@@ -40,6 +40,39 @@ accepted; a leading `-` is the unary minus operator applied to a non-negative li
 
 ---
 
+## Construction (host-side)
+
+Host Go code constructs a `BlNumber` via the generic `Number[T NumberInput](v T) (BlNumber,
+error)` constructor. The `NumberInput` constraint accepts every Go numeric type (`int`,
+`int8`–`int64`, `uint`, `uint8`–`uint64`, `float32`, `float64`), `bool` (true → 1, false → 0),
+`string` (parsed as a decimal — accepts thousands separators, currency symbols, leading /
+trailing whitespace), and `decimal.Decimal`. Integer / `bool` / `decimal.Decimal` inputs are
+infallible; the `error` return only fires for a `float32` / `float64` holding `NaN` / `Inf`,
+or for a `string` that can't be parsed as a number after format-stripping.
+
+```go
+// host-side (Go)
+// Most common — integer or float inputs are infallible from the constraint's perspective;
+// the error only fires for NaN / Inf floats.
+var age,    _ = Number(30)
+var pi,     _ = Number(3.14159)
+var amount, _ = Number(decimal.RequireFromString("1500.50"))
+
+// Parse a decimal string (accepts "$3.14", "1,500.50", "€1,234.56", whitespace, etc.).
+var price, _ = Number("$1,234.56")
+
+// Bool coerces to 0 / 1 — useful when wiring boolean flags into arithmetic expressions.
+var flag, _ = Number(true)        // → BlNumber(1)
+```
+
+`Number(...)` returns `(BlNumber, error)`. The two failure modes are `NaN` / `Inf` from a
+float and an unparseable decimal string; integer types, `decimal.Decimal`, and `bool` are
+infallible, but the `_` slot keeps the call-site shape uniform with the fallible cases.
+Arbitrary-precision arithmetic is preserved end-to-end — no float coercion happens inside the
+engine (see [§ Semantics & behaviour](#semantics--behaviour)).
+
+---
+
 ## Operators
 
 | Operator | Meaning | Example | Result |

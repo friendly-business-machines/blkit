@@ -37,6 +37,8 @@ ymDuration("P1.5Y")                  // → ymDuration("P1Y6M") (fractional year
 ymDuration("P0.5M")                  // 0.5 months — fractional months are representable
 ymDuration("P1Y0.25M")               // 1 year, 0.25 months
 ymDuration("P1.5Y0.5M")              // → ymDuration("P1Y6.5M") (fractions accepted on any designator)
+ymDuration("p1y6m")                  // → ymDuration("P1Y6M")   (designators are case-insensitive on input)
+ymDuration("P1Y6m")                  // → ymDuration("P1Y6M")
 ymDuration("P1DT2H")                 // → BlParseError (day/time designators not allowed here)
 ```
 
@@ -44,6 +46,11 @@ blkit accepts a decimal fraction on either designator — this is a deliberate r
 8601, which permits a fraction only on the smallest unit used. Fractional components combine as
 `years*12 + months` into the internal total, stored exactly using arbitrary-precision decimal
 (no float rounding).
+
+The designator letters `P` / `Y` / `M` are **case-insensitive on input** (`P1Y6M`, `p1y6m`,
+`P1Y6m`, etc. all parse identically) — also a deliberate relaxation of ISO 8601, matching the
+case-insensitive parsing rule used for the `true` / `false` and `null` literals. Canonical
+output (`String()`) always emits uppercase designators.
 
 `ymDuration` is paired with `dtDuration` ([days_time_duration.spec.md](days_time_duration.spec.md))
 for the sibling days-time duration. The two are separate functions — the typed return makes
@@ -67,6 +74,108 @@ or `date(dt)` first. See [datetime.spec.md § Business-day arithmetic & differen
 for the registered overloads.
 
 `[@test] ../../expr/years_months_duration_test.go`
+
+---
+
+## Construction (host-side)
+
+Host Go code constructs a `BlYearsMonthsDuration` via the generic
+`YMDuration[T YMDurationInput](v T) (BlYearsMonthsDuration, error)` constructor.
+`YMDurationInput` accepts the natural Go shapes for a years-months value, plus the
+wrapped-`Bl*` forms:
+
+- **`string`** / **`BlString`** — two parse paths, dispatched on the first non-sign character
+  (case-insensitive): if the string starts with `P` / `-P` / `+P` (or `p` / `-p` / `+p`),
+  it's parsed as an **ISO 8601 duration** with Y/M designators only (`"P1Y6M"`, `"-P6M"`,
+  `"P0.5M"`, `"p1y6m"`, …) — D/T designators are rejected, since those belong to
+  `BlDaysTimeDuration` (see [days_time_duration.spec.md](days_time_duration.spec.md)). All
+  designator letters (`P` / `Y` / `M`) are case-insensitive on input; canonical output is
+  uppercase. Any other string is parsed as a **decimal number of total months** (`"12.25"`,
+  `"-6"`, `"100.5"`, …), exactly as if the caller had wrapped it in
+  `decimal.NewFromString(...)` themselves. An unparseable string (matches neither shape)
+  errors.
+- **Integer types** (`int`, `int8`–`int64`, `uint`, `uint8`–`uint64`) — interpreted as the
+  total months. `YMDuration(6)` is six months; `YMDuration(30 * 12)` is thirty years.
+- **`float32`** / **`float64`** — total months. Subject to float-precision limits; prefer
+  `decimal.Decimal` when precision matters. A `float` holding `NaN` or `Inf` errors.
+- **`decimal.Decimal`** / **`BlNumber`** — exact decimal total months, the preferred form when
+  fractional precision matters (matches the internal storage and preserves fractional months
+  without float rounding). `BlNumber` is just the engine's wrapped form of `decimal.Decimal`.
+- **`YM(years, months)`** — generic constructor function for explicit
+  `(years, months)` components when the caller doesn't want to compute `years*12 + months`
+  themselves. Each argument is independently constrained by `YMNumberInput`, which accepts
+  any Go integer type, `float32` / `float64` (`NaN` / `Inf` errors), `decimal.Decimal`, a
+  numeric string (parsed via `decimal.NewFromString`), `BlNumber`, or `BlString` (treated
+  as the numeric-string path). Different types across the two arguments are fine —
+  `YM(1, "6.5")` is a typed call where `years` is `int` and `months` is `string`.
+  Type-checking happens at compile time via the constraint; there is **no struct-literal
+  form** because Go's type system can't express "this field is one of these unrelated types"
+  without `any`, and `any` would defeat the compile-time check. Components are not range-
+  restricted (`YM(0, 15)` is fine; the constructor normalises into the canonical
+  `(Y, M)` form), and either argument may be fractional.
+
+```go
+// host-side (Go)
+// ISO 8601 string — convenient when the value comes from config or persistence.
+var mortgage, _  = YMDuration("P30Y")
+var grace,    _  = YMDuration("P1Y6M")
+var lowered,  _  = YMDuration("p1y6m")            // designators are case-insensitive on input
+var bad,    err  = YMDuration("P1DT2H")           // err != nil — D/T designators not allowed
+
+// Integer total months.
+var halfYear, _  = YMDuration(6)                   // 6 months
+var century,  _  = YMDuration(100 * 12)            // 100 years
+
+// Float64 total months — convenient but subject to float precision.
+var floatY,   _  = YMDuration(12.25)               // 1y 0.25m
+
+// String of a decimal number — parsed as total months. Equivalent to wrapping in
+// decimal.NewFromString yourself but reads cleaner.
+var fromStr,    _ = YMDuration("12.25")            // → 1y 0.25m
+
+// Exact fractional total via decimal.Decimal — equivalent shape, useful when the value
+// already exists as a decimal.
+var dec1,       _ = decimal.NewFromString("12.25")
+var fractional, _ = YMDuration(dec1)
+
+// From an engine value — BlNumber and BlString are accepted directly.
+var dec2,  _     = decimal.NewFromString("18.5")
+var n,     _     = Number(dec2)
+var fromBlN, _   = YMDuration(n)                                          // 18.5 total months
+
+var s,   _       = String("P1Y6M")
+var fromBlS, _   = YMDuration(s)                                          // parsed via the ISO 8601 path
+
+// Integer components — the simplest case. YM is a generic function; type params
+// are inferred from the arguments, so the call site reads cleanly.
+var split,    _  = YMDuration(YM(1, 6))
+
+// Fractional months — pass a decimal.Decimal for the argument that needs it.
+var dec3,    _   = decimal.NewFromString("3.5")
+var partial, _   = YMDuration(YM(2, dec3))                            // 2y 3.5m → 27.5 total months
+
+// String components — numeric strings are parsed via decimal.NewFromString.
+var strYrs,   _  = YMDuration(YM("1", "6.5"))
+
+// Mixed types across the two arguments — each is independently typed via the constraint.
+var mixed,    _  = YMDuration(YM(2, "3.5"))
+
+// Components from BlNumber / BlString values — accepted directly, no .Decimal() unwrap.
+var yearsN,  _    = Number(1)
+var monthsN, _    = Number(6)
+var fromBl, _    = YMDuration(YM(yearsN, monthsN))
+
+var yearsS, _    = String("1")
+var monthsS, _   = String("6.5")
+var fromBlS2, _  = YMDuration(YM(yearsS, monthsS))
+```
+
+`YMDuration(...)` returns `(BlYearsMonthsDuration, error)`. The error path fires for an
+unparseable or wrong-kind ISO 8601 `string` / `BlString`, and for a `float32` / `float64`
+holding `NaN` / `Inf`. Integer / `decimal.Decimal` / `BlNumber` / `YM`
+inputs are infallible. For details on the underlying `decimal.Decimal` total-months storage
+and the `Years()` / `Months()` / `TotalMonths()` / `TotalYears()` accessors, see [§ Value
+type & host API](#value-type--host-api-exported).
 
 ---
 
@@ -230,13 +339,17 @@ The exported surface has three parts:
   implementation, producing the canonical ISO 8601 form: integer split `"P1Y6M"` when the total
   is a whole month count, fractional smallest-unit form (`"P1Y0.25M"`, `"P0.5M"`) otherwise,
   `"-P6M"` for negatives, and `"P0Y0M"` for zero.
-- **`YearsMonths(years, months int)` / `YearsMonthsFromTotalMonths(totalMonths decimal.Decimal)`** —
-  the host constructors. `YearsMonths` is the integer-component convenience form; inputs are
-  not range-restricted, and the constructor normalises by summing `years*12 + months` into the
-  internal total. `YearsMonthsFromTotalMonths` accepts an exact decimal total, including
-  fractional values — host code that needs `P1Y0.25M` constructs it as
-  `YearsMonthsFromTotalMonths(decimal.NewFromFloat(12.25))` or equivalent. The older
-  integer-only `YearsMonthsFromMonths(totalMonths int)` form remains for ergonomics.
+- **`YMDuration[T YMDurationInput](v T) (BlYearsMonthsDuration, error)`** — the generic host
+  constructor. The `YMDurationInput` constraint accepts a `string` / `BlString`
+  (dispatched on the first non-sign character: leading `P` → ISO 8601 with Y/M designators
+  only; otherwise → decimal number of total months), every Go integer type (total months),
+  `float32` / `float64` (total months; `NaN` / `Inf` error), `decimal.Decimal` / `BlNumber`
+  (exact total months, possibly fractional), and a
+  `YM{Years, Months decimal.Decimal}` struct (explicit components — not
+  range-restricted, and either field may be fractional). See [§ Construction
+  (host-side)](#construction-host-side) for the worked example. The `error` return fires
+  only for an unparseable string / BlString or a `NaN` / `Inf` float; integer / decimal /
+  BlNumber / components inputs are infallible.
 - **`Years()` / `Months()` / `TotalMonths()` accessors** — hand the normalised components and the
   signed total back to host code. `Years()` returns the integer years portion (truncated toward
   zero) with sign; `Months()` returns the months remainder as a `decimal.Decimal`
@@ -254,10 +367,51 @@ func (d BlYearsMonthsDuration) Equal(other BlValue) BlValue   // exact decimal c
 func (d BlYearsMonthsDuration) String() string                // "P1Y6M" / "P0.5M" / "-P6M" / "P0Y0M"
 func (BlYearsMonthsDuration) isBlValue() {}
 
-// Host constructors.
-func YearsMonths(years, months int) BlYearsMonthsDuration                              // integer convenience
-func YearsMonthsFromMonths(totalMonths int) BlYearsMonthsDuration                      // integer total
-func YearsMonthsFromTotalMonths(totalMonths decimal.Decimal) BlYearsMonthsDuration     // fractional total
+// Host constructor — accepts:
+//   - string / BlString:    "P..." parses as ISO 8601 (Y/M only; designators case-insensitive
+//                            on input — "p1y6m" works too); anything else parses as a
+//                            decimal-number total-months string ("12.25", "-6", …).
+//   - any Go integer:        total months.
+//   - float32 / float64:     total months; NaN / Inf error.
+//   - decimal.Decimal:       exact total months (preferred for fractional precision).
+//   - BlNumber:               engine-wrapped decimal; treated identically to decimal.Decimal.
+//   - ymComponents (built via YM(years, months)):
+//                             explicit (years, months); each argument is independently
+//                             type-checked against YMNumberInput at compile time. The two
+//                             arguments may carry different types.
+
+// YMNumberInput is the per-argument constraint for the YM constructor: any Go
+// numeric type, a numeric string, decimal.Decimal, BlNumber, or BlString.
+type YMNumberInput interface {
+    int | int8 | int16 | int32 | int64 |
+    uint | uint8 | uint16 | uint32 | uint64 |
+    float32 | float64 |
+    decimal.Decimal |
+    string |
+    BlNumber |
+    BlString
+}
+
+// ymComponents is the opaque value produced by YM(...). It can only be constructed
+// via the typed YM function, which guarantees the field values come from the
+// accepted set.
+type ymComponents struct {
+    years  any   // typed at construction via the YMNumberInput constraint
+    months any
+}
+
+// Generic typed constructor — Y and M are inferred from the argument types.
+func YM[Y, M YMNumberInput](years Y, months M) ymComponents
+
+type YMDurationInput interface {
+    string | BlString |
+    int | int8 | int16 | int32 | int64 |
+    uint | uint8 | uint16 | uint32 | uint64 |
+    float32 | float64 |
+    decimal.Decimal | BlNumber |
+    ymComponents
+}
+func YMDuration[T YMDurationInput](v T) (BlYearsMonthsDuration, error)
 
 // Host accessors (consume an evaluated result).
 func (d BlYearsMonthsDuration) Years() int                  // integer years; truncated toward zero; sign carries

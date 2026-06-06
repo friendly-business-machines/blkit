@@ -83,6 +83,45 @@ and they share names with the constructors:
 
 ---
 
+## Construction (host-side)
+
+Host Go code constructs a `BlDateTime` via the generic `DateTime[T DateTimeInput](v T)
+(BlDateTime, error)` constructor. `DateTimeInput` accepts a `string` (parsed as ISO 8601 /
+RFC 9557 — the zone-or-naive kind is set based on whether a zone designator was present), a
+`time.Time` (the result is always zoned because a `time.Time` always carries a `Location`),
+or a `DateTimeComponents` struct for explicit component-by-component construction. To build a
+naive `BlDateTime` from a `time.Time`, route through `ToDateTimeComponentsAsNaive(t)` first.
+
+```go
+// host-side (Go)
+// Most common: an ISO 8601 string.
+var local,  _ = DateTime("2025-03-28T11:45:30")               // naive
+var utc,    _ = DateTime("2025-03-28T11:45:30Z")              // zoned, UTC
+var london, _ = DateTime("2025-03-28T11:45:30+01:00")         // zoned, offset
+var paris,  _ = DateTime("2025-03-28T11:45:30[Europe/Paris]") // zoned, IANA zone
+
+// From a time.Time — the result is zoned.
+var now      = time.Now()
+var nowDT, _ = DateTime(now)
+
+// From a time.Time but stripping the zone (host wants wall-clock semantics, no zone).
+var wallClock, _ = DateTime(ToDateTimeComponentsAsNaive(now))
+
+// From explicit components.
+var deploy, _ = DateTime(DateTimeComponents{
+    Year: 2025, Month: 3, Day: 1, Hour: 3, Minute: 0, Second: 0,
+    Zone: "Europe/London",
+})
+```
+
+`DateTime(...)` returns `(BlDateTime, error)`. The error path fires for unparseable strings,
+invalid components (`Month = 13`, `Day = 32`, `Hour ≥ 24`, etc.), or a `DateTimeComponents`
+with both `Offset` and `Zone` set (they're mutually exclusive). The full `DateTimeInput`
+constraint, the `DateTimeComponents` struct, and the `ToDateTimeComponentsAsNaive` helper are
+documented in [§ Value type & host API](#value-type--host-api-exported).
+
+---
+
 ## Operators
 
 | Operator | Meaning | Example | Result |

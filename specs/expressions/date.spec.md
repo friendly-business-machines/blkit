@@ -59,6 +59,44 @@ date("2025-03-28[Europe/London]").timezone // → "Europe/London" (ext; null if 
 
 ---
 
+## Construction (host-side)
+
+Host Go code constructs a `BlDate` via the generic `Date[T DateInput](v T) (BlDate, error)`
+constructor. `DateInput` accepts a `string` (parsed as ISO 8601 / RFC 9557 — the zone-or-naive
+kind is set based on whether a zone designator was present), a `time.Time` (the date portion
+is extracted; the result is always zoned because a `time.Time` always carries a `Location`),
+or a `DateComponents` struct for explicit component-by-component construction. To build a
+naive `BlDate` from a `time.Time`, route through `ToDateComponentsAsNaive(t)` first.
+
+```go
+// host-side (Go)
+// Most common: an ISO 8601 string.
+var d1, _ = Date("2025-03-28")                         // naive
+var d2, _ = Date("2025-03-28+05:30")                   // zoned, offset
+var d3, _ = Date("2025-03-28[Europe/London]")          // zoned, IANA zone
+
+// From a time.Time — the date portion is extracted; the result is zoned.
+var now      = time.Now()
+var today, _ = Date(now)
+
+// From a time.Time but stripping the zone (host wants a wall-clock date, no zone).
+var todayNaive, _ = Date(ToDateComponentsAsNaive(now))
+
+// From explicit components.
+var christmas, _ = Date(DateComponents{Year: 2025, Month: 12, Day: 25})
+
+// Convenience helper for today in the local zone.
+var t = Today()
+```
+
+`Date(...)` returns `(BlDate, error)`. The error path fires for unparseable strings, invalid
+components (`Month = 13`, `Day = 32`, etc.), or a `DateComponents` with both `Offset` and
+`Zone` set (they're mutually exclusive). The full `DateInput` constraint, the
+`DateComponents` struct, and the `ToDateComponentsAsNaive` / `Today` helpers are documented
+in [§ Value type & host API](#value-type--host-api-exported).
+
+---
+
 ## Operators
 
 | Operator | Meaning | Example | Result |
