@@ -1,14 +1,14 @@
 ---
-name: BlDictionary
-description: The dictionary type in the blkit expression language — an unordered key-value map. Covers dictionary literals, path access, the dictionary built-in library (incl. blkit extensions), and the Go layer (BlDictionary + expr registrations).
+name: bl.BlDictionary
+description: The dictionary type in the blkit expression language — an unordered key-value map. Covers dictionary literals, path access, the dictionary built-in library (incl. blkit extensions), and the Go layer (bl.BlDictionary + expr registrations).
 targets:
-  - ../../expr/dictionary.go
+  - ../../dictionary.go
 ---
 
-# BlDictionary — the `dictionary` type
+# bl.BlDictionary — the `dictionary` type
 
 `dictionary` is an unordered map from string keys to values. The Go value type backing it is
-`BlDictionary`. It is a pure value used within expressions — distinct from `ExecutionContext`
+`bl.BlDictionary`. It is a pure value used within expressions — distinct from `ExecutionContext`
 (the mutable process variable store, see [execution-context.spec.md](../data/execution-context.spec.md)).
 
 See [bl-expr.spec.md](bl-expr.spec.md) for dictionary literals and path access, documented
@@ -38,40 +38,40 @@ applicant["my key"]                // bracket access for special-character keys
 
 Keys are non-empty, case-sensitive strings. A dictionary is an unordered set of key/value
 pairs at the language level — equality is order-insensitive (`{a:1, b:2} = {b:2, a:1}`), and
-operations that surface keys (`keys(d)`, `values(d)`, `getEntries(d)`, `String()`) emit them in
+operations that surface keys (`keys(d)`, `values(d)`, `getEntries(d)`, `bl.String()`) emit them in
 **code-point-sorted order** for a canonical, deterministic form. Literal source order is
 significant only during the literal's one-pass eager evaluation — each entry's RHS is
 evaluated in source order against the partial scope built up by the entries to its left
 (`{a: 2, b: a*2}` → `{a: 2, b: 4}`). After evaluation, the dictionary holds resolved values
 with no remaining expression dependencies; iteration order is not preserved.
 
-`[@test] ../../expr/dictionary_test.go`
+`[@test] ../../dictionary_test.go`
 
 ---
 
 ## Construction (host-side)
 
-Host Go code builds a dictionary by handing a `map[string]BlValue` to the `Dictionary(...)`
+Host Go code builds a dictionary by handing a `map[string]bl.BlValue` to the `bl.Dictionary(...)`
 constructor. Since the language treats dictionaries as unordered, the map's iteration order is
 irrelevant — keys are sorted into canonical order at construction. An empty-string key is
 rejected at the assembly step.
 
 ```go
 // host-side (Go)
-var applicant, _ = Dictionary(map[string]BlValue{
-    "name":   String("Alice"),
-    "age":    Number(30),
-    "income": Number(75000),
+var applicant, _ = bl.Dictionary(map[string]bl.BlValue{
+    "name":   bl.String("Alice"),
+    "age":    bl.Number(30),
+    "income": bl.Number(75000),
 })
 
 // Hand it to the engine as an input variable.
-var schema, _ = Schema(BlField{Name: "applicant", Type: BlTypeDictionary})
-var eligible, _ = Bl.Expr(`applicant.age >= 18 and applicant.income > 50000`, schema)
+var schema, _ = bl.Schema(bl.Field{Name: "applicant", Type: bl.TypeDictionary})
+var eligible, _ = bl.Expr(`applicant.age >= 18 and applicant.income > 50000`, schema)
 var result, _ = eligible.Evaluate(map[string]any{"applicant": applicant})
-// result is BlBoolean(true)
+// result is bl.BlBoolean(true)
 ```
 
-`Dictionary(entries)` returns `(BlDictionary, error)`. The error covers the validation cases —
+`bl.Dictionary(entries)` returns `(bl.BlDictionary, error)`. The error covers the validation cases —
 currently just empty-string keys; duplicate-key collisions cannot occur because the input is
 already a Go map.
 
@@ -91,7 +91,7 @@ Dictionaries have no arithmetic operators (`+`/`-`/etc.), no ordering operators
 Member access is **patcher-lowered** to a call to `getValue(d, key)`. So `d.name` and
 `d["name"]` are both equivalent to `getValue(d, "name")`.
 
-`[@test] ../../expr/dictionary_operators_test.go`
+`[@test] ../../dictionary_operators_test.go`
 
 ---
 
@@ -114,7 +114,7 @@ DMN-inspired functions plus blkit extensions (**ext**).
 | `isEmpty(d)` **ext** | `isEmpty({})` | `true` |
 | `dictionaryRemove(d, key)` **ext** | `dictionaryRemove({a:1, b:2}, "a")` | `{b: 2}` |
 
-`[@test] ../../expr/dictionary_functions_test.go`
+`[@test] ../../dictionary_functions_test.go`
 
 ---
 
@@ -125,25 +125,25 @@ Lives in `expr/dictionary.go`. Shared mechanics in
 
 ### Value type & host API (exported)
 
-`BlDictionary` is the immutable Go value type that represents a dictionary inside the engine
-and at the host-code boundary. It wraps a single private `map[string]BlValue` — dictionaries
+`bl.BlDictionary` is the immutable Go value type that represents a dictionary inside the engine
+and at the host-code boundary. It wraps a single private `map[string]bl.BlValue` — dictionaries
 are unordered at the language level, so no parallel keys slice is needed. Every operation in
-the library returns a fresh `BlDictionary`; callers cannot mutate the underlying map.
+the library returns a fresh `bl.BlDictionary`; callers cannot mutate the underlying map.
 
 The exported surface has three parts:
 
-- **`BlValue` interface methods** — `Type()`, `Equal()`, `String()`, and the unexported
+- **`bl.BlValue` interface methods** — `Type()`, `Equal()`, `bl.String()`, and the unexported
   `isBlValue()` marker — required of every blkit value type so the engine can treat them
   uniformly. `Equal` is **structural** — `{a:1, b:2}` equals `{b:2, a:1}` because they hold
-  the same key/value pairs. `String()` doubles as the `fmt.Stringer` implementation,
+  the same key/value pairs. `bl.String()` doubles as the `fmt.Stringer` implementation,
   producing a canonical, **code-point-sorted** literal form (e.g. `'{age: 30, name: "Alice"}'`)
   so that the textual representation is deterministic for the same dictionary value.
-- **`Dictionary(m)`** — the host constructor, accepting a Go `map[string]BlValue`. Returns
-  `(BlDictionary, error)`; the error path covers empty-string keys (the only structural
+- **`bl.Dictionary(m)`** — the host constructor, accepting a Go `map[string]bl.BlValue`. Returns
+  `(bl.BlDictionary, error)`; the error path covers empty-string keys (the only structural
   validation — duplicate keys can't occur in a Go map). See [§ Construction
   (host-side)](#construction-host-side) for the worked example.
-- **`Native()` accessor** — returns a defensive copy of the underlying `map[string]BlValue`.
-  Callers may mutate the returned map without affecting the `BlDictionary`. Iteration order
+- **`Native()` accessor** — returns a defensive copy of the underlying `map[string]bl.BlValue`.
+  Callers may mutate the returned map without affecting the `bl.BlDictionary`. Iteration order
   is Go's standard map randomisation; for a stable order use the sorted output of `keys(d)`
   inside an expression, or sort the result of `Native()` yourself.
 
@@ -153,8 +153,8 @@ type BlDictionary struct {
     m map[string]BlValue
 }
 
-// BlValue interface — required by all Bl* value types.
-func (BlDictionary) Type() BlType { return BlTypeDictionary }
+// bl.BlValue interface — required by all Bl* value types.
+func (BlDictionary) Type() Type { return TypeDictionary }
 func (d BlDictionary) Equal(other BlValue) BlValue   // structural; dictionaries are unordered
 func (d BlDictionary) String() string                // canonical literal form (keys code-point-sorted)
 func (BlDictionary) isBlValue() {}
@@ -169,7 +169,7 @@ func (d BlDictionary) Native() map[string]BlValue    // defensive copy
 ### Backing implementations (unexported, suffix `Fn`)
 
 Dictionary has **no per-type operator implementation functions**. Equality (`=` / `!=`)
-dispatches through the `BlValue.Equal()` interface method (see [§ Value type & host
+dispatches through the `bl.BlValue.Equal()` interface method (see [§ Value type & host
 API](#value-type--host-api-exported)), and member access (`.field`, `[key]`) is patcher-lowered
 to a call to `getValue(d, key)`. Dictionary has no arithmetic operators (`+`/`-`/etc.), no
 ordering operators (`<`/`<=`/`>`/`>=`), and no `in` operator.
@@ -195,10 +195,10 @@ func dictionaryPutFn(args ...any) (any, error)                      // (d, BlStr
 ```
 
 Member-access patcher dispatch is documented in [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go).
-The engine also models the evaluation scope as a `BlDictionary`. Dictionary literals with
+The engine also models the evaluation scope as a `bl.BlDictionary`. Dictionary literals with
 forward-referencing entries (`{a: 2, b: a*2}`) compile to entries evaluated in order, where
 each entry adds its key to the scope before the next entry evaluates. Native Go
-`map[string]any` inputs wrap to `BlDictionary` via the engine's input bridge.
+`map[string]any` inputs wrap to `bl.BlDictionary` via the engine's input bridge.
 
 ### Registrations (`dictionaryOptions`, unexported)
 
@@ -211,7 +211,7 @@ initialisation to learn about the dictionary library. Each entry is built with
 - `impl` must have the signature `func(...any) (any, error)` — that is the only shape
   [`expr-lang/expr`](https://github.com/expr-lang/expr) accepts. The `typed1` / `typed2`
   adapters (defined in [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go))
-  wrap a typed implementation such as `func(BlDictionary) BlNumber` into that shape; the
+  wrap a typed implementation such as `func(bl.BlDictionary) bl.BlNumber` into that shape; the
   variadic impls are registered directly because their multi-shape dispatch can't be expressed
   as a fixed-arity adapter.
 - `typeHints` is a variadic list of `new(func(...) ...)` values. The engine reflects on them
@@ -227,36 +227,36 @@ func dictionaryOptions() []expr.Option {
     return []expr.Option{
         // core dictionary operations
         expr.Function("getValue",    getValueFn,
-            new(func(BlDictionary, BlString) BlValue),
-            new(func(BlDictionary, BlList) BlValue)),
-        expr.Function("getEntries",  typed1(getEntriesFn),  new(func(BlDictionary) BlList)),
+            new(func(bl.BlDictionary, bl.BlString) bl.BlValue),
+            new(func(bl.BlDictionary, bl.BlList) bl.BlValue)),
+        expr.Function("getEntries",  typed1(getEntriesFn),  new(func(bl.BlDictionary) bl.BlList)),
         expr.Function("dictionaryPut",  dictionaryPutFn,
-            new(func(BlDictionary, BlString, BlValue) BlDictionary),
-            new(func(BlDictionary, BlList, BlValue) BlDictionary)),
-        expr.Function("dictionaryMerge", typed1(dictionaryMergeFn), new(func(BlList) BlDictionary)),  // list of dictionaries; later wins
+            new(func(bl.BlDictionary, bl.BlString, bl.BlValue) bl.BlDictionary),
+            new(func(bl.BlDictionary, bl.BlList, bl.BlValue) bl.BlDictionary)),
+        expr.Function("dictionaryMerge", typed1(dictionaryMergeFn), new(func(bl.BlList) bl.BlDictionary)),  // list of dictionaries; later wins
 
         // ext
-        expr.Function("keys",          typed1(keysFn),          new(func(BlDictionary) BlList)),
-        expr.Function("values",        typed1(valuesFn),        new(func(BlDictionary) BlList)),
-        expr.Function("has",           typed2(hasFn),           new(func(BlDictionary, BlString) BlBoolean)),
-        expr.Function("size",          typed1(dictSizeFn),       new(func(BlDictionary) BlNumber)),
-        expr.Function("isEmpty",       typed1(dictIsEmptyFn),    new(func(BlDictionary) BlBoolean)),       // dictionary overload (other type overloads in their own specs)
-        expr.Function("dictionaryRemove", typed2(dictionaryRemoveFn), new(func(BlDictionary, BlString) BlDictionary)),
+        expr.Function("keys",          typed1(keysFn),          new(func(bl.BlDictionary) bl.BlList)),
+        expr.Function("values",        typed1(valuesFn),        new(func(bl.BlDictionary) bl.BlList)),
+        expr.Function("has",           typed2(hasFn),           new(func(bl.BlDictionary, bl.BlString) bl.BlBoolean)),
+        expr.Function("size",          typed1(dictSizeFn),       new(func(bl.BlDictionary) bl.BlNumber)),
+        expr.Function("isEmpty",       typed1(dictIsEmptyFn),    new(func(bl.BlDictionary) bl.BlBoolean)),       // dictionary overload (other type overloads in their own specs)
+        expr.Function("dictionaryRemove", typed2(dictionaryRemoveFn), new(func(bl.BlDictionary, bl.BlString) bl.BlDictionary)),
     }
 }
 ```
 
-`[@test] ../../expr/dictionary_test.go`
+`[@test] ../../dictionary_test.go`
 
 ---
 
 ## Edge cases
 
 - Missing key (`.`/`[]`/`getValue`) → `null`.
-- `dictionaryPut` with an empty-string key → `BlTypeError`.
+- `dictionaryPut` with an empty-string key → `bl.TypeError`.
 - `dictionaryRemove` of an absent key → the dictionary unchanged.
 - `dictionaryMerge` / `dictionaryPut` with an empty dictionary → no-op.
 - Special-character keys require quoted/bracket syntax (`{"my key": 1}`, `d["my key"]`).
-- Host construction (`Dictionary(map[string]BlValue{...})`) with an empty-string key → error
+- Host construction (`bl.Dictionary(map[string]bl.BlValue{...})`) with an empty-string key → error
   from the host constructor (see [§ Construction (host-side)](#construction-host-side)).
   Duplicate keys cannot occur because the input is a Go map.

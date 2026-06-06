@@ -27,7 +27,7 @@ All blkit classes are organised into sub-namespaces:
 
 - `blkit.processes` — process execution classes (`Process`, `ProcessGraph`, `StartEvent`, `EndEvent`, gateway nodes, tasks)
 - `blkit.decisions` — decision classes (`DecisionTask`, `DecisionTable`, `LiteralExpression`, `BoxedContext`, `Relation`, `Invocation`, `BusinessKnowledgeModel`)
-- `blkit.expr` — typed value system and expression factory (`Bl`, `BlNumber`, `BlString`, `BlExpr`, `BlDictionary`, `BlList`, etc.)
+- `blkit.expr` — typed value system and expression factory (`Bl`, `bl.BlNumber`, `bl.BlString`, `bl.BlExpr`, `bl.BlDictionary`, `bl.BlList`, etc.)
 - `blkit.data` — data contracts, execution context, and the pluggable state store (`InputContract`, `OutputContract`, `ExecutionContext`, `ExecutionHistory`, `StateStore`)
 - `blkit.messagegateway` — producer-side typed client SDK (`MessageGateway` interface, `RedisMessageGateway`, `NATSMessageGateway`, `InMemoryMessageGateway`) for submitting process runs, delivering messages, and observing events from outside the worker pool
 - `blkit.restserver` — HTTP REST server with Server-Sent Events that exposes processes registered on a `MessageGateway`. Optionally embeds a worker in the same binary.
@@ -56,11 +56,11 @@ blkit implements a fluent interface: method chains read as meaningful, human-fri
 Process graphs are declared by chaining `.to()` calls from a `start()` node through tasks and gateways to an `end()` node. The chain expressions are passed as a list to the `graph` parameter of `Process.create()`. Gateways are `ProcessNode`s — `and_()`, `or_()`, `xor()`, and `join()` each create a gateway node that is passed into `.to()` like any other node. `Process.create()` walks the edges to discover the full graph structure and stores the result as a `ProcessGraph`.
 
 ```go
-myProcess := NewProcess("my-process", "1.0", []Edge{
-    Start("start", "Start", NewInputContract()).To(taskA),
+myProcess := bl.NewProcess("my-process", "1.0", []Edge{
+    bl.Start("start", "Start", bl.NewInputContract()).To(taskA),
     taskA.To(Xor(conditions, map[string]ProcessNode{"b": taskB, "c": taskC})),
     Join(taskB, taskC).To(taskD),
-    taskD.To(End("done", "Done")),
+    taskD.To(bl.End("done", "Done")),
 })
 ```
 
@@ -87,15 +87,15 @@ This design allows a single `Process` instance to be evaluated concurrently for 
 
 ## Extensibility
 
-Projects built on blkit extend it by authoring a custom Go package implementing domain logic, algorithms, and third-party integrations. This package is a standard module dependency. `NativeFunctionTask` nodes in a process definition hold a direct reference to a Go function, which receives the `ExecutionContext` and returns a `BlValue`.
+Projects built on blkit extend it by authoring a custom Go package implementing domain logic, algorithms, and third-party integrations. This package is a standard module dependency. `NativeFunctionTask` nodes in a process definition hold a direct reference to a Go function, which receives the `ExecutionContext` and returns a `bl.BlValue`.
 
 ## Key Go Dependencies
 
 | Package | Purpose |
 |---|---|
-| [`github.com/shopspring/decimal`](https://github.com/shopspring/decimal) | Arbitrary-precision decimal arithmetic backing `BlNumber`. Ensures exact results for decimal operations (`0.1 + 0.2 = 0.3`). |
-| [`github.com/expr-lang/expr`](https://github.com/expr-lang/expr) | Expression language engine underpinning `blkit.expr`. blkit extends it with its own type system (`BlValue`), operators, and built-in function registrations. |
-| [`github.com/apache/arrow/go/v17/arrow`](https://github.com/apache/arrow/go/v17) | Apache Arrow columnar format, used by `BlTable.ToArrow()` to export table values for interop with data-processing tools. |
+| [`github.com/shopspring/decimal`](https://github.com/shopspring/decimal) | Arbitrary-precision decimal arithmetic backing `bl.BlNumber`. Ensures exact results for decimal operations (`0.1 + 0.2 = 0.3`). |
+| [`github.com/expr-lang/expr`](https://github.com/expr-lang/expr) | Expression language engine underpinning `blkit.expr`. blkit extends it with its own type system (`bl.BlValue`), operators, and built-in function registrations. |
+| [`github.com/apache/arrow/go/v17/arrow`](https://github.com/apache/arrow/go/v17) | Apache Arrow columnar format, used by `bl.BlTable.ToArrow()` to export table values for interop with data-processing tools. |
 | [`github.com/stretchr/testify`](https://github.com/stretchr/testify) | Test-only. Provides richer assertions and suite lifecycle hooks on top of the standard `testing` package. |
 
 ## Influences

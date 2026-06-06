@@ -1,20 +1,20 @@
 ---
-name: BlCalendar
-description: The calendar type in the blkit expression language — a named, ordered collection of temporal entries (dates, datetimes, or date/datetime ranges) for holidays, schedules, blackout periods, maintenance windows, and the like. Covers entry construction, calendar construction with optional validity bounds, query/mutation built-ins, and the Go layer (BlCalendar + expr registrations).
+name: bl.BlCalendar
+description: The calendar type in the blkit expression language — a named, ordered collection of temporal entries (dates, datetimes, or date/datetime ranges) for holidays, schedules, blackout periods, maintenance windows, and the like. Covers entry construction, calendar construction with optional validity bounds, query/mutation built-ins, and the Go layer (bl.BlCalendar + expr registrations).
 targets:
-  - ../../expr/calendar.go
+  - ../../calendar.go
 ---
 
-# BlCalendar — the `calendar` type
+# bl.BlCalendar — the `calendar` type
 
 `calendar` is a blkit-specific type: an immutable, **chronologically-ordered** collection of
 entries, each a temporal value (`date`, `datetime`, or a `range` of either) with an optional
 name. It models holiday sets, maintenance windows, blackout periods, freeze schedules, and
-similar collections. The Go value type backing it is `BlCalendar`.
+similar collections. The Go value type backing it is `bl.BlCalendar`.
 
 Chronological ordering — by entry position, ties broken by name — is canonical: `entries(c)`
 yields entries in that order, equality is set-equality (same entries regardless of construction
-order), and `next` / `prev` walk the same sequence. Host code passing entries to `Calendar(...)`
+order), and `next` / `prev` walk the same sequence. Host code passing entries to `bl.Calendar(...)`
 need not pre-sort them; the constructor establishes the canonical order.
 
 A literal would be the syntactic form for writing a constant value of a type directly inside
@@ -43,29 +43,29 @@ type-safe than encoding the same shape through an expression-language options di
 ```go
 // host-side (Go) — calendars are built host-side and supplied to expressions as input
 // variables. CalendarEntry is infallible so it inlines cleanly inside the entries slice;
-// WithValidity takes a BlRange covering the period the calendar is authoritative over.
-var ukHolidays, _ = Calendar(
-    []BlCalendarEntry{
-        CalendarEntry(blDate("2025-01-01"), "New Year's Day"),
-        CalendarEntry(blDate("2025-04-18"), "Good Friday"),
-        CalendarEntry(blDate("2025-04-21"), "Easter Monday"),
-        CalendarEntry(blDate("2025-05-05"), "Early May Bank Holiday"),
-        CalendarEntry(blDate("2025-05-26"), "Spring Bank Holiday"),
-        CalendarEntry(blDate("2025-08-25"), "Summer Bank Holiday"),
-        CalendarEntry(blDate("2025-12-25"), "Christmas Day"),
-        CalendarEntry(blDate("2025-12-26"), "Boxing Day"),
-        CalendarEntry(
+// WithValidity takes a bl.BlRange covering the period the calendar is authoritative over.
+var ukHolidays, _ = bl.Calendar(
+    []bl.BlCalendarEntry{
+        bl.CalendarEntry(blDate("2025-01-01"), "New Year's Day"),
+        bl.CalendarEntry(blDate("2025-04-18"), "Good Friday"),
+        bl.CalendarEntry(blDate("2025-04-21"), "Easter Monday"),
+        bl.CalendarEntry(blDate("2025-05-05"), "Early May Bank Holiday"),
+        bl.CalendarEntry(blDate("2025-05-26"), "Spring Bank Holiday"),
+        bl.CalendarEntry(blDate("2025-08-25"), "Summer Bank Holiday"),
+        bl.CalendarEntry(blDate("2025-12-25"), "Christmas Day"),
+        bl.CalendarEntry(blDate("2025-12-26"), "Boxing Day"),
+        bl.CalendarEntry(
             blRange(blDate("2025-12-24"), blDate("2026-01-02")),
             "Holiday closure"),
     },
     WithValidity(blRange(blDate("2025-01-01"), blDate("2025-12-31"))))
 
 // Hand it to the engine as an input variable.
-var schema, _ = Schema(
-    BlField{Name: "applicantDate", Type: BlTypeString},
-    BlField{Name: "ukHolidays",    Type: BlTypeCalendar},
+var schema, _ = bl.Schema(
+    bl.Field{Name: "applicantDate", Type: bl.TypeString},
+    bl.Field{Name: "ukHolidays",    Type: bl.TypeCalendar},
 )
-var checkHoliday, _ = Bl.Expr(`isPublicHoliday(applicantDate, ukHolidays)`, schema)
+var checkHoliday, _ = bl.Expr(`isPublicHoliday(applicantDate, ukHolidays)`, schema)
 var result, _ = checkHoliday.Evaluate(
     map[string]any{"applicantDate": "2025-12-25", "ukHolidays": ukHolidays})
 ```
@@ -73,15 +73,15 @@ var result, _ = checkHoliday.Evaluate(
 `CalendarEntry` is infallible — it just wraps a value and optional name. Type validation (the
 value must be a temporal point or temporal range, see [§ Entry kinds](#entry-kinds)) and
 zone-kind homogeneity (see [§ Zone-kind homogeneity](#zone-kind-homogeneity)) are checked at
-the `Calendar(...)` assembly step, so a single error return surfaces all the structural
+the `bl.Calendar(...)` assembly step, so a single error return surfaces all the structural
 problems at once.
 
 Full host-API signatures are in [§ Value types & host API](#value-types--host-api-exported).
 
 ### Importing from iCalendar (`.ics`)
 
-`ImportICal(r io.Reader, opts ...ICalOption) (BlCalendar, error)` parses an RFC 5545
-iCalendar document and returns the equivalent `BlCalendar`. It's the recommended path for
+`bl.ImportICal(r io.Reader, opts ...ICalOption) (bl.BlCalendar, error)` parses an RFC 5545
+iCalendar document and returns the equivalent `bl.BlCalendar`. It's the recommended path for
 holiday sets, public-holiday feeds, maintenance-window schedules, and any other data already
 distributed as `.ics` (Google Calendar, Apple Calendar, Outlook, CalDAV servers, public
 holiday providers, etc.). The underlying parser is
@@ -93,21 +93,21 @@ expansion; both are added as blkit dependencies.
 // host-side (Go)
 var f, _    = os.Open("uk-bank-holidays-2025.ics")
 defer f.Close()
-var ukHolidays, _ = ImportICal(f,
+var ukHolidays, _ = bl.ImportICal(f,
     WithICalExpansionWindow(blRange(blDate("2025-01-01"), blDate("2025-12-31"))),
     WithValidity(blRange(blDate("2025-01-01"), blDate("2025-12-31"))))
 ```
 
 #### Mapping
 
-| iCalendar feature | `BlCalendar` representation |
+| iCalendar feature | `bl.BlCalendar` representation |
 |---|---|
-| `VEVENT` with `DTSTART` only (or `DTSTART == DTEND`) | a point entry (`BlDate` or `BlDateTime` per the source value type) |
-| `VEVENT` with distinct `DTSTART` / `DTEND` | a range entry — `BlRange` with `start = DTSTART`, `end = DTEND` (inclusive at both ends; iCal's `DTEND` is exclusive for `DATE` values per RFC 5545, so the importer subtracts one day for whole-day ranges and uses the value as-is for `DATE-TIME` ranges) |
+| `VEVENT` with `DTSTART` only (or `DTSTART == DTEND`) | a point entry (`bl.BlDate` or `bl.BlDateTime` per the source value type) |
+| `VEVENT` with distinct `DTSTART` / `DTEND` | a range entry — `bl.BlRange` with `start = DTSTART`, `end = DTEND` (inclusive at both ends; iCal's `DTEND` is exclusive for `DATE` values per RFC 5545, so the importer subtracts one day for whole-day ranges and uses the value as-is for `DATE-TIME` ranges) |
 | `SUMMARY` | the entry name (empty / missing → unnamed entry) |
-| `VEVENT` `VALUE=DATE` (all-day) | `BlDate` |
-| `VEVENT` `VALUE=DATE-TIME` with `Z` suffix or `TZID` | zoned `BlDateTime` (or `BlDate` for date values with a zone marker) |
-| `VEVENT` `VALUE=DATE-TIME` with neither | naive `BlDateTime` / `BlDate` |
+| `VEVENT` `VALUE=DATE` (all-day) | `bl.BlDate` |
+| `VEVENT` `VALUE=DATE-TIME` with `Z` suffix or `TZID` | zoned `bl.BlDateTime` (or `bl.BlDate` for date values with a zone marker) |
+| `VEVENT` `VALUE=DATE-TIME` with neither | naive `bl.BlDateTime` / `bl.BlDate` |
 | `RRULE` / `RDATE` / `EXDATE` / `EXRULE` | expanded to individual entries within the **expansion window** (see below) |
 | `VTIMEZONE` | parsed but discarded; entries reference their IANA zone via `TZID`, resolved through Go's `time.LoadLocation` (so the tzdata source still wins on DST rules — see [days_time_duration.spec.md § Construction](days_time_duration.spec.md#construction) for the tzdata caveat) |
 | `VTODO`, `VFREEBUSY`, `VJOURNAL`, `VALARM`, anything else | **skipped silently** unless `WithICalStrict(true)` is set (which raises an error on any non-`VEVENT` component) |
@@ -117,7 +117,7 @@ var ukHolidays, _ = ImportICal(f,
 A `VEVENT` with `RRULE` represents a (potentially infinite) recurring series. The importer
 requires an explicit **expansion window** before expanding such events — otherwise a yearly
 Christmas Day event would generate entries forever. The window is supplied via
-`WithICalExpansionWindow(BlRange)`; if omitted, `WithValidity(BlRange)` is used as a fallback
+`WithICalExpansionWindow(bl.BlRange)`; if omitted, `WithValidity(bl.BlRange)` is used as a fallback
 (since the calendar isn't authoritative outside its validity range, expanding past it
 contributes nothing useful). If **neither** is supplied and the document contains any
 `RRULE`, `ImportICal` returns an error rather than guess a window.
@@ -134,14 +134,14 @@ import a mixed-zone document, the host can re-run `ImportICal` against a filtere
 post-process the resulting entries with `withoutOffset` / `withTimezone`
 ([datetime.spec.md § Zone stripping](datetime.spec.md#zone-stripping-ext) /
 [§ Zone conversion](datetime.spec.md#zone-conversion-ext)) before rebuilding via
-`Calendar(...)`.
+`bl.Calendar(...)`.
 
 #### Options
 
 | Option | Default | Effect |
 |---|---|---|
-| `WithICalExpansionWindow(BlRange)` | — | Bounded window over which `RRULE` / `EXRULE` series are expanded. Required when the document contains any `RRULE` and `WithValidity` is not supplied. |
-| `WithValidity(BlRange)` | — | Sets the resulting calendar's validity range. Also serves as the fallback expansion window for `RRULE` events. |
+| `WithICalExpansionWindow(bl.BlRange)` | — | Bounded window over which `RRULE` / `EXRULE` series are expanded. Required when the document contains any `RRULE` and `WithValidity` is not supplied. |
+| `WithValidity(bl.BlRange)` | — | Sets the resulting calendar's validity range. Also serves as the fallback expansion window for `RRULE` events. |
 | `WithICalDefaultName(string)` | `""` (unnamed) | Name applied to any imported entry whose source `VEVENT` has an empty / missing `SUMMARY`. |
 | `WithICalStrict(bool)` | `false` | When `true`, any non-`VEVENT` component (`VTODO`, `VFREEBUSY`, etc.) → error. When `false`, such components are skipped silently. |
 
@@ -152,7 +152,7 @@ type ICalOption func(*iCalConfig)
 func WithICalExpansionWindow(BlRange) ICalOption
 func WithICalDefaultName(string) ICalOption
 func WithICalStrict(bool) ICalOption
-// WithValidity is shared with Calendar(...) and accepted here too — see the host API block.
+// WithValidity is shared with bl.Calendar(...) and accepted here too — see the host API block.
 
 func ImportICal(r io.Reader, opts ...ICalOption) (BlCalendar, error)
 ```
@@ -166,7 +166,7 @@ func ImportICal(r io.Reader, opts ...ICalOption) (BlCalendar, error)
 - An unknown `TZID` (not in the tzdata available to Go's `time.LoadLocation`) → error naming
   the unrecognised zone.
 - A document with no `VEVENT` (only `VTIMEZONE` definitions, or only skipped component types)
-  → an empty `BlCalendar` (matching `Calendar([]BlCalendarEntry{})`).
+  → an empty `bl.BlCalendar` (matching `bl.Calendar([]bl.BlCalendarEntry{})`).
 - `ImportICal` does not deduplicate; two identical recurring instances expanded from
   overlapping `RRULE` / `RDATE` produce two entries. Apply `CalendarMerge([imported],
   WithDedupe(DedupeByValueAndName))` (single-element list) host-side if dedup is wanted.
@@ -174,7 +174,7 @@ func ImportICal(r io.Reader, opts ...ICalOption) (BlCalendar, error)
 ### Entry kinds
 
 A calendar entry pairs a temporal value with an optional name — the name is the lookup key for
-queries like `find` and is otherwise display metadata. `CalendarEntry(value, name...)` accepts
+queries like `find` and is otherwise display metadata. `bl.CalendarEntry(value, name...)` accepts
 any of the four temporal entry kinds:
 
 - **Single date** — the typical holiday entry, e.g. `blDate("2025-12-25")` paired with
@@ -182,50 +182,50 @@ any of the four temporal entry kinds:
 - **Single datetime** — for instant-specific events (deploy windows, scheduled outages), e.g.
   `blDateTime("2025-03-01T03:00:00[Europe/London]")` paired with `"Spring deploy"`.
 - **Date range** — for multi-day closures, conference dates, financial periods, e.g. a
-  `BlRange` over `blDate("2025-12-24")` and `blDate("2026-01-02")` paired with `"Holiday
+  `bl.BlRange` over `blDate("2025-12-24")` and `blDate("2026-01-02")` paired with `"Holiday
   closure"`.
-- **Datetime range** — for sub-day maintenance windows or scheduled blackouts, e.g. a `BlRange`
-  over two zoned `BlDateTime`s for a Saturday maintenance window.
+- **Datetime range** — for sub-day maintenance windows or scheduled blackouts, e.g. a `bl.BlRange`
+  over two zoned `bl.BlDateTime`s for a Saturday maintenance window.
 
-Both endpoints of a range entry must be the **same** temporal kind (both `BlDate` or both
-`BlDateTime`) and follow the same zone-kind rule as direct comparisons (mismatched
-endpoints → `BlTypeError` at range construction; see
+Both endpoints of a range entry must be the **same** temporal kind (both `bl.BlDate` or both
+`bl.BlDateTime`) and follow the same zone-kind rule as direct comparisons (mismatched
+endpoints → `bl.TypeError` at range construction; see
 [range.spec.md § Edge cases](range.spec.md#edge-cases)). Range entries must also be **bounded
 on both ends** — an open-ended range (e.g. `[blDate("2025-01-01")..]`) is rejected by
-`Calendar(...)` at assembly time. Calendars represent scheduled, bounded events; an indefinite
+`bl.Calendar(...)` at assembly time. Calendars represent scheduled, bounded events; an indefinite
 "from X onwards" is either a configuration concern (regenerate the calendar when the scope
 changes) or belongs in a different abstraction (a status flag, not a calendar entry). A
 `CalendarEntry` whose value is anything other than a temporal point or a bounded temporal range
-→ error from `Calendar(...)` at assembly time.
+→ error from `bl.Calendar(...)` at assembly time.
 
 ### Zone-kind homogeneity
 
 Every entry in a non-empty calendar must share the **same zone-kind** — either all entries are
 **zoned** (carry an offset or IANA timezone) or all entries are **naive** (no zone). Mixing the
-two inside one calendar → error from `Calendar(...)` (and from `calendarMerge` at evaluation
+two inside one calendar → error from `bl.Calendar(...)` (and from `calendarMerge` at evaluation
 time when merging calendars of different zone-kinds). The validity range, when supplied via
-`WithValidity(BlRange)`, must also match — a zoned calendar requires a zoned range; a naive
+`WithValidity(bl.BlRange)`, must also match — a zoned calendar requires a zoned range; a naive
 calendar requires a naive range.
 
 ```go
 // host-side (Go)
 
 // OK — both zoned.
-Calendar([]BlCalendarEntry{
-    CalendarEntry(blDate("2025-12-25[Europe/London]")),
-    CalendarEntry(blDate("2025-12-26[Europe/London]")),
+bl.Calendar([]bl.BlCalendarEntry{
+    bl.CalendarEntry(blDate("2025-12-25[Europe/London]")),
+    bl.CalendarEntry(blDate("2025-12-26[Europe/London]")),
 })
 
 // OK — both naive.
-Calendar([]BlCalendarEntry{
-    CalendarEntry(blDate("2025-12-25")),
-    CalendarEntry(blDate("2025-12-26")),
+bl.Calendar([]bl.BlCalendarEntry{
+    bl.CalendarEntry(blDate("2025-12-25")),
+    bl.CalendarEntry(blDate("2025-12-26")),
 })
 
 // Error — mixed zone-kind.
-Calendar([]BlCalendarEntry{
-    CalendarEntry(blDate("2025-12-25[Europe/London]")),
-    CalendarEntry(blDate("2025-12-26")),
+bl.Calendar([]bl.BlCalendarEntry{
+    bl.CalendarEntry(blDate("2025-12-25[Europe/London]")),
+    bl.CalendarEntry(blDate("2025-12-26")),
 })
 // → error: mixed zone-kind entries
 ```
@@ -250,7 +250,7 @@ calling — the strip/attach functions are in
 [datetime.spec.md § Zone stripping](datetime.spec.md#zone-stripping-ext) and
 [datetime.spec.md § Zone conversion](datetime.spec.md#zone-conversion-ext).
 
-`[@test] ../../expr/calendar_test.go`
+`[@test] ../../calendar_test.go`
 
 ---
 
@@ -284,7 +284,7 @@ Calendars are sorted at construction time (see [§ Sort order](#sort-order)); `n
 just consult that existing order. `next(c, point, n)` walks the sequence **forward** from
 `point` and returns the nth entry past it; `prev(c, point, n)` walks **backward** and returns
 the nth entry before it. `n` defaults to `1` and must be a positive integer (`n ≤ 0` →
-`BlTypeError`). Both return a `BlCalendarEntry` on success or `BlNull` when fewer than `n`
+`bl.TypeError`). Both return a `bl.BlCalendarEntry` on success or `bl.BlNull` when fewer than `n`
 matching entries exist on the chosen side of `point`.
 
 The strictly-past-`point` filter:
@@ -297,7 +297,7 @@ The strictly-past-`point` filter:
   neither next nor prev — it is the currently-active entry, not the next or previous.
 
 `point` must share the calendar's zone-kind (per
-[§ Zone-kind homogeneity](#zone-kind-homogeneity)); a mismatch → `BlTypeError`. The temporal
+[§ Zone-kind homogeneity](#zone-kind-homogeneity)); a mismatch → `bl.TypeError`. The temporal
 kind of `point` may differ from individual entries — entries of the other kind are silently
 skipped (per the same per-entry null-on-temporal-mismatch rule used by `contains` /
 `entriesFor` / `overlaps` / `entriesIn`), so a `date` point against a calendar mixing date and
@@ -327,7 +327,7 @@ prev(ukHolidays, date("2025-12-25"))            // → Summer Bank Holiday (2025
 
 A `point` or `range` argument must share the calendar's zone-kind (per
 [§ Zone-kind homogeneity](#zone-kind-homogeneity)); a mismatched zone-kind argument →
-`BlTypeError` from the query call. **Within** a calendar's zone-kind, temporal kinds may still
+`bl.TypeError` from the query call. **Within** a calendar's zone-kind, temporal kinds may still
 differ between the query and individual entries (a date query against a calendar that holds
 both date and datetime entries, or vice versa), so each entry is matched independently:
 
@@ -344,7 +344,7 @@ without poisoning the result — scanning continues. Use the conversion function
 [date.spec.md § Conversion](date.spec.md) / [datetime.spec.md § Conversion](datetime.spec.md)
 to coerce explicitly when you need cross-temporal-kind matching to succeed.
 
-`[@test] ../../expr/calendar_query_test.go`
+`[@test] ../../calendar_query_test.go`
 
 ---
 
@@ -356,9 +356,9 @@ to coerce explicitly when you need cross-temporal-kind matching to succeed.
 | `calendarKeep(c, target[, options])` | `calendarKeep(ukHolidays, "Boxing Day")` | entries matching `target` **retained**, all others dropped (symmetric inverse of `calendarDrop`) |
 | `calendarMerge(calendars[, options])` | `calendarMerge([england, scotland], {dedupeBy: "value"})` | union of all input entries, re-sorted into the result calendar's canonical chronological order (see [§ Sort order](#sort-order)); optional dedupe via `{dedupeBy, tiebreak}` |
 
-All three return a fresh `BlCalendar` — the receiver is never mutated. There is no `calendarAdd`
+All three return a fresh `bl.BlCalendar` — the receiver is never mutated. There is no `calendarAdd`
 inside the expression language because adding an entry would require constructing a fresh
-`BlCalendarEntry`, which is a host-only operation
+`bl.BlCalendarEntry`, which is a host-only operation
 (see [§ Construction (host-side)](#construction-host-side)). To append entries, build the
 expanded calendar host-side and re-supply it as an input variable.
 
@@ -370,11 +370,11 @@ identically, but matching entries are **removed** by `calendarDrop` and **retain
 
 | `target` type | Match rule |
 |---|---|
-| `BlString` | match entries whose `name` equals `target` (case-sensitive exact match); unnamed entries are never matched |
-| `BlRegex` (from [`pattern(s)`](string.spec.md#precompiled-patterns-patterns--blregex)) | match entries whose `name` matches the precompiled regex (RE2 syntax, anchored at both ends via `^(?:…)$`); unnamed entries are never matched |
-| `BlDate` / `BlDateTime` | match entries whose `value` equals `target` (via `BlValue.Equal()`) |
-| `BlRange` | depends on `rangeMatch` (see below); default is structural equality |
-| `BlList` | match entries that satisfy **any** item in the list, applying the rule above per item |
+| `bl.BlString` | match entries whose `name` equals `target` (case-sensitive exact match); unnamed entries are never matched |
+| `bl.BlRegex` (from [`pattern(s)`](string.spec.md#precompiled-patterns-patterns--blregex)) | match entries whose `name` matches the precompiled regex (RE2 syntax, anchored at both ends via `^(?:…)$`); unnamed entries are never matched |
+| `bl.BlDate` / `bl.BlDateTime` | match entries whose `value` equals `target` (via `bl.BlValue.Equal()`) |
+| `bl.BlRange` | depends on `rangeMatch` (see below); default is structural equality |
+| `bl.BlList` | match entries that satisfy **any** item in the list, applying the rule above per item |
 
 Strings and precompiled patterns are two distinct entry-name match modes — strings are exact
 matches, `pattern(...)` values are regex matches. There is no single-argument form that infers
@@ -382,12 +382,12 @@ one from the other; the type of the argument selects the mode.
 
 #### Range-target match mode (`rangeMatch`)
 
-When `target` is a `BlRange` (or contains range items in a list), the optional `options`
+When `target` is a `bl.BlRange` (or contains range items in a list), the optional `options`
 dictionary key `rangeMatch` selects how it is compared against each entry:
 
 | `rangeMatch` | Match rule for a range target `T` against an entry `e` |
 |---|---|
-| `"equality"` (default) | matches iff `e.value` is a `BlRange` structurally equal to `T` (same endpoints and inclusivity); a point entry inside `T` is **not** matched |
+| `"equality"` (default) | matches iff `e.value` is a `bl.BlRange` structurally equal to `T` (same endpoints and inclusivity); a point entry inside `T` is **not** matched |
 | `"entryWithin"` | matches iff `e.value` lies **entirely inside** `T` — a point entry is matched when the point is in `T`; a range entry is matched when its full span is contained in `T` (partial overlap doesn't count). Reads as *"drop / keep everything **within** this period"*. |
 | `"entryEncloses"` | matches iff `e.value` is a range that **entirely encloses** `T` — a point entry is essentially never matched (it would have to be a degenerate range equal to `T`); a range entry is matched when `T` lies within its span. Reads as *"drop / keep entries that **span** this period"*. |
 | `"overlap"` | matches iff `e.value` **overlaps** with `T` — a point entry is matched when the point is in `T`; a range entry is matched when the two ranges share at least one element. Reads as *"drop / keep everything that **touches** this period"*. |
@@ -397,8 +397,8 @@ asks "is the entry inside the target?" (target is the wider one); `"entryEnclose
 the entry contain the target?" (entry is the wider one). `"overlap"` is symmetric, so no
 direction option is needed.
 
-`rangeMatch` only affects how a `BlRange` target dispatches; `BlString` / `BlRegex` /
-`BlDate` / `BlDateTime` targets ignore it (those modes are about names or single-value
+`rangeMatch` only affects how a `bl.BlRange` target dispatches; `bl.BlString` / `bl.BlRegex` /
+`bl.BlDate` / `bl.BlDateTime` targets ignore it (those modes are about names or single-value
 equality, with no range comparison to broaden). For a list `target` containing mixed kinds,
 the mode applies only to the range elements; the other elements continue to use their own
 rules.
@@ -441,22 +441,22 @@ calendarKeep(ukHolidays, pattern(".*"))                                    // ev
 Each entry is checked against the target(s) once; an entry that matches by any criterion
 participates in the drop / keep set.
 
-A `target` whose type isn't in the table (or a list element that isn't) → `BlTypeError`. A
-`BlRegex` whose source is malformed never reaches `calendarDrop` — it would have failed at the
+A `target` whose type isn't in the table (or a list element that isn't) → `bl.TypeError`. A
+`bl.BlRegex` whose source is malformed never reaches `calendarDrop` — it would have failed at the
 `pattern(...)` call site. Zone-kind mismatch (a naive value target against a zoned calendar or
-vice versa) → `BlTypeError`, consistent with
+vice versa) → `bl.TypeError`, consistent with
 [§ Zone-kind homogeneity](#zone-kind-homogeneity).
 
-`calendarKeep` does **not** match unnamed entries via a `BlString` or `BlRegex` target — they
-have no name to compare. An unnamed entry whose value matches a `BlDate` / `BlDateTime` /
-`BlRange` target is retained as expected. Host code that wants to retain unnamed entries
+`calendarKeep` does **not** match unnamed entries via a `bl.BlString` or `bl.BlRegex` target — they
+have no name to compare. An unnamed entry whose value matches a `bl.BlDate` / `bl.BlDateTime` /
+`bl.BlRange` target is retained as expected. Host code that wants to retain unnamed entries
 alongside name-matched ones should pass an explicit list mixing values and names.
 
 The validity range is preserved across both functions; only the entry list changes.
 
-The host-side equivalents are methods on `BlCalendar`. The polymorphic target argument is
-typed `any` and accepts: `string` (exact name), `BlRegex` (regex name), `BlDate`, `BlDateTime`,
-`BlRange` (value), or a `[]any` whose elements are any combination of those. Range-match mode
+The host-side equivalents are methods on `bl.BlCalendar`. The polymorphic target argument is
+typed `any` and accepts: `string` (exact name), `bl.BlRegex` (regex name), `bl.BlDate`, `bl.BlDateTime`,
+`bl.BlRange` (value), or a `[]any` whose elements are any combination of those. Range-match mode
 for range targets is supplied via functional options:
 
 ```go
@@ -485,7 +485,7 @@ var onlyChristmasPair, _ = ukHolidays.Keep([]any{
 var onlyChristmasWeek, _ = ukHolidays.Keep(christmasWeek, WithRangeMatch(RangeMatchEntryWithin))
 ```
 
-Both methods return `(BlCalendar, error)`. The error covers the same failure modes as the
+Both methods return `(bl.BlCalendar, error)`. The error covers the same failure modes as the
 expression-language form: an unsupported target type, a zone-kind mismatch, an unknown
 range-match mode, or a malformed list element. The validity range is preserved on the returned
 calendar.
@@ -537,19 +537,19 @@ calendarMerge([england, scotland, wales], {dedupeBy: "value", tiebreak: "name"})
 calendarMerge([england, scotland], {dedupeBy: "valueAndName"})
 ```
 
-The recognised keys are `dedupeBy` and `tiebreak`; an unknown key → `BlTypeError`. A `dedupeBy`
+The recognised keys are `dedupeBy` and `tiebreak`; an unknown key → `bl.TypeError`. A `dedupeBy`
 value other than `"value"` or `"valueAndName"`, or a `tiebreak` value other than `"first"` or
-`"name"`, is also a `BlTypeError`. `tiebreak` is silently ignored when `dedupeBy` is omitted
+`"name"`, is also a `bl.TypeError`. `tiebreak` is silently ignored when `dedupeBy` is omitted
 (no groups to break) or when it equals `"valueAndName"` (groups are defined by exact equality
 on both axes, so any group member is interchangeable — the first-occurrence one is kept for
 determinism).
 
 Validity bounds are **not** unioned across the input calendars — the result has none unless
-re-supplied to a follow-up `Calendar(..., WithValidity(...))` host construction. Dedupe
+re-supplied to a follow-up `bl.Calendar(..., WithValidity(...))` host construction. Dedupe
 operates on entries only.
 
 **Zone-kind enforcement** (see [§ Zone-kind homogeneity](#zone-kind-homogeneity)):
-`calendarMerge` rejects a list of calendars whose zone-kinds differ with `BlTypeError`. Merging
+`calendarMerge` rejects a list of calendars whose zone-kinds differ with `bl.TypeError`. Merging
 an empty calendar with a non-empty one is fine; the result inherits the non-empty operand's
 zone-kind.
 
@@ -558,12 +558,12 @@ calendars as a slice plus functional options for dedupe:
 
 ```go
 // host-side (Go)
-var concat, _   = CalendarMerge([]BlCalendar{england, scotland})
-var byValue, _  = CalendarMerge([]BlCalendar{england, scotland},
+var concat, _   = CalendarMerge([]bl.BlCalendar{england, scotland})
+var byValue, _  = CalendarMerge([]bl.BlCalendar{england, scotland},
     WithDedupe(DedupeByValue))                                          // tiebreak defaults to TiebreakFirst
-var byValName, _ = CalendarMerge([]BlCalendar{england, scotland},
+var byValName, _ = CalendarMerge([]bl.BlCalendar{england, scotland},
     WithDedupe(DedupeByValueAndName))
-var byValNm, _  = CalendarMerge([]BlCalendar{england, scotland, wales},
+var byValNm, _  = CalendarMerge([]bl.BlCalendar{england, scotland, wales},
     WithDedupe(DedupeByValue), WithTiebreak(TiebreakName))              // value-grouping, name-tiebreak
 ```
 
@@ -591,9 +591,9 @@ func CalendarMerge(calendars []BlCalendar, opts ...MergeOption) (BlCalendar, err
 ```
 
 Validity bounds are not unioned (matching the expression-language behaviour); the returned
-calendar has none unless re-supplied via a follow-up `Calendar(..., WithValidity(...))`.
+calendar has none unless re-supplied via a follow-up `bl.Calendar(..., WithValidity(...))`.
 
-`[@test] ../../expr/calendar_mutation_test.go`
+`[@test] ../../calendar_mutation_test.go`
 
 ---
 
@@ -609,14 +609,14 @@ The `in` operator on a calendar is **patcher-lowered** to a call to `contains(c,
 `contains(ukHolidays, date("2025-12-25"))` — the per-entry cross-temporal-kind null-on-mismatch
 rule from [§ Cross-kind matching](#cross-kind-matching) applies identically, and the operand
 must share the calendar's zone-kind (per
-[§ Zone-kind homogeneity](#zone-kind-homogeneity)). The left operand must be a `BlDate` or
-`BlDateTime`; a range left operand → `BlTypeError` from the patcher (use the explicit
+[§ Zone-kind homogeneity](#zone-kind-homogeneity)). The left operand must be a `bl.BlDate` or
+`bl.BlDateTime`; a range left operand → `bl.TypeError` from the patcher (use the explicit
 `overlaps(c, r)` / `entriesIn(c, r)` calls for range-on-calendar queries — those have to pick
 between overlap and containment semantics, which `in` doesn't).
 
 Calendars have no arithmetic operators and no ordering operators (`<`/`<=`/`>`/`>=`).
 
-`[@test] ../../expr/calendar_operators_test.go`
+`[@test] ../../calendar_operators_test.go`
 
 ---
 
@@ -635,7 +635,7 @@ businessDaysBetween(date("2025-04-14"), date("2025-04-25"), ukHolidays)  // → 
 Iteration outside `[validFrom, validTo]` is silently tolerated by default — the calendar simply
 contributes no holiday information beyond its bounds. Callers that need a hard guarantee can
 opt in by passing `strictCalendarRange: true` to any iterating business-day function, which
-raises `BlCalendarRangeError` the moment iteration would step past the boundary (see
+raises `bl.CalendarRangeError` the moment iteration would step past the boundary (see
 [date.spec.md § Calendar-range strictness](date.spec.md#calendar-range-strictness)).
 
 ---
@@ -658,10 +658,10 @@ calendars built from the same entries in different argument orders are equal).
 
 The sort key is a tuple, compared lexicographically:
 
-1. **Position** (ascending). For a point entry (`BlDate` or `BlDateTime`), the position is the
+1. **Position** (ascending). For a point entry (`bl.BlDate` or `bl.BlDateTime`), the position is the
    value itself. For a range entry, the position is `range.start`. When the entry types differ
-   on this axis (a `BlDate` against a `BlDateTime`, both in the calendar's shared zone-kind),
-   the `BlDate` is projected to **midnight of that day** in the same zone-kind for the
+   on this axis (a `bl.BlDate` against a `bl.BlDateTime`, both in the calendar's shared zone-kind),
+   the `bl.BlDate` is projected to **midnight of that day** in the same zone-kind for the
    comparison only — its in-place storage is unchanged. So
    `date("2025-12-25")` sorts at the same position as `datetime("2025-12-25T00:00:00")`.
 2. **Specificity** (point before range, on tie). When two entries share a position but one is
@@ -679,7 +679,7 @@ Two entries that are equal on all five keys (same position, same kind, same rang
 name) are observationally indistinguishable; their relative order is implementation-defined
 but stable for a given calendar value, so `entries(c)` is deterministic.
 
-For zoned calendars, positions compare as **UTC instants** (the same rule as zoned `BlDateTime`
+For zoned calendars, positions compare as **UTC instants** (the same rule as zoned `bl.BlDateTime`
 comparison in [datetime.spec.md § Comparison semantics](datetime.spec.md#comparison-semantics));
 for naive calendars, positions compare as **wall-clock**. A calendar's zone-kind is uniform
 ([§ Zone-kind homogeneity](#zone-kind-homogeneity)), so the comparison kind never varies within
@@ -707,57 +707,57 @@ Lives in `expr/calendar.go`. Shared mechanics in
 
 ### Value types & host API (exported)
 
-`BlCalendar` is the immutable Go value type that represents a calendar inside the engine and at
-the host-code boundary. It wraps an insertion-ordered slice of `BlCalendarEntry` plus the two
+`bl.BlCalendar` is the immutable Go value type that represents a calendar inside the engine and at
+the host-code boundary. It wraps an insertion-ordered slice of `bl.BlCalendarEntry` plus the two
 optional validity bounds. All fields are private so callers cannot mutate the underlying value;
-every operation in the library returns a fresh `BlCalendar`.
+every operation in the library returns a fresh `bl.BlCalendar`.
 
-`BlCalendarEntry` is the immutable Go value type for a single entry. It pairs an optional name
+`bl.BlCalendarEntry` is the immutable Go value type for a single entry. It pairs an optional name
 (a `*string` so unnamed entries are distinct from named-with-empty-string) with a temporal
-`value` — one of `BlDate`, `BlDateTime`, or a `BlRange` whose endpoints are one of those.
-`BlCalendarEntry` implements `BlValue` so it can be returned from `entries(c)` and `find(c,
-name)` (which produce a `BlList` of entries), but its `Type()` returns `BlTypeAny` because it
+`value` — one of `bl.BlDate`, `bl.BlDateTime`, or a `bl.BlRange` whose endpoints are one of those.
+`bl.BlCalendarEntry` implements `bl.BlValue` so it can be returned from `entries(c)` and `find(c,
+name)` (which produce a `bl.BlList` of entries), but its `Type()` returns `bl.TypeAny` because it
 is not a first-class language type with a literal form — host code and other built-ins treat it
 opaquely, accessing only via `entryName(e)` and `entryValue(e)`.
 
 The exported surface has four parts:
 
-- **`BlValue` interface methods on `BlCalendar`** — `Type()`, `Equal()`, `String()`, and the
+- **`bl.BlValue` interface methods on `bl.BlCalendar`** — `Type()`, `Equal()`, `bl.String()`, and the
   unexported `isBlValue()` marker. `Equal` is structural — same entries in the same order, same
-  validity bounds. `String()` doubles as the `fmt.Stringer` implementation, producing a
+  validity bounds. `bl.String()` doubles as the `fmt.Stringer` implementation, producing a
   multi-line summary suitable for debug output (e.g.
-  `"BlCalendar{2025-01-01: New Year's Day, 2025-12-25: Christmas Day}"`).
-- **`BlValue` interface methods on `BlCalendarEntry`** — same set, with `Type()` returning
-  `BlTypeAny`. `Equal` compares both name and value; `String()` produces e.g.
+  `"bl.BlCalendar{2025-01-01: New Year's Day, 2025-12-25: Christmas Day}"`).
+- **`bl.BlValue` interface methods on `bl.BlCalendarEntry`** — same set, with `Type()` returning
+  `bl.TypeAny`. `Equal` compares both name and value; `bl.String()` produces e.g.
   `"2025-12-25: Christmas Day"` (or `"2025-12-25"` for unnamed).
-- **`CalendarEntry(value, name...)` / `Calendar(entries, opts...)`** — the host constructors.
+- **`bl.CalendarEntry(value, name...)` / `bl.Calendar(entries, opts...)`** — the host constructors.
   `CalendarEntry` is **infallible**: it just wraps the value and the optional name into a
-  `BlCalendarEntry` so it inlines cleanly inside an entries slice literal. All validation —
+  `bl.BlCalendarEntry` so it inlines cleanly inside an entries slice literal. All validation —
   the value must be a temporal point or temporal range, the entries must share a single
   zone-kind, the validity range must match the entries' zone-kind, and the range must be
-  well-formed — is performed by `Calendar(entries, opts...)`, which returns an `error`
+  well-formed — is performed by `bl.Calendar(entries, opts...)`, which returns an `error`
   describing the first structural problem found. Validity is supplied as a single functional
-  option `WithValidity(BlRange)` taking the range the calendar is authoritative over; the
+  option `WithValidity(bl.BlRange)` taking the range the calendar is authoritative over; the
   range may be open at either end (`[from..]` for an indefinite upper bound, `[..to]` for an
   indefinite lower bound). Omitting `WithValidity` leaves the calendar unbounded on both ends.
   The same zone-kind homogeneity check runs at evaluation time inside `calendarMerge` when
   combining calendars of different kinds.
-- **`Entries()` / `ValidFrom()` / `ValidTo()` / `ZoneKind()` accessors on `BlCalendar`**, plus
-  **`Name()` / `Value()` accessors on `BlCalendarEntry`** — hand the internal state back to host
-  code in defensive-copy form. `Entries()` returns a fresh `[]BlCalendarEntry`; mutating the
+- **`Entries()` / `ValidFrom()` / `ValidTo()` / `ZoneKind()` accessors on `bl.BlCalendar`**, plus
+  **`Name()` / `Value()` accessors on `bl.BlCalendarEntry`** — hand the internal state back to host
+  code in defensive-copy form. `Entries()` returns a fresh `[]bl.BlCalendarEntry`; mutating the
   returned slice does not affect the calendar. `ZoneKind()` returns the calendar's declared
   zone-kind as a small enum (`CalendarZoneNaive` / `CalendarZoneZoned` / `CalendarZoneEmpty`
   for an empty calendar with no determined kind), so host code can check before adding entries.
 
 ```go
-// BlCalendarEntry is an immutable (optional-name, temporal-value) pair.
+// bl.BlCalendarEntry is an immutable (optional-name, temporal-value) pair.
 type BlCalendarEntry struct {
     name  *string  // nil == unnamed (distinct from named-with-empty-string)
     value BlValue  // BlDate / BlDateTime / BlRange of either
 }
 
-// BlValue interface — required by all Bl* value types.
-func (BlCalendarEntry) Type() BlType { return BlTypeAny } // not a first-class language type
+// bl.BlValue interface — required by all Bl* value types.
+func (BlCalendarEntry) Type() Type { return TypeAny } // not a first-class language type
 func (e BlCalendarEntry) Equal(other BlValue) BlValue     // same name and value
 func (e BlCalendarEntry) String() string                  // "2025-12-25: Christmas Day" / "2025-12-25"
 func (BlCalendarEntry) isBlValue() {}
@@ -766,20 +766,20 @@ func (BlCalendarEntry) isBlValue() {}
 func (e BlCalendarEntry) Name() (string, bool)            // value, ok — ok == false for unnamed
 func (e BlCalendarEntry) Value() BlValue
 
-// BlCalendar wraps insertion-ordered entries plus optional validity bounds.
+// bl.BlCalendar wraps insertion-ordered entries plus optional validity bounds.
 type BlCalendar struct {
     entries             []BlCalendarEntry
     validFrom, validTo  BlValue            // BlNull when unset
 }
 
-// BlValue interface — required by all Bl* value types.
-func (BlCalendar) Type() BlType { return BlTypeCalendar }
+// bl.BlValue interface — required by all Bl* value types.
+func (BlCalendar) Type() Type { return TypeCalendar }
 func (c BlCalendar) Equal(other BlValue) BlValue   // set-equality on entries; same validity range
 func (c BlCalendar) String() string                // debug summary
 func (BlCalendar) isBlValue() {}
 
 // Host constructors.
-type CalendarOption func(*BlCalendar)
+type CalendarOption func(*bl.BlCalendar)
 func WithValidity(r BlRange) CalendarOption                                  // r may be open on either end
 func CalendarEntry(value BlValue, name ...string) BlCalendarEntry            // infallible; validation deferred to Calendar(...)
 func Calendar(entries []BlCalendarEntry, opts ...CalendarOption) (BlCalendar, error) // non-temporal entry, mixed zone-kind, or validFrom > validTo → error
@@ -791,7 +791,7 @@ func (c BlCalendar) ValidTo() BlValue             // BlNull when unset
 func (c BlCalendar) ZoneKind() CalendarZoneKind   // CalendarZoneNaive / CalendarZoneZoned / CalendarZoneEmpty
 
 // Host-side equivalents of the expression-language mutation built-ins.
-// Drop/Keep target accepts: string | BlRegex | BlDate | BlDateTime | BlRange | []any.
+// Drop/Keep target accepts: string | bl.BlRegex | bl.BlDate | bl.BlDateTime | bl.BlRange | []any.
 // The opts ... slot supplies WithRangeMatch(...) for range-target dispatch (see § calendarDrop).
 func (c BlCalendar) Drop(target any, opts ...DropKeepOption) (BlCalendar, error)
 func (c BlCalendar) Keep(target any, opts ...DropKeepOption) (BlCalendar, error)
@@ -811,7 +811,7 @@ const (
 ### Backing implementations (unexported, suffix `Fn`)
 
 Calendar has **no per-type operator implementation functions**. Equality (`=` / `!=`)
-dispatches through the `BlValue.Equal()` interface method (see [§ Value types & host
+dispatches through the `bl.BlValue.Equal()` interface method (see [§ Value types & host
 API](#value-types--host-api-exported)). Calendar has no arithmetic operators, no ordering
 operators, and no `in` operator.
 
@@ -848,17 +848,17 @@ func entryOverlapsRange(e BlCalendarEntry, r BlRange) BlValue             // BlB
 
 // Zone-kind helpers used by both construction and query paths.
 func temporalZoneKind(v BlValue) CalendarZoneKind                         // for an entry value (point/range) or a query arg
-func enforceCalendarZoneKind(c BlCalendar, v BlValue) error               // BlTypeError when v's kind doesn't match c's
+func enforceCalendarZoneKind(c BlCalendar, v BlValue) error               // TypeError when v's kind doesn't match c's
 ```
 
-The host-construction check (in `Calendar(...)` / `CalendarEntry(...)`), the
+The host-construction check (in `bl.Calendar(...)` / `bl.CalendarEntry(...)`), the
 calendar-merge check (`calendarMergeFn`), and the query-time check (`calContainsFn`,
 `entriesForFn`, `calOverlapsFn`, `entriesInFn`) all share `enforceCalendarZoneKind` — so the
 homogeneity rule has a single source of truth, and any new calendar-aware function inherits it
 by routing through the helper.
 
-Native Go inputs wrap through the engine's input bridge — a host-built `BlCalendar` passed as an
-input variable arrives unchanged. There is no native Go type that maps to `BlCalendar`, so the
+Native Go inputs wrap through the engine's input bridge — a host-built `bl.BlCalendar` passed as an
+input variable arrives unchanged. There is no native Go type that maps to `bl.BlCalendar`, so the
 construction path is always the host constructors above (or the `calendar` / `calendarEntry`
 built-ins inside an expression).
 
@@ -872,13 +872,13 @@ initialisation to learn about the calendar library. Each entry is built with
 - `impl` must have the signature `func(...any) (any, error)` — that is the only shape
   [`expr-lang/expr`](https://github.com/expr-lang/expr) accepts. The `typed1` / `typed2`
   adapters (defined in [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go))
-  wrap a typed implementation such as `func(BlCalendar) BlList` into that shape; the variadic
+  wrap a typed implementation such as `func(bl.BlCalendar) bl.BlList` into that shape; the variadic
   impls are registered directly because their multi-shape dispatch can't be expressed as a
   fixed-arity adapter.
 - `typeHints` is a variadic list of `new(func(...) ...)` values. The engine reflects on them
   at compile time to validate that callers supply the right argument types — they carry no
   runtime cost. Multiple hints register the function as overloaded across signatures (e.g.
-  `contains` / `overlaps` / `count` / `isEmpty` add `BlCalendar` signatures to the same names
+  `contains` / `overlaps` / `count` / `isEmpty` add `bl.BlCalendar` signatures to the same names
   registered in other spokes).
 
 The registrations are grouped by role: query/inspection, mutation, and the overloaded entries
@@ -890,129 +890,129 @@ shared with other spokes. Calendar construction is host-only (see
 func calendarOptions() []expr.Option {
     return []expr.Option{
         // NOTE — no calendar(...) or calendarEntry(...) constructors; calendars and entries are
-        // built host-side via the Calendar(...) / CalendarEntry(...) Go constructors (see
+        // built host-side via the bl.Calendar(...) / bl.CalendarEntry(...) Go constructors (see
         // § Value types & host API). Likewise no calendarAdd, which would require minting a
         // fresh entry from inside an expression.
 
         // query / inspection
-        expr.Function("entries",    typed1(entriesFn),    new(func(BlCalendar) BlList)),
-        expr.Function("names",      typed1(namesFn),      new(func(BlCalendar) BlList)),
-        expr.Function("find",       typed2(findFn),       new(func(BlCalendar, BlString) BlList)),
-        expr.Function("contains",   typed2(calContainsFn), new(func(BlCalendar, BlValue) BlBoolean)),     // overload; string/list/range overloads elsewhere
-        expr.Function("entriesFor", typed2(entriesForFn), new(func(BlCalendar, BlValue) BlList)),
-        expr.Function("overlaps",   typed2(calOverlapsFn), new(func(BlCalendar, BlRange) BlBoolean)),     // overload; range overload in range.spec.md
-        expr.Function("entriesIn",  typed2(entriesInFn),  new(func(BlCalendar, BlRange) BlList)),
-        expr.Function("validFrom",  typed1(validFromFn),  new(func(BlCalendar) BlValue)),
-        expr.Function("validTo",    typed1(validToFn),    new(func(BlCalendar) BlValue)),
-        expr.Function("validRange", typed1(validRangeFn), new(func(BlCalendar) BlValue)),
-        expr.Function("entryName",  typed1(entryNameFn),  new(func(BlCalendarEntry) BlValue)),
-        expr.Function("entryValue", typed1(entryValueFn), new(func(BlCalendarEntry) BlValue)),
+        expr.Function("entries",    typed1(entriesFn),    new(func(bl.BlCalendar) bl.BlList)),
+        expr.Function("names",      typed1(namesFn),      new(func(bl.BlCalendar) bl.BlList)),
+        expr.Function("find",       typed2(findFn),       new(func(bl.BlCalendar, bl.BlString) bl.BlList)),
+        expr.Function("contains",   typed2(calContainsFn), new(func(bl.BlCalendar, bl.BlValue) bl.BlBoolean)),     // overload; string/list/range overloads elsewhere
+        expr.Function("entriesFor", typed2(entriesForFn), new(func(bl.BlCalendar, bl.BlValue) bl.BlList)),
+        expr.Function("overlaps",   typed2(calOverlapsFn), new(func(bl.BlCalendar, bl.BlRange) bl.BlBoolean)),     // overload; range overload in range.spec.md
+        expr.Function("entriesIn",  typed2(entriesInFn),  new(func(bl.BlCalendar, bl.BlRange) bl.BlList)),
+        expr.Function("validFrom",  typed1(validFromFn),  new(func(bl.BlCalendar) bl.BlValue)),
+        expr.Function("validTo",    typed1(validToFn),    new(func(bl.BlCalendar) bl.BlValue)),
+        expr.Function("validRange", typed1(validRangeFn), new(func(bl.BlCalendar) bl.BlValue)),
+        expr.Function("entryName",  typed1(entryNameFn),  new(func(bl.BlCalendarEntry) bl.BlValue)),
+        expr.Function("entryValue", typed1(entryValueFn), new(func(bl.BlCalendarEntry) bl.BlValue)),
         expr.Function("next",       nextFn,
-            new(func(BlCalendar, BlDate) BlValue),
-            new(func(BlCalendar, BlDate, BlNumber) BlValue),
-            new(func(BlCalendar, BlDateTime) BlValue),
-            new(func(BlCalendar, BlDateTime, BlNumber) BlValue)),                                  // returns BlCalendarEntry or BlNull
+            new(func(bl.BlCalendar, bl.BlDate) bl.BlValue),
+            new(func(bl.BlCalendar, bl.BlDate, bl.BlNumber) bl.BlValue),
+            new(func(bl.BlCalendar, bl.BlDateTime) bl.BlValue),
+            new(func(bl.BlCalendar, bl.BlDateTime, bl.BlNumber) bl.BlValue)),                                  // returns bl.BlCalendarEntry or bl.BlNull
         expr.Function("prev",       prevFn,
-            new(func(BlCalendar, BlDate) BlValue),
-            new(func(BlCalendar, BlDate, BlNumber) BlValue),
-            new(func(BlCalendar, BlDateTime) BlValue),
-            new(func(BlCalendar, BlDateTime, BlNumber) BlValue)),                                  // symmetric inverse of next
+            new(func(bl.BlCalendar, bl.BlDate) bl.BlValue),
+            new(func(bl.BlCalendar, bl.BlDate, bl.BlNumber) bl.BlValue),
+            new(func(bl.BlCalendar, bl.BlDateTime) bl.BlValue),
+            new(func(bl.BlCalendar, bl.BlDateTime, bl.BlNumber) bl.BlValue)),                                  // symmetric inverse of next
 
         // mutation — each returns a fresh calendar
         expr.Function("calendarDrop", calendarDropFn,
             // (c, target) — target type selects the dispatch
-            new(func(BlCalendar, BlString) BlCalendar),
-            new(func(BlCalendar, BlRegex) BlCalendar),
-            new(func(BlCalendar, BlDate) BlCalendar),
-            new(func(BlCalendar, BlDateTime) BlCalendar),
-            new(func(BlCalendar, BlRange) BlCalendar),
-            new(func(BlCalendar, BlList) BlCalendar),
+            new(func(bl.BlCalendar, bl.BlString) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlRegex) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlDate) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlDateTime) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlRange) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlList) bl.BlCalendar),
             // (c, target, options) — options dict; recognised key `rangeMatch`
-            new(func(BlCalendar, BlString,    BlDictionary) BlCalendar),
-            new(func(BlCalendar, BlRegex,     BlDictionary) BlCalendar),
-            new(func(BlCalendar, BlDate,      BlDictionary) BlCalendar),
-            new(func(BlCalendar, BlDateTime,  BlDictionary) BlCalendar),
-            new(func(BlCalendar, BlRange,     BlDictionary) BlCalendar),
-            new(func(BlCalendar, BlList,      BlDictionary) BlCalendar)),                          // polymorphic; see § calendarDrop / calendarKeep
+            new(func(bl.BlCalendar, bl.BlString,    bl.BlDictionary) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlRegex,     bl.BlDictionary) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlDate,      bl.BlDictionary) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlDateTime,  bl.BlDictionary) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlRange,     bl.BlDictionary) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlList,      bl.BlDictionary) bl.BlCalendar)),                          // polymorphic; see § calendarDrop / calendarKeep
         expr.Function("calendarKeep", calendarKeepFn,
-            new(func(BlCalendar, BlString) BlCalendar),
-            new(func(BlCalendar, BlRegex) BlCalendar),
-            new(func(BlCalendar, BlDate) BlCalendar),
-            new(func(BlCalendar, BlDateTime) BlCalendar),
-            new(func(BlCalendar, BlRange) BlCalendar),
-            new(func(BlCalendar, BlList) BlCalendar),
-            new(func(BlCalendar, BlString,    BlDictionary) BlCalendar),
-            new(func(BlCalendar, BlRegex,     BlDictionary) BlCalendar),
-            new(func(BlCalendar, BlDate,      BlDictionary) BlCalendar),
-            new(func(BlCalendar, BlDateTime,  BlDictionary) BlCalendar),
-            new(func(BlCalendar, BlRange,     BlDictionary) BlCalendar),
-            new(func(BlCalendar, BlList,      BlDictionary) BlCalendar)),                          // symmetric inverse of calendarDrop
+            new(func(bl.BlCalendar, bl.BlString) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlRegex) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlDate) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlDateTime) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlRange) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlList) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlString,    bl.BlDictionary) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlRegex,     bl.BlDictionary) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlDate,      bl.BlDictionary) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlDateTime,  bl.BlDictionary) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlRange,     bl.BlDictionary) bl.BlCalendar),
+            new(func(bl.BlCalendar, bl.BlList,      bl.BlDictionary) bl.BlCalendar)),                          // symmetric inverse of calendarDrop
         expr.Function("calendarMerge", calendarMergeFn,
-            new(func(BlList) BlCalendar),
-            new(func(BlList, BlDictionary) BlCalendar)),                                          // see § calendarMerge for the options dict
+            new(func(bl.BlList) bl.BlCalendar),
+            new(func(bl.BlList, bl.BlDictionary) bl.BlCalendar)),                                          // see § calendarMerge for the options dict
 
         // overloads of list-spoke aggregate functions (canonical entries in list.spec.md)
-        expr.Function("count",   typed1(calCountFn),   new(func(BlCalendar) BlNumber)),                   // overload
-        expr.Function("isEmpty", typed1(calIsEmptyFn), new(func(BlCalendar) BlBoolean)),                  // overload
+        expr.Function("count",   typed1(calCountFn),   new(func(bl.BlCalendar) bl.BlNumber)),                   // overload
+        expr.Function("isEmpty", typed1(calIsEmptyFn), new(func(bl.BlCalendar) bl.BlBoolean)),                  // overload
     }
 }
 ```
 
 `isPublicHoliday` / `isBusinessDay` / `addBusinessDays` / … ([date.spec.md](date.spec.md)) take
-a `BlCalendar` (named `phCalendar`). Iterating variants raise `BlCalendarRangeError` past the
+a `bl.BlCalendar` (named `phCalendar`). Iterating variants raise `bl.CalendarRangeError` past the
 validity bounds only when `strictCalendarRange: true` is supplied.
 
-`[@test] ../../expr/calendar_test.go`
+`[@test] ../../calendar_test.go`
 
 ---
 
 ## Edge cases
 
-- Empty calendar via `Calendar(nil)` or `Calendar([]BlCalendarEntry{})` → no entries, no
+- Empty calendar via `bl.Calendar(nil)` or `bl.Calendar([]bl.BlCalendarEntry{})` → no entries, no
   validity bounds. A `WithValidity(r)` whose range is malformed (start > end, or endpoints
-  with mismatched zone-kind / temporal kind) → error from `BlRange` construction, surfaced via
-  `Calendar(...)`.
+  with mismatched zone-kind / temporal kind) → error from `bl.BlRange` construction, surfaced via
+  `bl.Calendar(...)`.
 - `validRange(c)` → `null` unless both bounds are set; validity does not filter the query
   built-ins.
-- `find` and the by-name form (`BlString` target) of `calendarDrop` / `calendarKeep` are
-  case-sensitive exact matchers; the by-pattern form (`BlRegex` target) is anchored end-to-end
+- `find` and the by-name form (`bl.BlString` target) of `calendarDrop` / `calendarKeep` are
+  case-sensitive exact matchers; the by-pattern form (`bl.BlRegex` target) is anchored end-to-end
   RE2 (use `.*` for partial matches). Unnamed entries are never matched by either name form,
   so `calendarKeep(c, pattern(".*"))` drops every unnamed entry.
 - `calendarDrop(c, [])` returns the receiver unchanged; `calendarKeep(c, [])` returns an empty
   calendar (kept set is empty by definition). A list element whose type isn't string / regex /
-  date / datetime / range → `BlTypeError` at evaluation from either function.
-- A `BlRegex` target whose source was malformed never reaches `calendarDrop` / `calendarKeep` —
-  it would have failed at the `pattern(...)` call site with `BlRegexError`. See
+  date / datetime / range → `bl.TypeError` at evaluation from either function.
+- A `bl.BlRegex` target whose source was malformed never reaches `calendarDrop` / `calendarKeep` —
+  it would have failed at the `pattern(...)` call site with `bl.RegexError`. See
   [string.spec.md § Precompiled patterns](string.spec.md#precompiled-patterns-patterns--blregex).
 - `calendarMerge` does not union validity bounds (result has none unless re-supplied
   host-side). It performs no deduplication by default; pass `{dedupeBy: "value"}` or
   `{dedupeBy: "valueAndName"}` to dedupe. Unknown keys in the options dictionary, or unknown
-  values for `dedupeBy` / `tiebreak`, → `BlTypeError`. `tiebreak` is consulted only when
+  values for `dedupeBy` / `tiebreak`, → `bl.TypeError`. `tiebreak` is consulted only when
   `dedupeBy: "value"`; it is silently ignored otherwise. Dedupe equality is structural: two
   ranges with the same endpoints and inclusivity are equal, but a point entry never matches a
   range entry even if the point lies inside the range (use `entriesFor` / `entriesIn` for
   containment-style queries).
 - Mixing zoned and naive entries (or zoned/naive entries with the opposite-kind validity
-  bounds) → error from `Calendar(...)`; mixing zoned and naive calendars in `calendarMerge`
-  → `BlTypeError` at evaluation. See [§ Zone-kind homogeneity](#zone-kind-homogeneity).
+  bounds) → error from `bl.Calendar(...)`; mixing zoned and naive calendars in `calendarMerge`
+  → `bl.TypeError` at evaluation. See [§ Zone-kind homogeneity](#zone-kind-homogeneity).
 - Querying a calendar with a `point` or `range` whose zone-kind doesn't match the calendar's
-  → `BlTypeError`. To bridge, strip or attach zones at the consumer side via
+  → `bl.TypeError`. To bridge, strip or attach zones at the consumer side via
   `withoutOffset` / `withoutTimezone` / `withOffset` / `withTimezone`.
 - `contains` / `entriesFor` / `overlaps` / `entriesIn` with mismatched **temporal** types
   *within* the calendar's zone-kind (e.g. `date` point against a `datetime`-ranged entry) →
   `null` for the mismatched entries; the aggregating function treats per-entry `null` as no
   match and keeps scanning.
-- `CalendarEntry(value, ...)` is infallible — non-temporal values are accepted into the entry
-  wrapper but rejected by `Calendar(...)` at assembly time with a structural error naming the
+- `bl.CalendarEntry(value, ...)` is infallible — non-temporal values are accepted into the entry
+  wrapper but rejected by `bl.Calendar(...)` at assembly time with a structural error naming the
   offending entry's index. A range whose endpoints are mismatched (e.g. date start with
-  datetime end, or differing zone-kinds) → error from `BlRange` construction (see
+  datetime end, or differing zone-kinds) → error from `bl.BlRange` construction (see
   [range.spec.md § Edge cases](range.spec.md#edge-cases)) — caught before the entry reaches
   `CalendarEntry`.
-- An unbounded range entry (e.g. an open-ended `BlRange`) is **rejected** by `Calendar(...)` —
+- An unbounded range entry (e.g. an open-ended `bl.BlRange`) is **rejected** by `bl.Calendar(...)` —
   calendars hold scheduled, bounded events. The validity range supplied via `WithValidity(r)`
   may still be open on either end (that's a property of the calendar's scope, not of a single
   entry).
 - Equality requires the same entries in the same order **and** the same validity bounds; two
   otherwise-identical calendars with different `validFrom` are not equal.
-- `entryName(e)` returns `BlNull` for unnamed entries; `Name()` in host code returns
+- `entryName(e)` returns `bl.BlNull` for unnamed entries; `Name()` in host code returns
   `("", false)`.

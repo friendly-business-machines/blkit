@@ -20,11 +20,11 @@ This example shows how to compose these calculations entirely using blkit expres
 
 ## What This Example Demonstrates
 
-- Using `Bl.number()` for precise decimal arithmetic
-- Using `Bl.var()` to reference runtime variables
+- Using `bl.number()` for precise decimal arithmetic
+- Using `bl.var()` to reference runtime variables
 - Arithmetic operations: `.add()`, `.sub()`, `.mul()`, `.div()`
 - Comparison and conditional: `.gt()`, `.if_then_else()`
-- Using `Bl.context()` to build a structured output
+- Using `bl.context()` to build a structured output
 - Calling `.evaluate(variables)` to materialise a result
 - Composing a multi-step calculation from reusable expression fragments
 
@@ -90,41 +90,41 @@ This example shows how to compose these calculations entirely using blkit expres
 ```python
 # Step 1 — volumetric weight
 volumetric_weight = (
-    Bl.var("length_cm")
-    .mul(Bl.var("width_cm"))
-    .mul(Bl.var("height_cm"))
-    .div(Bl.number(5000))
+    bl.var("length_cm")
+    .mul(bl.var("width_cm"))
+    .mul(bl.var("height_cm"))
+    .div(bl.number(5000))
 )
 
 # Step 2 — billable weight (max of actual vs volumetric)
-# Bl.function_call("max", ...) invokes the built-in max() function
-billable_weight = Bl.function_call("max", [
-    Bl.var("actual_weight_kg"),
+# bl.function_call("max", ...) invokes the built-in max() function
+billable_weight = bl.function_call("max", [
+    bl.var("actual_weight_kg"),
     volumetric_weight,
 ])
 
 # Step 3 — zone-based rates returned as a Bl context
 zone_rates = (
-    Bl.var("destination_zone").eq(Bl.number(1))
+    bl.var("destination_zone").eq(bl.number(1))
     .if_then_else(
-        Bl.context({"base": Bl.number(5.00), "per_kg": Bl.number(1.50)}),
-        Bl.var("destination_zone").eq(Bl.number(2))
+        bl.context({"base": bl.number(5.00), "per_kg": bl.number(1.50)}),
+        bl.var("destination_zone").eq(bl.number(2))
         .if_then_else(
-            Bl.context({"base": Bl.number(12.00), "per_kg": Bl.number(2.50)}),
-            Bl.context({"base": Bl.number(25.00), "per_kg": Bl.number(4.00)}),
+            bl.context({"base": bl.number(12.00), "per_kg": bl.number(2.50)}),
+            bl.context({"base": bl.number(25.00), "per_kg": bl.number(4.00)}),
         ),
     )
 )
 
 # Step 4 — speed multiplier
 speed_multiplier = (
-    Bl.var("speed_tier").eq(Bl.string("standard"))
+    bl.var("speed_tier").eq(bl.string("standard"))
     .if_then_else(
-        Bl.number(1.0),
-        Bl.var("speed_tier").eq(Bl.string("express"))
+        bl.number(1.0),
+        bl.var("speed_tier").eq(bl.string("express"))
         .if_then_else(
-            Bl.number(1.5),
-            Bl.number(2.5),
+            bl.number(1.5),
+            bl.number(2.5),
         ),
     )
 )
@@ -136,11 +136,11 @@ subtotal = (
     .add(billable_weight.mul(zone_rates.path("per_kg")))
     .mul(speed_multiplier)
 )
-fuel_surcharge = subtotal.mul(Bl.number(0.08))
+fuel_surcharge = subtotal.mul(bl.number(0.08))
 total = subtotal.add(fuel_surcharge)
 
 # Final result as a structured context
-result_expr = Bl.context({
+result_expr = bl.context({
     "billable_weight_kg": billable_weight,
     "subtotal":           subtotal,
     "fuel_surcharge":     fuel_surcharge,
@@ -179,5 +179,5 @@ The documentation page for this example (`docs/examples/shipping-rate.md`) must 
 1. A short narrative introduction explaining the billing model and what the reader will build.
 2. The complete, runnable Go code.
 3. An explicit walkthrough: show the intermediate values for the first sample row (actual=3.2 kg, regional, express, total=38.88) with each intermediate computation labelled.
-4. A callout explaining the difference between `Bl.number()` values (arbitrary precision) and native floating-point — and why `Bl` arithmetic is preferable for financial calculations.
+4. A callout explaining the difference between `bl.number()` values (arbitrary precision) and native floating-point — and why `Bl` arithmetic is preferable for financial calculations.
 5. A short note on reusability: because the expressions are pure data structures, `result_expr` can be built once and evaluated many times with different variable maps.

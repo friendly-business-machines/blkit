@@ -11,20 +11,20 @@ A `BusinessKnowledgeModel` (BKM) is a reusable, parameterised function. It is no
 
 `BusinessKnowledgeModel` is generic over a parameters struct (whose exported fields declare the BKM's typed parameters) and an output type (the single typed return value). The body can be one of five forms:
 
-- **Expression** — a `BlExpr` of the output type, evaluated against the parameter handles
+- **Expression** — a `bl.BlExpr` of the output type, evaluated against the parameter handles
 - **PMML model** — a reference to a PMML (Predictive Model Markup Language) model
 - **ONNX model** — a reference to an ONNX (Open Neural Network Exchange) model
 - **Native function** — a Go function reference
 - **Decision task** — a reference to an entire other `DecisionTask`, evaluated as a black box
 
 ```go
-type BusinessKnowledgeModel[Parameters any, Output BlValue] struct {
+type BusinessKnowledgeModel[Parameters any, Output bl.BlValue] struct {
     Id          string
     Name        string
     Description string
 
     // Body — exactly one of these must be set
-    Body           BlExpr                  // expression body (typed Output)
+    Body           bl.BlExpr                  // expression body (typed Output)
     PMML           *PMMLReference          // PMML model reference
     ONNX           *ONNXReference          // ONNX model reference
     NativeFunction *NativeFunctionReference[Parameters, Output] // typed Go function reference
@@ -37,7 +37,7 @@ func NewBusinessKnowledgeModel[Parameters any, Output BlValue](
     opts BKMOpts[Parameters, Output],
 ) *BusinessKnowledgeModel[Parameters, Output]
 
-type BKMOpts[Parameters any, Output BlValue] struct {
+type BKMOpts[Parameters any, Output bl.BlValue] struct {
     Id          string
     Name        string
     Description string
@@ -78,16 +78,16 @@ type PaymentCalcParameters struct {
     Term      BlNumber
 }
 
-var paymentCalc = NewBusinessKnowledgeModel[PaymentCalcParameters, BlNumber](BKMOpts[PaymentCalcParameters, BlNumber]{
+var paymentCalc = NewBusinessKnowledgeModel[PaymentCalcParameters, bl.BlNumber](BKMOpts[PaymentCalcParameters, bl.BlNumber]{
     Id:   "payment_calc",
     Name: "Payment Calculator",
-    Body: func(p *PaymentCalcParameters) BlNumber {
-        return p.Principal.Multiply(p.Rate).Divide(Bl.Number(12))
+    Body: func(p *PaymentCalcParameters) bl.BlNumber {
+        return p.Principal.Multiply(p.Rate).Divide(bl.Number(12))
     },
 })
 ```
 
-`paymentCalc.Parameters.Principal`, `.Rate`, `.Term` are typed `BlNumber` handles that `Invocation` nodes use as the source side of bindings.
+`paymentCalc.Parameters.Principal`, `.Rate`, `.Term` are typed `bl.BlNumber` handles that `Invocation` nodes use as the source side of bindings.
 
 ---
 
@@ -115,7 +115,7 @@ type CreditScorerParameters struct {
     EmploymentYears BlNumber
 }
 
-var creditScorer = NewBusinessKnowledgeModel[CreditScorerParameters, BlNumber](BKMOpts[CreditScorerParameters, BlNumber]{
+var creditScorer = NewBusinessKnowledgeModel[CreditScorerParameters, bl.BlNumber](BKMOpts[CreditScorerParameters, bl.BlNumber]{
     Id:   "credit_scorer",
     Name: "Credit Score Model",
     PMML: &PMMLReference{
@@ -148,7 +148,7 @@ type FraudDetectorParameters struct {
     TimeOfDay         BlString
 }
 
-var fraudDetector = NewBusinessKnowledgeModel[FraudDetectorParameters, BlNumber](BKMOpts[FraudDetectorParameters, BlNumber]{
+var fraudDetector = NewBusinessKnowledgeModel[FraudDetectorParameters, bl.BlNumber](BKMOpts[FraudDetectorParameters, bl.BlNumber]{
     Id:   "fraud_detector",
     Name: "Fraud Detection Model",
     ONNX: &ONNXReference{Location: "models/fraud_detection.onnx"},
@@ -162,7 +162,7 @@ var fraudDetector = NewBusinessKnowledgeModel[FraudDetectorParameters, BlNumber]
 A `NativeFunctionReference[Parameters, Output]` wraps a Go function. The function's typed signature mirrors the BKM's: it receives a `*Parameters` value with the parameter handles already populated (resolved against the invocation arguments at call time) and returns the typed `Output`.
 
 ```go
-type NativeFunctionReference[Parameters any, Output BlValue] struct {
+type NativeFunctionReference[Parameters any, Output bl.BlValue] struct {
     Fn func(p *Parameters) (Output, error)
 }
 ```
@@ -174,11 +174,11 @@ type PremiumCalcParameters struct {
     RiskFactors    BlList
 }
 
-var premiumCalc = NewBusinessKnowledgeModel[PremiumCalcParameters, BlNumber](BKMOpts[PremiumCalcParameters, BlNumber]{
+var premiumCalc = NewBusinessKnowledgeModel[PremiumCalcParameters, bl.BlNumber](BKMOpts[PremiumCalcParameters, bl.BlNumber]{
     Id:   "premium_calc",
     Name: "Insurance Premium Calculator",
-    NativeFunction: &NativeFunctionReference[PremiumCalcParameters, BlNumber]{
-        Fn: insurance.CalculatePremium, // signature: (p *PremiumCalcParameters) (BlNumber, error)
+    NativeFunction: &NativeFunctionReference[PremiumCalcParameters, bl.BlNumber]{
+        Fn: insurance.CalculatePremium, // signature: (p *PremiumCalcParameters) (bl.BlNumber, error)
     },
 })
 ```
@@ -202,8 +202,8 @@ When invoked:
 
 1. Each entry in `InputMapping` is evaluated against the BKM's parameter handles to produce the referenced task's input map.
 2. The `DecisionTask` is evaluated with those inputs.
-3. If the referenced task has a single declared output, that output's `BlValue` is returned directly.
-4. If the referenced task has multiple declared outputs, a `BlDictionary` of all outputs (keyed by output name) is returned.
+3. If the referenced task has a single declared output, that output's `bl.BlValue` is returned directly.
+4. If the referenced task has multiple declared outputs, a `bl.BlDictionary` of all outputs (keyed by output name) is returned.
 
 ```go
 type CreditBKMParameters struct {
@@ -211,7 +211,7 @@ type CreditBKMParameters struct {
     RequestedAmount BlNumber
 }
 
-var creditBKM = NewBusinessKnowledgeModel[CreditBKMParameters, BlDictionary](BKMOpts[CreditBKMParameters, BlDictionary]{
+var creditBKM = NewBusinessKnowledgeModel[CreditBKMParameters, bl.BlDictionary](BKMOpts[CreditBKMParameters, bl.BlDictionary]{
     Id:   "credit_bkm",
     Name: "Credit Risk Check",
     DecisionTask: (&DecisionTaskReference{Task: creditModel}).
@@ -277,10 +277,10 @@ Output:
 
 - A BKM with no body field set is invalid; `NewBusinessKnowledgeModel` raises `DecisionDefinitionError`.
 - A BKM with more than one body field set is invalid; raises `DecisionDefinitionError`.
-- A BKM whose `Parameters` struct has a field with a non-`BlValue` type produces `DecisionDefinitionError`.
+- A BKM whose `Parameters` struct has a field with a non-`bl.BlValue` type produces `DecisionDefinitionError`.
 - A BKM invoked with an argument whose name is not present on its `Parameters` struct silently ignores that argument.
-- A `Parameters` field with no corresponding argument in `Invoke()` receives `BlNull`.
-- An argument whose runtime type disagrees with the declared `Parameters` field type produces `BlTypeError` at evaluation time.
+- A `Parameters` field with no corresponding argument in `Invoke()` receives `bl.BlNull`.
+- An argument whose runtime type disagrees with the declared `Parameters` field type produces `bl.TypeError` at evaluation time.
 - PMML and ONNX model loading failures produce a `DecisionEvaluationError` wrapping the cause.
 - A native function that returns an error produces a `DecisionEvaluationError` wrapping it.
 - A `DecisionTaskReference` whose `Task` is nil is invalid; raises `DecisionDefinitionError`.

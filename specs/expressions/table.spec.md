@@ -1,20 +1,20 @@
 ---
-name: BlTable
-description: The table (relation) type in the blkit expression language — an ordered list of uniformly-keyed dictionaries. Covers construction as a list-of-dictionaries, row/column access, the table built-ins, and the Go layer (BlTable + expr registrations).
+name: bl.BlTable
+description: The table (relation) type in the blkit expression language — an ordered list of uniformly-keyed dictionaries. Covers construction as a list-of-dictionaries, row/column access, the table built-ins, and the Go layer (bl.BlTable + expr registrations).
 targets:
-  - ../../expr/table.go
+  - ../../table.go
 ---
 
-# BlTable — the `table` type
+# bl.BlTable — the `table` type
 
 `table` is a DMN **relation**: an ordered, immutable list of `dictionary` rows that all share the same
-column keys (the "uniform-keys" invariant). The Go value type backing it is `BlTable`.
+column keys (the "uniform-keys" invariant). The Go value type backing it is `bl.BlTable`.
 
 A literal would be the syntactic form for writing a constant value of a type directly inside an
 expression (as `[1, 2, 3]` is for a list). **`table` has no dedicated form** of its own — a table
 is, structurally, a `list` of uniformly-keyed `dictionary`s, so list literals, indexing, filtering,
 and projection ([list.spec.md](list.spec.md), [bl-expr.spec.md](bl-expr.spec.md)) all apply. The
-`table(...)` built-in wraps a list of dictionaries as a validated `BlTable` — for example, the
+`table(...)` built-in wraps a list of dictionaries as a validated `bl.BlTable` — for example, the
 `table([{region: "domestic", rate: 5.99}])` in
 `rowCount(table([{region: "domestic", rate: 5.99}]))`. See [dictionary.spec.md](dictionary.spec.md) and
 [list.spec.md](list.spec.md).
@@ -28,7 +28,7 @@ and projection ([list.spec.md](list.spec.md), [bl-expr.spec.md](bl-expr.spec.md)
 // A list of uniformly-keyed dictionaries is the table's data:
 [{region: "domestic", rate: 5.99}, {region: "europe", rate: 15.99}]
 
-// table(list) validates uniform keys and yields a BlTable:
+// table(list) validates uniform keys and yields a bl.BlTable:
 table([{region: "domestic", rate: 5.99}, {region: "europe", rate: 15.99}])
 
 // Row access (1-based; negative from end; out of range → null):
@@ -39,7 +39,7 @@ table([...]).region             // → ["domestic", "europe"]
 table([...])[item.rate > 10]    // → rows with rate > 10
 ```
 
-`[@test] ../../expr/table_test.go`
+`[@test] ../../table_test.go`
 
 ---
 
@@ -49,7 +49,7 @@ All blkit extensions (**ext** — no DMN equivalent); relations in DMN are other
 
 | Function | Example | Result |
 |---|---|---|
-| `table(listOfDictionaries)` | `table([{a:1},{a:2}])` | a validated `BlTable` |
+| `table(listOfDictionaries)` | `table([{a:1},{a:2}])` | a validated `bl.BlTable` |
 | `count(t)` | `count(table([...]))` | row count |
 | `isEmpty(t)` | `isEmpty(table([]))` | `true` |
 | `columns(t)` | `columns(table([{a:1,b:2}]))` | `["a", "b"]` (declared/inferred order) |
@@ -66,7 +66,7 @@ All blkit extensions (**ext** — no DMN equivalent); relations in DMN are other
 A table is also a list, so list aggregates/operations apply over its rows (e.g. `count`, filtering,
 `for x in t return …`). `sum(t.rate)` sums a projected column.
 
-`[@test] ../../expr/table_functions_test.go`
+`[@test] ../../table_functions_test.go`
 
 ---
 
@@ -78,7 +78,7 @@ A table is also a list, so list aggregates/operations apply over its rows (e.g. 
 | `t.col` / `t[predicate]` | column projection / row filter | `t.region`, `t[item.rate > 10]` |
 | `=` `!=` | equality (row-wise, order-sensitive; shape is part of identity) | `t1 = t2` |
 
-`[@test] ../../expr/table_operators_test.go`
+`[@test] ../../table_operators_test.go`
 
 ---
 
@@ -86,7 +86,7 @@ A table is also a list, so list aggregates/operations apply over its rows (e.g. 
 
 | Legacy | New form |
 |---|---|
-| `Bl.Table(dictionaries…)` / `Bl.Table(Bl.Columns, Bl.Row…)` | `table([{…}, {…}])` (a list of dictionaries) |
+| `bl.Table(dictionaries…)` / `bl.Table(bl.Columns, bl.Row…)` | `table([{…}, {…}])` (a list of dictionaries) |
 | `columnNames` / `rowCount` / `isEmpty` | `columns(t)` / `count(t)` / `isEmpty(t)` |
 | `row(i)` / `rows` / `firstRow` / `lastRow` | `t[i]` / `asList(t)` / `t[1]` / `t[-1]` |
 | `column(name)` / `hasColumn(name)` | `t.name` (projection) / `hasColumn(t, name)` |
@@ -96,7 +96,7 @@ A table is also a list, so list aggregates/operations apply over its rows (e.g. 
 | `asList` | `asList(t)` |
 | `equals` | `=` / `!=` |
 | `toRecords` / `String` / `ToMarkdown` | Go host accessors (below) |
-| `BlList.asTable` | `table(list)` |
+| `bl.BlList.asTable` | `table(list)` |
 
 All are reflected; the table-specific structural ops are blkit extensions, the rest reuse list
 semantics.
@@ -110,14 +110,14 @@ Lives in `expr/table.go`. Shared mechanics in
 
 ### Value type & host API (exported)
 
-`BlTable` wraps an ordered column list plus a `[]BlDictionary` of rows enforcing the uniform-keys
-invariant. Implements `BlValue` (and is list-compatible).
+`bl.BlTable` wraps an ordered column list plus a `[]bl.BlDictionary` of rows enforcing the uniform-keys
+invariant. Implements `bl.BlValue` (and is list-compatible).
 
 ```go
 // host-side (Go)
-type BlTable struct{ columns []string; rows []BlDictionary }
+type BlTable struct{ columns []string; rows []bl.BlDictionary }
 
-func (BlTable) Type() BlType { return BlTypeTable }
+func (BlTable) Type() Type { return TypeTable }
 func (t BlTable) Equal(other BlValue) BlValue // row-wise, order-sensitive; shape is part of identity
 func (t BlTable) ToMarkdown() string          // aligned markdown table
 func (BlTable) isBlValue() {}
@@ -128,9 +128,9 @@ func (t BlTable) String() string      // list-of-dictionaries literal
 
 // ToArrow exports the table as an Apache Arrow record batch. The schema is
 // derived from the column order; each column's Arrow type is mapped from its
-// Bl* element type (BlNumber → Decimal128, BlString → Utf8, BlBoolean →
-// Boolean, BlDate → Date32, BlDateTime → Timestamp, durations → Duration,
-// nested BlList/BlDictionary → List/Struct). A BlNull cell becomes a null slot.
+// Bl* element type (bl.BlNumber → Decimal128, bl.BlString → Utf8, bl.BlBoolean →
+// Boolean, bl.BlDate → Date32, bl.BlDateTime → Timestamp, durations → Duration,
+// nested bl.BlList/bl.BlDictionary → List/Struct). A bl.BlNull cell becomes a null slot.
 // Returns an error if a column holds mixed, non-uniform types.
 func (t BlTable) ToArrow() (arrow.Record, error)  // github.com/apache/arrow/go/v17/arrow
 ```
@@ -141,37 +141,37 @@ func (t BlTable) ToArrow() (arrow.Record, error)  // github.com/apache/arrow/go/
 // host-side (Go)
 func tableOptions() []expr.Option {
     return []expr.Option{ // all ext
-        expr.Function("table",     typed1(tableFn),     new(func(BlList) BlTable)), // validates uniform keys
-        expr.Function("columns",   typed1(columnsFn),   new(func(BlTable) BlList)),
-        expr.Function("hasColumn", typed2(hasColumnFn), new(func(BlTable, BlString) BlBoolean)),
-        expr.Function("addRow",    typed2(addRowFn),    new(func(BlTable, BlDictionary) BlTable)),
-        expr.Function("removeRow", typed2(removeRowFn), new(func(BlTable, BlNumber) BlTable)),
-        expr.Function("project",   variadic(projectFn), new(func(BlTable, ...BlString) BlTable)),
-        expr.Function("drop",      variadic(dropFn),    new(func(BlTable, ...BlString) BlTable)),
-        expr.Function("rename",    typed3(renameFn),    new(func(BlTable, BlString, BlString) BlTable)),
-        expr.Function("distinct",  typed1(distinctFn),  new(func(BlTable) BlTable)),
-        expr.Function("sortBy",    sortByFn,            new(func(BlTable, BlString) BlTable), new(func(BlTable, BlString, BlBoolean) BlTable)),
-        expr.Function("asList",    typed1(asListFn),    new(func(BlTable) BlList)),
+        expr.Function("table",     typed1(tableFn),     new(func(bl.BlList) bl.BlTable)), // validates uniform keys
+        expr.Function("columns",   typed1(columnsFn),   new(func(bl.BlTable) bl.BlList)),
+        expr.Function("hasColumn", typed2(hasColumnFn), new(func(bl.BlTable, bl.BlString) bl.BlBoolean)),
+        expr.Function("addRow",    typed2(addRowFn),    new(func(bl.BlTable, bl.BlDictionary) bl.BlTable)),
+        expr.Function("removeRow", typed2(removeRowFn), new(func(bl.BlTable, bl.BlNumber) bl.BlTable)),
+        expr.Function("project",   variadic(projectFn), new(func(bl.BlTable, ...BlString) bl.BlTable)),
+        expr.Function("drop",      variadic(dropFn),    new(func(bl.BlTable, ...BlString) bl.BlTable)),
+        expr.Function("rename",    typed3(renameFn),    new(func(bl.BlTable, bl.BlString, bl.BlString) bl.BlTable)),
+        expr.Function("distinct",  typed1(distinctFn),  new(func(bl.BlTable) bl.BlTable)),
+        expr.Function("sortBy",    sortByFn,            new(func(bl.BlTable, bl.BlString) bl.BlTable), new(func(bl.BlTable, bl.BlString, bl.BlBoolean) bl.BlTable)),
+        expr.Function("asList",    typed1(asListFn),    new(func(bl.BlTable) bl.BlList)),
     }
 }
 ```
 
-`table(list)` validates that every element is a `BlDictionary` with identical keys → `BlTypeError` on
+`table(list)` validates that every element is a `bl.BlDictionary` with identical keys → `bl.TypeError` on
 mismatch. **Reuse.** Row indexing, projection, filtering, and list aggregates are inherited from the
-list machinery (`BlTable` embeds/satisfies `BlList`, so it is accepted wherever a `BlList` is). Native
-Go `[]map[string]any` inputs wrap to `BlTable` when uniform.
+list machinery (`bl.BlTable` embeds/satisfies `bl.BlList`, so it is accepted wherever a `bl.BlList` is). Native
+Go `[]map[string]any` inputs wrap to `bl.BlTable` when uniform.
 
-`[@test] ../../expr/table_test.go`
+`[@test] ../../table_test.go`
 
 ---
 
 ## Edge cases
 
 - `table([])` → empty table, no columns; the first `addRow` fixes the column order.
-- `addRow` with mismatched keys → `BlTypeError`.
+- `addRow` with mismatched keys → `bl.TypeError`.
 - `project`/`rename` referencing an absent column, or `rename` colliding with an existing one →
-  `BlTypeError`.
-- `sortBy` on a mixed-type column → `BlTypeError`.
+  `bl.TypeError`.
+- `sortBy` on a mixed-type column → `bl.TypeError`.
 - `t[i]` / `t.col` out of range / unknown column → `null`.
 - `distinct` uses order-insensitive row (dictionary) equality.
 - equality is `false` when column sets differ, even with identical row data.

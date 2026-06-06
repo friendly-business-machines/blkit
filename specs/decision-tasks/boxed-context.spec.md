@@ -9,7 +9,7 @@ targets:
 
 A `BoxedContext` is a `DecisionNode` defined by a set of named entries. Each entry binds an output name to a value expression. Entries can reference other entries' typed handles; the constructor topologically sorts entries by their inter-entry dependencies.
 
-`BoxedContext` is generic over an outputs struct (see [decision-node.spec.md](decision-node.spec.md)). Every exported field on the outputs struct is one entry on the dictionary. The node evaluates to a `BlDictionary` keyed by the entry names.
+`BoxedContext` is generic over an outputs struct (see [decision-node.spec.md](decision-node.spec.md)). Every exported field on the outputs struct is one entry on the dictionary. The node evaluates to a `bl.BlDictionary` keyed by the entry names.
 
 > A `BoxedContext` is always multi-output. For a single-value computation with named intermediate bindings, use a `LiteralExpression` with intermediate Go vars instead.
 
@@ -71,26 +71,26 @@ var monthlyBreakdown = NewBoxedContext[MonthlyBreakdownOutputs](BoxedContextOpts
     Name: "Monthly Breakdown",
     Entries: func(o *MonthlyBreakdownOutputs) []BoxedEntry {
         return []BoxedEntry{
-            Entry(o.Principal, loanAmount.Divide(term)),
-            Entry(o.Interest,  loanAmount.Multiply(rate).Divide(Bl.Number(12))),
-            Entry(o.Total,     o.Principal.Add(o.Interest)),
+            bl.Entry(o.Principal, loanAmount.Divide(term)),
+            bl.Entry(o.Interest,  loanAmount.Multiply(rate).Divide(bl.Number(12))),
+            bl.Entry(o.Total,     o.Principal.Add(o.Interest)),
         }
     },
 })
 
 result, err := monthlyBreakdown.Evaluate(map[string]any{
-    "loan_amount": Bl.Number(120000),
-    "rate":        Bl.Number(0.06),
-    "term":        Bl.Number(12),
+    "loan_amount": bl.Number(120000),
+    "rate":        bl.Number(0.06),
+    "term":        bl.Number(12),
 })
-// result is BlDictionary: {principal: 10000, interest: 600, total: 10600}
+// result is bl.BlDictionary: {principal: 10000, interest: 600, total: 10600}
 //
 // Access typed values downstream:
-// monthlyBreakdown.Outputs.Principal — BlNumber handle
-// monthlyBreakdown.Outputs.Total     — BlNumber handle
+// monthlyBreakdown.Outputs.Principal — bl.BlNumber handle
+// monthlyBreakdown.Outputs.Total     — bl.BlNumber handle
 ```
 
-Here `loanAmount`, `rate`, and `term` are typed `BlNumber` handles from upstream nodes' `.Outputs.X` fields (or DecisionTask-level inputs). `o.Principal` and `o.Interest` are this node's own handles — using them inside the closure declares cross-entry dependencies that `NewBoxedContext` honours when sorting.
+Here `loanAmount`, `rate`, and `term` are typed `bl.BlNumber` handles from upstream nodes' `.Outputs.X` fields (or DecisionTask-level inputs). `o.Principal` and `o.Interest` are this node's own handles — using them inside the closure declares cross-entry dependencies that `NewBoxedContext` honours when sorting.
 
 ---
 
@@ -100,7 +100,7 @@ The entry list is already topologically sorted by `NewBoxedContext`. At evaluati
 
 1. Each entry's expression is evaluated against the input variables plus the accumulated entry results.
 2. The entry's result is stored in the local dictionary under its name (the lowercased outputs-struct field name, or the `bl:"name"` tag).
-3. After all entries are evaluated, the result is a `BlDictionary` keyed by entry names.
+3. After all entries are evaluated, the result is a `bl.BlDictionary` keyed by entry names.
 
 Cycles in the entry graph are rejected at construction time and never observed during evaluation.
 
@@ -136,5 +136,5 @@ Output:
 - A `BoxedContext` whose `Entries` closure returns fewer entries than the outputs struct has fields — or duplicates — is invalid; raises `DecisionDefinitionError`.
 - Every entry's `Output` handle must originate from the outputs struct passed to the closure. A foreign handle (e.g., another node's `.Outputs.X`) used in the `Output` position produces `DecisionDefinitionError`.
 - An `Output` handle used inside the `Expression` of another entry declares a cross-entry dependency; cycles are rejected at construction.
-- If an entry's expression evaluates to `BlNull`, dependent entries can still reference that handle (it resolves to `BlNull`).
+- If an entry's expression evaluates to `bl.BlNull`, dependent entries can still reference that handle (it resolves to `bl.BlNull`).
 - Entries with no dependencies on other entries may execute in any order relative to each other.

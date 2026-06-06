@@ -65,7 +65,7 @@ The fetch loop, writer pool, and heartbeat goroutine are singletons per `worker.
 
 ## The Process Registry
 
-The blkit module exposes a **process registry** — a package-level variable in the blkit module, keyed by `(Namespace, ProcessID, Version)`. It is populated as a side effect of `NewProcess(...)` calls during package initialization. A worker binary's registry contents are therefore determined by **which packages are linked into the binary** — typically arranged by blank imports in `main`. The registry lives in the worker binary's memory; there is no shared in-memory registry across binaries. The namespace is derived from the calling package's import path, so processes from different packages cannot collide. See [process.spec.md](../processes/process.spec.md) for the full registration rules.
+The blkit module exposes a **process registry** — a package-level variable in the blkit module, keyed by `(Namespace, ProcessID, Version)`. It is populated as a side effect of `bl.NewProcess(...)` calls during package initialization. A worker binary's registry contents are therefore determined by **which packages are linked into the binary** — typically arranged by blank imports in `main`. The registry lives in the worker binary's memory; there is no shared in-memory registry across binaries. The namespace is derived from the calling package's import path, so processes from different packages cannot collide. See [process.spec.md](../processes/process.spec.md) for the full registration rules.
 
 A worker uses its in-memory registry as its **capability set**: the set of processes this worker is permitted and able to execute. Two consequences follow:
 
@@ -313,7 +313,7 @@ import (
     "github.com/friendly-business-machines/blkit/messagegateway"
     "github.com/friendly-business-machines/blkit/worker"
 
-    // Blank imports load process-defining packages so their NewProcess(...)
+    // Blank imports load process-defining packages so their bl.NewProcess(...)
     // calls run during package init and write into blkit's in-memory registry.
     // The worker uses the registry as its capability set.
     _ "example.com/area/lendingflows/v1"
@@ -454,5 +454,5 @@ Operational notes:
 - If the executor crashes before calling any outcome verb, the broker times out the in-flight slot (default `5 × HeartbeatInterval`) and redelivers the job to another worker.
 - Multiple `worker.Run` calls — within the same Go process or across multiple processes/machines — are supported. Each is an independent consumer of the broker. Serialization is whatever the underlying broker provides.
 - `worker.Run` does not own or modify the `Process` graph — it is read-only during execution.
-- The worker registers processes with the broker on startup but does **not** call `NewProcess(...)` itself; in-process registration happens at package init time (via blank imports of process-defining packages from `main`).
+- The worker registers processes with the broker on startup but does **not** call `bl.NewProcess(...)` itself; in-process registration happens at package init time (via blank imports of process-defining packages from `main`).
 - See [../messagegateway/overview.spec.md](../messagegateway/overview.spec.md) and [state-store.spec.md](../data/state-store.spec.md) for component-specific edge cases.

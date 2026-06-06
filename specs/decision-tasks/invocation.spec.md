@@ -51,7 +51,7 @@ func (i *Invocation[Outputs]) Evaluate(input map[string]any) (BlValue, error)
 - The `Outputs` struct has exactly one exported field.
 - Every `ParameterBinding`'s `Parameter` handle originates from `BKM`'s parameter struct.
 - Every BKM parameter has at most one binding (duplicate bindings are an error).
-- A BKM parameter with no binding will receive `BlNull` at invocation time.
+- A BKM parameter with no binding will receive `bl.BlNull` at invocation time.
 
 The constructor's `Bind[T]` helper enforces type matching between the parameter handle and the argument at the call site through Go's type parameter inference.
 
@@ -68,11 +68,11 @@ type PaymentCalcParameters struct {
     Term      BlNumber
 }
 
-var paymentCalc = NewBusinessKnowledgeModel[PaymentCalcParameters, BlNumber](BKMOpts[PaymentCalcParameters, BlNumber]{
+var paymentCalc = NewBusinessKnowledgeModel[PaymentCalcParameters, bl.BlNumber](BKMOpts[PaymentCalcParameters, bl.BlNumber]{
     Id:   "payment_calc",
     Name: "Payment Calculator",
-    Body: func(p *PaymentCalcParameters) BlNumber {
-        return p.Principal.Multiply(p.Rate).Divide(Bl.Number(12))
+    Body: func(p *PaymentCalcParameters) bl.BlNumber {
+        return p.Principal.Multiply(p.Rate).Divide(bl.Number(12))
     },
 })
 ```
@@ -89,35 +89,35 @@ var monthlyPayment = NewInvocation[MonthlyPaymentOutputs](InvocationOpts{
     Name: "Monthly Payment",
     BKM:  paymentCalc,
     Bindings: []ParameterBinding{
-        Bind(paymentCalc.Parameters.Principal, loanAmount),
-        Bind(paymentCalc.Parameters.Rate,      annualRate),
-        Bind(paymentCalc.Parameters.Term,      termMonths),
+        bl.Bind(paymentCalc.Parameters.Principal, loanAmount),
+        bl.Bind(paymentCalc.Parameters.Rate,      annualRate),
+        bl.Bind(paymentCalc.Parameters.Term,      termMonths),
     },
 })
 
-// monthlyPayment.Outputs.Amount — BlNumber handle for downstream nodes
+// monthlyPayment.Outputs.Amount — bl.BlNumber handle for downstream nodes
 ```
 
-Here `loanAmount`, `annualRate`, and `termMonths` are typed `BlNumber` handles drawn from upstream nodes' `.Outputs.X` fields or DecisionTask-level inputs.
+Here `loanAmount`, `annualRate`, and `termMonths` are typed `bl.BlNumber` handles drawn from upstream nodes' `.Outputs.X` fields or DecisionTask-level inputs.
 
 ---
 
 ## Parameter Bindings
 
-Each binding pairs a BKM-side parameter handle with an argument expression. The `Bind[T BlValue]` helper enforces that both have the same `Bl*` type:
+Each binding pairs a BKM-side parameter handle with an argument expression. The `Bind[T bl.BlValue]` helper enforces that both have the same `Bl*` type:
 
 ```go
-// Compile-time error: cannot pass BlString where BlNumber is expected
-Bind(paymentCalc.Parameters.Principal, someString)
+// Compile-time error: cannot pass bl.BlString where bl.BlNumber is expected
+bl.Bind(paymentCalc.Parameters.Principal, someString)
 ```
 
 The argument may be any typed expression, not just a raw handle:
 
 ```go
-Bind(paymentCalc.Parameters.Principal, loanAmount.Multiply(Bl.Number(1.1)))
+bl.Bind(paymentCalc.Parameters.Principal, loanAmount.Multiply(bl.Number(1.1)))
 ```
 
-A parameter without a binding receives `BlNull` at invocation time. The BKM body is responsible for tolerating `BlNull` (or the parameter being optional). The Invocation does not enforce that every BKM parameter has a binding — though future revisions may add an opt-in strictness flag.
+A parameter without a binding receives `bl.BlNull` at invocation time. The BKM body is responsible for tolerating `bl.BlNull` (or the parameter being optional). The Invocation does not enforce that every BKM parameter has a binding — though future revisions may add an opt-in strictness flag.
 
 The same BKM can be invoked by multiple `Invocation` nodes with different bindings.
 
@@ -140,6 +140,6 @@ When an `Invocation` evaluates:
 - An `Outputs`-field type that does not match the BKM's declared `Output` type is invalid.
 - A `ParameterBinding` whose `Parameter` handle does not belong to `BKM`'s parameters is invalid.
 - Two bindings targeting the same BKM parameter is invalid.
-- An argument whose evaluation produces a runtime type incompatible with the BKM parameter type produces a `BlTypeError` at evaluation time (caught after the compile-time `Bind[T]` constraint).
-- An `Invocation` that has no bindings is valid; all BKM parameters receive `BlNull`.
+- An argument whose evaluation produces a runtime type incompatible with the BKM parameter type produces a `bl.TypeError` at evaluation time (caught after the compile-time `Bind[T]` constraint).
+- An `Invocation` that has no bindings is valid; all BKM parameters receive `bl.BlNull`.
 - If the BKM faults during invocation, the Invocation faults with the same error.

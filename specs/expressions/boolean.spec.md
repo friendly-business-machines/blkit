@@ -1,15 +1,15 @@
 ---
-name: BlBoolean
-description: The boolean type in the blkit expression language — true/false with three-valued (null-propagating) logic. Covers boolean literals, the and/or/not operators, the boolean built-ins, and the Go layer (BlBoolean + expr registrations).
+name: bl.BlBoolean
+description: The boolean type in the blkit expression language — true/false with three-valued (null-propagating) logic. Covers boolean literals, the and/or/not operators, the boolean built-ins, and the Go layer (bl.BlBoolean + expr registrations).
 targets:
-  - ../../expr/boolean.go
+  - ../../boolean.go
 ---
 
-# BlBoolean — the `boolean` type
+# bl.BlBoolean — the `boolean` type
 
 `boolean` has two values, `true` and `false`, and participates in **three-valued logic** where
 `null` propagates through logical operations (SQL-style — `null` represents "unknown" rather than
-being a third boolean value). The Go value type backing it is `BlBoolean`.
+being a third boolean value). The Go value type backing it is `bl.BlBoolean`.
 
 See [bl-expr.spec.md](bl-expr.spec.md) for engine internals and operator precedence.
 
@@ -27,22 +27,22 @@ true, True, TRUE                   // → true
 false, False, FALSE                // → false
 ```
 
-Lowercase is canonical — `BlBoolean.String()` always emits `"true"` / `"false"`, and the
+Lowercase is canonical — `bl.BlBoolean.String()` always emits `"true"` / `"false"`, and the
 recommended style for hand-written expressions is lowercase. The mixed-case forms are accepted to
 ease porting from SQL-style dialects and to remove a small foot-gun for users who type `True`
 out of habit; they do not introduce a third or fourth literal value. Because case variants are
 reserved as boolean literals, a variable named `True`, `TRUE`, etc. is **not** addressable — host
-input keys that collide with a boolean literal in any casing produce a `BlParseError` at
+input keys that collide with a boolean literal in any casing produce a `bl.ParseError` at
 expression compile time.
 
-`[@test] ../../expr/boolean_test.go`
+`[@test] ../../boolean_test.go`
 
 ---
 
 ## Construction (host-side)
 
-Host Go code constructs a `BlBoolean` via the generic `Boolean[T BooleanInput](v T)
-(BlBoolean, error)` constructor. `BooleanInput` accepts a Go `bool` (direct), every Go integer
+Host Go code constructs a `bl.BlBoolean` via the generic `Boolean[T BooleanInput](v T)
+(bl.BlBoolean, error)` constructor. `BooleanInput` accepts a Go `bool` (direct), every Go integer
 type (`int`, `int8`–`int64`, `uint`, `uint8`–`uint64` — `0` → `false`, any non-zero → `true`,
 matching the C convention), or a `string` (case-insensitive `"true"` / `"false"`, mirroring
 the case-insensitive literal-parsing rule in [§ Literals](#literals)). `bool` and integer
@@ -52,31 +52,31 @@ recognised boolean literal in any casing.
 ```go
 // host-side (Go)
 // Direct construction from a Go bool — infallible.
-var approved, _ = Boolean(true)
-var rejected, _ = Boolean(false)
+var approved, _ = bl.Boolean(true)
+var rejected, _ = bl.Boolean(false)
 
 // From an integer — C convention: 0 → false, non-zero → true. Infallible.
-var flag,  _ = Boolean(1)               // → BlBoolean(true)
-var noFlag, _ = Boolean(0)              // → BlBoolean(false)
+var flag,  _ = bl.Boolean(1)               // → bl.BlBoolean(true)
+var noFlag, _ = bl.Boolean(0)              // → bl.BlBoolean(false)
 
 // From a string — case-insensitive; an unrecognised string returns an error.
-var fromConf,  _ = Boolean("true")      // → BlBoolean(true)
-var fromMixed, _ = Boolean("True")      // → BlBoolean(true)   (case-insensitive)
-var fromSQL,   _ = Boolean("FALSE")     // → BlBoolean(false)
-var bad,   err   = Boolean("yes")       // err != nil — "yes" is not a recognised literal
+var fromConf,  _ = bl.Boolean("true")      // → bl.BlBoolean(true)
+var fromMixed, _ = bl.Boolean("True")      // → bl.BlBoolean(true)   (case-insensitive)
+var fromSQL,   _ = bl.Boolean("FALSE")     // → bl.BlBoolean(false)
+var bad,   err   = bl.Boolean("yes")       // err != nil — "yes" is not a recognised literal
 
-// To model an unknown boolean from host code, pass Null() rather than constructing a BlBoolean.
-var hasConsent BlValue
+// To model an unknown boolean from host code, pass bl.Null() rather than constructing a bl.BlBoolean.
+var hasConsent bl.BlValue
 if maybeConsent != nil {
-    hasConsent, _ = Boolean(*maybeConsent)
+    hasConsent, _ = bl.Boolean(*maybeConsent)
 } else {
-    hasConsent = Null()
+    hasConsent = bl.Null()
 }
 ```
 
-`Boolean(...)` returns `(BlBoolean, error)`. Failure mode: a `string` input that doesn't
-match a case-variant of `"true"` or `"false"` — `Boolean("yes")`, `Boolean("1")`, and
-`Boolean("")` all error. Integer-shaped strings like `"1"` and `"0"` are intentionally
+`bl.Boolean(...)` returns `(bl.BlBoolean, error)`. Failure mode: a `string` input that doesn't
+match a case-variant of `"true"` or `"false"` — `bl.Boolean("yes")`, `bl.Boolean("1")`, and
+`bl.Boolean("")` all error. Integer-shaped strings like `"1"` and `"0"` are intentionally
 rejected so the string path mirrors the language's literal-parsing rule; convert the string
 to an integer first if you want `0` / non-zero coercion. For details on how unknown booleans
 propagate through three-valued logic, see [§ Three-valued logic](#three-valued-logic).
@@ -120,7 +120,7 @@ overload of a Go boolean operator — see
 Short-circuits: `false and X → false` (X never evaluated), `true or X → true`. `not(null) → null`.
 Equality with `null` yields `false`, never `null` (see [null.spec.md](null.spec.md)).
 
-`[@test] ../../expr/boolean_logic_test.go`
+`[@test] ../../boolean_logic_test.go`
 
 ---
 
@@ -135,7 +135,7 @@ Related null-handling helpers live alongside the type they introspect:
 [bl-expr.spec.md](bl-expr.spec.md)) and [`getOrElse`](null.spec.md#default-for-null) (null
 fallback, in [null.spec.md](null.spec.md)).
 
-`[@test] ../../expr/boolean_functions_test.go`
+`[@test] ../../boolean_functions_test.go`
 
 ---
 
@@ -146,18 +146,18 @@ Lives in `expr/boolean.go`. Shared mechanics in
 
 ### Value type & host API (exported)
 
-`BlBoolean` is the immutable Go value type that represents a boolean inside the engine and at the
+`bl.BlBoolean` is the immutable Go value type that represents a boolean inside the engine and at the
 host-code boundary. Its only field is private (`b`) so callers cannot mutate the underlying value —
-every operation in the library returns a fresh `BlBoolean`. There is **no third "unknown" enum
-value**: an unknown boolean is modelled as `BlNull` (see [null.spec.md](null.spec.md)), which
+every operation in the library returns a fresh `bl.BlBoolean`. There is **no third "unknown" enum
+value**: an unknown boolean is modelled as `bl.BlNull` (see [null.spec.md](null.spec.md)), which
 propagates through the three-valued logic table.
 
 The exported surface has three parts:
 
-- **`BlValue` interface methods** — `Type()`, `Equal()`, `String()`, and the unexported
+- **`bl.BlValue` interface methods** — `Type()`, `Equal()`, `bl.String()`, and the unexported
   `isBlValue()` marker — required of every blkit value type so the engine can treat them
   uniformly. `Equal` is structural (`true = true`, `false = false`); cross-type equality returns
-  `false`, never `null` (see [null.spec.md](null.spec.md)). `String()` doubles as the
+  `false`, never `null` (see [null.spec.md](null.spec.md)). `bl.String()` doubles as the
   `fmt.Stringer` implementation, producing `"true"` or `"false"`.
 - **`Boolean[T BooleanInput](v T)`** — the generic host constructor. The `BooleanInput`
   constraint accepts `bool` (direct), every Go integer type (`int`, `int8`–`int64`, `uint`,
@@ -166,18 +166,18 @@ The exported surface has three parts:
   rule used for source-text literals). All other Go types are rejected at compile time. The
   `error` return only fires at runtime for a `string` whose value is not a recognised boolean
   literal in any casing; integer and `bool` inputs are infallible. To model an unknown boolean
-  from host code, pass `Null()` (not a `*bool`) — see
+  from host code, pass `bl.Null()` (not a `*bool`) — see
   [null.spec.md § Construction (host-side)](null.spec.md#construction-host-side).
 - **`Native()` accessor** — hands the underlying Go `bool` back to host code. From there, Go's
   native `&&` / `||` / `!` are all that's needed.
 
 ```go
 // host-side (Go)
-// BlBoolean wraps a native Go bool. BlNull, not a third enum value, models "unknown".
+// bl.BlBoolean wraps a native Go bool. bl.BlNull, not a third enum value, models "unknown".
 type BlBoolean struct{ b bool }
 
-// BlValue interface — required by all Bl* value types.
-func (BlBoolean) Type() BlType { return BlTypeBoolean }
+// bl.BlValue interface — required by all Bl* value types.
+func (BlBoolean) Type() Type { return TypeBoolean }
 func (b BlBoolean) Equal(other BlValue) BlValue
 func (b BlBoolean) String() string                // "true" / "false"
 func (BlBoolean) isBlValue() {}
@@ -201,16 +201,16 @@ func (b BlBoolean) Native() bool                  // underlying Go bool
 
 `and` and `or` cannot be wired with `expr.Operator` — that mechanism overloads binary arithmetic /
 comparison operators, not the short-circuit logical operators, and our operands are wrapped
-`BlValue`s (possibly `BlNull`) rather than Go `bool`s. Instead, the engine's AST patcher (see
+`bl.BlValue`s (possibly `bl.BlNull`) rather than Go `bool`s. Instead, the engine's AST patcher (see
 [bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-ast-rewriting)) rewrites `a and b` and
 `a or b` into calls to internal functions `blAnd(a, b)` and `blOr(a, b)`. Both implement the
-three-valued logic table above; a non-boolean operand produces `BlNull`.
+three-valued logic table above; a non-boolean operand produces `bl.BlNull`.
 
 `not` is different: the source-level form is already a function call (`not(x)`), so it's registered
 directly under its plain name as an `expr.Function` rather than going through the patcher.
 
 Equality (`=` / `!=`) is **not** registered as a per-type operator impl — it dispatches through the
-`BlValue.Equal()` interface method (see [§ Value type & host
+`bl.BlValue.Equal()` interface method (see [§ Value type & host
 API](#value-type--host-api-exported)). That single dispatch path handles null propagation and
 cross-type comparison uniformly.
 
@@ -235,7 +235,7 @@ initialisation to learn about the boolean library. Each entry is built with
 - `impl` must have the signature `func(...any) (any, error)` — that is the only shape
   [`expr-lang/expr`](https://github.com/expr-lang/expr) accepts. The `typed1` / `typed2` adapters
   (defined in [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go)) wrap a
-  typed implementation such as `func(BlValue, BlValue) BlValue` into that shape, type-asserting
+  typed implementation such as `func(bl.BlValue, bl.BlValue) bl.BlValue` into that shape, type-asserting
   each argument and boxing the result.
 - `typeHints` is a variadic list of `new(func(...) ...)` values. The engine reflects on them at
   compile time to validate that callers supply the right argument types — they carry no runtime
@@ -249,18 +249,18 @@ lowering `and` / `or`) and the source-callable functions.
 func booleanOptions() []expr.Option {
     return []expr.Option{
         // patcher targets — emitted when the AST patcher rewrites `a and b` / `a or b`
-        expr.Function("blAnd",     typed2(blAndFn),     new(func(BlValue, BlValue) BlValue)),
-        expr.Function("blOr",      typed2(blOrFn),      new(func(BlValue, BlValue) BlValue)),
+        expr.Function("blAnd",     typed2(blAndFn),     new(func(bl.BlValue, bl.BlValue) bl.BlValue)),
+        expr.Function("blOr",      typed2(blOrFn),      new(func(bl.BlValue, bl.BlValue) bl.BlValue)),
 
         // source-callable
-        expr.Function("not",       typed1(notFn),       new(func(BlValue) BlValue)),
+        expr.Function("not",       typed1(notFn),       new(func(bl.BlValue) bl.BlValue)),
     }
 }
 ```
 
-Native Go `bool` inputs wrap to `BlBoolean` via the engine's input bridge.
+Native Go `bool` inputs wrap to `bl.BlBoolean` via the engine's input bridge.
 
-`[@test] ../../expr/boolean_test.go`
+`[@test] ../../boolean_test.go`
 
 ---
 

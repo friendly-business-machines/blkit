@@ -41,7 +41,7 @@ type NativeFunctionTask[Inputs any, Outputs any] struct {
     // with (sourceTaskId: t.Id, fieldName: <Go-field-name>, type: <Bl-type>).
     //
     // - Inputs holds the LHS handles that this task's InputBindings closure
-    //   pairs with upstream Outputs handles via Bind(in.X, ...).
+    //   pairs with upstream Outputs handles via bl.Bind(in.X, ...).
     // - Outputs holds the RHS handles that downstream tasks reference as the
     //   source side of their own InputBindings (e.g. validate.Outputs.IsValid).
     //
@@ -116,12 +116,12 @@ func (t *NativeFunctionTask[Inputs, Outputs]) Evaluate(ctx *ExecutionContext, ex
 The `Inputs` type parameter declares the task's typed inputs.
 
 - **Every exported field is an input.** Unexported fields are ignored.
-- **Field types must implement `BlValue`** (`BlNumber`, `BlString`, `BlBoolean`, `BlList`, `BlDictionary`, `BlDateTime`, `BlDaysTimeDuration`, etc.). A field whose type does not implement `BlValue` produces a `ProcessDefinitionError` at construction time.
+- **Field types must implement `bl.BlValue`** (`bl.BlNumber`, `bl.BlString`, `bl.BlBoolean`, `bl.BlList`, `bl.BlDictionary`, `bl.BlDateTime`, `bl.BlDaysTimeDuration`, etc.). A field whose type does not implement `bl.BlValue` produces a `ProcessDefinitionError` at construction time.
 - **Field name is the literal Go field name.** No transformation — `LoanAmount` is bound as `LoanAmount`.
 - **Duplicate field names** within the same struct produce a `ProcessDefinitionError`.
 - **`Inputs` may be empty** (`struct{}` or a type with no exported fields). A task that genuinely reads nothing declares an empty struct; the `InputBindings` closure returns an empty slice. This differs from `Outputs`, which requires at least one field.
 
-`NewNativeFunctionTask` allocates a typed handle into each exported field of `t.Inputs` at construction, stamped with `(sourceTaskId: t.Id, fieldName: <Go-field-name>, type: <Bl-type>)`. These handles are the LHS of the bindings produced by the `InputBindings` closure — `Bind(in.IsValid, ...)` reads the handle out of the populated `in` value the closure receives.
+`NewNativeFunctionTask` allocates a typed handle into each exported field of `t.Inputs` at construction, stamped with `(sourceTaskId: t.Id, fieldName: <Go-field-name>, type: <Bl-type>)`. These handles are the LHS of the bindings produced by the `InputBindings` closure — `bl.Bind(in.IsValid, ...)` reads the handle out of the populated `in` value the closure receives.
 
 ## InputBindings
 
@@ -129,15 +129,15 @@ The `Inputs` type parameter declares the task's typed inputs.
 InputBindings func(in Inputs) []ParameterBinding
 ```
 
-`opts.InputBindings` is a closure that wires this task's typed inputs to upstream values. `NewNativeFunctionTask` calls it after allocating handles on the task's `Inputs` field, passing a copy of the populated `Inputs` value (each field holds its typed handle). The closure body pairs each LHS handle from `in.X` with an RHS expression of the matching `Bl*` type — typically an upstream task's `Outputs.X` handle, but any `BlExpr` of the matching type works.
+`opts.InputBindings` is a closure that wires this task's typed inputs to upstream values. `NewNativeFunctionTask` calls it after allocating handles on the task's `Inputs` field, passing a copy of the populated `Inputs` value (each field holds its typed handle). The closure body pairs each LHS handle from `in.X` with an RHS expression of the matching `Bl*` type — typically an upstream task's `Outputs.X` handle, but any `bl.BlExpr` of the matching type works.
 
-Bindings use the existing [`Bind[T BlValue](parameter T, argument T) ParameterBinding`](../decision-tasks/invocation.spec.md) helper unchanged. The type parameter is inferred from the parameter handle's `Bl*` type and enforces that the argument has the same type — mismatches are compile errors at the call site.
+Bindings use the existing [`Bind[T bl.BlValue](parameter T, argument T) ParameterBinding`](../decision-tasks/invocation.spec.md) helper unchanged. The type parameter is inferred from the parameter handle's `Bl*` type and enforces that the argument has the same type — mismatches are compile errors at the call site.
 
 ### Validation
 
 `NewNativeFunctionTask` validates the returned bindings:
 
-- **Every `Inputs` handle is bound exactly once.** Unbound handles → `ProcessDefinitionError` at construction. No silent `BlNull` defaults — explicit is better for tasks because runtime resolution failures are harder to diagnose than construction-time errors. If a caller genuinely wants a default, they bind to a literal expression (`Bl.Boolean(false)`, `Bl.Number(0)`, etc.).
+- **Every `Inputs` handle is bound exactly once.** Unbound handles → `ProcessDefinitionError` at construction. No silent `bl.BlNull` defaults — explicit is better for tasks because runtime resolution failures are harder to diagnose than construction-time errors. If a caller genuinely wants a default, they bind to a literal expression (`bl.Boolean(false)`, `bl.Number(0)`, etc.).
 - **No duplicate bindings on the same `Inputs` field.** A second binding with an already-bound LHS handle → `ProcessDefinitionError`.
 - **The `Parameter` side of every binding is one of this task's `Inputs` handles.** Passing a handle from a different task as the LHS → `ProcessDefinitionError`.
 
@@ -145,8 +145,8 @@ Bindings use the existing [`Bind[T BlValue](parameter T, argument T) ParameterBi
 
 Task instances are immutable and shared across many process evaluations. They cannot store per-run values. The handle/binding machinery is the type-safe "address" half of value flow; the actual values live in `ExecutionContext` (the append-only log defined in [../data/execution-context.spec.md](../data/execution-context.spec.md)).
 
-- **A handle is an interface value with a handle-shaped concrete implementation.** `validate.Outputs.IsValid` is a `BlBoolean`. Its concrete type is a small struct stamped with `(sourceTaskId, fieldName, type)`; it implements the `BlBoolean` interface by *resolving against an `ExecutionContext` at evaluation time*, not by carrying a `bool`. Handles allocated into `t.Inputs` follow the same shape. Handles are immutable for the lifetime of the program.
-- **Values flow through `ExecutionContext`.** When `validate.Evaluate(ctx, execId)` runs, `Fn` returns a concrete `ValidateOutputs{IsValid: Bl.Boolean(true), ...}` — a fresh struct, separate from `validate.Outputs`, whose fields hold concrete `Bl*` values like `Bl.Boolean(true)`. `Evaluate` reflects the struct into a map and calls `ctx.Record("validate", execId, {"IsValid": Bl.Boolean(true), ...})`. The handles on `validate.Outputs` never see the value.
+- **A handle is an interface value with a handle-shaped concrete implementation.** `validate.Outputs.IsValid` is a `bl.BlBoolean`. Its concrete type is a small struct stamped with `(sourceTaskId, fieldName, type)`; it implements the `bl.BlBoolean` interface by *resolving against an `ExecutionContext` at evaluation time*, not by carrying a `bool`. Handles allocated into `t.Inputs` follow the same shape. Handles are immutable for the lifetime of the program.
+- **Values flow through `ExecutionContext`.** When `validate.Evaluate(ctx, execId)` runs, `Fn` returns a concrete `ValidateOutputs{IsValid: bl.Boolean(true), ...}` — a fresh struct, separate from `validate.Outputs`, whose fields hold concrete `Bl*` values like `bl.Boolean(true)`. `Evaluate` reflects the struct into a map and calls `ctx.Record("validate", execId, {"IsValid": bl.Boolean(true), ...})`. The handles on `validate.Outputs` never see the value.
 - **Downstream `Evaluate` resolves handles against `ctx`.** When `CalculateScore.Evaluate(ctx, execId)` runs later: for each `ParameterBinding` in `t.InputBindings`, the upstream handle (e.g. `validate.Outputs.IsValid`) is resolved against `ctx` — equivalent to `ctx.Get("validate.IsValid")`. The resolved concrete value is assigned into a fresh `*Inputs` struct under the binding's LHS field. `Fn(in)` runs with concrete values throughout.
 - **The same handle works across replays, suspends, multi-instance, and parallel branches** — because resolution is parameterised over `ctx`. The task object holds no per-run state; whatever `ctx` is current at `Evaluate` time supplies the value.
 
@@ -157,11 +157,11 @@ The bindings are purely a **construction-time wiring artifact**: they encode "wh
 The `Outputs` type parameter declares the task's typed outputs. The rules match [`DecisionNode` § Outputs structs](../decision-tasks/decision-node.spec.md#outputs-structs):
 
 - **Every exported field is an output.** Unexported fields are ignored.
-- **Field types must implement `BlValue`** (`BlNumber`, `BlString`, `BlBoolean`, `BlList`, `BlDictionary`, `BlDateTime`, `BlDaysTimeDuration`, etc.). A field whose type does not implement `BlValue` produces a `ProcessDefinitionError` at construction time.
+- **Field types must implement `bl.BlValue`** (`bl.BlNumber`, `bl.BlString`, `bl.BlBoolean`, `bl.BlList`, `bl.BlDictionary`, `bl.BlDateTime`, `bl.BlDaysTimeDuration`, etc.). A field whose type does not implement `bl.BlValue` produces a `ProcessDefinitionError` at construction time.
 - **Field name is the literal Go field name.** No transformation — `LoanAmount` records as `LoanAmount`, consumers read it as `ctx.Get("<task-id>.LoanAmount")`.
-- **At least one exported field** is required. An `Outputs` struct with no exported fields produces a `ProcessDefinitionError` — a task must declare at least one output. If the function genuinely emits no useful value, declare a single-field struct (e.g. `Status BlString`) so the recorded transaction has a meaningful field name.
+- **At least one exported field** is required. An `Outputs` struct with no exported fields produces a `ProcessDefinitionError` — a task must declare at least one output. If the function genuinely emits no useful value, declare a single-field struct (e.g. `Status bl.BlString`) so the recorded transaction has a meaningful field name.
 - **Duplicate field names** within the same struct produce a `ProcessDefinitionError`.
-- **Single-output ergonomics.** An `Outputs` struct with exactly one field is the natural shape for tasks that produce a single named value (e.g. `type FetchScoreOutputs struct { Score BlNumber }`). Consumers still read it via the qualified key (`ctx.Get("fetch-score.Score")`).
+- **Single-output ergonomics.** An `Outputs` struct with exactly one field is the natural shape for tasks that produce a single named value (e.g. `type FetchScoreOutputs struct { Score bl.BlNumber }`). Consumers still read it via the qualified key (`ctx.Get("fetch-score.Score")`).
 
 `NewNativeFunctionTask` runs this reflection once at construction and caches the result on the task; subsequent `Evaluate` calls reuse the cached field-to-name map. The same pass also allocates a typed handle into every exported field of `t.Outputs`; those handles are the symbolic references downstream tasks use to wire to this task's recorded values (see [§ InputBindings § How handles, bindings, and runtime values fit together](#how-handles-bindings-and-runtime-values-fit-together) above).
 
@@ -173,7 +173,7 @@ func (t *NativeFunctionTask[Inputs, Outputs]) Evaluate(ctx *ExecutionContext, ex
 
 `Evaluate` is the runtime entry point invoked by the scheduler. It resolves the `InputBindings` against `ctx` to populate a fresh `*Inputs`, calls the pure function `Fn`, and records the returned `Outputs` as a Pending transaction under `(t.Id, executionID)`. Behaviour:
 
-1. **Resolve bindings.** For each `ParameterBinding` in `t.InputBindings`, evaluate the binding's `Argument` expression against `ctx` to produce a concrete `BlValue`. (For the common case of `Bind(in.X, upstream.Outputs.Y)`, evaluation is `ctx.Get("<upstream-id>.<y-field>")`.)
+1. **Resolve bindings.** For each `ParameterBinding` in `t.InputBindings`, evaluate the binding's `Argument` expression against `ctx` to produce a concrete `bl.BlValue`. (For the common case of `bl.Bind(in.X, upstream.Outputs.Y)`, evaluation is `ctx.Get("<upstream-id>.<y-field>")`.)
 2. **Populate a fresh `*Inputs`.** Allocate a new `Inputs` value and assign each resolved value into the field identified by the binding's `Parameter` handle, using the cached field-to-handle map. `t.Inputs` retains its construction-time handles untouched.
 3. **Call `t.Fn(in)`.** If `Fn` returns a non-nil error, return it immediately. `Evaluate` does **not** call `ctx.Abort` — the scheduler still owns abort decisions (see [process.spec.md § Execution](./process.spec.md#execution)).
 4. **Record the returned `Outputs`.** Reflect on the returned struct (a fresh value, separate from `t.Outputs`, with concrete `Bl*` values populated by `Fn`) to build a `map[string]any` keyed by each field's Go name (the same key the construction-time handle on `t.Outputs.X` was stamped with). Call `ctx.Record(t.Id, executionID, values)`. The transaction lands as Pending; the scheduler drives `Commit` on success and `Abort` on failure (unchanged from today). `t.Outputs` retains its handles untouched.
@@ -191,7 +191,7 @@ Consequences of the pure-function shape:
 
 - **Everything `Fn` reads from process state must be declared as an `Inputs` field and bound.** There is no `ctx.Get` escape hatch.
 - **`Fn` cannot record intermediate side transactions via `ctx.Record`** — the only output channel is the returned `Outputs` struct. If a task needs to publish multiple records during a long-running operation, model it as multiple tasks (or include each value as an `Outputs` field).
-- **`Fn` cannot inspect `ExecutionHistory`, the current instance id, or any non-Inputs runtime state.** If a task genuinely needs one of these, declare it as an `Inputs` field whose binding resolves to the appropriate built-in expression (e.g. `Bl.InstanceID()`).
+- **`Fn` cannot inspect `ExecutionHistory`, the current instance id, or any non-Inputs runtime state.** If a task genuinely needs one of these, declare it as an `Inputs` field whose binding resolves to the appropriate built-in expression (e.g. `bl.InstanceID()`).
 
 The benefit: `Fn` is trivially unit-testable (construct an `Inputs` value, call `Fn(&in)`, assert on the returned `Outputs`); a glance at `Inputs` and `Outputs` tells you exactly what the task reads and writes.
 
@@ -218,7 +218,7 @@ A task author declares two structs (`Inputs`, `Outputs`), a `Fn` body that maps 
 
 ### Typed inputs from upstream tasks
 
-`InputBindings` pairs each input handle with a `BlValue` expression of the matching type — typically an upstream task's `Outputs` handle. The pure `Fn` body reads from `*in` only; no `ctx.Get`, no string keys.
+`InputBindings` pairs each input handle with a `bl.BlValue` expression of the matching type — typically an upstream task's `Outputs` handle. The pure `Fn` body reads from `*in` only; no `ctx.Get`, no string keys.
 
 ```go
 // loan_app/scoring.go
@@ -241,22 +241,22 @@ var CalculateScore = blkit.NewNativeFunctionTask(blkit.NativeFunctionTaskOpts[Ca
     Description: "Combines credit score and income into a final score, gated on validation.",
     InputBindings: func(in CalculateScoreInputs) []ParameterBinding {
         return []ParameterBinding{
-            Bind(in.IsValid,     validation.ValidateApplication.Outputs.IsValid),
-            Bind(in.CreditScore, credit.PullCreditReport.Outputs.Score),
-            Bind(in.Income,      income.CheckIncome.Outputs.AnnualIncome),
+            bl.Bind(in.IsValid,     validation.ValidateApplication.Outputs.IsValid),
+            bl.Bind(in.CreditScore, credit.PullCreditReport.Outputs.Score),
+            bl.Bind(in.Income,      income.CheckIncome.Outputs.AnnualIncome),
         }
     },
     Fn: func(in *CalculateScoreInputs) (CalculateScoreOutputs, error) {
         if !in.IsValid.ToNativeBool() {
             return CalculateScoreOutputs{
-                Score:  Bl.Number(0),
-                Reason: Bl.String("Failed validation"),
+                Score:  bl.Number(0),
+                Reason: bl.String("Failed validation"),
             }, nil
         }
         score := in.CreditScore.ToNativeFloat()*0.6 + min(in.Income.ToNativeFloat()/1000, 200)*0.4
         return CalculateScoreOutputs{
-            Score:  Bl.Number(score),
-            Reason: Bl.String("Calculated from credit and income"),
+            Score:  bl.Number(score),
+            Reason: bl.String("Calculated from credit and income"),
         }, nil
     },
 })
@@ -292,8 +292,8 @@ var ValidateApplication = blkit.NewNativeFunctionTask(blkit.NativeFunctionTaskOp
     Description: "Checks applicant age and loan-amount eligibility; emits a pass/fail with notes.",
     InputBindings: func(in ValidateApplicationInputs) []ParameterBinding {
         return []ParameterBinding{
-            Bind(in.Applicant,  loanapp.Start.Outputs.Applicant),
-            Bind(in.LoanAmount, loanapp.Start.Outputs.LoanAmount),
+            bl.Bind(in.Applicant,  loanapp.Start.Outputs.Applicant),
+            bl.Bind(in.LoanAmount, loanapp.Start.Outputs.LoanAmount),
         }
     },
     Fn: func(in *ValidateApplicationInputs) (ValidateApplicationOutputs, error) {
@@ -304,18 +304,18 @@ var ValidateApplication = blkit.NewNativeFunctionTask(blkit.NativeFunctionTaskOp
             notes = "All checks passed"
         }
         return ValidateApplicationOutputs{
-            IsValid:         Bl.Boolean(isValid),
-            ValidationNotes: Bl.String(notes),
+            IsValid:         bl.Boolean(isValid),
+            ValidationNotes: bl.String(notes),
         }, nil
     },
 })
 
 // In a process file (e.g. loan_app/loan.go):
-var loanProcess = NewProcess("loan-process", "1.0", ProcessOpts{
+var loanProcess = bl.NewProcess("loan-process", "1.0", ProcessOpts{
     Graph: []ProcessNode{
         loanapp.Start.
             To(validation.ValidateApplication).
-            To(End("done", "Done")),
+            To(bl.End("done", "Done")),
     },
 })
 ```
@@ -345,22 +345,22 @@ var CalculateScore = blkit.NewNativeFunctionTask(blkit.NativeFunctionTaskOpts[Ca
     Description: "Combines credit score and income into a final score, gated on validation.",
     InputBindings: func(in CalculateScoreInputs) []ParameterBinding {
         return []ParameterBinding{
-            Bind(in.IsValid,     fasttrack.Validate.Outputs.IsValid),
-            Bind(in.CreditScore, fasttrack.CreditReport.Outputs.Score),
-            Bind(in.Income,      fasttrack.CheckIncome.Outputs.AnnualIncome),
+            bl.Bind(in.IsValid,     fasttrack.Validate.Outputs.IsValid),
+            bl.Bind(in.CreditScore, fasttrack.CreditReport.Outputs.Score),
+            bl.Bind(in.Income,      fasttrack.CheckIncome.Outputs.AnnualIncome),
         }
     },
     Fn: func(in *CalculateScoreInputs) (CalculateScoreOutputs, error) { /* body */ },
 })
 
 // Process A — uses the package-scope task directly.
-var processA = NewProcess("loan-fast-track", "1.0", ProcessOpts{
+var processA = bl.NewProcess("loan-fast-track", "1.0", ProcessOpts{
     Graph: []ProcessNode{startA.To(scoring.CalculateScore).To(endA)},
 })
 
 // Process B — Clone, supplying task-level fields and fresh InputBindings.
 // The [Inputs, Outputs] type parameters are preserved automatically.
-var processB = NewProcess("loan-full-review", "1.0", ProcessOpts{
+var processB = bl.NewProcess("loan-full-review", "1.0", ProcessOpts{
     Graph: []ProcessNode{
         startB.To(scoring.CalculateScore.Clone(NativeFunctionTaskOpts[CalculateScoreInputs, CalculateScoreOutputs]{
             Id:                 "calc-score",
@@ -370,9 +370,9 @@ var processB = NewProcess("loan-full-review", "1.0", ProcessOpts{
             ExponentialBackoff: true,
             InputBindings: func(in CalculateScoreInputs) []ParameterBinding {
                 return []ParameterBinding{
-                    Bind(in.IsValid,     fullreview.Validate.Outputs.IsValid),
-                    Bind(in.CreditScore, fullreview.CreditReport.Outputs.Score),
-                    Bind(in.Income,      fullreview.CheckIncome.Outputs.AnnualIncome),
+                    bl.Bind(in.IsValid,     fullreview.Validate.Outputs.IsValid),
+                    bl.Bind(in.CreditScore, fullreview.CreditReport.Outputs.Score),
+                    bl.Bind(in.Income,      fullreview.CheckIncome.Outputs.AnnualIncome),
                 }
             },
         })).To(endB),
@@ -385,10 +385,10 @@ var processB = NewProcess("loan-full-review", "1.0", ProcessOpts{
 ## Edge Cases
 
 - A `NativeFunctionTask` whose `Fn` is nil is invalid and produces a `ValidationError`.
-- A `NativeFunctionTask[Inputs, Outputs]` whose `Outputs` type parameter has no exported fields is a `ProcessDefinitionError` at construction. A field on either `Inputs` or `Outputs` whose type does not implement `BlValue` is also a `ProcessDefinitionError`. Duplicate field names within `Inputs` or within `Outputs` are a `ProcessDefinitionError`.
+- A `NativeFunctionTask[Inputs, Outputs]` whose `Outputs` type parameter has no exported fields is a `ProcessDefinitionError` at construction. A field on either `Inputs` or `Outputs` whose type does not implement `bl.BlValue` is also a `ProcessDefinitionError`. Duplicate field names within `Inputs` or within `Outputs` are a `ProcessDefinitionError`.
 - An empty `Inputs` struct (no exported fields) is **valid** — for tasks that read nothing from process state. The `InputBindings` closure must return an empty slice in that case.
 - A `NativeFunctionTask` whose `opts.InputBindings` is `nil` while `Inputs` has at least one exported field is a `ProcessDefinitionError` — every input must be bound. (An empty-Inputs task may have `nil` `InputBindings` or a closure returning an empty slice; both are accepted.)
-- `InputBindings` returning a slice that does **not** bind every exported field of `Inputs` exactly once is a `ProcessDefinitionError`: unbound fields and duplicate bindings are both rejected. There is no `BlNull` default for unbound fields — bind to a literal expression (e.g. `Bl.Boolean(false)`) if a default is desired.
+- `InputBindings` returning a slice that does **not** bind every exported field of `Inputs` exactly once is a `ProcessDefinitionError`: unbound fields and duplicate bindings are both rejected. There is no `bl.BlNull` default for unbound fields — bind to a literal expression (e.g. `bl.Boolean(false)`) if a default is desired.
 - A `ParameterBinding` whose `Parameter` is not one of this task's `Inputs` handles (e.g. accidentally referencing another task's input handle on the LHS) is a `ProcessDefinitionError`.
 - A `ParameterBinding` whose `Parameter` and `Argument` have different `Bl*` types is a compile error at the `Bind[T]` call site, not a runtime error.
 

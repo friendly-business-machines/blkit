@@ -616,7 +616,7 @@ import (
     "github.com/friendly-business-machines/blkit"
     "github.com/friendly-business-machines/blkit/messagegateway"
 
-    _ "example.com/processes/lending" // blank import registers the process via NewProcess()
+    _ "example.com/processes/lending" // blank import registers the process via bl.NewProcess()
 )
 
 func main() {

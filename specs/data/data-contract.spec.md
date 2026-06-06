@@ -38,10 +38,10 @@ type ContractField struct {
 func RequiredField(name string, fieldType FieldType) ContractField
 func OptionalField(name string, fieldType FieldType) ContractField
 
-// FieldType is: BlType | DictionaryContract | ListContract | TableContract
+// FieldType is: bl.Type | DictionaryContract | ListContract | TableContract
 ```
 
-`BlType` is any of the `Bl` value type classes (`BlNumber`, `BlString`, `BlBoolean`, `BlDate`, `BlTime`, `BlDateTime`, `BlYearsMonthsDuration`, `BlDaysTimeDuration`, `BlList`, `BlDictionary`, `BlRange`, `BlCalendar`).
+`bl.Type` is any of the `Bl` value type classes (`bl.BlNumber`, `bl.BlString`, `bl.BlBoolean`, `bl.BlDate`, `bl.BlTime`, `bl.BlDateTime`, `bl.BlYearsMonthsDuration`, `bl.BlDaysTimeDuration`, `bl.BlList`, `bl.BlDictionary`, `bl.BlRange`, `bl.BlCalendar`).
 
 ---
 
@@ -51,7 +51,7 @@ For fields that hold structured or collection values, three contract types provi
 
 ### DictionaryContract
 
-A `DictionaryContract` declares a structured value — a `BlDictionary` with named, typed fields. At runtime, the value must be a `BlDictionary` whose keys and value types conform to the declared fields.
+A `DictionaryContract` declares a structured value — a `bl.BlDictionary` with named, typed fields. At runtime, the value must be a `bl.BlDictionary` whose keys and value types conform to the declared fields.
 
 ```go
 type DictionaryContract struct {
@@ -62,24 +62,24 @@ func NewDictionaryContract(fields ...ContractField) *DictionaryContract
 ```
 
 ```go
-addressContract := NewDictionaryContract(
-    RequiredField("street", BlString),
-    RequiredField("city", BlString),
-    RequiredField("postal_code", BlString),
-    RequiredField("country", BlString),
+addressContract := bl.NewDictionaryContract(
+    bl.RequiredField("street", bl.BlString),
+    bl.RequiredField("city", bl.BlString),
+    bl.RequiredField("postal_code", bl.BlString),
+    bl.RequiredField("country", bl.BlString),
 )
 
-applicantContract := NewDictionaryContract(
-    RequiredField("name", BlString),
-    RequiredField("age", BlNumber),
-    RequiredField("income", BlNumber),
-    OptionalField("address", addressContract),
+applicantContract := bl.NewDictionaryContract(
+    bl.RequiredField("name", bl.BlString),
+    bl.RequiredField("age", bl.BlNumber),
+    bl.RequiredField("income", bl.BlNumber),
+    bl.OptionalField("address", addressContract),
 )
 ```
 
 ### ListContract
 
-A `ListContract` declares a typed list — a `BlList` where every element conforms to a specified type. The element type can be a `BlType`, `DictionaryContract`, `ListContract`, or `TableContract`.
+A `ListContract` declares a typed list — a `bl.BlList` where every element conforms to a specified type. The element type can be a `bl.Type`, `DictionaryContract`, `ListContract`, or `TableContract`.
 
 ```go
 type ListContract struct {
@@ -91,15 +91,15 @@ func NewListContract(elementType FieldType) *ListContract
 
 ```go
 // List of numbers
-scoresContract := NewListContract(BlNumber)
+scoresContract := bl.NewListContract(bl.BlNumber)
 
 // List of structured dictionaries
-addressesContract := NewListContract(addressContract)
+addressesContract := bl.NewListContract(addressContract)
 ```
 
 ### TableContract
 
-A `TableContract` declares a relation — a [`BlTable`](../expressions/table.spec.md) (an ordered list of uniformly-keyed `BlDictionary` rows) where each row conforms to the declared columns.
+A `TableContract` declares a relation — a [`bl.BlTable`](../expressions/table.spec.md) (an ordered list of uniformly-keyed `bl.BlDictionary` rows) where each row conforms to the declared columns.
 
 ```go
 type TableContract struct {
@@ -110,44 +110,44 @@ func NewTableContract(fields ...ContractField) *TableContract
 ```
 
 ```go
-lineItemsContract := NewTableContract(
-    RequiredField("product", BlString),
-    RequiredField("quantity", BlNumber),
-    RequiredField("unit_price", BlNumber),
+lineItemsContract := bl.NewTableContract(
+    bl.RequiredField("product", bl.BlString),
+    bl.RequiredField("quantity", bl.BlNumber),
+    bl.RequiredField("unit_price", bl.BlNumber),
 )
 ```
 
-A `TableContract` constrains values to be `BlTable` instances whose columns match the declared fields. It is conceptually similar to `ListContract.create(DictionaryContract.create(*fields))`, but binds to the typed `BlTable` value (with its uniform-keys invariant) rather than a loose `BlList[BlDictionary]`.
+A `TableContract` constrains values to be `bl.BlTable` instances whose columns match the declared fields. It is conceptually similar to `ListContract.create(DictionaryContract.create(*fields))`, but binds to the typed `bl.BlTable` value (with its uniform-keys invariant) rather than a loose `bl.BlList[bl.BlDictionary]`.
 
 ---
 
 ## Attaching to an Event Node
 
-Every `StartEvent` carries an `*InputContract` — it is a mandatory positional argument to `Start()`, so a process cannot have a contract-less entrypoint. Every `EndEvent` may carry an optional `*OutputContract` via `EndOpts.Contract`. The public process API emerges from the contracts on its boundary nodes.
+Every `StartEvent` carries an `*InputContract` — it is a mandatory positional argument to `bl.Start()`, so a process cannot have a contract-less entrypoint. Every `EndEvent` may carry an optional `*OutputContract` via `EndOpts.Contract`. The public process API emerges from the contracts on its boundary nodes.
 
 ```go
-start := Start("start", "New Application",
-    NewInputContract(
-        RequiredField("applicant", applicantContract),
-        RequiredField("loan_amount", BlNumber),
-        OptionalField("referral_code", BlString),
+start := bl.Start("start", "New Application",
+    bl.NewInputContract(
+        bl.RequiredField("applicant", applicantContract),
+        bl.RequiredField("loan_amount", bl.BlNumber),
+        bl.OptionalField("referral_code", bl.BlString),
     ),
 )
 
-approved := End("approved", "Loan Approved", EndOpts{
-    Contract: NewOutputContract(
-        RequiredField("offer_id", BlString),
-        RequiredField("approved_amount", BlNumber),
+approved := bl.End("approved", "Loan Approved", EndOpts{
+    Contract: bl.NewOutputContract(
+        bl.RequiredField("offer_id", bl.BlString),
+        bl.RequiredField("approved_amount", bl.BlNumber),
     ),
 })
 
-rejected := End("rejected", "Loan Rejected", EndOpts{
-    Contract: NewOutputContract(
-        RequiredField("rejection_reason", BlString),
+rejected := bl.End("rejected", "Loan Rejected", EndOpts{
+    Contract: bl.NewOutputContract(
+        bl.RequiredField("rejection_reason", bl.BlString),
     ),
 })
 
-loanApplication := NewProcess("loan-application", "1.0", ProcessOpts{
+loanApplication := bl.NewProcess("loan-application", "1.0", ProcessOpts{
     Name: "Loan Application",
     Graph: []ProcessNode{
         start.To(/* ... */).To(approved),
@@ -161,33 +161,33 @@ loanApplication := NewProcess("loan-application", "1.0", ProcessOpts{
 For processes with multiple entrypoints, each start node carries its own `InputContract` directly — no special multi-start handling is required.
 
 ```go
-newApp := Start("new", "New Application",
-    NewInputContract(
-        RequiredField("applicant", applicantContract),
-        RequiredField("loan_amount", BlNumber),
+newApp := bl.Start("new", "New Application",
+    bl.NewInputContract(
+        bl.RequiredField("applicant", applicantContract),
+        bl.RequiredField("loan_amount", bl.BlNumber),
     ),
 )
 
-reassess := Start("reassess", "Re-assessment",
-    NewInputContract(
-        RequiredField("applicant", applicantContract),
-        RequiredField("risk_level", BlString),
+reassess := bl.Start("reassess", "Re-assessment",
+    bl.NewInputContract(
+        bl.RequiredField("applicant", applicantContract),
+        bl.RequiredField("risk_level", bl.BlString),
     ),
 )
 
-approved := End("approved", "Loan Approved", EndOpts{
-    Contract: NewOutputContract(
-        RequiredField("offer_id", BlString),
+approved := bl.End("approved", "Loan Approved", EndOpts{
+    Contract: bl.NewOutputContract(
+        bl.RequiredField("offer_id", bl.BlString),
     ),
 })
 
-rejected := End("rejected", "Loan Rejected", EndOpts{
-    Contract: NewOutputContract(
-        RequiredField("rejection_reason", BlString),
+rejected := bl.End("rejected", "Loan Rejected", EndOpts{
+    Contract: bl.NewOutputContract(
+        bl.RequiredField("rejection_reason", bl.BlString),
     ),
 })
 
-loanDecision := NewProcess("loan-decision", "1.0", ProcessOpts{
+loanDecision := bl.NewProcess("loan-decision", "1.0", ProcessOpts{
     Name: "Loan Decision Process",
     Graph: []ProcessNode{
         newApp.To(/* ... */),
@@ -210,13 +210,13 @@ A `DecisionTask` carries two independent contract fields — `InputContract` and
 loanModel := &DecisionTask{
     Id:   "loan-model",
     Name: "Loan Approval Model",
-    InputContract: NewInputContract(
-        RequiredField("applicant", applicantContract),
-        RequiredField("loan_amount", BlNumber),
+    InputContract: bl.NewInputContract(
+        bl.RequiredField("applicant", applicantContract),
+        bl.RequiredField("loan_amount", bl.BlNumber),
     ),
-    OutputContract: NewOutputContract(
-        RequiredField("approval", BlString),
-        RequiredField("risk_score", BlNumber),
+    OutputContract: bl.NewOutputContract(
+        bl.RequiredField("approval", bl.BlString),
+        bl.RequiredField("risk_score", bl.BlNumber),
     ),
 }
 ```
@@ -273,25 +273,25 @@ When an `OutputContract` is set, `model.Validate()` additionally checks:
 Nested types are validated recursively:
 
 - `DictionaryContract` — each field is checked for presence (required/optional) and type conformance.
-- `ListContract` — the value must be a `BlList`, and every element is checked against the declared `element_type`.
-- `TableContract` — the value must be a `BlTable`, and each row is checked against the declared fields.
+- `ListContract` — the value must be a `bl.BlList`, and every element is checked against the declared `element_type`.
+- `TableContract` — the value must be a `bl.BlTable`, and each row is checked against the declared fields.
 
 ---
 
 ## Edge Cases
 
-- `NewInputContract()` and `NewOutputContract()` with no fields are valid but perform no field-level validation — they accept any input/output.
-- `Start()` requires an `*InputContract` argument. Passing `nil` is a programmer error and produces a `ProcessDefinitionError` at construction time.
-- An `EndEvent` constructed via `End(id, name)` (no `EndOpts`) or `End(id, name, EndOpts{})` (zero opts) has a `nil` `Contract` and performs no output validation.
+- `bl.NewInputContract()` and `bl.NewOutputContract()` with no fields are valid but perform no field-level validation — they accept any input/output.
+- `bl.Start()` requires an `*InputContract` argument. Passing `nil` is a programmer error and produces a `ProcessDefinitionError` at construction time.
+- An `EndEvent` constructed via `bl.End(id, name)` (no `EndOpts`) or `bl.End(id, name, EndOpts{})` (zero opts) has a `nil` `Contract` and performs no output validation.
 - A `DecisionTask` with both `InputContract == nil` and `OutputContract == nil` performs no validation; one-set, one-nil is allowed and the set one is independently validated.
-- Duplicate field names within the same `NewInputContract(...)` or `NewOutputContract(...)` call produce a `DataContractValidationError` at definition time.
+- Duplicate field names within the same `bl.NewInputContract(...)` or `bl.NewOutputContract(...)` call produce a `DataContractValidationError` at definition time.
 - `DataContractValidationError` at submission time prevents the process from running — the submission is rejected synchronously (the start-command is never published to the broker).
 - `DataContractValidationError` at completion time causes the process to fail — the failure is recorded as `PROCESS_FAILED` in the `ExecutionHistory` with the error attached.
-- A field typed as `BlList` (the class, not a `ListContract`) declares that the value must be a list, but does not constrain the element type. Use `ListContract` for element-level type constraints.
-- A field typed as `BlDictionary` (the class, not a `DictionaryContract`) declares that the value must be a dictionary, but does not constrain its keys or value types. Use `DictionaryContract` for structural constraints on dictionary values.
-- `BlNull` is not a valid field type — a field that may be absent should be declared as `optional`. At evaluation time, a missing input resolves to `BlNull` regardless of contract.
+- A field typed as `bl.BlList` (the class, not a `ListContract`) declares that the value must be a list, but does not constrain the element type. Use `ListContract` for element-level type constraints.
+- A field typed as `bl.BlDictionary` (the class, not a `DictionaryContract`) declares that the value must be a dictionary, but does not constrain its keys or value types. Use `DictionaryContract` for structural constraints on dictionary values.
+- `bl.BlNull` is not a valid field type — a field that may be absent should be declared as `optional`. At evaluation time, a missing input resolves to `bl.BlNull` regardless of contract.
 - A single `*InputContract` may be shared by reference across multiple `StartEvent`s with identical input shapes; the same applies to `*OutputContract` across multiple `EndEvent`s. Contracts are read-only after construction, so sharing is safe.
-- `NewDictionaryContract()` with no fields is valid — it constrains the value to be a `BlDictionary` but imposes no field requirements.
-- `NewListContract(elementType)` with a nested `ListContract` is valid — represents a list of lists.
-- `NewTableContract()` with no fields is valid — it constrains the value to be a `BlTable` but imposes no column requirements.
+- `bl.NewDictionaryContract()` with no fields is valid — it constrains the value to be a `bl.BlDictionary` but imposes no field requirements.
+- `bl.NewListContract(elementType)` with a nested `ListContract` is valid — represents a list of lists.
+- `bl.NewTableContract()` with no fields is valid — it constrains the value to be a `bl.BlTable` but imposes no column requirements.
 - Duplicate field names in a `DictionaryContract` or `TableContract` produce a `DataContractValidationError` at definition time.

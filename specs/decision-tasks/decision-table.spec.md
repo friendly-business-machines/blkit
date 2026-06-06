@@ -79,7 +79,7 @@ func ListInput(label string, expression BlList) ListInputColumn
 func DictionaryInput(label string, expression BlDictionary, schema *DictionaryContract) DictionaryInputColumn
 ```
 
-Each concrete `*InputColumn` type embeds the matching `Bl*` interface — `NumberInputColumn` embeds `BlNumber`, `StringInputColumn` embeds `BlString`, etc. — so the column value can be used directly inside rule predicates without an extra `.Ref` hop.
+Each concrete `*InputColumn` type embeds the matching `Bl*` interface — `NumberInputColumn` embeds `bl.BlNumber`, `StringInputColumn` embeds `bl.BlString`, etc. — so the column value can be used directly inside rule predicates without an extra `.Ref` hop.
 
 ---
 
@@ -115,10 +115,10 @@ func (r *Rule) AddOutputEntry(outputName string, value BlExpr) *Rule
 
 - `Id` is optional. When set, it must be unique within the `DecisionTable`.
 - `Description` is optional — a human-readable explanation of why this rule exists or when it applies.
-- `Conditions` pair a column with a boolean `BlExpr` predicate. The predicate references the column directly (e.g., `age.GreaterThanOrEqual(Bl.Number(18))`).
+- `Conditions` pair a column with a boolean `bl.BlExpr` predicate. The predicate references the column directly (e.g., `age.GreaterThanOrEqual(bl.Number(18))`).
 - Not every input column needs an entry for every rule — omitted inputs match any value (wildcard, rendered as `"-"` in markdown).
 - A rule matches when **all** specified conditions evaluate to `true`.
-- `Results` are keyed by the output name as declared on the `Outputs` struct. An output that does not appear on the struct produces a `DecisionDefinitionError`. A rule that omits an output produces `BlNull` for it.
+- `Results` are keyed by the output name as declared on the `Outputs` struct. An output that does not appear on the struct produces a `DecisionDefinitionError`. A rule that omits an output produces `bl.BlNull` for it.
 
 ### Example — Single Output Column
 
@@ -139,16 +139,16 @@ var eligibility = NewDecisionTable[EligibilityOutputs](DecisionTableOpts{
     HitPolicy: HitPolicyUnique,
     Inputs:    []TableInput{eligAgeCol, eligIncomeCol},
     Rules: []Rule{
-        *NewRule().
-            AddInputEntry(eligAgeCol,    eligAgeCol.GreaterThanOrEqual(Bl.Number(18))).
-            AddInputEntry(eligIncomeCol, eligIncomeCol.GreaterThanOrEqual(Bl.Number(30000))).
-            AddOutputEntry("eligibility", Bl.String("eligible")),
-        *NewRule().
-            AddInputEntry(eligAgeCol, eligAgeCol.LessThan(Bl.Number(18))).
-            AddOutputEntry("eligibility", Bl.String("ineligible")),
-        *NewRule().
-            AddInputEntry(eligIncomeCol, eligIncomeCol.LessThan(Bl.Number(30000))).
-            AddOutputEntry("eligibility", Bl.String("ineligible")),
+        *bl.NewRule().
+            AddInputEntry(eligAgeCol,    eligAgeCol.GreaterThanOrEqual(bl.Number(18))).
+            AddInputEntry(eligIncomeCol, eligIncomeCol.GreaterThanOrEqual(bl.Number(30000))).
+            AddOutputEntry("eligibility", bl.String("eligible")),
+        *bl.NewRule().
+            AddInputEntry(eligAgeCol, eligAgeCol.LessThan(bl.Number(18))).
+            AddOutputEntry("eligibility", bl.String("ineligible")),
+        *bl.NewRule().
+            AddInputEntry(eligIncomeCol, eligIncomeCol.LessThan(bl.Number(30000))).
+            AddOutputEntry("eligibility", bl.String("ineligible")),
     },
 })
 ```
@@ -182,19 +182,19 @@ var loanPricing = NewDecisionTable[LoanPricingOutputs](DecisionTableOpts{
     HitPolicy: HitPolicyUnique,
     Inputs:    []TableInput{pricingScoreCol, pricingAmountCol},
     Rules: []Rule{
-        *NewRule("prime").
-            AddInputEntry(pricingScoreCol,  pricingScoreCol.GreaterThanOrEqual(Bl.Number(750))).
-            AddInputEntry(pricingAmountCol, pricingAmountCol.LessThanOrEqual(Bl.Number(500000))).
-            AddOutputEntry("rate", Bl.Number(3.5)).
-            AddOutputEntry("term", Bl.Number(360)),
-        *NewRule("standard").
-            AddInputEntry(pricingScoreCol, pricingScoreCol.In(Bl.Range(Bl.Number(650), Bl.Number(749), true, true))).
-            AddOutputEntry("rate", Bl.Number(5.0)).
-            AddOutputEntry("term", Bl.Number(240)),
-        *NewRule("subprime").
-            AddInputEntry(pricingScoreCol, pricingScoreCol.LessThan(Bl.Number(650))).
-            AddOutputEntry("rate", Bl.Number(7.5)).
-            AddOutputEntry("term", Bl.Number(180)),
+        *bl.NewRule("prime").
+            AddInputEntry(pricingScoreCol,  pricingScoreCol.GreaterThanOrEqual(bl.Number(750))).
+            AddInputEntry(pricingAmountCol, pricingAmountCol.LessThanOrEqual(bl.Number(500000))).
+            AddOutputEntry("rate", bl.Number(3.5)).
+            AddOutputEntry("term", bl.Number(360)),
+        *bl.NewRule("standard").
+            AddInputEntry(pricingScoreCol, pricingScoreCol.In(bl.Range(bl.Number(650), bl.Number(749), true, true))).
+            AddOutputEntry("rate", bl.Number(5.0)).
+            AddOutputEntry("term", bl.Number(240)),
+        *bl.NewRule("subprime").
+            AddInputEntry(pricingScoreCol, pricingScoreCol.LessThan(bl.Number(650))).
+            AddOutputEntry("rate", bl.Number(7.5)).
+            AddOutputEntry("term", bl.Number(180)),
     },
 })
 ```
@@ -227,16 +227,16 @@ var shipping = NewDecisionTable[ShippingOutputs](DecisionTableOpts{
     HitPolicy: HitPolicyFirst,
     Inputs:    []TableInput{shippingWeightCol, shippingDestinationCol},
     Rules: []Rule{
-        *NewRule("light-domestic").
-            AddInputEntry(shippingWeightCol,      shippingWeightCol.LessThanOrEqual(Bl.Number(5))).
-            AddInputEntry(shippingDestinationCol, shippingDestinationCol.In(Bl.List(Bl.String("US"), Bl.String("CA")))).
-            AddOutputEntry("cost", Bl.Number(9.99)),
-        *NewRule("medium-domestic").
-            AddInputEntry(shippingWeightCol,      shippingWeightCol.In(Bl.Range(Bl.Number(5), Bl.Number(20), false, true))).
-            AddInputEntry(shippingDestinationCol, shippingDestinationCol.In(Bl.List(Bl.String("US"), Bl.String("CA")))).
-            AddOutputEntry("cost", Bl.Number(19.99)),
-        *NewRule("fallback").
-            AddOutputEntry("cost", Bl.Number(49.99)),
+        *bl.NewRule("light-domestic").
+            AddInputEntry(shippingWeightCol,      shippingWeightCol.LessThanOrEqual(bl.Number(5))).
+            AddInputEntry(shippingDestinationCol, shippingDestinationCol.In(bl.List(bl.String("US"), bl.String("CA")))).
+            AddOutputEntry("cost", bl.Number(9.99)),
+        *bl.NewRule("medium-domestic").
+            AddInputEntry(shippingWeightCol,      shippingWeightCol.In(bl.Range(bl.Number(5), bl.Number(20), false, true))).
+            AddInputEntry(shippingDestinationCol, shippingDestinationCol.In(bl.List(bl.String("US"), bl.String("CA")))).
+            AddOutputEntry("cost", bl.Number(19.99)),
+        *bl.NewRule("fallback").
+            AddOutputEntry("cost", bl.Number(49.99)),
     },
 })
 ```
@@ -313,22 +313,22 @@ var discount = NewDecisionTable[DiscountOutputs](DecisionTableOpts{
     HitPolicy: HitPolicyFirst,
     Inputs:    []TableInput{discountTypeCol, discountTotalCol},
     Rules: []Rule{
-        *NewRule("vip").
-            AddInputEntry(discountTypeCol, discountTypeCol.Equals(Bl.String("VIP"))).
-            AddOutputEntry("discount", Bl.Number(0.20)),
-        *NewRule("large-order").
-            AddInputEntry(discountTotalCol, discountTotalCol.GreaterThan(Bl.Number(500))).
-            AddOutputEntry("discount", Bl.Number(0.10)),
-        *NewRule("default").
-            AddOutputEntry("discount", Bl.Number(0.0)),
+        *bl.NewRule("vip").
+            AddInputEntry(discountTypeCol, discountTypeCol.Equals(bl.String("VIP"))).
+            AddOutputEntry("discount", bl.Number(0.20)),
+        *bl.NewRule("large-order").
+            AddInputEntry(discountTotalCol, discountTotalCol.GreaterThan(bl.Number(500))).
+            AddOutputEntry("discount", bl.Number(0.10)),
+        *bl.NewRule("default").
+            AddOutputEntry("discount", bl.Number(0.0)),
     },
 })
 
 result, err := discount.Evaluate(map[string]any{
-    "customer_type": Bl.String("VIP"),
-    "order_total":   Bl.Number(1000),
+    "customer_type": bl.String("VIP"),
+    "order_total":   bl.Number(1000),
 })
-// result is BlNumber(0.20) — first rule matched, others not considered
+// result is bl.BlNumber(0.20) — first rule matched, others not considered
 ```
 
 ### Example — COLLECT with Aggregation
@@ -352,24 +352,24 @@ var penalties = NewDecisionTable[PenaltyOutputs](DecisionTableOpts{
     Aggregation: &sumAgg,
     Inputs:      []TableInput{penaltySpeedCol, penaltyZoneCol},
     Rules: []Rule{
-        *NewRule("school-speeding").
-            AddInputEntry(penaltySpeedCol, penaltySpeedCol.GreaterThan(Bl.Number(30))).
-            AddInputEntry(penaltyZoneCol,  penaltyZoneCol.Equals(Bl.String("school"))).
-            AddOutputEntry("fine", Bl.Number(200)),
-        *NewRule("excessive-speed").
-            AddInputEntry(penaltySpeedCol, penaltySpeedCol.GreaterThan(Bl.Number(50))).
-            AddOutputEntry("fine", Bl.Number(150)),
-        *NewRule("school-zone").
-            AddInputEntry(penaltyZoneCol, penaltyZoneCol.Equals(Bl.String("school"))).
-            AddOutputEntry("fine", Bl.Number(50)),
+        *bl.NewRule("school-speeding").
+            AddInputEntry(penaltySpeedCol, penaltySpeedCol.GreaterThan(bl.Number(30))).
+            AddInputEntry(penaltyZoneCol,  penaltyZoneCol.Equals(bl.String("school"))).
+            AddOutputEntry("fine", bl.Number(200)),
+        *bl.NewRule("excessive-speed").
+            AddInputEntry(penaltySpeedCol, penaltySpeedCol.GreaterThan(bl.Number(50))).
+            AddOutputEntry("fine", bl.Number(150)),
+        *bl.NewRule("school-zone").
+            AddInputEntry(penaltyZoneCol, penaltyZoneCol.Equals(bl.String("school"))).
+            AddOutputEntry("fine", bl.Number(50)),
     },
 })
 
 result, err := penalties.Evaluate(map[string]any{
-    "speed":     Bl.Number(55),
-    "zone_type": Bl.String("school"),
+    "speed":     bl.Number(55),
+    "zone_type": bl.String("school"),
 })
-// All three rules match — result is BlNumber(400) (200 + 150 + 50)
+// All three rules match — result is bl.BlNumber(400) (200 + 150 + 50)
 ```
 
 ---
@@ -377,11 +377,11 @@ result, err := penalties.Evaluate(map[string]any{
 ## Evaluation
 
 1. For each `TableInput`, evaluate its `Expression` against the input variables and bind the result to the column's label in a local context.
-2. For each `Rule`, evaluate each specified `InputEntry`'s predicate against the local context. An entry must evaluate to `BlBoolean.TRUE` to match. Input columns not referenced in the rule's `Conditions` always match (wildcard).
+2. For each `Rule`, evaluate each specified `InputEntry`'s predicate against the local context. An entry must evaluate to `bl.BlBoolean.TRUE` to match. Input columns not referenced in the rule's `Conditions` always match (wildcard).
 3. A rule matches if **all** specified conditions match.
 4. Apply the hit policy to the set of matching rules to produce the output.
 5. If no rule matches:
-   - For `Unique`, `First`, `Any`: return `BlNull` output (not an error, unless surrounding semantics treat the output as required).
+   - For `Unique`, `First`, `Any`: return `bl.BlNull` output (not an error, unless surrounding semantics treat the output as required).
    - For `Collect`, `RuleOrder`, `OutputOrder`: return an empty list.
 
 ---
@@ -395,7 +395,7 @@ result, err := penalties.Evaluate(map[string]any{
 - The first row is headers: hit policy indicator in the first cell, then input column labels, then output names.
 - The hit policy indicator is the standard single-letter abbreviation (`U`, `F`, `C`, …). For `Collect` with an aggregation, the aggregation symbol is appended (`C+`, `C<`, `C>`, `C#`).
 - A visual separator column is placed between the last input column and the first output column. The header cell is empty, and every data row contains `█` (Unicode full block).
-- Each subsequent row is a rule: rule index, then (if `showRuleIDs=true`) the rule id in a `rule-id` column, then input entries rendered via `BlUnaryTest.Source()` (with `"-"` for omitted/wildcard inputs), then the `█` separator, then output values rendered via `BlValue.String()` (with `""` for omitted outputs).
+- Each subsequent row is a rule: rule index, then (if `showRuleIDs=true`) the rule id in a `rule-id` column, then input entries rendered via `bl.BlUnaryTest.Source()` (with `"-"` for omitted/wildcard inputs), then the `█` separator, then output values rendered via `bl.BlValue.String()` (with `""` for omitted outputs).
 - When `showInputMappings=true`, a table mapping each input label to its expression is rendered above the decision table.
 - When `showRuleDescriptions=true`, a numbered list of rule descriptions is appended below the table.
 
@@ -418,14 +418,14 @@ var riskLevel = NewDecisionTable[RiskOutputs](DecisionTableOpts{
     HitPolicy: HitPolicyUnique,
     Inputs:    []TableInput{riskAgeCol, riskScoreCol},
     Rules: []Rule{
-        *NewRule("young-good-credit", "Young applicant with strong credit history").
-            AddInputEntry(riskAgeCol,   riskAgeCol.LessThan(Bl.Number(25))).
-            AddInputEntry(riskScoreCol, riskScoreCol.GreaterThan(Bl.Number(700))).
-            AddOutputEntry("risk",   Bl.String("low")).
-            AddOutputEntry("reason", Bl.String("Young with good credit")),
-        *NewRule("older-any-credit", "Standard risk for older applicants").
-            AddInputEntry(riskAgeCol, riskAgeCol.GreaterThanOrEqual(Bl.Number(25))).
-            AddOutputEntry("risk", Bl.String("medium")),
+        *bl.NewRule("young-good-credit", "Young applicant with strong credit history").
+            AddInputEntry(riskAgeCol,   riskAgeCol.LessThan(bl.Number(25))).
+            AddInputEntry(riskScoreCol, riskScoreCol.GreaterThan(bl.Number(700))).
+            AddOutputEntry("risk",   bl.String("low")).
+            AddOutputEntry("reason", bl.String("Young with good credit")),
+        *bl.NewRule("older-any-credit", "Standard risk for older applicants").
+            AddInputEntry(riskAgeCol, riskAgeCol.GreaterThanOrEqual(bl.Number(25))).
+            AddOutputEntry("risk", bl.String("medium")),
     },
 })
 
@@ -447,13 +447,13 @@ Output:
 
 - A `DecisionTable` with no input columns is valid; all rules match unconditionally.
 - A `DecisionTable` whose `Outputs` struct has no exported fields is invalid — `NewDecisionTable` raises `DecisionDefinitionError`.
-- A `DecisionTable` with no `Rule` entries evaluates to `BlNull` (or empty list for multi-result policies) without error.
-- A `Rule` with an empty string `Id` is invalid — `NewRule("")` produces `DecisionDefinitionError`.
-- A `Rule` with no `Id` (`NewRule()`) is valid.
+- A `DecisionTable` with no `Rule` entries evaluates to `bl.BlNull` (or empty list for multi-result policies) without error.
+- A `Rule` with an empty string `Id` is invalid — `bl.NewRule("")` produces `DecisionDefinitionError`.
+- A `Rule` with no `Id` (`bl.NewRule()`) is valid.
 - A `Rule` whose `Id` duplicates an existing rule's id in the table produces `DecisionDefinitionError`.
 - An `AddOutputEntry` call referencing an output name not declared on the outputs struct produces `DecisionDefinitionError`.
 - An `AddInputEntry` call whose column was not added to `DecisionTableOpts.Inputs` produces `DecisionDefinitionError`.
 - A rule with no input entries (all inputs are wildcards) matches unconditionally.
-- Predicates must be `BlExpr` instances evaluating to `BlBoolean`. A predicate that evaluates to a non-boolean type produces a `BlTypeError` at evaluation time.
+- Predicates must be `bl.BlExpr` instances evaluating to `bl.BlBoolean`. A predicate that evaluates to a non-boolean type produces a `bl.TypeError` at evaluation time.
 - `HitPolicyCollect` with `AggregationSum` on a non-numeric output is a `DecisionDefinitionError`.
 - An output declared on the outputs struct that is set by no rule is a `DecisionDefinitionError` (every declared output must be reachable).

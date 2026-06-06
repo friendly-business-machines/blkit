@@ -1,17 +1,17 @@
 ---
-name: BlTime
-description: The time-of-day type in the blkit expression language. Covers the time constructor, component access, duration arithmetic, comparison, timezone/offset semantics, and the Go layer (BlTime + expr registrations).
+name: bl.BlTime
+description: The time-of-day type in the blkit expression language. Covers the time constructor, component access, duration arithmetic, comparison, timezone/offset semantics, and the Go layer (bl.BlTime + expr registrations).
 targets:
-  - ../../expr/time.go
+  - ../../time.go
 ---
 
-# BlTime — the `time` type
+# bl.BlTime — the `time` type
 
 `time` is a time of day: hours, minutes, seconds (optionally fractional), with an optional UTC
 offset or IANA timezone. The textual form follows [ISO 8601](https://www.iso.org/iso-8601-date-and-time-format.html)
 for the time portion and [RFC 9557 (IXDTF)](https://datatracker.ietf.org/doc/html/rfc9557) for
 the `[Zone]` suffix used to attach an IANA timezone name. The Go value type backing it is
-`BlTime`.
+`bl.BlTime`.
 
 See [bl-expr.spec.md](bl-expr.spec.md) for the engine and component-access syntax.
 
@@ -38,7 +38,7 @@ time(datetime("2025-03-28T14:30:00"))  // extract time component
 blkit distinguishes a fixed **offset** (`+01:00`, not DST-aware), a named **timezone**
 (`[Europe/Paris]`, DST-aware), and a **local** time (no UTC relationship).
 
-`[@test] ../../expr/time_test.go`
+`[@test] ../../time_test.go`
 
 ---
 
@@ -53,38 +53,38 @@ time("11:45:30+02:00").offset       // → dtDuration("PT2H")   (ext)
 time("11:45:30[Europe/Paris]").timezone  // → "Europe/Paris" (ext)
 ```
 
-`[@test] ../../expr/time_components_test.go`
+`[@test] ../../time_components_test.go`
 
 ---
 
 ## Construction (host-side)
 
-Host Go code constructs a `BlTime` via the generic `Time[T TimeInput](v T) (BlTime, error)`
+Host Go code constructs a `bl.BlTime` via the generic `Time[T TimeInput](v T) (bl.BlTime, error)`
 constructor. `TimeInput` accepts a `string` (parsed as ISO 8601 / RFC 9557 — the zone-or-naive
 kind is set based on whether a zone designator was present), a `time.Time` (the time portion
 is extracted; the result is always zoned because a `time.Time` always carries a `Location`),
 or a `TimeComponents` struct for explicit component-by-component construction. To build a
-naive `BlTime` from a `time.Time`, route through `ToTimeComponentsAsNaive(t)` first.
+naive `bl.BlTime` from a `time.Time`, route through `ToTimeComponentsAsNaive(t)` first.
 
 ```go
 // host-side (Go)
 // Most common: an ISO 8601 string.
-var morning, _ = Time("09:00:00")                       // naive
-var london,  _ = Time("11:45:30+01:00")                 // zoned, offset
-var paris,   _ = Time("11:45:30[Europe/Paris]")         // zoned, IANA zone
+var morning, _ = bl.Time("09:00:00")                       // naive
+var london,  _ = bl.Time("11:45:30+01:00")                 // zoned, offset
+var paris,   _ = bl.Time("11:45:30[Europe/Paris]")         // zoned, IANA zone
 
 // From a time.Time — the time-of-day portion is extracted; the result is zoned.
 var now      = time.Now()
-var nowTime, _ = Time(now)
+var nowTime, _ = bl.Time(now)
 
 // From a time.Time but stripping the zone (host wants a wall-clock time, no zone).
-var wallClock, _ = Time(ToTimeComponentsAsNaive(now))
+var wallClock, _ = bl.Time(ToTimeComponentsAsNaive(now))
 
 // From explicit components.
-var noon, _ = Time(TimeComponents{Hour: 12, Minute: 0, Second: 0})
+var noon, _ = bl.Time(TimeComponents{Hour: 12, Minute: 0, Second: 0})
 ```
 
-`Time(...)` returns `(BlTime, error)`. The error path fires for unparseable strings, invalid
+`bl.Time(...)` returns `(bl.BlTime, error)`. The error path fires for unparseable strings, invalid
 components (`Hour ≥ 24`, `Minute ≥ 60`, etc.), or a `TimeComponents` with both `Offset` and
 `Zone` set (they're mutually exclusive). The full `TimeInput` constraint, the `TimeComponents`
 struct, and the `ToTimeComponentsAsNaive` helper are documented in [§ Value type & host
@@ -105,11 +105,11 @@ Only a **days-time** duration may be applied (time has no year/month concept). T
 not tracked — adding `PT25H` to `23:00:00` gives `00:00:00` (day advance discarded); use `datetime`
 for day-tracking arithmetic.
 
-`withOffset(t, offset)` for re-zoning a `BlTime` is documented in
+`withOffset(t, offset)` for re-zoning a `bl.BlTime` is documented in
 [datetime.spec.md § Re-zoning](datetime.spec.md#re-zoning-ext) — the function accepts both
-`BlTime` and `BlDateTime`.
+`bl.BlTime` and `bl.BlDateTime`.
 
-`[@test] ../../expr/time_ops_test.go`
+`[@test] ../../time_ops_test.go`
 
 ---
 
@@ -128,18 +128,18 @@ Lives in `expr/time.go`. Shared mechanics in
 
 ### Value type & host API (exported)
 
-`BlTime` is the immutable Go value type that represents a time of day inside the engine and at
+`bl.BlTime` is the immutable Go value type that represents a time of day inside the engine and at
 the host-code boundary. It wraps a Go [`time.Time`](https://pkg.go.dev/time#Time) — Go has no
 separate time-of-day type, so `time.Time` is used by convention with the date portion set to
-`0001-01-01` (year 1) and ignored by all `BlTime` operations — plus a `naive` boolean that
+`0001-01-01` (year 1) and ignored by all `bl.BlTime` operations — plus a `naive` boolean that
 distinguishes the timezone-naive (local) case from a genuinely UTC/zoned one. Both fields are
 private so callers cannot mutate the underlying value; every operation in the library returns
-a fresh `BlTime`.
+a fresh `bl.BlTime`.
 
 Constructors normalise the date portion to `0001-01-01` on input. Conversions in/out (e.g.
 `Native()` accessor returning the wrapped `time.Time`, or callers passing a `time.Time` into
-`Time(...)` whose date portion is non-zero) discard the date component; callers should not
-read the year/month/day fields of a `BlTime.Native()` value.
+`bl.Time(...)` whose date portion is non-zero) discard the date component; callers should not
+read the year/month/day fields of a `bl.BlTime.Native()` value.
 
 The `naive` flag is needed because Go's `time.Time` always carries a non-nil `*time.Location`,
 so there is no built-in way to represent "a time of day with no timezone interpretation".
@@ -150,10 +150,10 @@ an IANA zone loaded via [`time.LoadLocation`](https://pkg.go.dev/time#LoadLocati
 
 The exported surface has three parts:
 
-- **`BlValue` interface methods** — `Type()`, `Equal()`, `String()`, and the unexported
+- **`bl.BlValue` interface methods** — `Type()`, `Equal()`, `bl.String()`, and the unexported
   `isBlValue()` marker — required of every blkit value type so the engine can treat them
   uniformly. `Equal` compares wall-clock times when both operands are naive, and compares as
-  UTC instants when both are zoned/offset; mixing them returns `BlNull`. `String()` doubles as
+  UTC instants when both are zoned/offset; mixing them returns `bl.BlNull`. `bl.String()` doubles as
   the `fmt.Stringer` implementation, producing the canonical ISO 8601 / RFC 9557 form (e.g.
   `"14:30:00"`, `"14:30:00+01:00"`, or `"14:30:00[Europe/Paris]"`).
 - **`Time[T TimeInput](v T)`** — the generic host constructor. `TimeInput` accepts `string`
@@ -180,8 +180,8 @@ type BlTime struct {
     naive bool        // true when no offset/zone was specified — Location() is ignored
 }
 
-// BlValue interface — required by all Bl* value types.
-func (BlTime) Type() BlType { return BlTypeTime }
+// bl.BlValue interface — required by all Bl* value types.
+func (BlTime) Type() Type { return TypeTime }
 func (t BlTime) Equal(other BlValue) BlValue   // wall-clock or UTC-instant; cross-kind → Null
 func (t BlTime) String() string                // canonical ISO 8601 / RFC 9557
 func (BlTime) isBlValue() {}
@@ -197,7 +197,7 @@ type TimeInput interface { string | time.Time | TimeComponents }
 func Time[T TimeInput](v T) (BlTime, error)
 
 // Decompose a time.Time into time-of-day components with Offset/Zone unset, so the
-// resulting TimeComponents builds a naive BlTime when passed to Time. Use this when
+// resulting TimeComponents builds a naive bl.BlTime when passed to Time. Use this when
 // host code has a time.Time but wants to drop its zone interpretation.
 func ToTimeComponentsAsNaive(t time.Time) TimeComponents
 
@@ -208,10 +208,10 @@ func (t BlTime) IsNaive() bool                 // true when timezone-naive
 
 ### Operator implementation functions (unexported)
 
-`expr-lang/expr` has no knowledge of `BlTime` and cannot apply Go's native `+`/`-`/`<`/etc. to
+`expr-lang/expr` has no knowledge of `bl.BlTime` and cannot apply Go's native `+`/`-`/`<`/etc. to
 blkit values. For every operator that should work on times, blkit supplies a named Go function
-that performs the operation and returns the result wrapped as a `BlValue`. The connection from
-operator token to function happens in two steps, neither of which is unique to `BlTime`:
+that performs the operation and returns the result wrapped as a `bl.BlValue`. The connection from
+operator token to function happens in two steps, neither of which is unique to `bl.BlTime`:
 
 1. The Registrations section below calls `expr.Function("addTimeDur", typed2(addTimeDur), …)`,
    which makes the engine aware of the function under that exact string name and records its
@@ -222,17 +222,17 @@ operator token to function happens in two steps, neither of which is unique to `
    and dispatch to whichever one's signature matches the operand types." Centralised in one
    place because a single operator spans many types.
 
-So when the parser encounters `t + dur` and the operands type-check to `BlTime` +
-`BlDaysTimeDuration`, the engine finds `addTimeDur` in the `"+"` binding list, sees its
+So when the parser encounters `t + dur` and the operands type-check to `bl.BlTime` +
+`bl.BlDaysTimeDuration`, the engine finds `addTimeDur` in the `"+"` binding list, sees its
 signature matches, and dispatches to it.
 
-Arithmetic impls return `BlTime` directly because they cannot yield null (midnight wrap
+Arithmetic impls return `bl.BlTime` directly because they cannot yield null (midnight wrap
 handles any overflow case: `time("23:00:00") + dtDuration("PT2H") → time("01:00:00")`, day
-advance discarded). Comparison impls return `BlValue` because cross-kind comparison (naive vs
-zoned/offset) yields `BlNull`.
+advance discarded). Comparison impls return `bl.BlValue` because cross-kind comparison (naive vs
+zoned/offset) yields `bl.BlNull`.
 
 Equality (`=` / `!=`) is **not** registered as a per-type operator impl. The engine dispatches
-`=` / `!=` through the `Equal()` method on the `BlValue` interface, which `BlTime` implements
+`=` / `!=` through the `Equal()` method on the `bl.BlValue` interface, which `bl.BlTime` implements
 above. That single dispatch path handles null propagation and cross-type comparison uniformly.
 
 `between` and `in` are patcher-lowered: `between` rewrites to a pair of comparisons; `in`
@@ -246,10 +246,10 @@ func ltTimes(a, b BlTime) BlValue                          // "<"  ; cross-kind 
 func leTimes(a, b BlTime) BlValue                          // "<=" ; cross-kind → Null
 func gtTimes(a, b BlTime) BlValue                          // ">"  ; cross-kind → Null
 func geTimes(a, b BlTime) BlValue                          // ">=" ; cross-kind → Null
-// "=" and "!=" go through BlValue.Equal(); see BlTime.Equal() above.
+// "=" and "!=" go through bl.BlValue.Equal(); see bl.BlTime.Equal() above.
 ```
 
-These are written in clean typed form (`BlTime → BlValue`) for readability and unit testing.
+These are written in clean typed form (`bl.BlTime → bl.BlValue`) for readability and unit testing.
 The engine cannot consume them at this shape directly — they're wrapped by the `typed1`/`typed2`
 adapters at registration time.
 
@@ -266,11 +266,11 @@ func timeFn(args ...any) (any, error)   // time("…") | time(h, m, s) | time(dt
 ```
 
 `timeFn` parses ISO 8601 / RFC 9557 strings via Go's [`time.Parse`](https://pkg.go.dev/time#Parse);
-an unparseable string → `BlParseError`. Hour/minute/second component construction validates
-ranges (hour 0–23, minute/second 0–59) and rejects invalid combinations with `BlTypeError`.
+an unparseable string → `ParseError`. Hour/minute/second component construction validates
+ranges (hour 0–23, minute/second 0–59) and rejects invalid combinations with `TypeError`.
 IANA zone lookups go through [`time.LoadLocation`](https://pkg.go.dev/time#LoadLocation); an
-unknown zone name → `BlTypeError`. Native Go `time.Time` (time-of-day portion) inputs wrap to
-`BlTime`.
+unknown zone name → `TypeError`. Native Go `time.Time` (time-of-day portion) inputs wrap to
+`bl.BlTime`.
 
 Component accessors (`.hour`/`.minute`/`.second`/`.offset`/`.timezone`) are resolved by the
 component-access patcher described in [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go)
@@ -280,7 +280,7 @@ user-callable `expr.Function`s.
 Operator implementation functions (`addTimeDur`, `subTimeDur`, `ltTimes`, `leTimes`,
 `gtTimes`, `geTimes`) are documented in the previous section.
 
-The `withOffset` function (re-zoning) accepts both `BlTime` and `BlDateTime` and is registered
+The `withOffset` function (re-zoning) accepts both `bl.BlTime` and `bl.BlDateTime` and is registered
 in [datetime.spec.md § Re-zoning](datetime.spec.md#re-zoning-ext) under a single
 `expr.Function` with both type signatures.
 
@@ -295,7 +295,7 @@ entry is built with `expr.Function(name, impl, typeHints...)`, where:
 - `impl` must have the signature `func(...any) (any, error)` — that is the only shape
   [`expr-lang/expr`](https://github.com/expr-lang/expr) accepts. The `typed1` / `typed2` /
   `typed3` adapters (defined in [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go))
-  wrap a typed implementation such as `func(BlTime, BlDaysTimeDuration) BlTime` into that
+  wrap a typed implementation such as `func(bl.BlTime, bl.BlDaysTimeDuration) bl.BlTime` into that
   shape, type-asserting each argument and boxing the result. The variadic implementation
   (`timeFn`) already satisfies the shape and is registered directly.
 - `typeHints` is a variadic list of `new(func(...) ...)` values. The engine reflects on them
@@ -303,7 +303,7 @@ entry is built with `expr.Function(name, impl, typeHints...)`, where:
   runtime cost. Multiple hints register the function as overloaded across signatures.
 
 Time-only registrations are grouped by role: operator impls (consumed by `operatorBindings()`)
-and the constructor. Re-zoning (`withOffset`) accepts both `BlTime` and `BlDateTime` and is
+and the constructor. Re-zoning (`withOffset`) accepts both `bl.BlTime` and `bl.BlDateTime` and is
 registered once in [datetime.spec.md](datetime.spec.md) with both type signatures.
 
 ```go
@@ -311,30 +311,30 @@ registered once in [datetime.spec.md](datetime.spec.md) with both type signature
 func timeOptions() []expr.Option {
     return []expr.Option{
         // operator impls — bound to operator tokens by operatorBindings()
-        expr.Function("addTimeDur", typed2(addTimeDur), new(func(BlTime, BlDaysTimeDuration) BlTime)),
-        expr.Function("subTimeDur", typed2(subTimeDur), new(func(BlTime, BlDaysTimeDuration) BlTime)),
-        expr.Function("ltTimes",    typed2(ltTimes),    new(func(BlTime, BlTime) BlValue)),
-        expr.Function("leTimes",    typed2(leTimes),    new(func(BlTime, BlTime) BlValue)),
-        expr.Function("gtTimes",    typed2(gtTimes),    new(func(BlTime, BlTime) BlValue)),
-        expr.Function("geTimes",    typed2(geTimes),    new(func(BlTime, BlTime) BlValue)),
-        // = and != dispatch via BlValue.Equal() — no per-type registration
+        expr.Function("addTimeDur", typed2(addTimeDur), new(func(bl.BlTime, bl.BlDaysTimeDuration) bl.BlTime)),
+        expr.Function("subTimeDur", typed2(subTimeDur), new(func(bl.BlTime, bl.BlDaysTimeDuration) bl.BlTime)),
+        expr.Function("ltTimes",    typed2(ltTimes),    new(func(bl.BlTime, bl.BlTime) bl.BlValue)),
+        expr.Function("leTimes",    typed2(leTimes),    new(func(bl.BlTime, bl.BlTime) bl.BlValue)),
+        expr.Function("gtTimes",    typed2(gtTimes),    new(func(bl.BlTime, bl.BlTime) bl.BlValue)),
+        expr.Function("geTimes",    typed2(geTimes),    new(func(bl.BlTime, bl.BlTime) bl.BlValue)),
+        // = and != dispatch via bl.BlValue.Equal() — no per-type registration
 
         // construction / extraction
         expr.Function("time", timeFn,
-            new(func(BlString) BlTime),                          // time("…")
-            new(func(BlNumber, BlNumber, BlNumber) BlTime),      // time(h, m, s)
-            new(func(BlDateTime) BlTime)),                       // time(dt) extraction
+            new(func(bl.BlString) bl.BlTime),                          // time("…")
+            new(func(bl.BlNumber, bl.BlNumber, bl.BlNumber) bl.BlTime),      // time(h, m, s)
+            new(func(bl.BlDateTime) bl.BlTime)),                       // time(dt) extraction
     }
 }
 ```
 
-`[@test] ../../expr/time_test.go`
+`[@test] ../../time_test.go`
 
 ---
 
 ## Edge cases
 
-- Hour outside 0–23, or minute/second outside 0–59 (component form) → `BlTypeError`.
+- Hour outside 0–23, or minute/second outside 0–59 (component form) → `bl.TypeError`.
 - `time("24:00:00")` (end-of-day) is valid ISO 8601, normalised to `00:00:00`.
-- Unknown IANA zone id → `BlTypeError`.
-- Applying a years-months duration → `BlTypeError`.
+- Unknown IANA zone id → `bl.TypeError`.
+- Applying a years-months duration → `bl.TypeError`.

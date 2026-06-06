@@ -55,8 +55,8 @@ type ExclusiveGateway struct {
 ```
 
 ```go
-conditions := NewGatewayConditions(
-    NewBranch("approve", Bl.NumberVar("checkCredit.score").GreaterThanOrEqual(Bl.Number(700))),
+conditions := bl.NewGatewayConditions(
+    bl.NewBranch("approve", bl.NumberVar("checkCredit.score").GreaterThanOrEqual(bl.Number(700))),
     DefaultBranch("reject"),
 )
 
@@ -86,9 +86,9 @@ type InclusiveGateway struct {
 ```
 
 ```go
-conditions := NewGatewayConditions(
-    NewBranch("email", Bl.BooleanVar("notificationCheck.wants_email")),
-    NewBranch("sms",   Bl.BooleanVar("notificationCheck.wants_sms")),
+conditions := bl.NewGatewayConditions(
+    bl.NewBranch("email", bl.BooleanVar("notificationCheck.wants_email")),
+    bl.NewBranch("sms",   bl.BooleanVar("notificationCheck.wants_sms")),
     DefaultBranch("log"),
 )
 

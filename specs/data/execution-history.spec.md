@@ -225,22 +225,22 @@ For a process `start → validate → review → end`:
 
 ```go
 type StepInputs struct{}
-type StepOutputs struct{ Status BlString }
+type StepOutputs struct{ Status bl.BlString }
 
-var validate = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var validate = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "validate", Name: "Validate",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var review = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var review = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "review", Name: "Review",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
 
-var simpleReview = NewProcess("simple-review", "1.0", ProcessOpts{
+var simpleReview = bl.NewProcess("simple-review", "1.0", ProcessOpts{
     Graph: []ProcessNode{
-        Start("start", "Start", NewInputContract()).To(validate),
+        bl.Start("start", "Start", bl.NewInputContract()).To(validate),
         validate.To(review),
-        review.To(End("done", "Done")),
+        review.To(bl.End("done", "Done")),
     },
 })
 ```
@@ -384,28 +384,28 @@ For a process with an AND split and join: `start → AND(check-credit, check-inc
 
 ```go
 type StepInputs struct{}
-type StepOutputs struct{ Status BlString }
+type StepOutputs struct{ Status bl.BlString }
 
-var checkCredit = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var checkCredit = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "check-credit", Name: "Check Credit",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var checkIncome = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var checkIncome = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "check-income", Name: "Check Income",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
 decide := decisionTemplate.Clone(DecisionTaskOpts{
     Id:             "decide",
     Name:           "Decide",
-    InputMappings:  NewVariableMapping(),
-    OutputMappings: NewVariableMapping(),
+    InputMappings:  bl.NewVariableMapping(),
+    OutputMappings: bl.NewVariableMapping(),
 })
 
-parallelChecks := NewProcess("parallel-checks", "1.0", ProcessOpts{
+parallelChecks := bl.NewProcess("parallel-checks", "1.0", ProcessOpts{
     Graph: []Edge{
-        Start("start", "Start", NewInputContract()).To(And(checkCredit, checkIncome)),
+        bl.Start("start", "Start", bl.NewInputContract()).To(And(checkCredit, checkIncome)),
         Join(checkCredit, checkIncome).To(decide),
-        decide.To(End("done", "Done")),
+        decide.To(bl.End("done", "Done")),
     },
 })
 ```
@@ -646,37 +646,37 @@ For a process with an XOR split: `start → assess-risk → XOR(approve, reject)
 
 ```go
 type StepInputs struct{}
-type StepOutputs struct{ Status BlString }
+type StepOutputs struct{ Status bl.BlString }
 
 assessRisk := riskTemplate.Clone(DecisionTaskOpts{
     Id:             "assess-risk",
     Name:           "Assess Risk",
-    InputMappings:  NewVariableMapping(),
-    OutputMappings: NewVariableMapping(),
+    InputMappings:  bl.NewVariableMapping(),
+    OutputMappings: bl.NewVariableMapping(),
 })
-var approve = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var approve = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "approve", Name: "Approve",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var reject = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var reject = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "reject", Name: "Reject",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
 
-conditions := NewGatewayConditions(
-    NewBranch("approve", Bl.StringVar("assess-risk.risk_level").Equals(Bl.String("low"))),
+conditions := bl.NewGatewayConditions(
+    bl.NewBranch("approve", bl.StringVar("assess-risk.risk_level").Equals(bl.String("low"))),
     DefaultBranch("reject"),
 )
 
-riskDecision := NewProcess("risk-decision", "1.0", ProcessOpts{
+riskDecision := bl.NewProcess("risk-decision", "1.0", ProcessOpts{
     Graph: []Edge{
-        Start("start", "Start", NewInputContract()).To(assessRisk),
+        bl.Start("start", "Start", bl.NewInputContract()).To(assessRisk),
         assessRisk.To(Xor(conditions, map[string]ProcessNode{
             "approve": approve,
             "reject":  reject,
         })),
-        approve.To(End("done", "Done")),
-        reject.To(End("done", "Done")),
+        approve.To(bl.End("done", "Done")),
+        reject.To(bl.End("done", "Done")),
     },
 })
 ```
@@ -741,18 +741,18 @@ For a process `start → assess → end`, where `assess` has a loop that re-eval
 assess := riskTemplate.Clone(DecisionTaskOpts{
     Id:             "assess",
     Name:           "Assess Risk",
-    InputMappings:  NewVariableMapping(),
-    OutputMappings: NewVariableMapping(),
+    InputMappings:  bl.NewVariableMapping(),
+    OutputMappings: bl.NewVariableMapping(),
 })
-assess.Loop = NewLoopConfig(
-    Bl.StringVar("assess.risk_score").Equals(Bl.String("indeterminate")),
+assess.Loop = bl.NewLoopConfig(
+    bl.StringVar("assess.risk_score").Equals(bl.String("indeterminate")),
     LoopOpts{MaxIterations: 3},
 )
 
-riskCheck := NewProcess("risk-check", "1.0", ProcessOpts{
+riskCheck := bl.NewProcess("risk-check", "1.0", ProcessOpts{
     Graph: []Edge{
-        Start("start", "Start", NewInputContract()).To(assess),
-        assess.To(End("done", "Done")),
+        bl.Start("start", "Start", bl.NewInputContract()).To(assess),
+        assess.To(bl.End("done", "Done")),
     },
 })
 ```
@@ -847,27 +847,27 @@ All loop iterations share the same `execution_id` — they are part of a single 
 For a process `start → send → end`, where `send` runs once per recipient in a collection:
 
 ```go
-type SendInputs struct{ Recipient BlDictionary }
-type SendOutputs struct{ Delivered BlBoolean }
+type SendInputs struct{ Recipient bl.BlDictionary }
+type SendOutputs struct{ Delivered bl.BlBoolean }
 
-var send = NewNativeFunctionTask(NativeFunctionTaskOpts[SendInputs, SendOutputs]{
+var send = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[SendInputs, SendOutputs]{
     Id: "send", Name: "Send Notification",
     InputBindings: func(in SendInputs) []ParameterBinding {
         return []ParameterBinding{
-            Bind(in.Recipient, Bl.MultiInstanceItem[BlDictionary]()),
+            bl.Bind(in.Recipient, bl.MultiInstanceItem[bl.BlDictionary]()),
         }
     },
     Fn: func(in *SendInputs) (SendOutputs, error) { /* body */ },
-    MultiInstance: NewMultiInstanceConfig(
-        Bl.ListVar("start.recipients"),
+    MultiInstance: bl.NewMultiInstanceConfig(
+        bl.ListVar("start.recipients"),
         MultiInstanceOpts{ElementVariable: "recipient", IsSequential: false},
     ),
 })
 
-var notifyAll = NewProcess("notify-all", "1.0", ProcessOpts{
+var notifyAll = bl.NewProcess("notify-all", "1.0", ProcessOpts{
     Graph: []ProcessNode{
-        Start("start", "Start", NewInputContract()).To(send),
-        send.To(End("done", "Done")),
+        bl.Start("start", "Start", bl.NewInputContract()).To(send),
+        send.To(bl.End("done", "Done")),
     },
 })
 ```
@@ -967,27 +967,27 @@ For a process with a loopback: `start → review → XOR(approved → end, needs
 
 ```go
 type StepInputs struct{}
-type StepOutputs struct{ Status BlString }
+type StepOutputs struct{ Status bl.BlString }
 
-var review = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var review = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "review", Name: "Review",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var revise = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var revise = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "revise", Name: "Revise",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
 
-conditions := NewGatewayConditions(
-    NewBranch("approved", Bl.StringVar("review.status").Equals(Bl.String("approved"))),
+conditions := bl.NewGatewayConditions(
+    bl.NewBranch("approved", bl.StringVar("review.status").Equals(bl.String("approved"))),
     DefaultBranch("needs_revision"),
 )
 
-docReview := NewProcess("doc-review", "1.0", ProcessOpts{
+docReview := bl.NewProcess("doc-review", "1.0", ProcessOpts{
     Graph: []Edge{
-        Start("start", "Start", NewInputContract()).To(review),
+        bl.Start("start", "Start", bl.NewInputContract()).To(review),
         review.To(Xor(conditions, map[string]ProcessNode{
-            "approved":       End("done", "Done"),
+            "approved":       bl.End("done", "Done"),
             "needs_revision": revise,
         })),
         revise.To(review),

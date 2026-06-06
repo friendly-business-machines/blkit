@@ -1,14 +1,14 @@
 ---
-name: BlYearsMonthsDuration
-description: The years-and-months duration type in the blkit expression language (ISO 8601 PnYnM). Covers construction, component access, the arithmetic/comparison operators, the duration built-ins, and the Go layer (BlYearsMonthsDuration + expr registrations).
+name: bl.BlYearsMonthsDuration
+description: The years-and-months duration type in the blkit expression language (ISO 8601 PnYnM). Covers construction, component access, the arithmetic/comparison operators, the duration built-ins, and the Go layer (bl.BlYearsMonthsDuration + expr registrations).
 targets:
-  - ../../expr/years_months_duration.go
+  - ../../years_months_duration.go
 ---
 
-# BlYearsMonthsDuration — the years-and-months `duration`
+# bl.BlYearsMonthsDuration — the years-and-months `duration`
 
 A years-and-months duration covers only years and months (ISO 8601 `PnYnM`). The Go value type
-backing it is `BlYearsMonthsDuration`. It is distinct from `BlDaysTimeDuration`
+backing it is `bl.BlYearsMonthsDuration`. It is distinct from `bl.BlDaysTimeDuration`
 ([days_time_duration.spec.md](days_time_duration.spec.md)): the two **cannot** be added to each
 other, and a years-months duration **cannot** be applied to a `time` (only to a `date` or
 `datetime`).
@@ -39,7 +39,7 @@ ymDuration("P1Y0.25M")               // 1 year, 0.25 months
 ymDuration("P1.5Y0.5M")              // → ymDuration("P1Y6.5M") (fractions accepted on any designator)
 ymDuration("p1y6m")                  // → ymDuration("P1Y6M")   (designators are case-insensitive on input)
 ymDuration("P1Y6m")                  // → ymDuration("P1Y6M")
-ymDuration("P1DT2H")                 // → BlParseError (day/time designators not allowed here)
+ymDuration("P1DT2H")                 // → bl.ParseError (day/time designators not allowed here)
 ```
 
 blkit accepts a decimal fraction on either designator — this is a deliberate relaxation of ISO
@@ -50,13 +50,13 @@ blkit accepts a decimal fraction on either designator — this is a deliberate r
 The designator letters `P` / `Y` / `M` are **case-insensitive on input** (`P1Y6M`, `p1y6m`,
 `P1Y6m`, etc. all parse identically) — also a deliberate relaxation of ISO 8601, matching the
 case-insensitive parsing rule used for the `true` / `false` and `null` literals. Canonical
-output (`String()`) always emits uppercase designators.
+output (`bl.String()`) always emits uppercase designators.
 
 `ymDuration` is paired with `dtDuration` ([days_time_duration.spec.md](days_time_duration.spec.md))
 for the sibling days-time duration. The two are separate functions — the typed return makes
 downstream usage statically checkable, where a single polymorphic `duration(string)` would force
 the call site to inspect the runtime type — and a D/T string passed to `ymDuration` (or vice
-versa) is a `BlParseError`.
+versa) is a `bl.ParseError`.
 
 The companion built-in `ymDurationBetween(from, to)` computes the years-months span between
 two dates or datetimes (registered in [datetime.spec.md](datetime.spec.md), which owns the
@@ -68,111 +68,111 @@ ymDurationBetween(date("2011-12-22"), date("2013-08-24"))   // → ymDuration("P
 ymDurationBetween(date("2025-06-01"), date("2024-06-01"))   // → ymDuration("-P1Y")  (signed)
 ```
 
-Both operands must be the **same** temporal kind — either both `BlDate` or both `BlDateTime`. A
+Both operands must be the **same** temporal kind — either both `bl.BlDate` or both `bl.BlDateTime`. A
 mixed `(date, datetime)` call is a type error; convert one operand explicitly via `datetime(d)`
 or `date(dt)` first. See [datetime.spec.md § Business-day arithmetic & difference](datetime.spec.md#business-day-arithmetic--difference-ext)
 for the registered overloads.
 
-`[@test] ../../expr/years_months_duration_test.go`
+`[@test] ../../years_months_duration_test.go`
 
 ---
 
 ## Construction (host-side)
 
-Host Go code constructs a `BlYearsMonthsDuration` via the generic
-`YMDuration[T YMDurationInput](v T) (BlYearsMonthsDuration, error)` constructor.
+Host Go code constructs a `bl.BlYearsMonthsDuration` via the generic
+`YMDuration[T YMDurationInput](v T) (bl.BlYearsMonthsDuration, error)` constructor.
 `YMDurationInput` accepts the natural Go shapes for a years-months value, plus the
 wrapped-`Bl*` forms:
 
-- **`string`** / **`BlString`** — two parse paths, dispatched on the first non-sign character
+- **`string`** / **`bl.BlString`** — two parse paths, dispatched on the first non-sign character
   (case-insensitive): if the string starts with `P` / `-P` / `+P` (or `p` / `-p` / `+p`),
   it's parsed as an **ISO 8601 duration** with Y/M designators only (`"P1Y6M"`, `"-P6M"`,
   `"P0.5M"`, `"p1y6m"`, …) — D/T designators are rejected, since those belong to
-  `BlDaysTimeDuration` (see [days_time_duration.spec.md](days_time_duration.spec.md)). All
+  `bl.BlDaysTimeDuration` (see [days_time_duration.spec.md](days_time_duration.spec.md)). All
   designator letters (`P` / `Y` / `M`) are case-insensitive on input; canonical output is
   uppercase. Any other string is parsed as a **decimal number of total months** (`"12.25"`,
   `"-6"`, `"100.5"`, …), exactly as if the caller had wrapped it in
   `decimal.NewFromString(...)` themselves. An unparseable string (matches neither shape)
   errors.
 - **Integer types** (`int`, `int8`–`int64`, `uint`, `uint8`–`uint64`) — interpreted as the
-  total months. `YMDuration(6)` is six months; `YMDuration(30 * 12)` is thirty years.
+  total months. `bl.YMDuration(6)` is six months; `bl.YMDuration(30 * 12)` is thirty years.
 - **`float32`** / **`float64`** — total months. Subject to float-precision limits; prefer
   `decimal.Decimal` when precision matters. A `float` holding `NaN` or `Inf` errors.
-- **`decimal.Decimal`** / **`BlNumber`** — exact decimal total months, the preferred form when
+- **`decimal.Decimal`** / **`bl.BlNumber`** — exact decimal total months, the preferred form when
   fractional precision matters (matches the internal storage and preserves fractional months
-  without float rounding). `BlNumber` is just the engine's wrapped form of `decimal.Decimal`.
-- **`YM(years, months)`** — generic constructor function for explicit
+  without float rounding). `bl.BlNumber` is just the engine's wrapped form of `decimal.Decimal`.
+- **`bl.YM(years, months)`** — generic constructor function for explicit
   `(years, months)` components when the caller doesn't want to compute `years*12 + months`
   themselves. Each argument is independently constrained by `YMNumberInput`, which accepts
   any Go integer type, `float32` / `float64` (`NaN` / `Inf` errors), `decimal.Decimal`, a
-  numeric string (parsed via `decimal.NewFromString`), `BlNumber`, or `BlString` (treated
+  numeric string (parsed via `decimal.NewFromString`), `bl.BlNumber`, or `bl.BlString` (treated
   as the numeric-string path). Different types across the two arguments are fine —
-  `YM(1, "6.5")` is a typed call where `years` is `int` and `months` is `string`.
+  `bl.YM(1, "6.5")` is a typed call where `years` is `int` and `months` is `string`.
   Type-checking happens at compile time via the constraint; there is **no struct-literal
   form** because Go's type system can't express "this field is one of these unrelated types"
   without `any`, and `any` would defeat the compile-time check. Components are not range-
-  restricted (`YM(0, 15)` is fine; the constructor normalises into the canonical
+  restricted (`bl.YM(0, 15)` is fine; the constructor normalises into the canonical
   `(Y, M)` form), and either argument may be fractional.
 
 ```go
 // host-side (Go)
 // ISO 8601 string — convenient when the value comes from config or persistence.
-var mortgage, _  = YMDuration("P30Y")
-var grace,    _  = YMDuration("P1Y6M")
-var lowered,  _  = YMDuration("p1y6m")            // designators are case-insensitive on input
-var bad,    err  = YMDuration("P1DT2H")           // err != nil — D/T designators not allowed
+var mortgage, _  = bl.YMDuration("P30Y")
+var grace,    _  = bl.YMDuration("P1Y6M")
+var lowered,  _  = bl.YMDuration("p1y6m")            // designators are case-insensitive on input
+var bad,    err  = bl.YMDuration("P1DT2H")           // err != nil — D/T designators not allowed
 
 // Integer total months.
-var halfYear, _  = YMDuration(6)                   // 6 months
-var century,  _  = YMDuration(100 * 12)            // 100 years
+var halfYear, _  = bl.YMDuration(6)                   // 6 months
+var century,  _  = bl.YMDuration(100 * 12)            // 100 years
 
 // Float64 total months — convenient but subject to float precision.
-var floatY,   _  = YMDuration(12.25)               // 1y 0.25m
+var floatY,   _  = bl.YMDuration(12.25)               // 1y 0.25m
 
 // String of a decimal number — parsed as total months. Equivalent to wrapping in
 // decimal.NewFromString yourself but reads cleaner.
-var fromStr,    _ = YMDuration("12.25")            // → 1y 0.25m
+var fromStr,    _ = bl.YMDuration("12.25")            // → 1y 0.25m
 
 // Exact fractional total via decimal.Decimal — equivalent shape, useful when the value
 // already exists as a decimal.
 var dec1,       _ = decimal.NewFromString("12.25")
-var fractional, _ = YMDuration(dec1)
+var fractional, _ = bl.YMDuration(dec1)
 
-// From an engine value — BlNumber and BlString are accepted directly.
+// From an engine value — bl.BlNumber and bl.BlString are accepted directly.
 var dec2,  _     = decimal.NewFromString("18.5")
-var n,     _     = Number(dec2)
-var fromBlN, _   = YMDuration(n)                                          // 18.5 total months
+var n,     _     = bl.Number(dec2)
+var fromBlN, _   = bl.YMDuration(n)                                          // 18.5 total months
 
-var s,   _       = String("P1Y6M")
-var fromBlS, _   = YMDuration(s)                                          // parsed via the ISO 8601 path
+var s,   _       = bl.String("P1Y6M")
+var fromBlS, _   = bl.YMDuration(s)                                          // parsed via the ISO 8601 path
 
 // Integer components — the simplest case. YM is a generic function; type params
 // are inferred from the arguments, so the call site reads cleanly.
-var split,    _  = YMDuration(YM(1, 6))
+var split,    _  = bl.YMDuration(bl.YM(1, 6))
 
 // Fractional months — pass a decimal.Decimal for the argument that needs it.
 var dec3,    _   = decimal.NewFromString("3.5")
-var partial, _   = YMDuration(YM(2, dec3))                            // 2y 3.5m → 27.5 total months
+var partial, _   = bl.YMDuration(bl.YM(2, dec3))                            // 2y 3.5m → 27.5 total months
 
 // String components — numeric strings are parsed via decimal.NewFromString.
-var strYrs,   _  = YMDuration(YM("1", "6.5"))
+var strYrs,   _  = bl.YMDuration(bl.YM("1", "6.5"))
 
 // Mixed types across the two arguments — each is independently typed via the constraint.
-var mixed,    _  = YMDuration(YM(2, "3.5"))
+var mixed,    _  = bl.YMDuration(bl.YM(2, "3.5"))
 
-// Components from BlNumber / BlString values — accepted directly, no .Decimal() unwrap.
-var yearsN,  _    = Number(1)
-var monthsN, _    = Number(6)
-var fromBl, _    = YMDuration(YM(yearsN, monthsN))
+// Components from bl.BlNumber / bl.BlString values — accepted directly, no .Decimal() unwrap.
+var yearsN,  _    = bl.Number(1)
+var monthsN, _    = bl.Number(6)
+var fromBl, _    = bl.YMDuration(bl.YM(yearsN, monthsN))
 
-var yearsS, _    = String("1")
-var monthsS, _   = String("6.5")
-var fromBlS2, _  = YMDuration(YM(yearsS, monthsS))
+var yearsS, _    = bl.String("1")
+var monthsS, _   = bl.String("6.5")
+var fromBlS2, _  = bl.YMDuration(bl.YM(yearsS, monthsS))
 ```
 
-`YMDuration(...)` returns `(BlYearsMonthsDuration, error)`. The error path fires for an
-unparseable or wrong-kind ISO 8601 `string` / `BlString`, and for a `float32` / `float64`
-holding `NaN` / `Inf`. Integer / `decimal.Decimal` / `BlNumber` / `YM`
+`bl.YMDuration(...)` returns `(bl.BlYearsMonthsDuration, error)`. The error path fires for an
+unparseable or wrong-kind ISO 8601 `string` / `bl.BlString`, and for a `float32` / `float64`
+holding `NaN` / `Inf`. Integer / `decimal.Decimal` / `bl.BlNumber` / `YM`
 inputs are infallible. For details on the underlying `decimal.Decimal` total-months storage
 and the `Years()` / `Months()` / `TotalMonths()` / `TotalYears()` accessors, see [§ Value
 type & host API](#value-type--host-api-exported).
@@ -209,7 +209,7 @@ Component access is **patcher-lowered** to function calls (`durationYears(d)`,
 `durationMonths(d)`, `durationTotalMonths(d)`, `durationTotalYears(d)`); see
 [bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-ast-rewriting).
 
-`[@test] ../../expr/years_months_duration_components_test.go`
+`[@test] ../../years_months_duration_components_test.go`
 
 ---
 
@@ -226,15 +226,15 @@ Component access is **patcher-lowered** to function calls (`durationYears(d)`,
 | `=` `!=` | equality by total months | `ymDuration("P1Y") = ymDuration("P12M")` | `true` |
 
 `+` and `-` also apply between this duration and a `date` or `datetime` (those overloads live in
-the date/datetime spokes). Mixing with a `BlDaysTimeDuration` → `BlTypeError`; applying to a
-`time` → `BlTypeError`. Division by zero → `null`.
+the date/datetime spokes). Mixing with a `bl.BlDaysTimeDuration` → `bl.TypeError`; applying to a
+`time` → `bl.TypeError`. Division by zero → `null`.
 
-`*` and `/` scale the total-months count by a `BlNumber` using **exact decimal arithmetic** — no
+`*` and `/` scale the total-months count by a `bl.BlNumber` using **exact decimal arithmetic** — no
 rounding. `ymDuration("P1Y") / 7` yields a duration whose `totalMonths` is exactly `12/7` (a
-`BlNumber` with arbitrary precision); the canonical string form puts the resulting fraction on
+`bl.BlNumber` with arbitrary precision); the canonical string form puts the resulting fraction on
 the smallest designator used (here, months).
 
-`[@test] ../../expr/years_months_duration_ops_test.go`
+`[@test] ../../years_months_duration_ops_test.go`
 
 ---
 
@@ -242,19 +242,19 @@ the smallest designator used (here, months).
 
 | Function | Example | Result |
 |---|---|---|
-| `ymDuration(from)` | `ymDuration("P1Y6M")` | the corresponding `BlYearsMonthsDuration` (Y/M-only strings; D/T strings → `BlParseError`) |
+| `ymDuration(from)` | `ymDuration("P1Y6M")` | the corresponding `bl.BlYearsMonthsDuration` (Y/M-only strings; D/T strings → `bl.ParseError`) |
 | `ymDurationBetween(from, to)` | `ymDurationBetween(date("2024-01-01"), date("2025-06-01"))` | `ymDuration("P1Y5M")` |
 | `abs(d)` | `abs(ymDuration("-P2Y3M"))` | `ymDuration("P2Y3M")` |
 | `isNegative(d)` **ext** | `isNegative(ymDuration("-P3M"))` | `true` (zero → `false`) |
 
 `abs` and `isNegative` are overloaded across the two duration types (the registrations in this
-spoke add the `BlYearsMonthsDuration` signatures; the `BlDaysTimeDuration` ones live in
+spoke add the `bl.BlYearsMonthsDuration` signatures; the `bl.BlDaysTimeDuration` ones live in
 [days_time_duration.spec.md](days_time_duration.spec.md)).
 
 ### Rounding
 
 The six numeric rounding modes from [number.spec.md § Built-in functions](number.spec.md#built-in-functions)
-are overloaded on `BlYearsMonthsDuration`: the second argument is a positive duration `step`
+are overloaded on `bl.BlYearsMonthsDuration`: the second argument is a positive duration `step`
 (rather than a decimal `scale`), and the result is rounded to the nearest integer multiple of
 `step`. This lets host code round to common business granularities — nearest month, nearest
 quarter, nearest year, nearest half-year — without converting through total-months arithmetic.
@@ -282,10 +282,10 @@ roundUp(ymDuration("P1Y0.5M"), ymDuration("P1M"))      // → ymDuration("P1Y1M"
 roundDown(ymDuration("P1Y11M"), ymDuration("P1Y"))     // → ymDuration("P1Y") (truncate to whole years)
 ```
 
-A non-positive `step` (zero or negative) → `BlTypeError`; rounding to a "nearest zero-sized
+A non-positive `step` (zero or negative) → `bl.TypeError`; rounding to a "nearest zero-sized
 multiple" or "nearest negative multiple" has no sensible meaning.
 
-`[@test] ../../expr/years_months_duration_functions_test.go`
+`[@test] ../../years_months_duration_functions_test.go`
 
 ---
 
@@ -302,10 +302,10 @@ multiple" or "nearest negative multiple" has no sensible meaning.
   deliberate relaxation of ISO 8601, which restricts the fraction to the smallest unit used):
   `P1.5Y`, `P0.5M`, `P1Y0.5M`, and `P1.5Y0.5M` are all valid. Components combine into the
   internal total as `years*12 + months`.
-- Canonical output (`String()`) puts any fractional remainder on the smallest designator used:
-  `12/7` months as `String()` becomes `"P1.7142857...M"` (the underlying decimal preserves all
+- Canonical output (`bl.String()`) puts any fractional remainder on the smallest designator used:
+  `12/7` months as `bl.String()` becomes `"P1.7142857...M"` (the underlying decimal preserves all
   digits; the formatter emits the minimal exact representation).
-- Sign applies to the whole value: a negative `BlYearsMonthsDuration` has negative `.years` and
+- Sign applies to the whole value: a negative `bl.BlYearsMonthsDuration` has negative `.years` and
   negative `.months` components (not "negative years, positive months").
 - Zero duration (`ymDuration("P0Y0M")`) is not negative.
 - `ymDurationBetween(from, to)` is signed — `from > to` yields a negative result. The result
@@ -320,36 +320,36 @@ Lives in `expr/years_months_duration.go`. Shared mechanics in
 
 ### Value type & host API (exported)
 
-`BlYearsMonthsDuration` is the immutable Go value type that represents a years-and-months
+`bl.BlYearsMonthsDuration` is the immutable Go value type that represents a years-and-months
 duration inside the engine and at the host-code boundary. It wraps a single signed
 arbitrary-precision decimal — the **total months** — and derives the year/month components by
 normalisation. The field is private so callers cannot mutate the underlying value; every
-operation in the library returns a fresh `BlYearsMonthsDuration`. The decimal representation
-mirrors `BlDaysTimeDuration`'s exact-seconds storage and preserves ISO 8601 fractional
+operation in the library returns a fresh `bl.BlYearsMonthsDuration`. The decimal representation
+mirrors `bl.BlDaysTimeDuration`'s exact-seconds storage and preserves ISO 8601 fractional
 durations without float rounding. Go has no built-in years-months duration type
 (`time.Duration` is a fixed nanosecond count and cannot represent calendar units), so the
 host-code surface stands alone.
 
 The exported surface has three parts:
 
-- **`BlValue` interface methods** — `Type()`, `Equal()`, `String()`, and the unexported
+- **`bl.BlValue` interface methods** — `Type()`, `Equal()`, `bl.String()`, and the unexported
   `isBlValue()` marker — required of every blkit value type so the engine can treat them
   uniformly. `Equal` compares by total months, so `ymDuration("P1Y")` equals `ymDuration("P12M")`
-  and `ymDuration("P1.5Y")` equals `ymDuration("P1Y6M")`. `String()` doubles as the `fmt.Stringer`
+  and `ymDuration("P1.5Y")` equals `ymDuration("P1Y6M")`. `bl.String()` doubles as the `fmt.Stringer`
   implementation, producing the canonical ISO 8601 form: integer split `"P1Y6M"` when the total
   is a whole month count, fractional smallest-unit form (`"P1Y0.25M"`, `"P0.5M"`) otherwise,
   `"-P6M"` for negatives, and `"P0Y0M"` for zero.
-- **`YMDuration[T YMDurationInput](v T) (BlYearsMonthsDuration, error)`** — the generic host
-  constructor. The `YMDurationInput` constraint accepts a `string` / `BlString`
+- **`YMDuration[T YMDurationInput](v T) (bl.BlYearsMonthsDuration, error)`** — the generic host
+  constructor. The `YMDurationInput` constraint accepts a `string` / `bl.BlString`
   (dispatched on the first non-sign character: leading `P` → ISO 8601 with Y/M designators
   only; otherwise → decimal number of total months), every Go integer type (total months),
-  `float32` / `float64` (total months; `NaN` / `Inf` error), `decimal.Decimal` / `BlNumber`
+  `float32` / `float64` (total months; `NaN` / `Inf` error), `decimal.Decimal` / `bl.BlNumber`
   (exact total months, possibly fractional), and a
   `YM{Years, Months decimal.Decimal}` struct (explicit components — not
   range-restricted, and either field may be fractional). See [§ Construction
   (host-side)](#construction-host-side) for the worked example. The `error` return fires
-  only for an unparseable string / BlString or a `NaN` / `Inf` float; integer / decimal /
-  BlNumber / components inputs are infallible.
+  only for an unparseable string / bl.BlString or a `NaN` / `Inf` float; integer / decimal /
+  bl.BlNumber / components inputs are infallible.
 - **`Years()` / `Months()` / `TotalMonths()` accessors** — hand the normalised components and the
   signed total back to host code. `Years()` returns the integer years portion (truncated toward
   zero) with sign; `Months()` returns the months remainder as a `decimal.Decimal`
@@ -358,30 +358,30 @@ The exported surface has three parts:
 
 ```go
 // host-side (Go)
-// BlYearsMonthsDuration wraps a signed arbitrary-precision decimal count of total months.
+// bl.BlYearsMonthsDuration wraps a signed arbitrary-precision decimal count of total months.
 type BlYearsMonthsDuration struct{ months decimal.Decimal }
 
-// BlValue interface — required by all Bl* value types.
-func (BlYearsMonthsDuration) Type() BlType { return BlTypeYearsMonthsDuration }
+// bl.BlValue interface — required by all Bl* value types.
+func (BlYearsMonthsDuration) Type() Type { return TypeYearsMonthsDuration }
 func (d BlYearsMonthsDuration) Equal(other BlValue) BlValue   // exact decimal compare on total months
 func (d BlYearsMonthsDuration) String() string                // "P1Y6M" / "P0.5M" / "-P6M" / "P0Y0M"
 func (BlYearsMonthsDuration) isBlValue() {}
 
 // Host constructor — accepts:
-//   - string / BlString:    "P..." parses as ISO 8601 (Y/M only; designators case-insensitive
+//   - string / bl.BlString:    "P..." parses as ISO 8601 (Y/M only; designators case-insensitive
 //                            on input — "p1y6m" works too); anything else parses as a
 //                            decimal-number total-months string ("12.25", "-6", …).
 //   - any Go integer:        total months.
 //   - float32 / float64:     total months; NaN / Inf error.
 //   - decimal.Decimal:       exact total months (preferred for fractional precision).
-//   - BlNumber:               engine-wrapped decimal; treated identically to decimal.Decimal.
+//   - bl.BlNumber:               engine-wrapped decimal; treated identically to decimal.Decimal.
 //   - ymComponents (built via YM(years, months)):
 //                             explicit (years, months); each argument is independently
 //                             type-checked against YMNumberInput at compile time. The two
 //                             arguments may carry different types.
 
 // YMNumberInput is the per-argument constraint for the YM constructor: any Go
-// numeric type, a numeric string, decimal.Decimal, BlNumber, or BlString.
+// numeric type, a numeric string, decimal.Decimal, bl.BlNumber, or bl.BlString.
 type YMNumberInput interface {
     int | int8 | int16 | int32 | int64 |
     uint | uint8 | uint16 | uint32 | uint64 |
@@ -392,7 +392,7 @@ type YMNumberInput interface {
     BlString
 }
 
-// ymComponents is the opaque value produced by YM(...). It can only be constructed
+// ymComponents is the opaque value produced by bl.YM(...). It can only be constructed
 // via the typed YM function, which guarantees the field values come from the
 // accepted set.
 type ymComponents struct {
@@ -421,10 +421,10 @@ func (d BlYearsMonthsDuration) TotalMonths() decimal.Decimal // signed exact tot
 
 ### Operator implementation functions (unexported)
 
-`expr-lang/expr` has no knowledge of `BlYearsMonthsDuration` and cannot apply Go's native
+`expr-lang/expr` has no knowledge of `bl.BlYearsMonthsDuration` and cannot apply Go's native
 `+`/`-`/`<`/etc. to blkit values. For every operator that should work on years-months durations,
 blkit supplies a named Go function that performs the operation on the underlying total-months
-counts and returns the result wrapped as a `BlValue`. The connection from operator token to
+counts and returns the result wrapped as a `bl.BlValue`. The connection from operator token to
 function happens in two steps, neither of which is unique to this type:
 
 1. The Registrations section below calls `expr.Function("addYMDuration", typed2(addYMDuration), …)`,
@@ -439,13 +439,13 @@ function happens in two steps, neither of which is unique to this type:
    duration kinds, and several temporal forms — and `expr.Operator` needs the full list of
    candidates per operator in a single call.
 
-So when the parser encounters `a + b` and both operands type-check to `BlYearsMonthsDuration`,
+So when the parser encounters `a + b` and both operands type-check to `bl.BlYearsMonthsDuration`,
 the engine finds `addYMDuration` in the `"+"` binding list, sees its signature matches, and
 dispatches to it.
 
 Equality (`=` / `!=`) is **not** registered as a per-type operator impl. The engine dispatches
-`=` / `!=` through the `Equal()` method on the `BlValue` interface, which
-`BlYearsMonthsDuration` implements above (compare by total months). That single dispatch path
+`=` / `!=` through the `Equal()` method on the `bl.BlValue` interface, which
+`bl.BlYearsMonthsDuration` implements above (compare by total months). That single dispatch path
 handles null propagation and cross-type comparison uniformly.
 
 ```go
@@ -459,7 +459,7 @@ func ltYMDuration(a, b BlYearsMonthsDuration) BlValue                           
 func leYMDuration(a, b BlYearsMonthsDuration) BlValue                             // "<="
 func gtYMDuration(a, b BlYearsMonthsDuration) BlValue                             // ">"
 func geYMDuration(a, b BlYearsMonthsDuration) BlValue                             // ">="
-// "=" and "!=" go through BlValue.Equal(); see BlYearsMonthsDuration.Equal() above.
+// "=" and "!=" go through bl.BlValue.Equal(); see bl.BlYearsMonthsDuration.Equal() above.
 ```
 
 These are written in clean typed form for readability and unit testing. The engine cannot consume
@@ -486,7 +486,7 @@ func isNegativeYMFn(d BlYearsMonthsDuration) BlBoolean                // ext; D/
 
 // Rounding family — overloads of the numeric rounding modes from number.spec.md.
 // Each rounds totalMonths(d) / totalMonths(step) per the chosen mode, then multiplies back.
-// A non-positive step returns a BlTypeError.
+// A non-positive step returns a bl.TypeError.
 func roundYMFn(d, step BlYearsMonthsDuration) BlYearsMonthsDuration            // ext; alias of roundHalfUpYM
 func roundUpYMFn(d, step BlYearsMonthsDuration) BlYearsMonthsDuration          // ext
 func roundDownYMFn(d, step BlYearsMonthsDuration) BlYearsMonthsDuration        // ext
@@ -500,9 +500,9 @@ The six rounding impls share a single helper that computes the rounded quotient 
 the same per-mode decimal-rounding logic as the numeric `round*Fn` impls in `expr/number.go` so
 that ties and signs behave identically across types.
 
-The Y/M-only parser `ymDurationFn(s BlString) (BlYearsMonthsDuration, error)` lives in this
+The Y/M-only parser `ymDurationFn(s bl.BlString) (bl.BlYearsMonthsDuration, error)` lives in this
 spoke. It accepts only ISO 8601 strings whose designators are restricted to `Y` and `M` (with an
-optional `T`-less leading sign); any `D`/`T`/`H`/`S` designator yields a `BlParseError`. The
+optional `T`-less leading sign); any `D`/`T`/`H`/`S` designator yields a `bl.ParseError`. The
 sibling `dtDuration` parser in [days_time_duration.spec.md](days_time_duration.spec.md) applies
 the mirror restriction.
 
@@ -519,12 +519,12 @@ library function. Each entry is built with `expr.Function(name, impl, typeHints.
   [`expr-lang/expr`](https://github.com/expr-lang/expr) accepts. The `typed1` / `typed2`
   adapters (defined in
   [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go)) wrap a typed
-  implementation such as `func(BlYearsMonthsDuration, BlYearsMonthsDuration) BlYearsMonthsDuration`
+  implementation such as `func(bl.BlYearsMonthsDuration, bl.BlYearsMonthsDuration) bl.BlYearsMonthsDuration`
   into that shape.
 - `typeHints` is a variadic list of `new(func(...) ...)` values. The engine reflects on them at
   compile time to validate that callers supply the right argument types — they carry no runtime
   cost. Multiple hints register the function as overloaded across signatures (e.g. `abs`
-  accepts both `BlYearsMonthsDuration` and `BlDaysTimeDuration`).
+  accepts both `bl.BlYearsMonthsDuration` and `bl.BlDaysTimeDuration`).
 
 The registrations are grouped by role: operator impls (consumed by `operatorBindings()`),
 component-accessor impls (emitted by the patcher), and the library functions.
@@ -534,64 +534,64 @@ component-accessor impls (emitted by the patcher), and the library functions.
 func yearsMonthsDurationOptions() []expr.Option {
     return []expr.Option{
         // operator impls — bound to operator tokens by operatorBindings()
-        expr.Function("addYMDuration",   typed2(addYMDuration),   new(func(BlYearsMonthsDuration, BlYearsMonthsDuration) BlYearsMonthsDuration)),
-        expr.Function("subYMDuration",   typed2(subYMDuration),   new(func(BlYearsMonthsDuration, BlYearsMonthsDuration) BlYearsMonthsDuration)),
-        expr.Function("negYMDuration",   typed1(negYMDuration),   new(func(BlYearsMonthsDuration) BlYearsMonthsDuration)),
-        expr.Function("scaleYMDuration", typed2(scaleYMDuration), new(func(BlYearsMonthsDuration, BlNumber) BlYearsMonthsDuration)),
-        expr.Function("divYMDuration",   typed2(divYMDuration),   new(func(BlYearsMonthsDuration, BlNumber) BlValue)),
-        expr.Function("ltYMDuration",    typed2(ltYMDuration),    new(func(BlYearsMonthsDuration, BlYearsMonthsDuration) BlValue)),
-        expr.Function("leYMDuration",    typed2(leYMDuration),    new(func(BlYearsMonthsDuration, BlYearsMonthsDuration) BlValue)),
-        expr.Function("gtYMDuration",    typed2(gtYMDuration),    new(func(BlYearsMonthsDuration, BlYearsMonthsDuration) BlValue)),
-        expr.Function("geYMDuration",    typed2(geYMDuration),    new(func(BlYearsMonthsDuration, BlYearsMonthsDuration) BlValue)),
-        // = and != dispatch via BlValue.Equal() — no per-type registration
+        expr.Function("addYMDuration",   typed2(addYMDuration),   new(func(bl.BlYearsMonthsDuration, bl.BlYearsMonthsDuration) bl.BlYearsMonthsDuration)),
+        expr.Function("subYMDuration",   typed2(subYMDuration),   new(func(bl.BlYearsMonthsDuration, bl.BlYearsMonthsDuration) bl.BlYearsMonthsDuration)),
+        expr.Function("negYMDuration",   typed1(negYMDuration),   new(func(bl.BlYearsMonthsDuration) bl.BlYearsMonthsDuration)),
+        expr.Function("scaleYMDuration", typed2(scaleYMDuration), new(func(bl.BlYearsMonthsDuration, bl.BlNumber) bl.BlYearsMonthsDuration)),
+        expr.Function("divYMDuration",   typed2(divYMDuration),   new(func(bl.BlYearsMonthsDuration, bl.BlNumber) bl.BlValue)),
+        expr.Function("ltYMDuration",    typed2(ltYMDuration),    new(func(bl.BlYearsMonthsDuration, bl.BlYearsMonthsDuration) bl.BlValue)),
+        expr.Function("leYMDuration",    typed2(leYMDuration),    new(func(bl.BlYearsMonthsDuration, bl.BlYearsMonthsDuration) bl.BlValue)),
+        expr.Function("gtYMDuration",    typed2(gtYMDuration),    new(func(bl.BlYearsMonthsDuration, bl.BlYearsMonthsDuration) bl.BlValue)),
+        expr.Function("geYMDuration",    typed2(geYMDuration),    new(func(bl.BlYearsMonthsDuration, bl.BlYearsMonthsDuration) bl.BlValue)),
+        // = and != dispatch via bl.BlValue.Equal() — no per-type registration
 
         // component-access impls — emitted by the patcher when lowering .years / .months / .totalMonths / .totalYears
-        expr.Function("durationYears",       typed1(durationYearsYMFn),     new(func(BlYearsMonthsDuration) BlNumber)),
-        expr.Function("durationMonths",      typed1(durationMonthsYMFn),    new(func(BlYearsMonthsDuration) BlNumber)),
-        expr.Function("durationTotalMonths", typed1(durationTotalMonthsFn), new(func(BlYearsMonthsDuration) BlNumber)),
-        expr.Function("durationTotalYears",  typed1(durationTotalYearsFn),  new(func(BlYearsMonthsDuration) BlNumber)),  // ext
+        expr.Function("durationYears",       typed1(durationYearsYMFn),     new(func(bl.BlYearsMonthsDuration) bl.BlNumber)),
+        expr.Function("durationMonths",      typed1(durationMonthsYMFn),    new(func(bl.BlYearsMonthsDuration) bl.BlNumber)),
+        expr.Function("durationTotalMonths", typed1(durationTotalMonthsFn), new(func(bl.BlYearsMonthsDuration) bl.BlNumber)),
+        expr.Function("durationTotalYears",  typed1(durationTotalYearsFn),  new(func(bl.BlYearsMonthsDuration) bl.BlNumber)),  // ext
 
         // constructor — Y/M-only parser; sibling dtDuration lives in days_time_duration.spec.md
-        expr.Function("ymDuration", typed1(ymDurationFn), new(func(BlString) BlYearsMonthsDuration)),
+        expr.Function("ymDuration", typed1(ymDurationFn), new(func(bl.BlString) bl.BlYearsMonthsDuration)),
 
         // library — overloads share a name with the days-time spoke's registrations
-        expr.Function("ymDurationBetween", typed2(ymDurationBetweenFn), new(func(BlDate, BlDate) BlYearsMonthsDuration)),
-        expr.Function("abs",        typed1(absYMFn),        new(func(BlYearsMonthsDuration) BlYearsMonthsDuration)),  // overload
-        expr.Function("isNegative", typed1(isNegativeYMFn), new(func(BlYearsMonthsDuration) BlBoolean)),               // ext; overload
+        expr.Function("ymDurationBetween", typed2(ymDurationBetweenFn), new(func(bl.BlDate, bl.BlDate) bl.BlYearsMonthsDuration)),
+        expr.Function("abs",        typed1(absYMFn),        new(func(bl.BlYearsMonthsDuration) bl.BlYearsMonthsDuration)),  // overload
+        expr.Function("isNegative", typed1(isNegativeYMFn), new(func(bl.BlYearsMonthsDuration) bl.BlBoolean)),               // ext; overload
 
         // rounding — overloads of the numeric rounding modes from number.spec.md
-        expr.Function("round",         typed2(roundYMFn),         new(func(BlYearsMonthsDuration, BlYearsMonthsDuration) BlYearsMonthsDuration)),  // ext; alias of roundHalfUp
-        expr.Function("roundUp",       typed2(roundUpYMFn),       new(func(BlYearsMonthsDuration, BlYearsMonthsDuration) BlYearsMonthsDuration)),  // ext
-        expr.Function("roundDown",     typed2(roundDownYMFn),     new(func(BlYearsMonthsDuration, BlYearsMonthsDuration) BlYearsMonthsDuration)),  // ext
-        expr.Function("roundHalfUp",   typed2(roundHalfUpYMFn),   new(func(BlYearsMonthsDuration, BlYearsMonthsDuration) BlYearsMonthsDuration)),  // ext
-        expr.Function("roundHalfDown", typed2(roundHalfDownYMFn), new(func(BlYearsMonthsDuration, BlYearsMonthsDuration) BlYearsMonthsDuration)),  // ext
-        expr.Function("roundHalfEven", typed2(roundHalfEvenYMFn), new(func(BlYearsMonthsDuration, BlYearsMonthsDuration) BlYearsMonthsDuration)),  // ext
+        expr.Function("round",         typed2(roundYMFn),         new(func(bl.BlYearsMonthsDuration, bl.BlYearsMonthsDuration) bl.BlYearsMonthsDuration)),  // ext; alias of roundHalfUp
+        expr.Function("roundUp",       typed2(roundUpYMFn),       new(func(bl.BlYearsMonthsDuration, bl.BlYearsMonthsDuration) bl.BlYearsMonthsDuration)),  // ext
+        expr.Function("roundDown",     typed2(roundDownYMFn),     new(func(bl.BlYearsMonthsDuration, bl.BlYearsMonthsDuration) bl.BlYearsMonthsDuration)),  // ext
+        expr.Function("roundHalfUp",   typed2(roundHalfUpYMFn),   new(func(bl.BlYearsMonthsDuration, bl.BlYearsMonthsDuration) bl.BlYearsMonthsDuration)),  // ext
+        expr.Function("roundHalfDown", typed2(roundHalfDownYMFn), new(func(bl.BlYearsMonthsDuration, bl.BlYearsMonthsDuration) bl.BlYearsMonthsDuration)),  // ext
+        expr.Function("roundHalfEven", typed2(roundHalfEvenYMFn), new(func(bl.BlYearsMonthsDuration, bl.BlYearsMonthsDuration) bl.BlYearsMonthsDuration)),  // ext
     }
 }
 ```
 
 The date / datetime `+` / `-` overloads that consume a years-months duration live in the
 [date](date.spec.md) and [datetime](datetime.spec.md) spokes (those spokes own one operand of
-the pair); applying a years-months duration to a `time` → `BlTypeError`.
+the pair); applying a years-months duration to a `time` → `bl.TypeError`.
 
-`[@test] ../../expr/years_months_duration_test.go`
+`[@test] ../../years_months_duration_test.go`
 
 ---
 
 ## Edge cases
 
-- `dtDuration("P1DT…")` (any day or time designator) → `BlParseError` for this type.
+- `dtDuration("P1DT…")` (any day or time designator) → `bl.ParseError` for this type.
 - Fractional designators are accepted on either Y or M (or both) — a deliberate relaxation of
   ISO 8601's smallest-unit-only rule.
 - Division by a zero factor (`d / 0`) → `null`.
 - `*` and `/` produce exact decimal results — no rounding. The fractional remainder is preserved
-  on the months component and emitted on the smallest unit by `String()`.
-- `round*` family: `step` must be a positive duration. Zero or negative `step` → `BlTypeError`.
+  on the months component and emitted on the smallest unit by `bl.String()`.
+- `round*` family: `step` must be a positive duration. Zero or negative `step` → `bl.TypeError`.
   Sign of the input is preserved (rounding direction respects it — `roundUp` on a negative input
   rounds away from zero, making it more negative).
 - Zero duration: `isNegative` → `false`, `abs` → unchanged, `.years` is `0`, `.months` is `0`.
-- Adding a `BlDaysTimeDuration` → `BlTypeError`; applying any years-months duration to a `time`
-  → `BlTypeError`.
+- Adding a `bl.BlDaysTimeDuration` → `bl.TypeError`; applying any years-months duration to a `time`
+  → `bl.TypeError`.
 - `ymDurationBetween` is signed: `from > to` yields a negative result rather than swapping
   the operands; its output is always whole months because date arithmetic produces integer spans.
 - Sign is held on the whole value, not per component — a negative duration has both negative

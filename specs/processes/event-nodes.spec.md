@@ -51,9 +51,9 @@ func Start(id string, name string, contract *InputContract, opts ...StartOpts) *
 ```
 
 ```go
-start := Start("start", "New Application", NewInputContract(
-    RequiredField("applicant", applicantContract),
-    RequiredField("loan_amount", BlNumber),
+start := bl.Start("start", "New Application", bl.NewInputContract(
+    bl.RequiredField("applicant", applicantContract),
+    bl.RequiredField("loan_amount", bl.BlNumber),
 ))
 ```
 
@@ -81,12 +81,12 @@ func End(id string, name string, opts ...EndOpts) *EndEvent
 ```
 
 ```go
-done := End("done", "Done")
+done := bl.End("done", "Done")
 
-approved := End("approved", "Loan Approved", EndOpts{
-    Contract: NewOutputContract(
-        RequiredField("offer_id", BlString),
-        RequiredField("approved_amount", BlNumber),
+approved := bl.End("approved", "Loan Approved", EndOpts{
+    Contract: bl.NewOutputContract(
+        bl.RequiredField("offer_id", bl.BlString),
+        bl.RequiredField("approved_amount", bl.BlNumber),
     ),
 })
 ```
@@ -214,7 +214,7 @@ func SuspendForDuration(id string, name string, duration BlExpr) *SuspendForDura
 ```
 
 ```go
-backoff := SuspendForDuration("backoff", "Wait Before Retry", Bl.DaysTimeDuration("PT15M"))
+backoff := SuspendForDuration("backoff", "Wait Before Retry", bl.DaysTimeDuration("PT15M"))
 ```
 
 The runtime computes the wake time as `now + duration` and persists it. A timer subsystem (the long-running worker's scheduler) re-enqueues the process when the wake time is reached.
@@ -236,7 +236,7 @@ func SuspendUntilDatetime(id string, name string, deadline BlExpr) *SuspendUntil
 
 ```go
 auctionStart := SuspendUntilDatetime("await-auction", "Wait for Auction Start",
-    Bl.DateTimeVar("start.auction_start_time"))
+    bl.DateTimeVar("start.auction_start_time"))
 ```
 
 If the resolved deadline is in the past, the suspension is recorded but the runtime wakes immediately on the next scheduler tick.
@@ -265,7 +265,7 @@ func PauseForDuration(id string, name string, duration BlExpr) *PauseForDuration
 ```
 
 ```go
-rateLimit := PauseForDuration("rate-limit", "Rate Limit", Bl.DaysTimeDuration("PT2S"))
+rateLimit := PauseForDuration("rate-limit", "Rate Limit", bl.DaysTimeDuration("PT2S"))
 ```
 
 ---

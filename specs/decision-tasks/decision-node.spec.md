@@ -42,7 +42,7 @@ type EligibilityOutputs struct {
 Rules for the outputs struct:
 
 - **Every exported field is an output.** No filter — the caller put it there, so it is an output.
-- A field's static type must implement `BlValue` (`BlString`, `BlNumber`, `BlBoolean`, `BlDate`, `BlTime`, `BlDateTime`, `BlDaysTimeDuration`, `BlYearsMonthsDuration`, `BlList`, `BlDictionary`, `BlRange`, `BlCalendar`). A non-`BlValue` field type is a `DecisionDefinitionError` at construction time.
+- A field's static type must implement `bl.BlValue` (`bl.BlString`, `bl.BlNumber`, `bl.BlBoolean`, `bl.BlDate`, `bl.BlTime`, `bl.BlDateTime`, `bl.BlDaysTimeDuration`, `bl.BlYearsMonthsDuration`, `bl.BlList`, `bl.BlDictionary`, `bl.BlRange`, `bl.BlCalendar`). A non-`bl.BlValue` field type is a `DecisionDefinitionError` at construction time.
 - The column name defaults to the lowercase field name; override with a `bl:"name"` struct tag.
 - Single-output nodes use an outputs struct with exactly one field. Multi-output nodes use one field per output column.
 
@@ -68,7 +68,7 @@ The constructor performs the following steps:
 
 1. Allocate and populate the underlying node value from `opts`.
 2. Reflect on the `Outputs` type parameter. For every exported field:
-   - Verify the field's static type implements `BlValue`. Reject otherwise.
+   - Verify the field's static type implements `bl.BlValue`. Reject otherwise.
    - Derive the output's name (lowercased field name, or the `bl:"name"` tag if present).
    - Register the output on the underlying node.
    - Allocate a typed handle and assign it into the corresponding field of the returned value's `Outputs`.
@@ -78,8 +78,8 @@ The constructor performs the following steps:
 The exact return type for the example above is `*DecisionTable[EligibilityOutputs]`. Access patterns:
 
 ```go
-eligibility.Outputs.Risk      // BlString  — typed handle
-eligibility.Outputs.Score     // BlNumber  — typed handle
+eligibility.Outputs.Risk      // bl.BlString  — typed handle
+eligibility.Outputs.Score     // bl.BlNumber  — typed handle
 eligibility.GetId()           // "eligibility"
 eligibility.Evaluate(input)   // standalone evaluation
 ```
@@ -98,10 +98,10 @@ type ApprovalOutputs struct {
 var approval = NewLiteralExpression[ApprovalOutputs](LiteralExpressionOpts{
     Id:   "approval",
     Name: "Loan Approval",
-    Body: Bl.If(
-        eligibility.Outputs.Risk.Equals(Bl.String("high")),
-        Bl.String("review"),
-        Bl.String("approved"),
+    Body: bl.If(
+        eligibility.Outputs.Risk.Equals(bl.String("high")),
+        bl.String("review"),
+        bl.String("approved"),
     ),
 })
 ```
@@ -124,8 +124,8 @@ These fields live on each concrete node's struct and are exposed through the int
 
 A `DecisionNode` is evaluated by calling `Evaluate(input)`:
 
-- **Single-output case** (outputs struct has exactly one field): returns that field's `BlValue` directly.
-- **Multi-output case**: returns a `BlDictionary` keyed by the declared output names.
+- **Single-output case** (outputs struct has exactly one field): returns that field's `bl.BlValue` directly.
+- **Multi-output case**: returns a `bl.BlDictionary` keyed by the declared output names.
 
 Within a `DecisionTask`, the runtime evaluates nodes in topologically sorted dependency order and stores each node's result in the evaluation context under the node's `Id`.
 
@@ -140,11 +140,11 @@ Any decision node can be evaluated independently by calling `.Evaluate(input)` w
 ## Edge Cases
 
 - A `DecisionNode` whose `Id` is an empty string is invalid; `NewDecisionTask` rejects it with `DecisionDefinitionError`.
-- An outputs-struct field whose type does not implement `BlValue` is a `DecisionDefinitionError` at construction time.
+- An outputs-struct field whose type does not implement `bl.BlValue` is a `DecisionDefinitionError` at construction time.
 - An outputs-struct with no exported fields is a `DecisionDefinitionError` (a node must declare at least one output).
 - An outputs-struct field whose `bl:"name"` tag duplicates another field's effective name (within the same node) is a `DecisionDefinitionError`.
 - Output names must be unique across the whole `DecisionTask`. Collisions are rejected at task construction.
 - Decision nodes forming a circular dependency among themselves are detected by `NewDecisionTask` and rejected with `DecisionDefinitionError`.
 - Calling `.Evaluate()` in standalone mode with an input variable not referenced by any expression on the node is silently ignored.
-- A required input variable that is missing at evaluation time resolves to `BlNull`.
-- A node body that produces a value whose runtime type disagrees with the declared outputs-struct field type produces a `BlTypeError` at evaluation time.
+- A required input variable that is missing at evaluation time resolves to `bl.BlNull`.
+- A node body that produces a value whose runtime type disagrees with the declared outputs-struct field type produces a `bl.TypeError` at evaluation time.

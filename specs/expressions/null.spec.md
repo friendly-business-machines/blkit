@@ -1,17 +1,17 @@
 ---
-name: BlNull
-description: The null type in the blkit expression language — a fieldless value type meaning absence or unknown, with SQL-style propagation. Covers the null literal, the equality / instance-of operators, propagation semantics, the null-handling built-ins, and the Go layer (BlNull + expr registrations).
+name: bl.BlNull
+description: The null type in the blkit expression language — a fieldless value type meaning absence or unknown, with SQL-style propagation. Covers the null literal, the equality / instance-of operators, propagation semantics, the null-handling built-ins, and the Go layer (bl.BlNull + expr registrations).
 targets:
-  - ../../expr/null.go
+  - ../../null.go
 ---
 
-# BlNull — the `null` type
+# bl.BlNull — the `null` type
 
 `null` represents the absence of a value or an unknown. It is the result of missing dictionary
 keys, out-of-range list access, division by zero, an arithmetic / path expression whose operand
 was already null, and any other operation whose normal result is undefined. The Go value type
-backing it is `BlNull` — a fieldless struct, so every value of it is structurally identical;
-the host constructor `Null()` returns one such value, and every "produces null" path in the
+backing it is `bl.BlNull` — a fieldless struct, so every value of it is structurally identical;
+the host constructor `bl.Null()` returns one such value, and every "produces null" path in the
 engine returns an equivalent one.
 
 See [bl-expr.spec.md](bl-expr.spec.md) for engine internals and three-valued logic.
@@ -29,63 +29,63 @@ of this type; the canonical form is lowercase, but the parser accepts any casing
 null, Null, NULL                   // all parse to the null value
 ```
 
-Lowercase is canonical — `BlNull.String()` always emits `"null"`, and the recommended style for
+Lowercase is canonical — `bl.BlNull.String()` always emits `"null"`, and the recommended style for
 hand-written expressions is lowercase. The mixed-case forms are accepted to ease porting from
 SQL-style dialects (where `NULL` is the conventional casing) and to remove a small foot-gun for
 users who type `Null` out of habit; they do not introduce additional null values. Because case
 variants are reserved as the null literal, a variable named `Null`, `NULL`, etc. is **not**
-addressable — host input keys that match any casing of `null` produce a `BlParseError` at
+addressable — host input keys that match any casing of `null` produce a `bl.ParseError` at
 expression compile time.
 
 This parallels the case-insensitive-input / lowercase-canonical rule for `true` / `false`
 ([boolean.spec.md § Literals](boolean.spec.md#literals)).
 
-`[@test] ../../expr/null_test.go`
+`[@test] ../../null_test.go`
 
 ---
 
 ## Construction (host-side)
 
-Host Go code constructs a `BlNull` via the `Null()` function, matching the same-name-minus-`Bl`
-convention used by every other `Bl*` constructor (`Number(v)`, `String(v)`, `Boolean(b)`,
-`List(items...)`, `Dictionary(m)`, `Date(...)`, etc.). `Null()` is infallible — there's no
-input shape that can fail — and the returned `BlNull` carries no state, so every call is
+Host Go code constructs a `bl.BlNull` via the `bl.Null()` function, matching the same-name-minus-`Bl`
+convention used by every other `Bl*` constructor (`bl.Number(v)`, `bl.String(v)`, `bl.Boolean(b)`,
+`bl.List(items...)`, `bl.Dictionary(m)`, `bl.Date(...)`, etc.). `bl.Null()` is infallible — there's no
+input shape that can fail — and the returned `bl.BlNull` carries no state, so every call is
 structurally equivalent.
 
 ```go
 // host-side (Go)
-// Build a null directly with the Null() constructor — useful when wiring it into another
-// host-built BlValue.
-var middleName = Null()
+// Build a null directly with the bl.Null() constructor — useful when wiring it into another
+// host-built bl.BlValue.
+var middleName = bl.Null()
 
-// Typical use: embed it in a BlDictionary for a known-absent field. The Dictionary(...)
-// constructor takes a map[string]BlValue, so the value must already be a BlValue — an
-// explicit Null() entry stands in for "this field exists but has no value."
-var applicant, _ = Dictionary(map[string]BlValue{
-    "applicant_name": String("Alice"),
-    "applicant_age":  Number(30),
-    "middle_name":    Null(),
+// Typical use: embed it in a bl.BlDictionary for a known-absent field. The bl.Dictionary(...)
+// constructor takes a map[string]bl.BlValue, so the value must already be a bl.BlValue — an
+// explicit bl.Null() entry stands in for "this field exists but has no value."
+var applicant, _ = bl.Dictionary(map[string]bl.BlValue{
+    "applicant_name": bl.String("Alice"),
+    "applicant_age":  bl.Number(30),
+    "middle_name":    bl.Null(),
 })
 ```
 
-The same `BlNull` value can also reach the engine **via the input bridge** when the host
-passes a raw `map[string]any` straight to `BlExpr.Evaluate` — no explicit `Null()` call is
-needed at that layer because the bridge resolves several "absence" shapes to `BlNull`
+The same `bl.BlNull` value can also reach the engine **via the input bridge** when the host
+passes a raw `map[string]any` straight to `bl.BlExpr.Evaluate` — no explicit `bl.Null()` call is
+needed at that layer because the bridge resolves several "absence" shapes to `bl.BlNull`
 automatically:
 
-- A Go `nil` value in the input map → `BlNull`.
-- A key absent from the input map → `BlNull` on access.
-- An untyped JSON `null` (from `json.Unmarshal` into `map[string]any`) → `BlNull`.
-- A typed Go `*T` whose value is `nil` → `BlNull` (the bridge dereferences pointers).
+- A Go `nil` value in the input map → `bl.BlNull`.
+- A key absent from the input map → `bl.BlNull` on access.
+- An untyped JSON `null` (from `json.Unmarshal` into `map[string]any`) → `bl.BlNull`.
+- A typed Go `*T` whose value is `nil` → `bl.BlNull` (the bridge dereferences pointers).
 
-Call `Null()` explicitly when the host wants the call site to make "this value is
-intentionally absent" visible at a glance, especially when constructing a `BlDictionary` /
-`BlList` / other `Bl*` value host-side (where the slot must be a `BlValue`); rely on the
+Call `bl.Null()` explicitly when the host wants the call site to make "this value is
+intentionally absent" visible at a glance, especially when constructing a `bl.BlDictionary` /
+`bl.BlList` / other `Bl*` value host-side (where the slot must be a `bl.BlValue`); rely on the
 bridge's `nil` / missing-key handling when the absence comes naturally from upstream data
 (`json.Unmarshal` results, optional fields, etc.). Either path lands on a structurally
-identical `BlNull`. To **test** whether an arbitrary `BlValue` is null, use the `IsNull()`
+identical `bl.BlNull`. To **test** whether an arbitrary `bl.BlValue` is null, use the `IsNull()`
 accessor declared on the interface — `v.IsNull()` reads more naturally than a type-assertion
-against `BlNull`.
+against `bl.BlNull`.
 
 ---
 
@@ -97,9 +97,9 @@ against `BlNull`.
 | `instance of` | type test | `null instance of null` | `true` |
 
 Null has no arithmetic operators (`+` / `-` / etc.), no ordering operators (`<` / `<=` / `>` /
-`>=`), and no `in` operator. Equality (`=` / `!=`) dispatches through the `BlValue.Equal()`
+`>=`), and no `in` operator. Equality (`=` / `!=`) dispatches through the `bl.BlValue.Equal()`
 interface method (see [§ Value type & host API](#value-type--host-api-exported)) — `Equal()` on
-`BlNull` always returns `BlBoolean(false)`, even against another `BlNull`, which is the
+`bl.BlNull` always returns `bl.BlBoolean(false)`, even against another `bl.BlNull`, which is the
 SQL-three-valued-logic convention. Use `instance of null`, `isNull(x)`, or `IsNull()` (Go) to
 test for null instead.
 
@@ -108,7 +108,7 @@ encounter a null operand follow the propagation rules in [§ Semantics &
 behaviour](#semantics--behaviour) — most return null, with documented exceptions for the
 short-circuit boolean cases.
 
-`[@test] ../../expr/null_operators_test.go`
+`[@test] ../../null_operators_test.go`
 
 ---
 
@@ -126,10 +126,10 @@ sibling form).
 forms are accepted. Prefer `isNull` for brevity; `instance of null` reads as a generic type
 test alongside other `instance of` calls in the same expression.
 
-`getOrElse(value, default)` returns `default` when `value` is `BlNull`, otherwise returns
+`getOrElse(value, default)` returns `default` when `value` is `bl.BlNull`, otherwise returns
 `value` unchanged. It is the canonical null fallback — preferred over an explicit
 `if isNull(x) then d else x`, which is more verbose and re-evaluates `x` twice. It accepts any
-`BlValue` for both arguments and only fires on `BlNull` — a defined-but-empty value (the empty
+`bl.BlValue` for both arguments and only fires on `bl.BlNull` — a defined-but-empty value (the empty
 string `""`, the empty list `[]`, the zero number `0`) is returned as-is, **not** treated as
 null.
 
@@ -144,7 +144,7 @@ getOrElse(42, 1)                     // → 42
 getOrElse(applicant.middleName, "")  // → "" if the key is missing or null
 ```
 
-`[@test] ../../expr/null_functions_test.go`
+`[@test] ../../null_functions_test.go`
 
 ---
 
@@ -174,7 +174,7 @@ logic table determines a definite result without consulting the null operand
 | `false or null` / `null or false` | `null` |
 | `not(null)` | `null` |
 
-`[@test] ../../expr/null_propagation_test.go`
+`[@test] ../../null_propagation_test.go`
 
 ### Producing null
 
@@ -190,7 +190,7 @@ The engine produces `null` in the following situations:
 - Numeric operations whose result is undefined: `sqrt` of a negative number, `ln` / `log` of
   zero-or-negative, `**` whose result would be complex
   ([number.spec.md](number.spec.md)).
-- A `BlDate` / `BlDateTime` comparison or subtraction that mixes naive and zoned operands
+- A `bl.BlDate` / `bl.BlDateTime` comparison or subtraction that mixes naive and zoned operands
   (see the comparison-semantics sections of [date.spec.md](date.spec.md) and
   [datetime.spec.md](datetime.spec.md)).
 - A range query (`contains`, `overlaps`, `entriesFor`, `entriesIn`) where the per-entry
@@ -206,7 +206,7 @@ Three idiomatic tests; all return the same answer:
 |---|---|
 | `x instance of null` | inside expressions; reads naturally alongside other `instance of` calls |
 | `isNull(x)` **ext** | inside expressions; the briefer form, preferred in most code |
-| `IsNull() bool` (Go) | host code consuming an evaluated `BlValue` |
+| `IsNull() bool` (Go) | host code consuming an evaluated `bl.BlValue` |
 
 **Do not use `x = null`** — equality with null is always `false`, so `if x = null then …`
 never matches.
@@ -228,48 +228,48 @@ if v.IsNull() {
 
 ## Go implementation (expr extension)
 
-`BlNull` and the shared null helpers live in `expr/value.go` (alongside the `BlValue` interface
+`bl.BlNull` and the shared null helpers live in `expr/value.go` (alongside the `bl.BlValue` interface
 itself — see [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go)). The
-type has no `expr/null.go` of its own because `BlNull` is trivial enough to live with the
+type has no `expr/null.go` of its own because `bl.BlNull` is trivial enough to live with the
 interface it supports; the registrations target file is `expr/null.go` only for symmetry with
 the other spokes.
 
 ### Value type & host API (exported)
 
-`BlNull` is the immutable Go value type that represents the absence-or-unknown value inside
-the engine and at the host-code boundary. The struct has no fields — `BlNull` is a zero-sized
+`bl.BlNull` is the immutable Go value type that represents the absence-or-unknown value inside
+the engine and at the host-code boundary. The struct has no fields — `bl.BlNull` is a zero-sized
 type, so every value of it is structurally identical and equality on the Go side is trivial.
-The package exposes a constructor `Null()` that returns a fresh (and therefore
-indistinguishable) `BlNull`, matching the same-name-minus-`Bl` constructor convention used by
+The package exposes a constructor `bl.Null()` that returns a fresh (and therefore
+indistinguishable) `bl.BlNull`, matching the same-name-minus-`Bl` constructor convention used by
 every other `Bl*` type.
 
 The exported surface has three parts:
 
-- **`BlValue` interface methods** — `Type()`, `Equal()`, `String()`, and the unexported
+- **`bl.BlValue` interface methods** — `Type()`, `Equal()`, `bl.String()`, and the unexported
   `isBlValue()` marker — required of every blkit value type so the engine can treat them
-  uniformly. `Equal(other)` always returns `BlBoolean(false)`, even when `other` is also
-  `BlNull` — this is the SQL-style three-valued-logic rule, surfaced through the engine's
-  single equality dispatch path so callers don't need to special-case null. `String()`
+  uniformly. `Equal(other)` always returns `bl.BlBoolean(false)`, even when `other` is also
+  `bl.BlNull` — this is the SQL-style three-valued-logic rule, surfaced through the engine's
+  single equality dispatch path so callers don't need to special-case null. `bl.String()`
   doubles as the `fmt.Stringer` implementation, producing `"null"`.
-- **`Null()`** — the host constructor. Infallible; takes no arguments; returns a `BlNull`.
-  Because `BlNull` is fieldless, the returned value is structurally identical to every other
-  `BlNull` ever produced — by the constructor, by the engine, or via the bridge. Host code
-  should call `Null()` rather than literal-construct `BlNull{}`, so that the call-site intent
-  is uniform with `Number(30)` / `String("x")` / etc.
-- **`IsNull() bool` accessor** — a convenience method declared on every `BlValue` (in
+- **`bl.Null()`** — the host constructor. Infallible; takes no arguments; returns a `bl.BlNull`.
+  Because `bl.BlNull` is fieldless, the returned value is structurally identical to every other
+  `bl.BlNull` ever produced — by the constructor, by the engine, or via the bridge. Host code
+  should call `bl.Null()` rather than literal-construct `bl.BlNull{}`, so that the call-site intent
+  is uniform with `bl.Number(30)` / `bl.String("x")` / etc.
+- **`IsNull() bool` accessor** — a convenience method declared on every `bl.BlValue` (in
   `expr/value.go`) so host code can write `v.IsNull()` against any evaluated result without
-  type-asserting first. For `BlNull` it returns `true`; for every other concrete `Bl*` type
-  it returns `false`. Prefer this over comparing a `BlValue` against `Null()` directly — the
+  type-asserting first. For `bl.BlNull` it returns `true`; for every other concrete `Bl*` type
+  it returns `false`. Prefer this over comparing a `bl.BlValue` against `bl.Null()` directly — the
   interface method works without a concrete-type assertion.
 
 ```go
 // host-side (Go)
-// BlNull is the absence-or-unknown value. The struct has no fields, so every BlNull is
-// structurally identical to every other BlNull.
+// bl.BlNull is the absence-or-unknown value. The struct has no fields, so every bl.BlNull is
+// structurally identical to every other bl.BlNull.
 type BlNull struct{}
 
-// BlValue interface — required by all Bl* value types.
-func (BlNull) Type() BlType { return BlTypeNull }
+// bl.BlValue interface — required by all Bl* value types.
+func (BlNull) Type() Type { return TypeNull }
 func (BlNull) Equal(other BlValue) BlValue   // always BlBoolean(false), even vs another BlNull
 func (BlNull) String() string                // "null"
 func (BlNull) isBlValue() {}
@@ -277,14 +277,14 @@ func (BlNull) isBlValue() {}
 // Host constructor — matches the Number(...) / String(...) / Boolean(...) convention.
 func Null() BlNull
 
-// IsNull is declared on every BlValue (in expr/value.go); for BlNull it returns true.
+// IsNull is declared on every bl.BlValue (in expr/value.go); for bl.BlNull it returns true.
 func (BlNull) IsNull() bool                  // always true for BlNull; always false for other Bl* types
 ```
 
 ### Backing implementations (unexported, suffix `Fn`)
 
 Null has **no per-type operator implementation functions**. Equality (`=` / `!=`) dispatches
-through the `BlValue.Equal()` interface method (see [§ Value type & host
+through the `bl.BlValue.Equal()` interface method (see [§ Value type & host
 API](#value-type--host-api-exported)), and `instance of` is handled by the engine's central
 type-test patcher. Null has no arithmetic, ordering, or `in` operators.
 
@@ -299,16 +299,16 @@ single source of truth.
 func isNullFn(v BlValue) BlBoolean                     // true iff v is BlNull
 func getOrElseFn(v BlValue, fallback BlValue) BlValue  // fallback when v is BlNull, else v
 
-// Shared propagation helper — used by other spokes' impls to short-circuit to a BlNull when
-// any operand is BlNull. The short-circuit boolean impls in expr/boolean.go intentionally do
+// Shared propagation helper — used by other spokes' impls to short-circuit to a bl.BlNull when
+// any operand is bl.BlNull. The short-circuit boolean impls in expr/boolean.go intentionally do
 // NOT call this — they implement the three-valued table directly.
 func propagatesNull(args ...BlValue) bool              // returns true iff any arg is BlNull
 ```
 
 The propagation helper has no expression-language surface — it's a Go-internal convenience
 for operator impls to keep their `if propagatesNull(a, b) { return Null() }` guard
-consistent. The engine bridge maps Go `nil` and absent input-map keys to a `BlNull` at the
-input boundary, so operator impls never see a Go-level `nil` `BlValue`.
+consistent. The engine bridge maps Go `nil` and absent input-map keys to a `bl.BlNull` at the
+input boundary, so operator impls never see a Go-level `nil` `bl.BlValue`.
 
 ### Registrations (`nullOptions`, unexported — all ext)
 
@@ -320,7 +320,7 @@ initialisation to learn about the null library. Each entry is built with
 - `impl` must have the signature `func(...any) (any, error)` — that is the only shape
   [`expr-lang/expr`](https://github.com/expr-lang/expr) accepts. The `typed1` / `typed2`
   adapters (defined in [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go))
-  wrap a typed implementation such as `func(BlValue) BlBoolean` into that shape.
+  wrap a typed implementation such as `func(bl.BlValue) bl.BlBoolean` into that shape.
 - `typeHints` is a variadic list of `new(func(...) ...)` values. The engine reflects on them
   at compile time to validate that callers supply the right argument types — they carry no
   runtime cost.
@@ -329,18 +329,18 @@ initialisation to learn about the null library. Each entry is built with
 // host-side (Go)
 func nullOptions() []expr.Option {
     return []expr.Option{
-        expr.Function("isNull",    typed1(isNullFn),    new(func(BlValue) BlBoolean)),         // ext
-        expr.Function("getOrElse", typed2(getOrElseFn), new(func(BlValue, BlValue) BlValue)),  // ext
+        expr.Function("isNull",    typed1(isNullFn),    new(func(bl.BlValue) bl.BlBoolean)),         // ext
+        expr.Function("getOrElse", typed2(getOrElseFn), new(func(bl.BlValue, bl.BlValue) bl.BlValue)),  // ext
     }
 }
 ```
 
-Every operation in the engine that produces null returns a `BlNull` (via `Null()` or
-literal `BlNull{}` — they're indistinguishable). The engine bridge maps Go `nil` and absent
-input-map keys to a `BlNull` at the input boundary; `instance of null` and `isNull(x)` test
-for it; every `BlValue` exposes `IsNull()` for host callers.
+Every operation in the engine that produces null returns a `bl.BlNull` (via `bl.Null()` or
+literal `bl.BlNull{}` — they're indistinguishable). The engine bridge maps Go `nil` and absent
+input-map keys to a `bl.BlNull` at the input boundary; `instance of null` and `isNull(x)` test
+for it; every `bl.BlValue` exposes `IsNull()` for host callers.
 
-`[@test] ../../expr/null_test.go`
+`[@test] ../../null_test.go`
 
 ---
 
@@ -355,13 +355,13 @@ for it; every `BlValue` exposes `IsNull()` for host callers.
   name for `instance of` is `null` lowercase (consistent with the lowercase type-name
   convention used by `instance of` across the language — see [bl-expr.spec.md § Type
   checking](bl-expr.spec.md#type-checking-instance-of)).
-- `getOrElse` only fires on `BlNull` — a defined-but-empty value (`""`, `[]`, `0`, `false`) is
+- `getOrElse` only fires on `bl.BlNull` — a defined-but-empty value (`""`, `[]`, `0`, `false`) is
   returned as-is, not treated as null. Callers wanting "treat falsy as missing" semantics
   must compose their own predicate (e.g. `if isEmpty(x) or isNull(x) then default else x`).
 - Writing `null` to a dictionary key whose data contract marks it required →
   `DataContractValidationError` at write time (see [data-contract.spec.md](../data/data-contract.spec.md)).
 - The engine bridge maps Go `nil`, absent input-map keys, and untyped JSON `null` to a
-  `BlNull` at the input boundary, so operator impls never see a Go-level `nil` `BlValue` at
+  `bl.BlNull` at the input boundary, so operator impls never see a Go-level `nil` `bl.BlValue` at
   runtime.
 - Short-circuit boolean operators are the only operators that **don't** propagate null —
   `false and X` and `true or X` evaluate to the definite answer without consulting `X`, even

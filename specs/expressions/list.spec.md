@@ -1,13 +1,13 @@
 ---
-name: BlList
-description: The list type in the blkit expression language — an ordered, immutable, heterogeneous collection. Covers list literals, indexing/filter/projection, the list built-in library (incl. blkit extensions), and the Go layer (BlList + expr registrations).
+name: bl.BlList
+description: The list type in the blkit expression language — an ordered, immutable, heterogeneous collection. Covers list literals, indexing/filter/projection, the list built-in library (incl. blkit extensions), and the Go layer (bl.BlList + expr registrations).
 targets:
-  - ../../expr/list.go
+  - ../../list.go
 ---
 
-# BlList — the `list` type
+# bl.BlList — the `list` type
 
-`list` is an ordered, immutable, heterogeneous collection. The Go value type backing it is `BlList`.
+`list` is an ordered, immutable, heterogeneous collection. The Go value type backing it is `bl.BlList`.
 Indexing is **1-based**; negative indexes count from the end.
 
 See [bl-expr.spec.md](bl-expr.spec.md) for list expressions (indexing, filter, projection, `for`,
@@ -74,12 +74,12 @@ Behaviour by input shape:
 | Single dictionary without the field | `null` |
 | List of dictionaries, every element has the field | list of values |
 | List of dictionaries, some elements missing the field | list with `null` for missing fields, e.g. `[{name:"A"},{age:30}].name` → `["A", null]` |
-| List containing non-dictionary elements | `BlTypeError` (the projection is only defined for dictionaries) |
+| List containing non-dictionary elements | `bl.TypeError` (the projection is only defined for dictionaries) |
 | Empty list | `[]` |
 
 Projection composes naturally with the aggregates and the rest of the list library. Assume
-the following data is in scope (`orders` and `customers` are each a `BlList` of `BlDictionary`,
-equivalently a `BlTable`):
+the following data is in scope (`orders` and `customers` are each a `bl.BlList` of `bl.BlDictionary`,
+equivalently a `bl.BlTable`):
 
 ```
 // expression-language
@@ -105,34 +105,34 @@ distinct(orders.region)                                  // → ["NA","EU"]   (u
 sum(for o in orders return o.amount * o.quantity)        // → 575       (per-row arithmetic first, then sum)
 ```
 
-`[@test] ../../expr/list_test.go`
+`[@test] ../../list_test.go`
 
 ---
 
 ## Construction (host-side)
 
-Host Go code builds a list with the variadic `List(items ...BlValue)` constructor. It's
-infallible — every input shape is valid; `List()` with no arguments yields the empty list, and
-existing Go slices spread in via `List(slice...)`. Element order is preserved exactly (lists
+Host Go code builds a list with the variadic `bl.List(items ...bl.BlValue)` constructor. It's
+infallible — every input shape is valid; `bl.List()` with no arguments yields the empty list, and
+existing Go slices spread in via `bl.List(slice...)`. Element order is preserved exactly (lists
 are order-sensitive at the language level — see [§ Operators](#operators)).
 
 ```go
 // host-side (Go)
-// Build a list directly from BlValue arguments.
-var scores = List(Number(85), Number(92), Number(78))
+// Build a list directly from bl.BlValue arguments.
+var scores = bl.List(bl.Number(85), bl.Number(92), bl.Number(78))
 
 // Spread an existing slice of BlValues.
-var names  = []BlValue{String("Alice"), String("Bob"), String("Charlie")}
-var roster = List(names...)
+var names  = []bl.BlValue{bl.String("Alice"), bl.String("Bob"), bl.String("Charlie")}
+var roster = bl.List(names...)
 
 // Empty list — degenerate but valid.
-var empty  = List()
+var empty  = bl.List()
 ```
 
-`List(...)` returns a `BlList` directly (no error path). For the alternative of letting the
+`bl.List(...)` returns a `bl.BlList` directly (no error path). For the alternative of letting the
 engine bridge wrap a native Go slice automatically when the list is supplied as an input
 variable, see [bl-expr.spec.md § Bridging native ↔ Bl*](bl-expr.spec.md#bridging-native--bl-valuego);
-when the host already holds `BlValue`s, `List(...)` is preferred since it avoids the
+when the host already holds `bl.BlValue`s, `bl.List(...)` is preferred since it avoids the
 round-trip through the bridge.
 
 ---
@@ -150,7 +150,7 @@ Lists have no arithmetic operators (`+`/`-`/etc.) and no ordering operators (`<`
 projection](#literals-indexing-filter-projection) — they're lowered by the engine per the hub
 (see [bl-expr.spec.md](bl-expr.spec.md)).
 
-`[@test] ../../expr/list_operators_test.go`
+`[@test] ../../list_operators_test.go`
 
 ---
 
@@ -192,7 +192,7 @@ DMN-inspired functions plus blkit extensions (**ext**). Positions are 1-based.
 `insertBefore` and `insertAfter` dispatch on the third argument's type:
 
 - Any non-list value → insert as a **single element**.
-- A `BlList` → **spread** the list's contents into the result.
+- A `bl.BlList` → **spread** the list's contents into the result.
 
 This means there's no direct way to insert a single list as one element — `insertBefore([1,4], 2, [2,3])` will spread, giving `[1,2,3,4]`, not `[1, [2,3], 4]`. To insert a list as one element, wrap it in another list so the engine spreads the outer list:
 
@@ -214,17 +214,17 @@ zipStringJoin([["a","b","c"], ["1","2","3"]], "-")      // → ["a-1", "b-2", "c
 
 **Input constraints**:
 
-- The outer `lists` argument is a `BlList` of `BlList` (a list of lists).
-- All inner lists must have the **same length** — mismatched lengths → `BlTypeError`.
-- All inner-list elements must be `BlString` — non-string elements → `BlTypeError`. Use
+- The outer `lists` argument is a `bl.BlList` of `bl.BlList` (a list of lists).
+- All inner lists must have the **same length** — mismatched lengths → `bl.TypeError`.
+- All inner-list elements must be `bl.BlString` — non-string elements → `bl.TypeError`. Use
   `string(x)` to convert explicitly upstream if needed.
 
 **Delimiter** (`delim`) accepts two forms:
 
-- A single `BlString` — applied between every adjacent pair (so for `N` lists, the same
+- A single `bl.BlString` — applied between every adjacent pair (so for `N` lists, the same
   delimiter appears `N−1` times per element).
-- A `BlList` of `BlString` of length **`N−1`** — each delimiter applied at the corresponding
-  gap. Wrong length → `BlTypeError`.
+- A `bl.BlList` of `bl.BlString` of length **`N−1`** — each delimiter applied at the corresponding
+  gap. Wrong length → `bl.TypeError`.
 
 ```
 // expression-language
@@ -234,11 +234,11 @@ zipStringJoin(["a", "b", "c"], ["-", ":"])              // per-gap delims → "a
 
 **Prefix and suffix** each accept two forms:
 
-- A single `BlString` — applied **once at the very start (prefix) or end (suffix)** of each
+- A single `bl.BlString` — applied **once at the very start (prefix) or end (suffix)** of each
   output element.
-- A `BlList` of `BlString` of length **`N`** — each prefix wraps its corresponding inner list's
+- A `bl.BlList` of `bl.BlString` of length **`N`** — each prefix wraps its corresponding inner list's
   element on the leading side; each suffix wraps its corresponding inner list's element on the
-  trailing side. Wrong length → `BlTypeError`.
+  trailing side. Wrong length → `bl.TypeError`.
 
 ```
 // expression-language
@@ -262,7 +262,7 @@ You can mix forms (e.g. single delim with per-list prefix/suffix, or vice versa)
 
 ### Sequence constructor: `seq` and the `:` operator
 
-`seq(start, end[, step])` (**ext**) materialises a numeric sequence as a `BlList`. Both `start`
+`seq(start, end[, step])` (**ext**) materialises a numeric sequence as a `bl.BlList`. Both `start`
 and `end` are inclusive; `step` defaults to `1`. The shorthand `start:end` syntax (see
 [bl-expr.spec.md § Sequences](bl-expr.spec.md#sequences-the--operator)) is parser-lowered to
 `seq(start, end, 1)`, so the two forms are exactly equivalent for the default-step case.
@@ -284,7 +284,7 @@ the result steps downward from `start` to `end` by `step`. Explicitly passing a 
 produces the same descending result for `start > end`. Reversing a sequence built this way
 yields the ascending form (`reverse(10:5)` → `[5, 6, 7, 8, 9, 10]`).
 
-**Step constraints.** `step` must be a non-zero `BlNumber`. A `step` of `0` → `BlTypeError` (no
+**Step constraints.** `step` must be a non-zero `bl.BlNumber`. A `step` of `0` → `bl.TypeError` (no
 progress would be made and the sequence would be infinite). A `step` with the wrong sign for a
 non-reversed sequence (e.g. `seq(5, 10, -1)`) is treated as **auto-direction**: the function
 inspects the relative ordering of `start` and `end` and uses `abs(step)` in the appropriate
@@ -292,15 +292,15 @@ direction. So `seq(5, 10, -1)` → `[5, 6, 7, 8, 9, 10]`, identical to `seq(5, 1
 
 **Fractional steps** are supported and preserved exactly (no float rounding) — `seq(0, 1, 0.1)`
 yields exactly 11 elements with no precision loss, matching blkit's arbitrary-precision
-`BlNumber` semantics. When `(end - start)` is not an exact multiple of `step`, the last element
+`bl.BlNumber` semantics. When `(end - start)` is not an exact multiple of `step`, the last element
 is the largest value not exceeding `end` (for ascending) / not less than `end` (for descending);
 `end` itself is included only when it falls exactly on the step grid (e.g. `seq(0, 0.95, 0.1)`
 → `[0, 0.1, 0.2, …, 0.9]`, stopping before `0.95`).
 
-**Non-numeric arguments** → `BlTypeError`. The function is integer-friendly but not
-integer-only — any `BlNumber` is acceptable.
+**Non-numeric arguments** → `bl.TypeError`. The function is integer-friendly but not
+integer-only — any `bl.BlNumber` is acceptable.
 
-`[@test] ../../expr/list_seq_test.go`
+`[@test] ../../list_seq_test.go`
 
 ### Aggregation
 
@@ -322,8 +322,8 @@ elements of the expected type. `all`/`any` follow three-valued logic ([boolean.s
 `all([]) = true` (vacuous), `any([]) = false`, `all([true, null]) = null`.
 
 `sum`, `mean`, and `median` accept lists of either **numbers** or a single **duration kind**
-(all `BlDaysTimeDuration` or all `BlYearsMonthsDuration`) — mixing the two duration kinds, or
-mixing numbers with durations, → `BlTypeError`. `product` and `stddev` are number-only because
+(all `bl.BlDaysTimeDuration` or all `bl.BlYearsMonthsDuration`) — mixing the two duration kinds, or
+mixing numbers with durations, → `bl.TypeError`. `product` and `stddev` are number-only because
 they require multiplication or squaring, which isn't defined for durations.
 
 **Comparable types.** `min(l)` and `max(l)` accept any list whose elements all share one of
@@ -333,9 +333,9 @@ the orderable types: `number`, `string`, `date`, `time`, `datetime`,
 `<`/`<=`/`>`/`>=`).
 
 A list whose elements mix incompatible comparable types (e.g. `min([1, "a"])` —
-number+string) → `BlTypeError`. Same-type comparisons across the temporal sub-distinctions
+number+string) → `bl.TypeError`. Same-type comparisons across the temporal sub-distinctions
 follow the per-type rules: cross-kind datetime comparison (naive vs zoned) within a list still
-yields the type's normal cross-kind `BlNull` semantics, which then propagates through the
+yields the type's normal cross-kind `bl.BlNull` semantics, which then propagates through the
 aggregate.
 
 ### Ordering used by `min` / `max` / `sort`
@@ -368,7 +368,7 @@ explicitly. Use the per-type operators inside the `precedes` function to match t
 ordering: `sort(items, function(a, b) a < b)` gives the same order as the type's natural
 ordering would produce in `min`/`max`.
 
-`[@test] ../../expr/list_functions_test.go`
+`[@test] ../../list_functions_test.go`
 
 ---
 
@@ -379,39 +379,39 @@ Lives in `expr/list.go`. Shared mechanics in
 
 ### Value type & host API (exported)
 
-`BlList` is the immutable Go value type that represents a list inside the engine and at the
-host-code boundary. It wraps a Go slice of `BlValue`. The single field is private so callers
-cannot mutate the underlying slice — every operation in the library returns a fresh `BlList`,
+`bl.BlList` is the immutable Go value type that represents a list inside the engine and at the
+host-code boundary. It wraps a Go slice of `bl.BlValue`. The single field is private so callers
+cannot mutate the underlying slice — every operation in the library returns a fresh `bl.BlList`,
 and the `Native()` accessor returns a defensive copy so host code can mutate freely without
 affecting the source.
 
 The exported surface has three parts:
 
-- **`BlValue` interface methods** — `Type()`, `Equal()`, `String()`, and the unexported
+- **`bl.BlValue` interface methods** — `Type()`, `Equal()`, `bl.String()`, and the unexported
   `isBlValue()` marker — required of every blkit value type so the engine can treat them
   uniformly. `Equal` is **element-wise and order-sensitive** — `[1, 2]` and `[2, 1]` are not
-  equal, and two lists of different length are never equal. `String()` doubles as the
+  equal, and two lists of different length are never equal. `bl.String()` doubles as the
   `fmt.Stringer` implementation, producing the canonical literal form (e.g. `"[1, 2, 3]"`).
-- **`List(items ...BlValue)`** — the host constructor. Variadic so callers can write
-  `List(v1, v2, v3)` directly or `List(slice...)` to spread an existing slice. Infallible:
+- **`bl.List(items ...bl.BlValue)`** — the host constructor. Variadic so callers can write
+  `bl.List(v1, v2, v3)` directly or `bl.List(slice...)` to spread an existing slice. Infallible:
   there's no input shape that can fail at construction. Native Go slices passed in via the
-  engine bridge are also wrapped to `BlList`. See [§ Construction
+  engine bridge are also wrapped to `bl.BlList`. See [§ Construction
   (host-side)](#construction-host-side) for the worked example.
-- **`Native()` accessor** — returns a defensive copy of the underlying `[]BlValue`. Callers
-  may mutate the returned slice without affecting the `BlList`. From there, normal Go slice
+- **`Native()` accessor** — returns a defensive copy of the underlying `[]bl.BlValue`. Callers
+  may mutate the returned slice without affecting the `bl.BlList`. From there, normal Go slice
   operations are available.
 
 ```go
 // host-side (Go)
-type BlList struct{ items []BlValue }   // immutable; items is private and never mutated
+type BlList struct{ items []bl.BlValue }   // immutable; items is private and never mutated
 
-// BlValue interface — required by all Bl* value types.
-func (BlList) Type() BlType { return BlTypeList }
+// bl.BlValue interface — required by all Bl* value types.
+func (BlList) Type() Type { return TypeList }
 func (l BlList) Equal(other BlValue) BlValue   // element-wise, order-sensitive; mismatched lengths → false
 func (l BlList) String() string                // canonical literal form, e.g. "[1, 2, 3]"
 func (BlList) isBlValue() {}
 
-// Host constructor — variadic; spread an existing slice with List(slice...).
+// Host constructor — variadic; spread an existing slice with bl.List(slice...).
 func List(items ...BlValue) BlList
 
 // Host accessor (consume an evaluated result).
@@ -421,7 +421,7 @@ func (l BlList) Native() []BlValue              // defensive copy; callers may m
 ### Backing implementations (unexported, suffix `Fn`)
 
 List has **no per-type operator implementation functions**. Equality (`=` / `!=`) dispatches
-through the `BlValue.Equal()` interface method (see [§ Value type & host API](#value-type--host-api-exported)),
+through the `bl.BlValue.Equal()` interface method (see [§ Value type & host API](#value-type--host-api-exported)),
 and the `in` operator is patcher-lowered to a call to `listContains(l, x)`. The indexing,
 filter, and projection bracket/dot syntax (`l[i]`, `l[predicate]`, `l.field`) is lowered by
 the engine per [bl-expr.spec.md](bl-expr.spec.md). List has no arithmetic or ordering
@@ -443,10 +443,10 @@ func distinctFn(l BlList) BlList                            // preserves first-o
 func duplicateValuesFn(l BlList) BlList                           // ext; values appearing more than once
 func sortFn(l BlList, precedes BlFunc) BlList
 
-// Aggregation impls — return BlValue because empty / wrong-type / mixed-type inputs yield BlNull or BlTypeError.
-func sumFn(l BlList) BlValue        // accepts number list or single-kind duration list; mixed → BlTypeError
+// Aggregation impls — return bl.BlValue because empty / wrong-type / mixed-type inputs yield bl.BlNull or TypeError.
+func sumFn(l BlList) BlValue        // accepts number list or single-kind duration list; mixed → TypeError
 func productFn(l BlList) BlValue    // number only
-func minFn(l BlList) BlValue        // any comparable element type (uniform within list); mixed → BlTypeError
+func minFn(l BlList) BlValue        // any comparable element type (uniform within list); mixed → TypeError
 func maxFn(l BlList) BlValue
 func meanFn(l BlList) BlValue       // number or single-kind duration list
 func medianFn(l BlList) BlValue     // number or single-kind duration list; even-length averages middle two
@@ -466,16 +466,16 @@ func stringJoinFn(args ...any) (any, error)     // (l) | (l, sep) | (l, sep, pre
 func zipStringJoinFn(args ...any) (any, error)  // (lists) | (lists, delim) | (lists, delim, prefix, suffix); delim/prefix/suffix each BlString or BlList of BlString — ext
 func removeFn(args ...any) (any, error)         // (l, pos BlNumber) | (l, pred BlFunc) — predicate form is ext
 func listReplaceFn(args ...any) (any, error)    // (l, pos BlNumber, item) | (l, pred BlFunc, item) — predicate form is ext
-func insertBeforeFn(args ...any) (any, error)   // (l, pos, item) inserts single; (l, pos, items BlList) spreads — 1-based; out-of-range → BlTypeError
-func insertAfterFn(args ...any) (any, error)    // ext; (l, pos, item) inserts single; (l, pos, items BlList) spreads — 1-based; pos = count(l) appends; out-of-range → BlTypeError
-func seqFn(args ...any) (any, error)            // ext; (start, end) | (start, end, step) — materialises BlList[BlNumber]; auto-direction; zero step → BlTypeError
+func insertBeforeFn(args ...any) (any, error)   // (l, pos, item) inserts single; (l, pos, items BlList) spreads — 1-based; out-of-range → TypeError
+func insertAfterFn(args ...any) (any, error)    // ext; (l, pos, item) inserts single; (l, pos, items BlList) spreads — 1-based; pos = count(l) appends; out-of-range → TypeError
+func seqFn(args ...any) (any, error)            // ext; (start, end) | (start, end, step) — materialises BlList[BlNumber]; auto-direction; zero step → TypeError
 ```
 
 `BlFunc` is the engine's value type for an inline `function(...) …` comparator/predicate (see
 [§ Function invocation](bl-expr.spec.md#function-invocation)). Out-of-range positions for
 `insertBefore`, `remove`, and `listReplace` follow the rules documented in [§ Edge cases](#edge-cases).
 
-`stringJoin` lives here (its first argument is a `BlList` and it reduces the list to a single
+`stringJoin` lives here (its first argument is a `bl.BlList` and it reduces the list to a single
 string, matching the pattern of every other list-reducing function — `sum`, `min`, `max`,
 `mode`, `zipStringJoin`). The string spec carries only a brief reference back to this section.
 The backing impl wraps Go's [`strings.Join`](https://pkg.go.dev/strings#Join).
@@ -490,7 +490,7 @@ initialisation to learn about the list library. Each entry is built with
 - `impl` must have the signature `func(...any) (any, error)` — that is the only shape
   [`expr-lang/expr`](https://github.com/expr-lang/expr) accepts. The `typed1` / `typed2` /
   `typed3` adapters (defined in [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go))
-  wrap a typed implementation such as `func(BlList) BlNumber` into that shape; the variadic
+  wrap a typed implementation such as `func(bl.BlList) bl.BlNumber` into that shape; the variadic
   impls are registered directly because their optional-arg shapes can't be expressed as a
   fixed-arity adapter.
 - `typeHints` is a variadic list of `new(func(...) ...)` values. The engine reflects on them
@@ -506,69 +506,69 @@ additions.
 func listOptions() []expr.Option {
     return []expr.Option{
         // core list operations
-        expr.Function("count",         typed1(countFn),         new(func(BlList) BlNumber)),
-        expr.Function("isEmpty",       typed1(listIsEmptyFn),   new(func(BlList) BlBoolean)),       // overloads string/dictionary/range
-        expr.Function("listContains",  typed2(listContainsFn),  new(func(BlList, BlValue) BlBoolean)),
-        expr.Function("indexOf",       typed2(listIndexOfFn),   new(func(BlList, BlValue) BlList)), // list overload; string overload in string.spec.md
+        expr.Function("count",         typed1(countFn),         new(func(bl.BlList) bl.BlNumber)),
+        expr.Function("isEmpty",       typed1(listIsEmptyFn),   new(func(bl.BlList) bl.BlBoolean)),       // overloads string/dictionary/range
+        expr.Function("listContains",  typed2(listContainsFn),  new(func(bl.BlList, bl.BlValue) bl.BlBoolean)),
+        expr.Function("indexOf",       typed2(listIndexOfFn),   new(func(bl.BlList, bl.BlValue) bl.BlList)), // list overload; string overload in string.spec.md
         expr.Function("sublist",       sublistFn,
-            new(func(BlList, BlNumber) BlList),
-            new(func(BlList, BlNumber, BlNumber) BlList)),
-        expr.Function("append",        appendFn,                new(func(BlList, ...BlValue) BlList)),
-        expr.Function("concatenate",   concatenateFn,           new(func(...BlList) BlList)),
-        expr.Function("union",         unionFn,                 new(func(...BlList) BlList)),
+            new(func(bl.BlList, bl.BlNumber) bl.BlList),
+            new(func(bl.BlList, bl.BlNumber, bl.BlNumber) bl.BlList)),
+        expr.Function("append",        appendFn,                new(func(bl.BlList, ...BlValue) bl.BlList)),
+        expr.Function("concatenate",   concatenateFn,           new(func(...BlList) bl.BlList)),
+        expr.Function("union",         unionFn,                 new(func(...BlList) bl.BlList)),
         expr.Function("insertBefore",  insertBeforeFn,
-            new(func(BlList, BlNumber, BlValue) BlList),                     // single item
-            new(func(BlList, BlNumber, BlList) BlList)),                     // ext — spread a list of items
+            new(func(bl.BlList, bl.BlNumber, bl.BlValue) bl.BlList),                     // single item
+            new(func(bl.BlList, bl.BlNumber, bl.BlList) bl.BlList)),                     // ext — spread a list of items
         expr.Function("insertAfter",   insertAfterFn,                        // ext (both forms)
-            new(func(BlList, BlNumber, BlValue) BlList),                     // single item
-            new(func(BlList, BlNumber, BlList) BlList)),                     // spread a list of items
+            new(func(bl.BlList, bl.BlNumber, bl.BlValue) bl.BlList),                     // single item
+            new(func(bl.BlList, bl.BlNumber, bl.BlList) bl.BlList)),                     // spread a list of items
         expr.Function("remove",        removeFn,
-            new(func(BlList, BlNumber) BlList),
-            new(func(BlList, BlFunc) BlList)),                  // predicate form is ext
+            new(func(bl.BlList, bl.BlNumber) bl.BlList),
+            new(func(bl.BlList, BlFunc) bl.BlList)),                  // predicate form is ext
         expr.Function("listReplace",   listReplaceFn,
-            new(func(BlList, BlNumber, BlValue) BlList),
-            new(func(BlList, BlFunc, BlValue) BlList)),         // predicate form is ext
-        expr.Function("reverse",       typed1(listReverseFn),   new(func(BlList) BlList)),          // list overload; string overload in string.spec.md
-        expr.Function("flatten",       typed1(flattenFn),       new(func(BlList) BlList)),
-        expr.Function("distinct",typed1(distinctFn),new(func(BlList) BlList)),
-        expr.Function("sort",          typed2(sortFn),          new(func(BlList, BlFunc) BlList)),
+            new(func(bl.BlList, bl.BlNumber, bl.BlValue) bl.BlList),
+            new(func(bl.BlList, BlFunc, bl.BlValue) bl.BlList)),         // predicate form is ext
+        expr.Function("reverse",       typed1(listReverseFn),   new(func(bl.BlList) bl.BlList)),          // list overload; string overload in string.spec.md
+        expr.Function("flatten",       typed1(flattenFn),       new(func(bl.BlList) bl.BlList)),
+        expr.Function("distinct",typed1(distinctFn),new(func(bl.BlList) bl.BlList)),
+        expr.Function("sort",          typed2(sortFn),          new(func(bl.BlList, BlFunc) bl.BlList)),
 
         // aggregation
-        expr.Function("sum",     typed1(sumFn),     new(func(BlList) BlValue)),
-        expr.Function("product", typed1(productFn), new(func(BlList) BlValue)),
-        expr.Function("min",     typed1(minFn),     new(func(BlList) BlValue)),
-        expr.Function("max",     typed1(maxFn),     new(func(BlList) BlValue)),
-        expr.Function("mean",    typed1(meanFn),    new(func(BlList) BlValue)),
-        expr.Function("median",  typed1(medianFn),  new(func(BlList) BlValue)),
-        expr.Function("stddev",  typed1(stddevFn),  new(func(BlList) BlValue)),
-        expr.Function("mode",    typed1(modeFn),    new(func(BlList) BlList)),
-        expr.Function("all",     typed1(allFn),     new(func(BlList) BlValue)),  // three-valued
-        expr.Function("any",     typed1(anyFn),     new(func(BlList) BlValue)),  // three-valued
+        expr.Function("sum",     typed1(sumFn),     new(func(bl.BlList) bl.BlValue)),
+        expr.Function("product", typed1(productFn), new(func(bl.BlList) bl.BlValue)),
+        expr.Function("min",     typed1(minFn),     new(func(bl.BlList) bl.BlValue)),
+        expr.Function("max",     typed1(maxFn),     new(func(bl.BlList) bl.BlValue)),
+        expr.Function("mean",    typed1(meanFn),    new(func(bl.BlList) bl.BlValue)),
+        expr.Function("median",  typed1(medianFn),  new(func(bl.BlList) bl.BlValue)),
+        expr.Function("stddev",  typed1(stddevFn),  new(func(bl.BlList) bl.BlValue)),
+        expr.Function("mode",    typed1(modeFn),    new(func(bl.BlList) bl.BlList)),
+        expr.Function("all",     typed1(allFn),     new(func(bl.BlList) bl.BlValue)),  // three-valued
+        expr.Function("any",     typed1(anyFn),     new(func(bl.BlList) bl.BlValue)),  // three-valued
 
         // string-producing reducers (input is a list; output is a string or list of strings)
         expr.Function("stringJoin",      stringJoinFn,
-            new(func(BlList) BlString),
-            new(func(BlList, BlString) BlString),
-            new(func(BlList, BlString, BlString, BlString) BlString)),
+            new(func(bl.BlList) bl.BlString),
+            new(func(bl.BlList, bl.BlString) bl.BlString),
+            new(func(bl.BlList, bl.BlString, bl.BlString, bl.BlString) bl.BlString)),
 
         // ext
-        expr.Function("prepend",         prependFn,               new(func(BlList, ...BlValue) BlList)),
-        expr.Function("duplicateValues", typed1(duplicateValuesFn), new(func(BlList) BlList)),
-        expr.Function("intersection",    intersectionFn,          new(func(...BlList) BlList)),
+        expr.Function("prepend",         prependFn,               new(func(bl.BlList, ...BlValue) bl.BlList)),
+        expr.Function("duplicateValues", typed1(duplicateValuesFn), new(func(bl.BlList) bl.BlList)),
+        expr.Function("intersection",    intersectionFn,          new(func(...BlList) bl.BlList)),
         expr.Function("zipStringJoin",   zipStringJoinFn,
-            new(func(BlList) BlList),                                                              // no delim/prefix/suffix
-            new(func(BlList, BlValue) BlList),                                                     // delim only (BlString or BlList)
-            new(func(BlList, BlValue, BlValue, BlValue) BlList)),                                  // delim + prefix + suffix (each BlString or BlList)
+            new(func(bl.BlList) bl.BlList),                                                              // no delim/prefix/suffix
+            new(func(bl.BlList, bl.BlValue) bl.BlList),                                                     // delim only (bl.BlString or bl.BlList)
+            new(func(bl.BlList, bl.BlValue, bl.BlValue, bl.BlValue) bl.BlList)),                                  // delim + prefix + suffix (each bl.BlString or bl.BlList)
         expr.Function("seq",             seqFn,
-            new(func(BlNumber, BlNumber) BlList),                                                  // default step = 1
-            new(func(BlNumber, BlNumber, BlNumber) BlList)),                                       // ext; also the patcher's lowering target for `start:end`
+            new(func(bl.BlNumber, bl.BlNumber) bl.BlList),                                                  // default step = 1
+            new(func(bl.BlNumber, bl.BlNumber, bl.BlNumber) bl.BlList)),                                       // ext; also the patcher's lowering target for `start:end`
     }
 }
 ```
 
-Native Go slices wrap to `BlList` via the engine's input bridge.
+Native Go slices wrap to `bl.BlList` via the engine's input bridge.
 
-`[@test] ../../expr/list_test.go`
+`[@test] ../../list_test.go`
 
 ---
 
@@ -579,8 +579,8 @@ Native Go slices wrap to `BlList` via the engine's input bridge.
 - `remove` at an out-of-range position → the list unchanged.
 - `sort` with a non-strict-weak-ordering comparator → undefined order.
 - numeric aggregates over an empty/non-numeric list → `null`.
-- `seq(start, end[, step])` with `step = 0` → `BlTypeError`. `step` of the wrong sign for the
+- `seq(start, end[, step])` with `step = 0` → `bl.TypeError`. `step` of the wrong sign for the
   start→end direction is treated as auto-direction (`abs(step)` applied in the correct
-  direction). Non-numeric `start` / `end` / `step` → `BlTypeError`. Fractional step preserves
+  direction). Non-numeric `start` / `end` / `step` → `bl.TypeError`. Fractional step preserves
   exact decimal precision (no float rounding); when `(end - start)` is not an exact multiple
   of `step`, `end` is excluded.

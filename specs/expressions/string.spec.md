@@ -1,14 +1,14 @@
 ---
-name: BlString
-description: The string type in the blkit expression language — an immutable Unicode sequence. Covers string literals, the concatenation/comparison operators, the string built-in functions (incl. blkit extensions), the regex dialect, and the Go layer (BlString + expr registrations).
+name: bl.BlString
+description: The string type in the blkit expression language — an immutable Unicode sequence. Covers string literals, the concatenation/comparison operators, the string built-in functions (incl. blkit extensions), the regex dialect, and the Go layer (bl.BlString + expr registrations).
 targets:
-  - ../../expr/string.go
+  - ../../string.go
 ---
 
-# BlString — the `string` type
+# bl.BlString — the `string` type
 
 `string` is an immutable sequence of Unicode code points. The Go value type backing it is
-`BlString`. Positions are **1-indexed**; length is measured in code points (not bytes or UTF-16
+`bl.BlString`. Positions are **1-indexed**; length is measured in code points (not bytes or UTF-16
 units).
 
 See [bl-expr.spec.md](bl-expr.spec.md) for the engine and cross-cutting semantics.
@@ -67,13 +67,13 @@ stringLength("🎉")             // → 1
 stringLength("🎉a")            // → 2
 ```
 
-`[@test] ../../expr/string_test.go`
+`[@test] ../../string_test.go`
 
 ---
 
 ## Construction (host-side)
 
-Host Go code constructs a `BlString` via the generic `String[T StringInput](v T) (BlString,
+Host Go code constructs a `bl.BlString` via the generic `String[T StringInput](v T) (bl.BlString,
 error)` constructor. The `StringInput` constraint accepts `string` or `[]byte`. A `string`
 input is infallible (a Go `string` has no encoding contract to violate, so it can't fail). A
 `[]byte` is interpreted as UTF-8 and validated; the `error` return fires when the bytes
@@ -83,19 +83,19 @@ etc.).
 ```go
 // host-side (Go)
 // From a Go string — infallible.
-var greeting, _ = String("hello")
+var greeting, _ = bl.String("hello")
 
 // From a valid-UTF-8 []byte.
 var bytes      = []byte{0x68, 0x65, 0x6C, 0x6C, 0x6F}     // "hello"
-var greet2, _  = String(bytes)
+var greet2, _  = bl.String(bytes)
 
 // From invalid bytes — error.
 var bad        = []byte{0x68, 0xFF, 0xFE}                 // 0xFF / 0xFE aren't valid UTF-8 leading bytes
-var _, err     = String(bad)                              // err != nil — invalid UTF-8
+var _, err     = bl.String(bad)                              // err != nil — invalid UTF-8
 
 // Other Go types are deliberately rejected at compile time — convert explicitly first.
 // e.g. for a number, use strconv.Itoa or fmt.Sprintf before passing to String:
-var label, _   = String(fmt.Sprintf("score: %d", 42))     // → "score: 42"
+var label, _   = bl.String(fmt.Sprintf("score: %d", 42))     // → "score: 42"
 ```
 
 Other Go types — numbers, booleans, dates, etc. — are deliberately rejected at compile time:
@@ -116,7 +116,7 @@ built-in if the conversion belongs inside an expression.
 Concatenation is **string-only**; to join a non-string, convert first: `"order-" + string(123) // →
 "order-123"`. Concatenating a non-string directly → `null`.
 
-`[@test] ../../expr/string_operators_test.go`
+`[@test] ../../string_operators_test.go`
 
 ---
 
@@ -154,7 +154,7 @@ DMN-inspired functions plus blkit extensions (**ext** — no DMN equivalent). Po
 Concatenation of many parts uses `+` chains or `stringJoin`. `string(from)` (any → string) is the
 conversion built-in (see [§ Go implementation](#go-implementation-expr-extension)).
 
-`[@test] ../../expr/string_functions_test.go`
+`[@test] ../../string_functions_test.go`
 
 ---
 
@@ -172,7 +172,7 @@ conversion built-in (see [§ Go implementation](#go-implementation-expr-extensio
 - Flags: `"i"` case-insensitive, `"m"` multiline (`^`/`$` match line boundaries), `"s"`
   dot-matches-newline. These map to RE2's inline flag groups `(?i)`, `(?m)`, `(?s)`, which may
   also be written directly in the pattern.
-- A malformed pattern → `BlRegexError` at evaluation time.
+- A malformed pattern → `bl.RegexError` at evaluation time.
 - `matches` requires the **whole string** to match (the engine anchors the pattern with
   `^(?:…)$` internally); use `contains` or `extract` for partial matching.
 - Replacement strings use `$1`, `$2`, … for numbered groups and `${name}` for named groups.
@@ -205,23 +205,23 @@ extract("a1 b22 c333", "[a-z]\\d+")                             // → ["a1", "b
 `contains` is a literal substring test, not a regex — for partial-string regex matching, use
 `extract` (which returns `[]` when nothing matches) or wrap the pattern: `matches(s, ".*pat.*")`.
 
-`[@test] ../../expr/string_regex_test.go`
+`[@test] ../../string_regex_test.go`
 
 ---
 
-## Precompiled patterns (`pattern(s)` / `BlRegex`)
+## Precompiled patterns (`pattern(s)` / `bl.BlRegex`)
 
-`pattern(s)` compiles a regex source string into a **`BlRegex`** — a first-class blkit value
+`pattern(s)` compiles a regex source string into a **`bl.BlRegex`** — a first-class blkit value
 that carries a compiled RE2 program. The dialect is identical to inline strings (see
-[§ Regex dialect](#regex-dialect)); a malformed source → `BlRegexError` at the `pattern(...)`
+[§ Regex dialect](#regex-dialect)); a malformed source → `bl.RegexError` at the `pattern(...)`
 call site rather than at the use site. The three regex built-ins (`matches`, `replace`,
-`extract`) accept either a `BlString` source pattern or a `BlRegex` value in the pattern slot:
+`extract`) accept either a `bl.BlString` source pattern or a `bl.BlRegex` value in the pattern slot:
 
 ```
 // expression-language — inline source string is compiled on every call site.
 matches("hello", "h.+o")                                          // → true
 
-// expression-language — inline pattern(...) builds a BlRegex value used right away.
+// expression-language — inline pattern(...) builds a bl.BlRegex value used right away.
 // Useful when you need flags-only-via-inline syntax or want to pass the same regex to
 // multiple consumers within one expression.
 matches("alice@example.com",
@@ -232,37 +232,37 @@ matches("Hi there", pattern("(?i)^hi.*"))                         // → true   
 ```
 
 For genuine **cross-call reuse** (compile once, evaluate many times against different inputs),
-build the `BlRegex` host-side via the Go constructor and supply it as an input variable:
+build the `bl.BlRegex` host-side via the Go constructor and supply it as an input variable:
 
 ```go
 // host-side (Go) — compile once.
-var emailRe, _ = Pattern(`[\w.+-]+@[\w-]+\.[\w.-]+`)
+var emailRe, _ = bl.Pattern(`[\w.+-]+@[\w-]+\.[\w.-]+`)
 
 // Then hand emailRe to the engine as an input variable; expressions reference it by name.
-var schema, _ = Schema(
-    BlField{Name: "addr",    Type: BlTypeString},
-    BlField{Name: "emailRe", Type: BlTypePattern},
+var schema, _ = bl.Schema(
+    bl.Field{Name: "addr",    Type: bl.TypeString},
+    bl.Field{Name: "emailRe", Type: bl.TypePattern},
 )
-var matchEmail, _ = Bl.Expr(`matches(addr, emailRe)`, schema)
+var matchEmail, _ = bl.Expr(`matches(addr, emailRe)`, schema)
 var result, _ = matchEmail.Evaluate(
     map[string]any{"addr": "alice@example.com", "emailRe": emailRe})
 ```
 
 `pattern(s)` accepts only a single argument — the source string. Flags (`"i"`, `"m"`, `"s"`)
 that the three-argument forms of `matches` / `replace` / `extract` accept must be written
-inline as `(?i)` / `(?m)` / `(?s)` groups inside the source. A `BlRegex` passed to the
+inline as `(?i)` / `(?m)` / `(?s)` groups inside the source. A `bl.BlRegex` passed to the
 three-argument form of `matches(s, p, flags)` — where the precompiled pattern already encodes
-its flags — → `BlTypeError`.
+its flags — → `bl.TypeError`.
 
-Two `BlRegex` values compare equal iff their source strings are equal (structural equality on
+Two `bl.BlRegex` values compare equal iff their source strings are equal (structural equality on
 the source, not on the compiled program).
 
 `pattern(s)` is a blkit extension (**ext**); the inline-string forms remain the FEEL-compatible
-path. `BlRegex` is also accepted as a target type by
+path. `bl.BlRegex` is also accepted as a target type by
 [calendar.spec.md § calendarDrop](calendar.spec.md#calendardropc-target) (and the symmetric
 `calendarKeep`), where it dispatches to regex-based name matching against calendar entries.
 
-`[@test] ../../expr/string_pattern_test.go`
+`[@test] ../../string_pattern_test.go`
 
 ---
 
@@ -279,10 +279,10 @@ path. `BlRegex` is also accepted as a target type by
   `split("a--b", ["--", "-"])` → `["a", "b"]`, not `["a", "", "b"]`). Overlapping matches at
   later positions are shadowed: `split("abcde", ["bc", "cd"])` → `["a", "de"]` because `"bc"`
   matches at position 1 before the scan reaches the would-be `"cd"` match at position 2. An
-  empty delimiter inside the list → `BlTypeError`; an empty delimiter list → `[s]` (single
+  empty delimiter inside the list → `bl.TypeError`; an empty delimiter list → `[s]` (single
   element, no splitting).
 
-`[@test] ../../expr/string_semantics_test.go`
+`[@test] ../../string_semantics_test.go`
 
 ---
 
@@ -293,20 +293,20 @@ Lives in `expr/string.go`. Shared mechanics in
 
 ### Value type & host API (exported)
 
-`BlString` is the immutable Go value type that represents a string inside the engine and at the
+`bl.BlString` is the immutable Go value type that represents a string inside the engine and at the
 host-code boundary. Its only field is private (`s`) so callers cannot mutate the underlying
-sequence — every operation in the library returns a fresh `BlString`.
+sequence — every operation in the library returns a fresh `bl.BlString`.
 
 The exported surface has three parts:
 
-- **`BlValue` interface methods** — `Type()`, `Equal()`, `String()`, and the unexported
+- **`bl.BlValue` interface methods** — `Type()`, `Equal()`, `bl.String()`, and the unexported
   `isBlValue()` marker — required of every blkit value type so the engine can treat them
   uniformly. `isBlValue()` is the sealing mechanism: because it's unexported, no type outside
-  this package can satisfy `BlValue`, preventing host code from inventing fake values that the
-  engine would then have to defend against. `String()` doubles as the `fmt.Stringer`
+  this package can satisfy `bl.BlValue`, preventing host code from inventing fake values that the
+  engine would then have to defend against. `bl.String()` doubles as the `fmt.Stringer`
   implementation, so `fmt.Println(s)` produces the underlying text rather than the raw struct.
   `Equal` performs case-sensitive code-point comparison.
-- **`String[T StringInput](v T) (BlString, error)`** — the generic host constructor. The
+- **`String[T StringInput](v T) (bl.BlString, error)`** — the generic host constructor. The
   `StringInput` constraint accepts `string` or `[]byte`. A `string` input is infallible (a Go
   `string` carries no encoding contract, so it can't fail). A `[]byte` input is interpreted as
   UTF-8 and validated; the `error` return fires when the bytes contain invalid UTF-8 sequences
@@ -322,12 +322,12 @@ The exported surface has three parts:
   slicing, etc.), so this is the only accessor required.
 
 ```go
-// BlString wraps a native Go string. BlString methods count positions and
+// bl.BlString wraps a native Go string. bl.BlString methods count positions and
 // length in Unicode code points (not bytes).
 type BlString struct{ s string }
 
-// BlValue interface — required by all Bl* value types.
-func (BlString) Type() BlType { return BlTypeString }
+// bl.BlValue interface — required by all Bl* value types.
+func (BlString) Type() Type { return TypeString }
 func (s BlString) Equal(other BlValue) BlValue   // case-sensitive code-point comparison
 func (s BlString) String() string
 func (BlString) isBlValue() {}
@@ -340,20 +340,20 @@ func String[T StringInput](v T) (BlString, error)
 // Host accessor (consume an evaluated result).
 func (s BlString) Native() string                // underlying Go string
 
-// BlRegex is the precompiled-regex value type — produced by pattern(s) and accepted in the
+// bl.BlRegex is the precompiled-regex value type — produced by pattern(s) and accepted in the
 // pattern slot of matches/replace/extract and as a target type by calendarDrop/calendarKeep.
 type BlRegex struct {
     source   string
     compiled *regexp.Regexp // built at construction; never nil for a valid BlRegex
 }
 
-// BlValue interface — required by all Bl* value types.
-func (BlRegex) Type() BlType { return BlTypeRegex }
+// bl.BlValue interface — required by all Bl* value types.
+func (BlRegex) Type() Type { return TypeRegex }
 func (r BlRegex) Equal(other BlValue) BlValue   // equal iff source strings are equal
 func (r BlRegex) String() string                // returns the original source string
 func (BlRegex) isBlValue() {}
 
-// Host constructor — compiles immediately; a malformed source returns BlRegexError.
+// Host constructor — compiles immediately; a malformed source returns bl.RegexError.
 func Pattern(source string) (BlRegex, error)
 
 // Host accessors (consume an evaluated result).
@@ -363,11 +363,11 @@ func (r BlRegex) Native() *regexp.Regexp        // the compiled program; do not 
 
 ### Operator implementation functions (unexported)
 
-`expr-lang/expr` has no knowledge of `BlString` and cannot apply Go's native `+`/`<`/etc. to
+`expr-lang/expr` has no knowledge of `bl.BlString` and cannot apply Go's native `+`/`<`/etc. to
 blkit values. For every operator that should work on two strings, blkit supplies a named Go
 function that performs the operation on the underlying Go strings and returns the result wrapped
-as a `BlValue`. The connection from operator token to function happens in two steps, neither of
-which is unique to `BlString`:
+as a `bl.BlValue`. The connection from operator token to function happens in two steps, neither of
+which is unique to `bl.BlString`:
 
 1. The Registrations section below calls `expr.Function("concatStrings", typed2(concatStrings), …)`,
    which makes the engine aware of the function under that exact string name and records its type
@@ -380,15 +380,15 @@ which is unique to `BlString`:
    several temporal forms — and `expr.Operator` needs the full list of candidates for each
    operator in a single call.
 
-So when the parser encounters `a + b` and both operands type-check to `BlString`, the engine
+So when the parser encounters `a + b` and both operands type-check to `bl.BlString`, the engine
 finds `concatStrings` in the `"+"` binding list, sees its signature matches, and dispatches to it.
 
-The return type is `BlValue` so the impls can propagate `BlNull` if the engine ever calls them
+The return type is `bl.BlValue` so the impls can propagate `bl.BlNull` if the engine ever calls them
 with a null operand (the type-checker normally prevents that, but the wider return type makes the
 null path explicit).
 
 Equality (`=` / `!=`) is **not** registered as a per-type operator impl. The engine dispatches
-`=` / `!=` through the `Equal()` method on the `BlValue` interface, which `BlString` implements
+`=` / `!=` through the `Equal()` method on the `bl.BlValue` interface, which `bl.BlString` implements
 above (case-sensitive code-point comparison). That single dispatch path handles null propagation
 and cross-type comparison uniformly.
 
@@ -398,10 +398,10 @@ func ltStrings(a, b BlString) BlValue      // "<"
 func leStrings(a, b BlString) BlValue      // "<="
 func gtStrings(a, b BlString) BlValue      // ">"
 func geStrings(a, b BlString) BlValue      // ">="
-// "=" and "!=" go through BlValue.Equal(); see BlString.Equal() above.
+// "=" and "!=" go through bl.BlValue.Equal(); see bl.BlString.Equal() above.
 ```
 
-These are written in clean typed form (`BlString → BlValue`) for readability and unit testing.
+These are written in clean typed form (`bl.BlString → bl.BlValue`) for readability and unit testing.
 The engine cannot consume them at this shape directly — they're wrapped by the `typed1`/`typed2`
 adapters at registration time.
 
@@ -439,7 +439,7 @@ func splitFn(args ...any) (any, error)        // delimiter is BlString or BlList
 func matchesFn(args ...any) (any, error)      // 2- or 3-arg; pattern slot accepts BlString or BlRegex (3-arg form rejects BlRegex)
 func replaceFn(args ...any) (any, error)      // 3- or 4-arg; pattern slot accepts BlString or BlRegex (4-arg form rejects BlRegex)
 func extractFn(args ...any) (any, error)      // 2- or 3-arg; pattern slot accepts BlString or BlRegex (3-arg form rejects BlRegex)
-func patternFn(s BlString) (BlRegex, error)   // ext; compiles s into a BlRegex (BlRegexError on malformed source)
+func patternFn(s BlString) (BlRegex, error)   // ext; compiles s into a BlRegex (RegexError on malformed source)
 func padLeadingFn(args ...any) (any, error)   // 2- or 3-arg (optional padChar)
 func padTrailingFn(args ...any) (any, error)  // 2- or 3-arg (optional padChar)
 // stringJoin's backing impl lives in list.spec.md — see § Backing implementations there.
@@ -469,14 +469,14 @@ beyond what blkit already pulls in:
   [`strings.Repeat`](https://pkg.go.dev/strings#Repeat).
 - **`regexp`** for the regex funcs (`matchesFn`/`replaceFn`/`extractFn`) — compiled via Go's
   [`regexp`](https://pkg.go.dev/regexp) package (RE2 syntax); `matches` anchors with `^(?:…)$`
-  before compiling. A bad pattern → `BlRegexError`. The multi-delimiter `split` form also routes
+  before compiling. A bad pattern → `bl.RegexError`. The multi-delimiter `split` form also routes
   through `regexp`: delimiters are sorted longest-first and concatenated with `|` into a single
   alternation, giving the left-to-right / longest-match-wins semantics for free (RE2's
   leftmost-first matching picks the first listed alternative at each position).
 
 `indexOf`/`isEmpty`/`reverse`/`contains` are overloaded with their list/calendar forms; each is
 registered once with multiple signatures, in whichever spec owns the canonical entry. Native Go
-`string` inputs wrap to `BlString`.
+`string` inputs wrap to `bl.BlString`.
 
 ### Registrations (`stringOptions`, unexported)
 
@@ -489,7 +489,7 @@ is built with `expr.Function(name, impl, typeHints...)`, where:
 - `impl` must have the signature `func(...any) (any, error)` — that is the only shape
   [`expr-lang/expr`](https://github.com/expr-lang/expr) accepts. The `typed1` / `typed2` /
   `typed3` adapters (defined in [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go))
-  wrap a typed implementation such as `func(BlString, BlString) BlValue` into that shape,
+  wrap a typed implementation such as `func(bl.BlString, bl.BlString) bl.BlValue` into that shape,
   type-asserting each argument and boxing the result. The variadic implementations declared
   above already satisfy the shape and are registered directly.
 - `typeHints` is a variadic list of `new(func(...) ...)` values. The engine reflects on them at
@@ -505,59 +505,59 @@ The registrations are grouped to reflect their role: operator impls (consumed by
 func stringOptions() []expr.Option {
     return []expr.Option{
         // operator impls — bound to operator tokens by operatorBindings()
-        expr.Function("concatStrings", typed2(concatStrings), new(func(BlString, BlString) BlValue)),
-        expr.Function("ltStrings",     typed2(ltStrings),     new(func(BlString, BlString) BlValue)),
-        expr.Function("leStrings",     typed2(leStrings),     new(func(BlString, BlString) BlValue)),
-        expr.Function("gtStrings",     typed2(gtStrings),     new(func(BlString, BlString) BlValue)),
-        expr.Function("geStrings",     typed2(geStrings),     new(func(BlString, BlString) BlValue)),
-        // = and != dispatch via BlValue.Equal() — no per-type registration
+        expr.Function("concatStrings", typed2(concatStrings), new(func(bl.BlString, bl.BlString) bl.BlValue)),
+        expr.Function("ltStrings",     typed2(ltStrings),     new(func(bl.BlString, bl.BlString) bl.BlValue)),
+        expr.Function("leStrings",     typed2(leStrings),     new(func(bl.BlString, bl.BlString) bl.BlValue)),
+        expr.Function("gtStrings",     typed2(gtStrings),     new(func(bl.BlString, bl.BlString) bl.BlValue)),
+        expr.Function("geStrings",     typed2(geStrings),     new(func(bl.BlString, bl.BlString) bl.BlValue)),
+        // = and != dispatch via bl.BlValue.Equal() — no per-type registration
 
         // library
-        expr.Function("stringLength",    typed1(stringLengthFn),    new(func(BlString) BlNumber)),
-        expr.Function("substring",       substringFn,               new(func(BlString, BlNumber) BlString),
-                                                                    new(func(BlString, BlNumber, BlNumber) BlString)),
-        expr.Function("substringBefore", typed2(substringBeforeFn), new(func(BlString, BlString) BlString)),
-        expr.Function("substringAfter",  typed2(substringAfterFn),  new(func(BlString, BlString) BlString)),
-        expr.Function("upperCase",       typed1(upperCaseFn),       new(func(BlString) BlString)),
-        expr.Function("lowerCase",       typed1(lowerCaseFn),       new(func(BlString) BlString)),
-        expr.Function("trim",            typed1(trimFn),            new(func(BlString) BlString)),
-        expr.Function("trimLeading",     typed1(trimLeadingFn),     new(func(BlString) BlString)),
-        expr.Function("trimTrailing",    typed1(trimTrailingFn),    new(func(BlString) BlString)),
-        expr.Function("contains",        typed2(containsFn),        new(func(BlString, BlString) BlBoolean)),
-        expr.Function("startsWith",      typed2(startsWithFn),      new(func(BlString, BlString) BlBoolean)),
-        expr.Function("endsWith",        typed2(endsWithFn),        new(func(BlString, BlString) BlBoolean)),
-        expr.Function("matches",         matchesFn,                 new(func(BlString, BlString) BlBoolean),
-                                                                    new(func(BlString, BlString, BlString) BlBoolean),
-                                                                    new(func(BlString, BlRegex)  BlBoolean)),
-        expr.Function("replace",         replaceFn,                 new(func(BlString, BlString, BlString) BlString),
-                                                                    new(func(BlString, BlString, BlString, BlString) BlString),
-                                                                    new(func(BlString, BlRegex,  BlString) BlString)),
-        expr.Function("split",           splitFn,                   new(func(BlString, BlString) BlList),
-                                                                    new(func(BlString, BlList) BlList)),
-        expr.Function("extract",         extractFn,                 new(func(BlString, BlString) BlList),
-                                                                    new(func(BlString, BlString, BlString) BlList),
-                                                                    new(func(BlString, BlRegex)  BlList)),
-        expr.Function("pattern",         typed1(patternFn),         new(func(BlString) BlRegex)),  // ext
-        expr.Function("isBlank",         typed1(isBlankFn),         new(func(BlString) BlBoolean)),
-        expr.Function("indexOf",         typed2(strIndexOfFn),      new(func(BlString, BlString) BlValue)),
-        expr.Function("isEmpty",         typed1(strIsEmptyFn),      new(func(BlString) BlBoolean)),
-        expr.Function("charAt",          typed2(charAtFn),          new(func(BlString, BlNumber) BlString)),
-        expr.Function("reverse",         typed1(strReverseFn),      new(func(BlString) BlString)),
-        expr.Function("padLeading",      padLeadingFn,              new(func(BlString, BlNumber) BlString),
-                                                                    new(func(BlString, BlNumber, BlString) BlString)),
-        expr.Function("padTrailing",     padTrailingFn,             new(func(BlString, BlNumber) BlString),
-                                                                    new(func(BlString, BlNumber, BlString) BlString)),
-        expr.Function("repeat",          typed2(repeatFn),          new(func(BlString, BlNumber) BlString)),
-        // stringJoin is registered in list.spec.md (its first arg is a BlList, and it lives
+        expr.Function("stringLength",    typed1(stringLengthFn),    new(func(bl.BlString) bl.BlNumber)),
+        expr.Function("substring",       substringFn,               new(func(bl.BlString, bl.BlNumber) bl.BlString),
+                                                                    new(func(bl.BlString, bl.BlNumber, bl.BlNumber) bl.BlString)),
+        expr.Function("substringBefore", typed2(substringBeforeFn), new(func(bl.BlString, bl.BlString) bl.BlString)),
+        expr.Function("substringAfter",  typed2(substringAfterFn),  new(func(bl.BlString, bl.BlString) bl.BlString)),
+        expr.Function("upperCase",       typed1(upperCaseFn),       new(func(bl.BlString) bl.BlString)),
+        expr.Function("lowerCase",       typed1(lowerCaseFn),       new(func(bl.BlString) bl.BlString)),
+        expr.Function("trim",            typed1(trimFn),            new(func(bl.BlString) bl.BlString)),
+        expr.Function("trimLeading",     typed1(trimLeadingFn),     new(func(bl.BlString) bl.BlString)),
+        expr.Function("trimTrailing",    typed1(trimTrailingFn),    new(func(bl.BlString) bl.BlString)),
+        expr.Function("contains",        typed2(containsFn),        new(func(bl.BlString, bl.BlString) bl.BlBoolean)),
+        expr.Function("startsWith",      typed2(startsWithFn),      new(func(bl.BlString, bl.BlString) bl.BlBoolean)),
+        expr.Function("endsWith",        typed2(endsWithFn),        new(func(bl.BlString, bl.BlString) bl.BlBoolean)),
+        expr.Function("matches",         matchesFn,                 new(func(bl.BlString, bl.BlString) bl.BlBoolean),
+                                                                    new(func(bl.BlString, bl.BlString, bl.BlString) bl.BlBoolean),
+                                                                    new(func(bl.BlString, bl.BlRegex)  bl.BlBoolean)),
+        expr.Function("replace",         replaceFn,                 new(func(bl.BlString, bl.BlString, bl.BlString) bl.BlString),
+                                                                    new(func(bl.BlString, bl.BlString, bl.BlString, bl.BlString) bl.BlString),
+                                                                    new(func(bl.BlString, bl.BlRegex,  bl.BlString) bl.BlString)),
+        expr.Function("split",           splitFn,                   new(func(bl.BlString, bl.BlString) bl.BlList),
+                                                                    new(func(bl.BlString, bl.BlList) bl.BlList)),
+        expr.Function("extract",         extractFn,                 new(func(bl.BlString, bl.BlString) bl.BlList),
+                                                                    new(func(bl.BlString, bl.BlString, bl.BlString) bl.BlList),
+                                                                    new(func(bl.BlString, bl.BlRegex)  bl.BlList)),
+        expr.Function("pattern",         typed1(patternFn),         new(func(bl.BlString) bl.BlRegex)),  // ext
+        expr.Function("isBlank",         typed1(isBlankFn),         new(func(bl.BlString) bl.BlBoolean)),
+        expr.Function("indexOf",         typed2(strIndexOfFn),      new(func(bl.BlString, bl.BlString) bl.BlValue)),
+        expr.Function("isEmpty",         typed1(strIsEmptyFn),      new(func(bl.BlString) bl.BlBoolean)),
+        expr.Function("charAt",          typed2(charAtFn),          new(func(bl.BlString, bl.BlNumber) bl.BlString)),
+        expr.Function("reverse",         typed1(strReverseFn),      new(func(bl.BlString) bl.BlString)),
+        expr.Function("padLeading",      padLeadingFn,              new(func(bl.BlString, bl.BlNumber) bl.BlString),
+                                                                    new(func(bl.BlString, bl.BlNumber, bl.BlString) bl.BlString)),
+        expr.Function("padTrailing",     padTrailingFn,             new(func(bl.BlString, bl.BlNumber) bl.BlString),
+                                                                    new(func(bl.BlString, bl.BlNumber, bl.BlString) bl.BlString)),
+        expr.Function("repeat",          typed2(repeatFn),          new(func(bl.BlString, bl.BlNumber) bl.BlString)),
+        // stringJoin is registered in list.spec.md (its first arg is a bl.BlList, and it lives
         // there alongside the other list-reducing functions like sum/min/max/zipStringJoin).
 
         // conversion
-        expr.Function("string", stringConvFn, new(func(BlValue) BlString)), // string(from) — any BlValue → BlString
+        expr.Function("string", stringConvFn, new(func(bl.BlValue) bl.BlString)), // string(from) — any bl.BlValue → bl.BlString
     }
 }
 ```
 
-`[@test] ../../expr/string_test.go`
+`[@test] ../../string_test.go`
 
 ---
 
@@ -567,6 +567,6 @@ func stringOptions() []expr.Option {
 - `substringBefore`/`substringAfter` with delimiter absent → `""`.
 - `indexOf` not found → `null` (not `0`).
 - `extract` with no matches → `[]` (not `null`).
-- `padLeading`/`padTrailing` with a multi-code-point `padChar` → `BlTypeError`.
-- `repeat` with a negative count → `BlTypeError`.
+- `padLeading`/`padTrailing` with a multi-code-point `padChar` → `bl.TypeError`.
+- `repeat` with a negative count → `bl.TypeError`.
 - `split("", "")` rules and empty-segment behaviour as above.

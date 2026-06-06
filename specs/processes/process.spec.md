@@ -1,23 +1,23 @@
 ---
 name: Process
-description: The central class for defining and executing a business process — created via NewProcess() with a graph of node chains, evaluated via Evaluate() using token-flow semantics
+description: The central class for defining and executing a business process — created via bl.NewProcess() with a graph of node chains, evaluated via Evaluate() using token-flow semantics
 targets:
   - ../processes/process.go
 ---
 
 # Process
 
-A `Process` defines a business process — a directed graph of `ProcessNode`s (tasks, gateways, events) connected by sequence flows. The design is inspired by BPMN but blkit does not implement the BPMN specification. Processes are created via `NewProcess()`, which accepts process metadata and a `graph` list of node chain expressions. The blkit registry caches each Process instance (populated by `NewProcess()`); long-running workers look it up by `(Namespace, Id, Version)` and call `Evaluate()` on it. Callers can also invoke `Evaluate()` directly to run a process without a worker.
+A `Process` defines a business process — a directed graph of `ProcessNode`s (tasks, gateways, events) connected by sequence flows. The design is inspired by BPMN but blkit does not implement the BPMN specification. Processes are created via `bl.NewProcess()`, which accepts process metadata and a `graph` list of node chain expressions. The blkit registry caches each Process instance (populated by `bl.NewProcess()`); long-running workers look it up by `(Namespace, Id, Version)` and call `Evaluate()` on it. Callers can also invoke `Evaluate()` directly to run a process without a worker.
 
 ```go
 type Process struct {
-    // Read-only attributes (set by NewProcess())
+    // Read-only attributes (set by bl.NewProcess())
     Id                 string
     Version            string
-    Namespace          string                     // auto-derived from the Go package import path of the NewProcess() caller; see "Registry"
+    Namespace          string                     // auto-derived from the Go package import path of the bl.NewProcess() caller; see "Registry"
     Name               *string
     Description        string
-    Graph              ProcessGraph               // processed, structured graph (built by NewProcess())
+    Graph              ProcessGraph               // processed, structured graph (built by bl.NewProcess())
     MaxRunTime         *time.Duration
     MaxCompletionTime  *time.Duration
     Retry              *RetryConfig
@@ -29,7 +29,7 @@ func NewProcess(
     opts ProcessOpts,
 ) *Process
 
-// ProcessOpts holds optional parameters for NewProcess()
+// ProcessOpts holds optional parameters for bl.NewProcess()
 type ProcessOpts struct {
     Name               *string
     Description        string
@@ -117,17 +117,17 @@ type RetryOpts struct {
 
 ## Graph Construction
 
-The `graph` parameter to `NewProcess()` receives a list of node chain expressions. Each chain is built from event nodes, gateway nodes, and task nodes connected via `.To()`:
+The `graph` parameter to `bl.NewProcess()` receives a list of node chain expressions. Each chain is built from event nodes, gateway nodes, and task nodes connected via `.To()`:
 
 - **Event nodes** — see [event-nodes.spec.md](event-nodes.spec.md) for `Start`, `End`, `Cancel`, `Error`, `Terminate`, and the `Suspend*` / `Pause*` variants.
 - **Gateway nodes** — see [gateway-nodes.spec.md](gateway-nodes.spec.md) for `And`, `Xor`, `Or`, `Join`, and `GatewayConditions`.
 - **Task nodes** — see [task-nodes.spec.md](task-nodes.spec.md).
 
-`NewProcess()` walks the chains, builds the graph, validates structure (connectivity, at least one reachable terminating event from each `StartEvent`, cycle exits, duplicate ids), and stores the result as a `ProcessGraph` on `Process.Graph`.
+`bl.NewProcess()` walks the chains, builds the graph, validates structure (connectivity, at least one reachable terminating event from each `StartEvent`, cycle exits, duplicate ids), and stores the result as a `ProcessGraph` on `Process.Graph`.
 
 ### ProcessGraph and SequenceFlow
 
-`ProcessGraph` is the processed, structured representation of a process graph. It is built by `NewProcess()` from the raw `Graph` list and stored as `Process.Graph`.
+`ProcessGraph` is the processed, structured representation of a process graph. It is built by `bl.NewProcess()` from the raw `Graph` list and stored as `Process.Graph`.
 
 ```go
 type ProcessGraph struct {
@@ -144,7 +144,7 @@ type SequenceFlow struct {
 }
 ```
 
-`NewProcess()` takes the raw `[]ProcessNode`, walks all edges from the nodes in the list to discover every reachable node and edge, categorizes nodes by type, and validates the graph structure (connectivity, terminating-event reachability, cycle exits, duplicate ids). The result is stored on `Process.Graph`.
+`bl.NewProcess()` takes the raw `[]ProcessNode`, walks all edges from the nodes in the list to discover every reachable node and edge, categorizes nodes by type, and validates the graph structure (connectivity, terminating-event reachability, cycle exits, duplicate ids). The result is stored on `Process.Graph`.
 
 `StartNodes` and `EndNodes` are typed conveniences for the most common boundary lookups. The full set of terminating event nodes (including `CancelEvent`, `ErrorEvent`, `TerminateEvent`) is reachable via `Nodes`.
 
@@ -156,25 +156,25 @@ Every `ProcessNode` exposes a `.To()` method. Calling `node.To(target)` records 
 func (n ProcessNode) To(target ProcessNode) ProcessNode
 ```
 
-Nodes and edges are free-standing during graph construction — they are not associated with any process until `NewProcess()` processes the `Graph` list. A node can only belong to one process; if a node already associated with one process appears in another process's `Graph` list, `NewProcess()` produces a `ProcessDefinitionError`.
+Nodes and edges are free-standing during graph construction — they are not associated with any process until `bl.NewProcess()` processes the `Graph` list. A node can only belong to one process; if a node already associated with one process appears in another process's `Graph` list, `bl.NewProcess()` produces a `ProcessDefinitionError`.
 
 ---
 
 ## Registry
 
-`NewProcess()` registers the returned `*Process` in a package-level `blkit` registry keyed by `(Namespace, Id, Version)`. The registry is the single source of truth used by the worker to resolve fetched `Job`s to a `*Process` — see [../worker/worker.spec.md](../worker/worker.spec.md#the-process-registry). Importing a package that defines processes is therefore sufficient to make those processes runnable in any worker binary that links the package; no explicit registration call is required.
+`bl.NewProcess()` registers the returned `*Process` in a package-level `blkit` registry keyed by `(Namespace, Id, Version)`. The registry is the single source of truth used by the worker to resolve fetched `Job`s to a `*Process` — see [../worker/worker.spec.md](../worker/worker.spec.md#the-process-registry). Importing a package that defines processes is therefore sufficient to make those processes runnable in any worker binary that links the package; no explicit registration call is required.
 
 ### Namespace Derivation
 
-`Namespace` is set automatically by `NewProcess()` and cannot be supplied by the caller — there is no `Namespace` field in `ProcessOpts`. The value is the Go package import path of the file that called `NewProcess()`.
+`Namespace` is set automatically by `bl.NewProcess()` and cannot be supplied by the caller — there is no `Namespace` field in `ProcessOpts`. The value is the Go package import path of the file that called `bl.NewProcess()`.
 
 The derivation uses `runtime.Caller(1)` to obtain the program counter of the caller, then `runtime.FuncForPC(pc).Name()` to retrieve the fully-qualified function name (formatted as `<package-import-path>.<function-name>`), then strips the trailing function/method segment to recover the package path.
 
 Examples:
 
-| `NewProcess()` call site | Derived `Namespace` |
+| `bl.NewProcess()` call site | Derived `Namespace` |
 |---|---|
-| `var X = NewProcess(...)` in `example.com/area/lendingflows/v1/loan.go` | `"example.com/area/lendingflows/v1"` |
+| `var X = bl.NewProcess(...)` in `example.com/area/lendingflows/v1/loan.go` | `"example.com/area/lendingflows/v1"` |
 | Inside an `init()` in `example.com/area/lendingflows/v1` | `"example.com/area/lendingflows/v1"` |
 | Inside `main.main()` of a `package main` binary | `"main"` |
 | Inside a `_test.go` file in package `lendingflows_test` | `"example.com/area/lendingflows/v1_test"` |
@@ -200,12 +200,12 @@ Because `Namespace` is part of the broker routing key produced by `MessageGatewa
 
 ### Edge Cases
 
-- `NewProcess()` called twice with the same `(Namespace, Id, Version)` panics. Within a single Go package this means two `NewProcess` calls with the same `Id` and `Version` collide as before; across packages, the differing namespace prevents collision automatically.
+- `bl.NewProcess()` called twice with the same `(Namespace, Id, Version)` panics. Within a single Go package this means two `NewProcess` calls with the same `Id` and `Version` collide as before; across packages, the differing namespace prevents collision automatically.
 - A process defined in package `main` produces `Namespace = "main"`. Multiple `package main` binaries that each define a process with the same `Id` and `Version` will not collide at runtime (different binaries), but two `NewProcess` calls with the same `Id` and `Version` inside one `package main` will.
 - Tests in a `_test`-suffixed package (e.g. `lendingflows_test`) produce a namespace ending in `_test`. Tests in the same package as the code under test share the package's namespace.
 - Tests that intentionally register the same `(Namespace, Id, Version)` more than once must call `blkit.ResetRegistry()` between calls.
 - Vendored or forked deployments where the module import path changes will produce a different namespace for the same process source. This is intentional — the namespace tracks where the code lives, not what it does.
-- Inlining: the derivation depends on the call frame for `NewProcess()` being present on the stack. `NewProcess` is large enough that the Go compiler will not inline it; if the implementation is later refactored such that inlining becomes possible, a `//go:noinline` directive should be added to preserve the derivation.
+- Inlining: the derivation depends on the call frame for `bl.NewProcess()` being present on the stack. `NewProcess` is large enough that the Go compiler will not inline it; if the implementation is later refactored such that inlining becomes possible, a `//go:noinline` directive should be added to preserve the derivation.
 
 ---
 
@@ -217,49 +217,49 @@ Because `Namespace` is part of the broker routing key produced by `MessageGatewa
 // generic over a typed Outputs struct; for these wiring-focused examples
 // we share a single one-field StepOutputs across every task in the snippet.
 type StepInputs struct{}
-type StepOutputs struct{ Status BlString }
+type StepOutputs struct{ Status bl.BlString }
 
-var validateApplication = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var validateApplication = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "validate", Name: "Validate Application",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var pullCreditReport = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var pullCreditReport = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "credit-report", Name: "Pull Credit Report",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var checkIncome = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var checkIncome = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "check-income", Name: "Check Income",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var issueOfferLetter = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var issueOfferLetter = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "offer", Name: "Issue Offer Letter",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var proposeCounter = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var proposeCounter = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "counter", Name: "Propose Counter",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var declineApplication = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var declineApplication = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "decline", Name: "Decline Application",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var notifyApplicant = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var notifyApplicant = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "notify", Name: "Notify Applicant",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var updateCreditBureau = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var updateCreditBureau = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "update-bureau", Name: "Update Credit Bureau",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var archiveApplication = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var archiveApplication = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "archive", Name: "Archive Application",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
 
 // Sub-process tasks
-verifyIdentity := NewSubProcessTask("verify-id", "Verify Identity",
+verifyIdentity := bl.NewSubProcessTask("verify-id", "Verify Identity",
     "kyc-verification", "start")
-fraudRiskCheck := NewSubProcessTask("fraud-check", "Fraud Risk Check",
+fraudRiskCheck := bl.NewSubProcessTask("fraud-check", "Fraud Risk Check",
     "fraud-check-process", "start")
 
 // Decision tasks — clone the decision-logic templates with this process's id/name/mappings.
@@ -268,42 +268,42 @@ fraudRiskCheck := NewSubProcessTask("fraud-check", "Fraud Risk Check",
 runAffordability := affordabilityTemplate().Clone(DecisionTaskOpts{
     Id:   "affordability",
     Name: "Run Affordability",
-    InputMappings: NewVariableMapping(
+    InputMappings: bl.NewVariableMapping(
         [2]string{"start.applicant",   "applicant"},
         [2]string{"start.loan_amount", "loan_amount"},
     ),
-    OutputMappings: NewVariableMapping(
+    OutputMappings: bl.NewVariableMapping(
         [2]string{"affordable", "affordability.affordable"},
     ),
 })
 calculateScore := scoringTemplate().Clone(DecisionTaskOpts{
     Id:   "calc-score",
     Name: "Calculate Score",
-    InputMappings: NewVariableMapping(
+    InputMappings: bl.NewVariableMapping(
         [2]string{"credit-report.score", "credit_score"},
         [2]string{"check-income.income", "income"},
     ),
-    OutputMappings: NewVariableMapping(
+    OutputMappings: bl.NewVariableMapping(
         [2]string{"score", "calc-score.score"},
     ),
 })
 
 // Gateway conditions
-riskConditions := NewGatewayConditions(
-    NewBranch("offer", Bl.StringVar("fraud-check.risk").Equals(Bl.String("low"))),
-    NewBranch("counter", Bl.StringVar("fraud-check.risk").Equals(Bl.String("medium"))),
+riskConditions := bl.NewGatewayConditions(
+    bl.NewBranch("offer", bl.StringVar("fraud-check.risk").Equals(bl.String("low"))),
+    bl.NewBranch("counter", bl.StringVar("fraud-check.risk").Equals(bl.String("medium"))),
     DefaultBranch("decline"),
 )
 
 // Boundary events
-start := Start("start", "Start", NewInputContract(
-    RequiredField("applicant", BlDictionary),
-    RequiredField("loan_amount", BlNumber),
+start := bl.Start("start", "Start", bl.NewInputContract(
+    bl.RequiredField("applicant", bl.BlDictionary),
+    bl.RequiredField("loan_amount", bl.BlNumber),
 ))
-done := End("done", "Done")
+done := bl.End("done", "Done")
 
 // Process
-loanApplication := NewProcess("loan-application", "1.0", ProcessOpts{
+loanApplication := bl.NewProcess("loan-application", "1.0", ProcessOpts{
     Name: "Loan Application Process",
     Graph: []ProcessNode{
         start.To(validateApplication),
@@ -365,21 +365,21 @@ A process can define multiple entrypoints and exit points. Each start and termin
 ```go
 // Tasks
 type StepInputs struct{}
-type StepOutputs struct{ Status BlString }
+type StepOutputs struct{ Status bl.BlString }
 
-var review = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var review = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "review", Name: "Review Application",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var generateOffer = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var generateOffer = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "generate-offer", Name: "Generate Offer",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var sendRejection = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var sendRejection = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "send-rejection", Name: "Send Rejection",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
-var notify = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
+var notify = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutputs]{
     Id: "notify", Name: "Notify Applicant",
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
@@ -388,35 +388,35 @@ var notify = NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOutput
 assessRisk := riskAssessmentTemplate().Clone(DecisionTaskOpts{
     Id:   "assess-risk",
     Name: "Assess Risk",
-    InputMappings: NewVariableMapping(
+    InputMappings: bl.NewVariableMapping(
         [2]string{"start.applicant",   "applicant"},
         [2]string{"start.risk_level",  "risk_level"},
     ),
-    OutputMappings: NewVariableMapping(
+    OutputMappings: bl.NewVariableMapping(
         [2]string{"risk_level", "assess-risk.risk_level"},
     ),
 })
 
 // Gateway conditions
-decisionConditions := NewGatewayConditions(
-    NewBranch("approve", Bl.StringVar("assess-risk.risk_level").Equals(Bl.String("low"))),
+decisionConditions := bl.NewGatewayConditions(
+    bl.NewBranch("approve", bl.StringVar("assess-risk.risk_level").Equals(bl.String("low"))),
     DefaultBranch("reject"),
 )
 
 // Boundary events — each entrypoint declares its own input shape
-newApp := Start("new", "New Application", NewInputContract(
-    RequiredField("applicant", BlDictionary),
-    RequiredField("loan_amount", BlNumber),
+newApp := bl.Start("new", "New Application", bl.NewInputContract(
+    bl.RequiredField("applicant", bl.BlDictionary),
+    bl.RequiredField("loan_amount", bl.BlNumber),
 ))
-reassess := Start("reassess", "Re-assessment", NewInputContract(
-    RequiredField("applicant", BlDictionary),
-    RequiredField("risk_level", BlString),
+reassess := bl.Start("reassess", "Re-assessment", bl.NewInputContract(
+    bl.RequiredField("applicant", bl.BlDictionary),
+    bl.RequiredField("risk_level", bl.BlString),
 ))
-approved := End("approved", "Loan Approved")
-rejected := End("rejected", "Loan Rejected")
+approved := bl.End("approved", "Loan Approved")
+rejected := bl.End("rejected", "Loan Rejected")
 
 // Process with two start nodes and two end nodes
-loanDecision := NewProcess("loan-decision", "1.0", ProcessOpts{
+loanDecision := bl.NewProcess("loan-decision", "1.0", ProcessOpts{
     Name: "Loan Decision Process",
     Graph: []ProcessNode{
         // New application flow: full review pipeline
@@ -454,7 +454,7 @@ result, err := loanDecision.Evaluate(EvaluateOpts{Context: ctxNew, History: hist
 // Or run as a re-assessment
 ctxRe, histRe, _ := store.NewExecutionState(loanDecision, NewExecutionStateOpts{
     StartId: "reassess",
-    Input:   map[string]any{"applicant": applicantData, "risk_level": Bl.String("low")},
+    Input:   map[string]any{"applicant": applicantData, "risk_level": bl.String("low")},
 })
 result, err = loanDecision.Evaluate(EvaluateOpts{Context: ctxRe, History: histRe})
 ```
@@ -592,14 +592,14 @@ When both are set, whichever limit is reached first stops retrying. For example,
 
 ```go
 // Retry up to 3 times with default 30s delay
-payment := NewProcess("payment", "1.0", ProcessOpts{
-    Retry: NewRetryConfig(RetryOpts{MaxRetries: 3}),
+payment := bl.NewProcess("payment", "1.0", ProcessOpts{
+    Retry: bl.NewRetryConfig(RetryOpts{MaxRetries: 3}),
     Graph: []ProcessNode{...},
 })
 
 // Retry for up to 48 hours with exponential backoff
-dataIngestion := NewProcess("data-ingestion", "1.0", ProcessOpts{
-    Retry: NewRetryConfig(RetryOpts{
+dataIngestion := bl.NewProcess("data-ingestion", "1.0", ProcessOpts{
+    Retry: bl.NewRetryConfig(RetryOpts{
         RetryFor:           48 * time.Hour,
         RetryDelay:         1 * time.Minute,
         ExponentialBackoff: true,
@@ -608,8 +608,8 @@ dataIngestion := NewProcess("data-ingestion", "1.0", ProcessOpts{
 })
 
 // Retry up to 10 times or for 6 hours, whichever comes first
-reportGen := NewProcess("report-gen", "1.0", ProcessOpts{
-    Retry: NewRetryConfig(RetryOpts{
+reportGen := bl.NewProcess("report-gen", "1.0", ProcessOpts{
+    Retry: bl.NewRetryConfig(RetryOpts{
         MaxRetries:         10,
         RetryFor:           6 * time.Hour,
         RetryDelay:         5 * time.Minute,
@@ -721,12 +721,12 @@ NativeFunctionTask
 
 ## Edge Cases
 
-- `NewProcess()` with missing or empty `id` or `version` produces a `ProcessDefinitionError`.
-- `NewProcess()` walks the nodes in the `Graph` list to discover the full graph structure, storing it as a `ProcessGraph` on the `Graph` attribute. Start and terminating nodes are identified by type (`StartEvent`, `EndEvent`, `CancelEvent`, `ErrorEvent`, `TerminateEvent`). If no `StartEvent` is reachable, `NewProcess()` raises `ProcessDefinitionError`. If a `StartEvent` has no path to any terminating event, `NewProcess()` raises `ProcessDefinitionError`.
+- `bl.NewProcess()` with missing or empty `id` or `version` produces a `ProcessDefinitionError`.
+- `bl.NewProcess()` walks the nodes in the `Graph` list to discover the full graph structure, storing it as a `ProcessGraph` on the `Graph` attribute. Start and terminating nodes are identified by type (`StartEvent`, `EndEvent`, `CancelEvent`, `ErrorEvent`, `TerminateEvent`). If no `StartEvent` is reachable, `bl.NewProcess()` raises `ProcessDefinitionError`. If a `StartEvent` has no path to any terminating event, `bl.NewProcess()` raises `ProcessDefinitionError`.
 - The `Graph` list must contain at least one node chain. An empty `Graph` produces a `ProcessDefinitionError`.
 - A process with no `StartEvent` cannot be run; `Evaluate()` returns a `ProcessDefinitionError`.
-- A process may have multiple start nodes. Each is identified by its `id` (set via the first argument to `Start(id, name, contract)`). The `StartId` passed to `store.NewExecutionState(...)` determines which entrypoint is used.
-- A process may have multiple end nodes. Each is identified by its `id` (set via the first argument to `End(id, name, ...)`). Execution terminates when any `EndEvent` is reached.
+- A process may have multiple start nodes. Each is identified by its `id` (set via the first argument to `bl.Start(id, name, contract)`). The `StartId` passed to `store.NewExecutionState(...)` determines which entrypoint is used.
+- A process may have multiple end nodes. Each is identified by its `id` (set via the first argument to `bl.End(id, name, ...)`). Execution terminates when any `EndEvent` is reached.
 - Duplicate start node ids on the same process produce a `ProcessDefinitionError`.
 - Duplicate end node ids on the same process produce a `ProcessDefinitionError`.
 - A process graph may contain cycles (loopbacks to earlier nodes). A cycle is valid as long as at least one conditional branch leads to a reachable terminating event. A cycle with no conditional exit is detected and returns a `ProcessDefinitionError` before execution begins.
@@ -739,10 +739,10 @@ NativeFunctionTask
 - With `ExponentialBackoff`, if the next computed delay would exceed the remaining `RetryFor` window, the retry is not attempted.
 - A process that fails due to `DataContractValidationError` from a `StartEvent` contract at submission time is not retried — the input is invalid and retrying would produce the same error. Only `PROCESS_FAILED` failures trigger retries. See [data-contract.spec.md](../data/data-contract.spec.md) for boundary-validation semantics.
 - See [gateway-nodes.spec.md](gateway-nodes.spec.md) for edge cases related to gateway constructors and `Join`. See [event-nodes.spec.md](event-nodes.spec.md) for edge cases on event nodes.
-- A node already associated with one process cannot appear in another process's `Graph` list — `NewProcess()` produces a `ProcessDefinitionError`.
+- A node already associated with one process cannot appear in another process's `Graph` list — `bl.NewProcess()` produces a `ProcessDefinitionError`.
 - `version` is mandatory and must be a non-empty string.
 - Two processes with the same `id` but different `version` values are distinct and can be registered simultaneously.
-- `Evaluate()` requires both `Context` and `History`. Providing one without the other (or neither) raises `ValueError`. Both must come from a `StateStore` factory — `NewExecutionState(...)` for a fresh run or `LoadExecutionState(...)` for a resume.
+- `Evaluate()` requires both `Context` and `History`. Providing one without the other (or neither) raises `ValueError`. Both must come from a `StateStore` factory — `bl.NewExecutionState(...)` for a fresh run or `LoadExecutionState(...)` for a resume.
 - `Evaluate()` with a freshly-built History (no prior steps) is an initial evaluation. The `ProcessInstanceId` was generated by the factory; `Input` is recorded as the initial transaction by the factory and is already present on the Context.
 - `Evaluate()` does not mutate the input `ExecutionHistory`. A deep copy is returned in the result.
 - `Evaluate()` runs a single scheduler loop that dispatches ready tasks as goroutines and awaits their completion. It returns when the process completes, suspends waiting for an external event, or fails.

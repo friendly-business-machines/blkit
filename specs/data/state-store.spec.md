@@ -53,7 +53,7 @@ type StateStore interface {
     // Build a fresh ExecutionContext + ExecutionHistory for a new process
     // instance. Generates a ProcessInstanceId; records the input variables as
     // the initial transaction against the start node identified by opts.StartId.
-    NewExecutionState(
+    bl.NewExecutionState(
         process *Process,
         opts NewExecutionStateOpts,
     ) (*ExecutionContext, *ExecutionHistory, error)
@@ -98,7 +98,7 @@ type StateStore interface {
 }
 
 type NewExecutionStateOpts struct {
-    StartId string         // start node id; must match a Start(id) in the process graph
+    StartId string         // start node id; must match a bl.Start(id) in the process graph
     Input   map[string]any // initial variables; defaults to empty when omitted
 }
 ```
@@ -143,19 +143,19 @@ The CBOR encoding maps `Bl` types to CBOR as follows:
 
 | Bl type | CBOR representation |
 |---|---|
-| `BlNumber` | Decimal fraction (tag 4) |
-| `BlString` | Text string |
-| `BlBoolean` | Boolean |
-| `BlNull` | Null |
-| `BlDate` | Tagged map (blkit tag) with year, month, day, offset, timezone |
-| `BlTime` | Tagged map (blkit tag) with hour, minute, second, offset, timezone |
-| `BlDateTime` | Tagged map (blkit tag) with date and time components |
+| `bl.BlNumber` | Decimal fraction (tag 4) |
+| `bl.BlString` | Text string |
+| `bl.BlBoolean` | Boolean |
+| `bl.BlNull` | Null |
+| `bl.BlDate` | Tagged map (blkit tag) with year, month, day, offset, timezone |
+| `bl.BlTime` | Tagged map (blkit tag) with hour, minute, second, offset, timezone |
+| `bl.BlDateTime` | Tagged map (blkit tag) with date and time components |
 | `BlDuration` | Tagged map (blkit tag) with years, months, days, hours, minutes, seconds |
-| `BlList` | Array of `Bl` values |
-| `BlDictionary` | Map of string keys to `Bl` values |
-| `BlRange` | Tagged map (blkit tag) with start, end, and inclusive flags |
+| `bl.BlList` | Array of `Bl` values |
+| `bl.BlDictionary` | Map of string keys to `Bl` values |
+| `bl.BlRange` | Tagged map (blkit tag) with start, end, and inclusive flags |
 
-`Bl` types with blkit-specific attributes (e.g. `BlDate` with offset and timezone) use blkit-defined semantic tags from CBOR's private-use range, encoding the full set of attributes as a CBOR map. This ensures lossless round-tripping of all `Bl` values regardless of custom attributes.
+`Bl` types with blkit-specific attributes (e.g. `bl.BlDate` with offset and timezone) use blkit-defined semantic tags from CBOR's private-use range, encoding the full set of attributes as a CBOR map. This ensures lossless round-tripping of all `Bl` values regardless of custom attributes.
 
 ---
 
@@ -169,7 +169,7 @@ The CBOR encoding maps `Bl` types to CBOR as follows:
 
 ## InMemoryStateStore (default)
 
-The default state store holds events in memory. Fast and zero-dependency, but lost when the worker process exits. When in-process or transient durability is acceptable, instantiate `NewInMemoryStateStore()` and pass it to `worker.Run`. `config()` raises `ValueError` — in-memory state cannot be shared with external processes. `WriteBatch` loops over the ops and applies them to in-memory data structures; `Flush` is a no-op.
+The default state store holds events in memory. Fast and zero-dependency, but lost when the worker process exits. When in-process or transient durability is acceptable, instantiate `bl.NewInMemoryStateStore()` and pass it to `worker.Run`. `config()` raises `ValueError` — in-memory state cannot be shared with external processes. `WriteBatch` loops over the ops and applies them to in-memory data structures; `Flush` is a no-op.
 
 ```go
 type InMemoryStateStore struct{}

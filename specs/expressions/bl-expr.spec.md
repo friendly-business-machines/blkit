@@ -1,17 +1,17 @@
 ---
-name: BlExpr
+name: bl.BlExpr
 description: The blkit expression language — a string-based expression syntax (based on DMN FEEL) parsed and evaluated into Bl* values. This is the hub spec covering the engine API, operators, control flow, unary tests, lexical rules, semantics, and the Go layer that extends expr-lang/expr; each data type's literals, functions, and Go implementation are detailed in its own spoke spec.
 targets:
-  - ../../expr/engine.go
-  - ../../expr/expr.go
+  - ../../engine.go
+  - ../../expr.go
 ---
 
 # The blkit expression language
 
 This spec defines **blkit's expression language**: a compact, business-readable syntax for writing
 expressions as text — `age >= 18 and income > 50000`, `sum(lineItems.amount)`,
-`if score >= 700 then "approve" else "review"` — that evaluate to blkit value types (`BlNumber`,
-`BlString`, `BlList`, …, each documented in its own spoke spec; see [§ Data types](#data-types)).
+`if score >= 700 then "approve" else "review"` — that evaluate to blkit value types (`bl.BlNumber`,
+`bl.BlString`, `bl.BlList`, …, each documented in its own spoke spec; see [§ Data types](#data-types)).
 
 Expressions are **strings**, parsed and evaluated at runtime — there is no programmatic
 expression-builder API. The language is based on **DMN 1.4 FEEL** (Friendly Enough Expression
@@ -25,7 +25,7 @@ functions, and Go implementation live in that type's **spoke** spec (e.g. [numbe
 [string.spec.md](string.spec.md)).
 
 Throughout, examples use the notation `expression  // → result`, where the result is shown in the
-same source syntax (e.g. a `BlNumber` renders as `42`, a `BlString` as `"foo"`).
+same source syntax (e.g. a `bl.BlNumber` renders as `42`, a `bl.BlString` as `"foo"`).
 
 ---
 
@@ -34,8 +34,8 @@ same source syntax (e.g. a `BlNumber` renders as `42`, a `BlString` as `"foo"`).
 ```go
 // host-side (Go)
 // Expr compiles a source string once, optionally type-checking it against a
-// declared schema. The returned BlExpr can be evaluated repeatedly.
-func (Bl) Expr(source string, schema BlSchema) (BlExpr, error)
+// declared schema. The returned bl.BlExpr can be evaluated repeatedly.
+func Expr(source string, schema BlSchema) (BlExpr, error)
 
 // BlSchema declares the variable names and types an expression may reference, so
 // type errors surface at parse time. Pass nil to skip static checking. See
@@ -48,28 +48,28 @@ type BlExpr interface {
 }
 ```
 
-A `BlExpr` is a compiled expression: parse a source string once with `Bl.Expr`, then `Evaluate` it
+A `bl.BlExpr` is a compiled expression: parse a source string once with `bl.Expr`, then `Evaluate` it
 repeatedly. Input variables are supplied as **native Go values** (`int`, `float64`, `string`, `bool`,
 slices, maps, `time.Time`, …) which the engine wraps into the corresponding `Bl*` value; the result
-is a `BlValue` (see [§ Engine internals](#engine-internals-go) for the bridging rules and host
-accessors). There are no `Bl.Number(…)`-style expression factories.
+is a `bl.BlValue` (see [§ Engine internals](#engine-internals-go) for the bridging rules and host
+accessors). There are no `bl.Number(…)`-style expression factories.
 
 ```go
 // host-side (Go)
-var schema, _ = Schema(
-    BlField{Name: "age",    Type: BlTypeNumber},
-    BlField{Name: "income", Type: BlTypeNumber},
+var schema, _ = bl.Schema(
+    bl.Field{Name: "age",    Type: bl.TypeNumber},
+    bl.Field{Name: "income", Type: bl.TypeNumber},
 )
-var eligible, _ = Bl.Expr("age >= 18 and income > 50000", schema)
+var eligible, _ = bl.Expr("age >= 18 and income > 50000", schema)
 
 var result, _ = eligible.Evaluate(map[string]any{
     "age":    21,
     "income": 60000,
 })
-// result is the BlBoolean true
+// result is the bl.BlBoolean true
 ```
 
-`[@test] ../../expr/engine_test.go`
+`[@test] ../../engine_test.go`
 
 ---
 
@@ -79,26 +79,26 @@ Every value belongs to one of the following types. Each has a literal or constru
 
 | Type | `Bl*` type | Literal / constructor | Example |
 |---|---|---|---|
-| number | `BlNumber` | digits, optional `.` and `-` | `42`, `3.14`, `-5`, `1500.50` |
-| string | `BlString` | double quotes | `"hello"` |
-| boolean | `BlBoolean` | keywords | `true`, `false` |
-| date | `BlDate` | `date(...)` | `date("2025-03-28")` |
-| time | `BlTime` | `time(...)` | `time("11:45:30")`, `time("11:45:30+02:00")` |
-| date-time | `BlDateTime` | `datetime(...)` | `datetime("2025-03-28T11:45:30")` |
-| days-time duration | `BlDaysTimeDuration` | `dtDuration(...)` | `dtDuration("P4DT12H")` |
-| years-months duration | `BlYearsMonthsDuration` | `ymDuration(...)` | `ymDuration("P1Y6M")` |
-| list | `BlList` | `[ ... ]` | `[1, 2, 3]` |
-| dictionary | `BlDictionary` | `{ ... }` | `{name: "Alice", age: 30}` |
-| range | `BlRange` | interval notation | `[1..10]`, `(1..10)`, `[1..10)` |
-| null | `BlNull` | keyword | `null` |
+| number | `bl.BlNumber` | digits, optional `.` and `-` | `42`, `3.14`, `-5`, `1500.50` |
+| string | `bl.BlString` | double quotes | `"hello"` |
+| boolean | `bl.BlBoolean` | keywords | `true`, `false` |
+| date | `bl.BlDate` | `date(...)` | `date("2025-03-28")` |
+| time | `bl.BlTime` | `time(...)` | `time("11:45:30")`, `time("11:45:30+02:00")` |
+| date-time | `bl.BlDateTime` | `datetime(...)` | `datetime("2025-03-28T11:45:30")` |
+| days-time duration | `bl.BlDaysTimeDuration` | `dtDuration(...)` | `dtDuration("P4DT12H")` |
+| years-months duration | `bl.BlYearsMonthsDuration` | `ymDuration(...)` | `ymDuration("P1Y6M")` |
+| list | `bl.BlList` | `[ ... ]` | `[1, 2, 3]` |
+| dictionary | `bl.BlDictionary` | `{ ... }` | `{name: "Alice", age: 30}` |
+| range | `bl.BlRange` | interval notation | `[1..10]`, `(1..10)`, `[1..10)` |
+| null | `bl.BlNull` | keyword | `null` |
 
 - **Numbers** are arbitrary-precision decimals — never floats; precision is preserved through all
   arithmetic (see [number.spec.md](number.spec.md)).
-- The blkit-specific types `BlCalendar` ([calendar.spec.md](calendar.spec.md)) and `BlTable`
+- The blkit-specific types `bl.BlCalendar` ([calendar.spec.md](calendar.spec.md)) and `bl.BlTable`
   ([table.spec.md](table.spec.md)) have **no literal syntax** in v1; they are produced
   programmatically and may be referenced as variables.
 
-`[@test] ../../expr/data_types_test.go`
+`[@test] ../../data_types_test.go`
 
 ### Numbers
 
@@ -156,15 +156,15 @@ loanAmount * 12       // identifier used in arithmetic
 ```
 
 Variables are supplied at evaluation time via the `input` map and, when an expression is compiled
-with a `BlSchema`, are type-checked at parse time. A reference to a name that is neither in scope
+with a `bl.BlSchema`, are type-checked at parse time. A reference to a name that is neither in scope
 nor declared is a parse error (see [§ Errors and null](#errors-and-null)).
 
-`[@test] ../../expr/variables_test.go`
+`[@test] ../../variables_test.go`
 
 ### Name resolution: `isDefined`
 
 `isDefined(x)` is a built-in that reports whether the engine could resolve `x` to a value. It
-returns `true` when `x` resolves (including when it resolves to `BlNull`) and `false` only when
+returns `true` when `x` resolves (including when it resolves to `bl.BlNull`) and `false` only when
 the name is unbound at evaluation time. It is the only way for an expression to distinguish "the
 caller supplied this name with a null value" from "the caller supplied no value at all."
 
@@ -172,23 +172,23 @@ caller supplied this name with a null value" from "the caller supplied no value 
 // expression-language
 isDefined(applicant)             // → true if `applicant` is bound, even if its value is null
 isDefined(applicant.middleName)  // → true (path access on a bound dictionary always resolves;
-                                 //   a missing key resolves to BlNull, which is still "defined")
+                                 //   a missing key resolves to bl.BlNull, which is still "defined")
 isDefined(undeclaredName)        // → false (only when there is no binding)
 ```
 
 `isDefined` operates at the resolution layer, not the value layer — to test whether a value *is*
-`BlNull` once resolved, use `isNull(x)` ([null.spec.md § Testing for null](null.spec.md#testing-for-null)).
-To supply a fallback when a value resolves to `BlNull`, use `getOrElse(x, default)`
+`bl.BlNull` once resolved, use `isNull(x)` ([null.spec.md § Testing for null](null.spec.md#testing-for-null)).
+To supply a fallback when a value resolves to `bl.BlNull`, use `getOrElse(x, default)`
 ([null.spec.md § Default for null](null.spec.md#default-for-null)).
 
-Because `isDefined` distinguishes "unbound name" from "bound to anything (including `BlNull`)", it
-cannot be expressed as a normal `BlValue → BlValue` impl — by the time a normal impl runs, the
+Because `isDefined` distinguishes "unbound name" from "bound to anything (including `bl.BlNull`)", it
+cannot be expressed as a normal `bl.BlValue → bl.BlValue` impl — by the time a normal impl runs, the
 argument has already been resolved and unbound names are a parse error. Instead, the engine's AST
 patcher (see [§ Patchers](#patchers-ast-rewriting)) intercepts `isDefined(name)` calls before
-resolution and rewrites them to a lookup against the input map plus declared `BlSchema` bindings.
+resolution and rewrites them to a lookup against the input map plus declared `bl.BlSchema` bindings.
 The impl is registered in `engine.go` alongside the other engine-level options.
 
-`[@test] ../../expr/is_defined_test.go`
+`[@test] ../../is_defined_test.go`
 
 ---
 
@@ -212,7 +212,7 @@ dtDuration("P1D") + dtDuration("PT12H")      // → dtDuration("P1DT12H")
 
 `null` propagates: `null + 1 // → null`. Division by zero yields `null`.
 
-`[@test] ../../expr/arithmetic_test.go`
+`[@test] ../../arithmetic_test.go`
 
 ---
 
@@ -220,7 +220,7 @@ dtDuration("P1D") + dtDuration("PT12H")      // → dtDuration("P1DT12H")
 
 The operators `<`, `<=`, `>`, `>=`, `=`, `!=` compare numbers, strings, and temporal/duration
 values; `=` and `!=` apply to all types. `x between a and b` is shorthand for `x >= a and x <= b`.
-The result is a `BlBoolean` (or `null` when operands are incomparable).
+The result is a `bl.BlBoolean` (or `null` when operands are incomparable).
 
 ```
 // expression-language
@@ -231,7 +231,7 @@ date("2025-01-01") < date("2025-06-01")   // → true
 5 between 1 and 10                 // → true
 ```
 
-`[@test] ../../expr/comparison_test.go`
+`[@test] ../../comparison_test.go`
 
 ---
 
@@ -253,7 +253,7 @@ true and null                     // → null
 null or false                     // → null
 ```
 
-`[@test] ../../expr/boolean_logic_test.go`
+`[@test] ../../boolean_logic_test.go`
 
 ---
 
@@ -277,7 +277,7 @@ contains("foobar", "oob")         // → true
 substring("foobar", 3, 2)         // → "ob"
 ```
 
-`[@test] ../../expr/string_expressions_test.go`
+`[@test] ../../string_expressions_test.go`
 
 ---
 
@@ -305,7 +305,7 @@ else if score >= 650 then "standard"
 else "subprime"
 ```
 
-`[@test] ../../expr/conditional_test.go`
+`[@test] ../../conditional_test.go`
 
 ---
 
@@ -330,15 +330,15 @@ Ranges work over numbers and ordered temporal values:
 [date("2025-01-01")..date("2025-12-31")]
 ```
 
-`[@test] ../../expr/ranges_test.go`
+`[@test] ../../ranges_test.go`
 
 ---
 
 ## Sequences: the `:` operator
 
-`start:end` materialises a numeric **`BlList`** running from `start` to `end` inclusive in
+`start:end` materialises a numeric **`bl.BlList`** running from `start` to `end` inclusive in
 steps of `1` — a strict-list counterpart to the range `[start..end]` (which stays as a
-`BlRange` for containment / interval-algebra purposes). The shorthand is sugar for
+`bl.BlRange` for containment / interval-algebra purposes). The shorthand is sugar for
 `seq(start, end, 1)`; the parser lowers `start:end` to `seq(start, end, 1)` at patch time, so
 the two forms are exactly equivalent. For a non-default step (or for clarity in dense
 expressions), call `seq(start, end, step)` explicitly. Full semantics — auto-reverse on
@@ -369,10 +369,10 @@ inside that value is a parse error. Use `seq(start, end)` (or parenthesise:
 // expression-language
 {a: seq(5, 10)}              // OK — explicit function call
 {a: (5:10)}                  // OK — parenthesised sequence expression
-{a: 5:10}                    // BlParseError — bare `:` in a dict value position
+{a: 5:10}                    // bl.ParseError — bare `:` in a dict value position
 ```
 
-`[@test] ../../expr/sequences_test.go`
+`[@test] ../../sequences_test.go`
 
 ---
 
@@ -390,14 +390,14 @@ calendar.
 date("2025-12-25") in ukHolidays   // → true   (calendar membership; see calendar.spec.md)
 ```
 
-For a `BlCalendar` right operand, `point in calendar` is **patcher-lowered** to
+For a `bl.BlCalendar` right operand, `point in calendar` is **patcher-lowered** to
 `contains(calendar, point)` and inherits its semantics — see
 [calendar.spec.md § Operators](calendar.spec.md#operators) for the zone-kind and
-cross-temporal-kind rules. The left operand for calendar membership must be a `BlDate` or
-`BlDateTime`; a range left operand → `BlTypeError` (use the explicit
+cross-temporal-kind rules. The left operand for calendar membership must be a `bl.BlDate` or
+`bl.BlDateTime`; a range left operand → `bl.TypeError` (use the explicit
 `overlaps(c, r)` / `entriesIn(c, r)` for range-on-calendar queries).
 
-`[@test] ../../expr/membership_test.go`
+`[@test] ../../membership_test.go`
 
 ---
 
@@ -451,20 +451,20 @@ a function argument or accessed via a path / component.
 
 Host Go code compiles a unary test once and evaluates it against many inputs — typical
 pattern when a decision-table row's cells are checked against repeated input data. The host
-API mirrors `Bl.Expr` but adds an `inputType` parameter so the engine can
+API mirrors `bl.Expr` but adds an `inputType` parameter so the engine can
 type-check the test body at parse time (e.g. `< 10` is only valid when the input is a
-`BlNumber`).
+`bl.BlNumber`).
 
 ```go
 // host-side (Go)
 
-// Bl.UnaryTest compiles a unary-test source string. inputType is the type the
+// bl.UnaryTest compiles a unary-test source string. inputType is the type the
 // implicit ? will hold at evaluation time; the engine uses it to type-check the
-// test body. Pass BlTypeAny for inputs whose type isn't known statically (e.g.
+// test body. Pass bl.TypeAny for inputs whose type isn't known statically (e.g.
 // when the test must accept the wildcard "-" against any value).
-func (Bl) UnaryTest(source string, inputType BlType) (BlUnaryTest, error)
+func UnaryTest(source string, inputType Type) (BlUnaryTest, error)
 
-// BlUnaryTest is a compiled unary-test expression, evaluated repeatedly against
+// bl.BlUnaryTest is a compiled unary-test expression, evaluated repeatedly against
 // different inputs.
 type BlUnaryTest interface {
     Test(input BlValue) (BlBoolean, error)   // → true / false / null
@@ -476,55 +476,55 @@ Worked example:
 
 ```go
 // host-side (Go) — compile-once, test-many.
-var atLeast18, _ = Bl.UnaryTest(">= 18", BlTypeNumber)
-var isUrgent,  _ = Bl.UnaryTest(`contains(?, "urgent")`, BlTypeString)
-var inRange,   _ = Bl.UnaryTest("[18..65]", BlTypeNumber)
-var wildcard,  _ = Bl.UnaryTest("-", BlTypeAny)
+var atLeast18, _ = bl.UnaryTest(">= 18", bl.TypeNumber)
+var isUrgent,  _ = bl.UnaryTest(`contains(?, "urgent")`, bl.TypeString)
+var inRange,   _ = bl.UnaryTest("[18..65]", bl.TypeNumber)
+var wildcard,  _ = bl.UnaryTest("-", bl.TypeAny)
 
-// Test against typed inputs. The result is a BlBoolean (true / false) on success,
-// or BlNull if the comparison would propagate null (e.g. numeric ordering against
+// Test against typed inputs. The result is a bl.BlBoolean (true / false) on success,
+// or bl.BlNull if the comparison would propagate null (e.g. numeric ordering against
 // a missing operand — see null.spec.md § Propagation).
-var n21, _    = Number(21)
-var ok,  _    = atLeast18.Test(n21)                              // → BlBoolean(true)
-var noteIn    = String("urgent notice")
-var ok2, _    = isUrgent.Test(noteIn)                            // → BlBoolean(true)
-var n70, _    = Number(70)
-var ok3, _    = inRange.Test(n70)                                // → BlBoolean(false)
-var ok4, _    = wildcard.Test(n70)                               // → BlBoolean(true) — wildcard matches anything
-var ok5, _    = wildcard.Test(Null())                            // → BlBoolean(true) — even Null
+var n21, _    = bl.Number(21)
+var ok,  _    = atLeast18.Test(n21)                              // → bl.BlBoolean(true)
+var noteIn    = bl.String("urgent notice")
+var ok2, _    = isUrgent.Test(noteIn)                            // → bl.BlBoolean(true)
+var n70, _    = bl.Number(70)
+var ok3, _    = inRange.Test(n70)                                // → bl.BlBoolean(false)
+var ok4, _    = wildcard.Test(n70)                               // → bl.BlBoolean(true) — wildcard matches anything
+var ok5, _    = wildcard.Test(bl.Null())                            // → bl.BlBoolean(true) — even Null
 ```
 
 The fallible cases:
 
-- **Parse-time errors** — `Bl.UnaryTest` returns `(nil, BlParseError)` if the source string
+- **Parse-time errors** — `bl.UnaryTest` returns `(nil, bl.ParseError)` if the source string
   isn't a valid unary test. Common causes: unknown identifier, malformed range, type mismatch
-  between the test body and the declared `inputType` (e.g. `>= 18` with `BlTypeString`).
-- **Evaluation-time errors** — `Test(input)` returns `(zero-value, BlTypeError)` if the
+  between the test body and the declared `inputType` (e.g. `>= 18` with `bl.TypeString`).
+- **Evaluation-time errors** — `Test(input)` returns `(zero-value, bl.TypeError)` if the
   supplied `input`'s type doesn't match the compiled `inputType`. This shouldn't happen with
   correct host code, but the runtime check catches mismatches (e.g. an input wrongly bridged
   from a `map[string]any` value).
-- **`BlNull` results** — a test against a null input returns `BlNull`, not an error.
+- **`bl.BlNull` results** — a test against a null input returns `bl.BlNull`, not an error.
   Wildcards (`-`) explicitly return `true` for null; all other tests propagate null per the
   standard rules (see [null.spec.md](null.spec.md)).
 
 The decision-table runtime ([decision-table.spec.md](../decision-tasks/decision-table.spec.md))
 uses this API internally: at table-construction time, each cell's unary-test source is
-compiled once via `Bl.UnaryTest` and the resulting `BlUnaryTest` is cached on the cell. At
+compiled once via `bl.UnaryTest` and the resulting `bl.BlUnaryTest` is cached on the cell. At
 evaluation time, the column-input value is fed through `Test(input)`, and the per-cell
 booleans are combined per the table's hit policy.
 
-**Relationship to `Bl.Expr`.** `Bl.UnaryTest` is internally implemented on top of the same
-`expr-lang/expr` pipeline `Bl.Expr` uses, with two extra steps in front: a **source
+**Relationship to `bl.Expr`.** `bl.UnaryTest` is internally implemented on top of the same
+`expr-lang/expr` pipeline `bl.Expr` uses, with two extra steps in front: a **source
 normaliser** rewrites the unary-test forms into ordinary expressions referencing `?` (e.g.
 `< 10` → `? < 10`, `2, 3` → `? = 2 or ? = 3`, `-` → `true`, `[18..65]` → `? in [18..65]`,
-`contains(?, "urgent")` left as-is), and a single-field `BlSchema` declaring `?` with type
+`contains(?, "urgent")` left as-is), and a single-field `bl.BlSchema` declaring `?` with type
 `inputType` is supplied to the parse / patch / type-check / compile chain. The result is functionally a
-`BlExpr` whose evaluation receives `?` from `Test(input)` rather than from a host
+`bl.BlExpr` whose evaluation receives `?` from `Test(input)` rather than from a host
 `map[string]any`. The separate public entry point exists so the test grammar (the
 left-implicit and comma-disjunction forms above) doesn't have to be valid plain-expression
 syntax — those forms only parse in unary-test mode.
 
-`[@test] ../../expr/unary_tests_test.go`
+`[@test] ../../unary_tests_test.go`
 
 ---
 
@@ -567,7 +567,7 @@ Accessing a field on a list of dictionaries projects that field across every ele
 
 List operations are covered by the [§ List functions](#list-functions).
 
-`[@test] ../../expr/list_expressions_test.go`
+`[@test] ../../list_expressions_test.go`
 
 ---
 
@@ -605,9 +605,9 @@ for i in 1..10 return if i <= 2 then 1 else partial[-1] + partial[-2]
 // → [1, 1, 2, 3, 5, 8, 13, 21, 34, 55]   (Fibonacci)
 ```
 
-Each loop result is a `BlList`.
+Each loop result is a `bl.BlList`.
 
-`[@test] ../../expr/for_test.go`
+`[@test] ../../for_test.go`
 
 ---
 
@@ -634,7 +634,7 @@ some x in [1, 2], y in [3, 4] satisfies x + y > 5     // → true   (2 + 4 > 5)
 every x in [1, 2], y in [3, 4] satisfies x + y >= 4   // → true   (every pair has sum ≥ 4)
 ```
 
-`[@test] ../../expr/quantified_test.go`
+`[@test] ../../quantified_test.go`
 
 ---
 
@@ -668,7 +668,7 @@ applicant.address.postcode         // navigate input variables
 See [dictionary.spec.md](dictionary.spec.md). Dictionary manipulation uses the
 [§ Dictionary functions](#dictionary-functions).
 
-`[@test] ../../expr/dictionaries_test.go`
+`[@test] ../../dictionaries_test.go`
 
 ---
 
@@ -703,7 +703,7 @@ ymDuration("P1Y6M").months           // → 6
 Available components follow the relevant `Bl*` type spec (e.g. [date.spec.md](date.spec.md),
 [range.spec.md](range.spec.md)).
 
-`[@test] ../../expr/components_test.go`
+`[@test] ../../components_test.go`
 
 ---
 
@@ -758,14 +758,14 @@ already disallows I/O, host calls, and arbitrary recursion at the VM layer. The 
 above are stated for clarity at the language-spec level so callers understand the surface
 they're getting, not to add engine work.
 
-`[@test] ../../expr/functions_test.go`
+`[@test] ../../functions_test.go`
 
 ---
 
 ## Type checking: `instance of`
 
 `x instance of T` tests a value's type, where `T` is a type name from
-[§ Data types](#data-types). Returns a `BlBoolean`.
+[§ Data types](#data-types). Returns a `bl.BlBoolean`.
 
 ```
 // expression-language
@@ -774,7 +774,7 @@ they're getting, not to add engine work.
 date("2025-01-01") instance of date    // → true
 ```
 
-`[@test] ../../expr/instance_of_test.go`
+`[@test] ../../instance_of_test.go`
 
 ---
 
@@ -790,7 +790,7 @@ cases, and Go registration. This catalogue is the index:
 | Boolean | `not` | [boolean.spec.md](boolean.spec.md) |
 | Null | `isNull`, `getOrElse` | [null.spec.md](null.spec.md) |
 | Resolution | `isDefined` | this spec ([§ Name resolution](#name-resolution-isdefined)) |
-| String | `substring`, `stringLength`, `upperCase`, `contains`, `matches`, `replace`, `split`, `stringJoin`, `pattern` (precompiled `BlRegex`), … | [string.spec.md](string.spec.md) |
+| String | `substring`, `stringLength`, `upperCase`, `contains`, `matches`, `replace`, `split`, `stringJoin`, `pattern` (precompiled `bl.BlRegex`), … | [string.spec.md](string.spec.md) |
 | Numeric | `decimal`, `floor`, `ceiling`, `round*`, `abs`, `modulo`, `sqrt`, `log`, `ln`, `exp`, `odd`, `even`, … | [number.spec.md](number.spec.md) |
 | List | `count`, `min`, `max`, `sum`, `mean`, `sublist`, `append`, `concatenate`, `union`, `distinct`, `flatten`, `sort`, `seq` (and the `:` sequence operator), … | [list.spec.md](list.spec.md) |
 | Dictionary | `getValue`, `getEntries`, `dictionaryPut`, `dictionaryMerge` | [dictionary.spec.md](dictionary.spec.md) |
@@ -831,7 +831,7 @@ a or b and c          // → a or (b and c)
 1 + 2:5 * 2           // → [3, 4, 5, 6, 7, 8, 9, 10]   (: between additive and multiplicative)
 ```
 
-`[@test] ../../expr/precedence_test.go`
+`[@test] ../../precedence_test.go`
 
 ---
 
@@ -842,12 +842,12 @@ a or b and c          // → a or (b and c)
   [§ Boolean logic](#boolean-logic)).
 - **Missing dictionary key** → `null`, not an error.
 - **Division by zero** → `null`.
-- **Parse / type-check errors** — malformed syntax, an unknown variable (when a `BlSchema` is given),
-  or a static type mismatch — are returned by `Bl.Expr` as a `BlParseError`.
-  `[@test] ../../expr/parse_error_test.go`
+- **Parse / type-check errors** — malformed syntax, an unknown variable (when a `bl.BlSchema` is given),
+  or a static type mismatch — are returned by `bl.Expr` as a `bl.ParseError`.
+  `[@test] ../../parse_error_test.go`
 - **Evaluation errors** — a type mismatch only detectable with concrete inputs (e.g. comparing
-  incompatible types) — are returned by `Evaluate` as a `BlTypeError`.
-  `[@test] ../../expr/eval_error_test.go`
+  incompatible types) — are returned by `Evaluate` as a `bl.TypeError`.
+  `[@test] ../../eval_error_test.go`
 
 ---
 
@@ -860,25 +860,26 @@ section is the **authoritative Go-implementation contract** shared by every spok
 *Go implementation* section then gives only its own concrete value type, host API, and registrations,
 referring back here for the mechanics.
 
-All code lives in the repo-root **`expr`** package (Go module path
-`github.com/friendly-business-machines/blkit/expr`).
+All code lives in the **root `blkit`** package (Go module path
+`github.com/friendly-business-machines/blkit`). Callers conventionally import as `bl`, so
+call sites read `bl.Expr(...)`, `bl.Number(...)`, etc.
 
 ### Package layout
 
 | File | Contents |
 |---|---|
-| `expr/engine.go` | The `Bl` entry namespace, `Bl.Expr`, `BlExpr`, `BlType`; the option-assembly, operator binding, patcher install, and the input/output bridge. `BlSchema` lives in `expr/schema.go`. |
-| `expr/value.go` | The `BlValue` interface, the `BlNull` singleton, and shared helpers (null propagation, equality, wrapping). |
-| `expr/errors.go` | `BlParseError`, `BlTypeError`, `BlRegexError`, `BlCalendarRangeError`. |
-| `expr/patch.go` | The `ast.Visitor` patcher(s) for FEEL-only syntax. |
-| `expr/<type>.go` | One per type (`number.go`, `string.go`, `date.go`, …): the `Bl*` value type, its exported host API, its unexported `…Options()` registrations, and its backing impl funcs. |
-| `expr/*_test.go` | Tests — the `[@test]` targets throughout these specs. |
+| `engine.go` | `Expr`, `bl.BlExpr`, `Type`; the option-assembly, operator binding, patcher install, and the input/output bridge. `bl.BlSchema` lives in `schema.go`. |
+| `value.go` | The `bl.BlValue` interface, the `bl.BlNull` singleton, and shared helpers (null propagation, equality, wrapping). |
+| `errors.go` | `ParseError`, `TypeError`, `RegexError`, `CalendarRangeError`. |
+| `patch.go` | The `ast.Visitor` patcher(s) for FEEL-only syntax. |
+| `<type>.go` | One per type (`number.go`, `string.go`, `date.go`, …): the `Bl*` value type, its exported host API, its unexported `…Options()` registrations, and its backing impl funcs. |
+| `*_test.go` | Tests — the `[@test]` targets throughout these specs. |
 
 ### Visibility & naming conventions
 
-- **Exported** (the public API): the value types (`BlNumber`, `BlString`, …); their host
+- **Exported** (the public API): the value types (`bl.BlNumber`, `bl.BlString`, …); their host
   constructors (`Number`, `Date`, `Today`, …) and accessors (`ToNativeFloat`, `ToNativeString`,
-  `CompareTo`, …); the engine surface (`Bl`, `BlExpr`, `BlSchema`, `BlValue`, `BlType`); and the
+  `CompareTo`, …); the engine surface (`Expr`, `bl.BlExpr`, `bl.BlSchema`, `bl.BlValue`, `Type`); and the
   error types.
 - **Unexported** (package-internal): built-in implementation funcs (suffix `Fn`, e.g. `dayNameFn`);
   operator implementation funcs (e.g. `addNumbers`, `ltDates`); each type's `…Options()` assembler;
@@ -888,45 +889,43 @@ All code lives in the repo-root **`expr`** package (Go module path
 
 ```go
 // host-side (Go)
-// Bl is the package entry namespace (a zero-size value), so callers write
-// expr.Bl.Expr(...).
-type blEngine struct{}
-var Bl blEngine
+// All identifiers below live in package blkit. Callers conventionally
+// import as `bl` (so call sites read bl.Expr, bl.Number, etc.).
 
-func (blEngine) Expr(source string, schema BlSchema) (BlExpr, error)
+func Expr(source string, schema BlSchema) (BlExpr, error)
 
-// BlExpr is a compiled expression (wraps a *vm.Program).
+// bl.BlExpr is a compiled expression (wraps a *vm.Program).
 type BlExpr interface {
     Evaluate(input map[string]any) (BlValue, error)
     Source() string
 }
 
-// BlSchema declares parse-time variable names and types. See schema.spec.md.
+// bl.BlSchema declares parse-time variable names and types. See schema.spec.md.
 
-// BlType identifies a language type for parse-time checking and `instance of`.
-type BlType int
+// Type identifies a language type for parse-time checking and `instance of`.
+type Type int
 const (
-    BlTypeNull BlType = iota
-    BlTypeNumber; BlTypeString; BlTypeBoolean
-    BlTypeDate; BlTypeTime; BlTypeDateTime
-    BlTypeDaysTimeDuration; BlTypeYearsMonthsDuration
-    BlTypeList; BlTypeDictionary; BlTypeRange; BlTypeTable; BlTypeCalendar
-    BlTypeRegex
-    BlTypeAny
+    TypeNull Type = iota
+    TypeNumber; TypeString; TypeBoolean
+    TypeDate; TypeTime; TypeDateTime
+    TypeDaysTimeDuration; TypeYearsMonthsDuration
+    TypeList; TypeDictionary; TypeRange; TypeTable; TypeCalendar
+    TypeRegex
+    TypeAny
 )
 ```
 
-**Pipeline.** `Bl.Expr` runs: **normalise** (source-level fixups `expr`'s lexer needs — see Operators)
+**Pipeline.** `bl.Expr` runs: **normalise** (source-level fixups `expr`'s lexer needs — see Operators)
 → **parse** (`expr`'s parser) → **patch** (`expr.Patch`, rewrite FEEL-only syntax) → **type-check**
-(against the `BlSchema`) → **compile** to a `*vm.Program`. `Evaluate` wraps the input map into `Bl*`
+(against the `bl.BlSchema`) → **compile** to a `*vm.Program`. `Evaluate` wraps the input map into `Bl*`
 values, runs the program on the sandboxed VM, and unwraps the result.
 
 ```go
 // host-side (Go)
-func (blEngine) Expr(source string, schema BlSchema) (BlExpr, error) {
+func Expr(source string, schema BlSchema) (BlExpr, error) {
     program, err := expr.Compile(normalise(source), buildOptions(schema)...)
     if err != nil {
-        return nil, &BlParseError{Source: source, Err: err}
+        return nil, &ParseError{Source: source, Err: err}
     }
     return &compiled{program: program, source: source}, nil
 }
@@ -944,14 +943,14 @@ func buildOptions(schema BlSchema) []expr.Option {
 }
 ```
 
-### The `BlValue` contract (`value.go`)
+### The `bl.BlValue` contract (`value.go`)
 
-Every `Bl*` value type implements `BlValue`, so they pass through the VM as `any`:
+Every `Bl*` value type implements `bl.BlValue`, so they pass through the VM as `any`:
 
 ```go
 // host-side (Go)
 type BlValue interface {
-    Type() BlType                // the language type tag
+    Type() Type                // the language type tag
     Equal(other BlValue) BlValue // three-valued: BlBoolean or BlNull (see null.spec.md)
     String() string              // canonical literal-form rendering
     isBlValue()                  // sealing method — only this package's types implement BlValue
@@ -977,17 +976,17 @@ func unwrap(v BlValue) any          // Bl* → native (used by host code)
 
 | Native Go input | Wrapped as |
 |---|---|
-| `int`, `int64`, `float64`, `decimal.Decimal`, decimal `string` via `Number(...)` | `BlNumber` |
-| `string` | `BlString` |
-| `bool` | `BlBoolean` |
-| `[]any` | `BlList` |
-| `map[string]any` | `BlDictionary` |
-| `time.Time` | `BlDate` / `BlDateTime` (per precision) |
-| `time.Duration` | `BlDaysTimeDuration` |
+| `int`, `int64`, `float64`, `decimal.Decimal`, decimal `string` via `Number(...)` | `bl.BlNumber` |
+| `string` | `bl.BlString` |
+| `bool` | `bl.BlBoolean` |
+| `[]any` | `bl.BlList` |
+| `map[string]any` | `bl.BlDictionary` |
+| `time.Time` | `bl.BlDate` / `bl.BlDateTime` (per precision) |
+| `time.Duration` | `bl.BlDaysTimeDuration` |
 | `nil` / absent input key | `Null` |
-| an already-`BlValue` | itself |
+| an already-`bl.BlValue` | itself |
 
-`BlNumber` stays an arbitrary-precision decimal inside the VM — **never** collapsed to `float64`.
+`bl.BlNumber` stays an arbitrary-precision decimal inside the VM — **never** collapsed to `float64`.
 `Null` propagates per [null.spec.md](null.spec.md).
 
 ### Registering built-in functions
@@ -1005,10 +1004,10 @@ type exprFn = func(args ...any) (any, error)
 func dateOptions() []expr.Option {
     return []expr.Option{
         expr.Function("dayName", dayNameFn,
-            new(func(BlDate) BlString), new(func(BlDateTime) BlString)),
+            new(func(bl.BlDate) bl.BlString), new(func(bl.BlDateTime) bl.BlString)),
         expr.Function("addBusinessDays", addBusinessDaysFn,
-            new(func(BlDate, BlNumber, BlCalendar) BlDate),
-            new(func(BlDate, BlNumber, BlCalendar, bool) BlDate)),
+            new(func(bl.BlDate, bl.BlNumber, bl.BlCalendar) bl.BlDate),
+            new(func(bl.BlDate, bl.BlNumber, bl.BlCalendar, bool) bl.BlDate)),
         // … one entry per function in the spoke's § Built-in functions
     }
 }
@@ -1052,9 +1051,9 @@ Three operator concerns are **not** handled by `expr.Operator`:
 - **`=` (single-equals).** FEEL uses `=`/`!=`; `expr`'s lexer expects `==`. The `normalise` step
   rewrites a single `=` to `==` (leaving `==`, `<=`, `>=`, `!=` untouched) before parsing.
 - **Unary `-`.** `expr.Operator` is binary-only; the patcher rewrites unary `-x` into `negate(x)`,
-  a registered function overloaded over `BlNumber`/duration types.
+  a registered function overloaded over `bl.BlNumber`/duration types.
 - **`and` / `or`.** Short-circuit logical operators over Go `bool`; our operands are wrapped `Bl*`
-  values that may be `BlNull`. The patcher rewrites them into calls to the three-valued funcs in
+  values that may be `bl.BlNull`. The patcher rewrites them into calls to the three-valued funcs in
   [boolean.spec.md](boolean.spec.md) (`blAnd`/`blOr`). `not(x)` is an ordinary `expr.Function`.
 
 ### Patchers (`patch.go`)
@@ -1080,20 +1079,20 @@ and lets identifiers ride directly on `expr`'s lexer.
 
 ### Environment & errors
 
-`BlSchema` is translated to an `expr.Env` (a `map[string]any` of zero-value `Bl*` exemplars per
+`bl.BlSchema` is translated to an `expr.Env` (a `map[string]any` of zero-value `Bl*` exemplars per
 field) so references are type-checked at parse time. Nested `Fields` are walked recursively so
 that member-access expressions (`applicant.address.postalCode`) type-check against the declared
 shape. Errors:
 
 ```go
 // host-side (Go)
-type BlParseError struct { Source string; Err error } // from Bl.Expr (parse/type-check)
-type BlTypeError  struct { /* op, types */ }           // from Evaluate (runtime type mismatch)
-type BlRegexError struct { Pattern string; Err error } // bad regex in matches/replace/extract
-type BlCalendarRangeError struct { /* date, bounds */ }// business-day iteration past validity
+type ParseError struct { Source string; Err error } // from Expr (parse/type-check)
+type TypeError  struct { /* op, types */ }           // from Evaluate (runtime type mismatch)
+type RegexError struct { Pattern string; Err error } // bad regex in matches/replace/extract
+type CalendarRangeError struct { /* date, bounds */ }// business-day iteration past validity
 ```
 
-`[@test] ../../expr/engine_internal_test.go`
+`[@test] ../../engine_internal_test.go`
 
 ---
 
@@ -1102,7 +1101,7 @@ type BlCalendarRangeError struct { /* date, bounds */ }// business-day iteration
 These are forward-looking notes; the referenced specs are **not** modified by this document.
 
 - **`LiteralExpression`** ([literal-expression.spec.md](../decision-tasks/literal-expression.spec.md))
-  could accept a source string compiled with `Bl.Expr` as its expression body.
+  could accept a source string compiled with `Expr` as its expression body.
 - **`DecisionTable`** ([decision-table.spec.md](../decision-tasks/decision-table.spec.md)) rule
   predicates and input entries could be authored as unary tests (see [§ Unary tests](#unary-tests)),
   parsed against each column's type.
@@ -1138,7 +1137,7 @@ behaviour, and the rationale.
     designators) is split into typed sibling constructors **`ymDuration(string)`** and
     **`dtDuration(string)`**. Each accepts only its kind's designators and has a single typed
     return, so downstream usage is statically checkable; a wrong-kind string is a
-    `BlParseError`. This avoids the runtime-dispatch cost of a polymorphic constructor for a
+    `ParseError`. This avoids the runtime-dispatch cost of a polymorphic constructor for a
     case (variable input strings) that's rare in practice.
 
   The catalogue and spokes use the renamed forms.
@@ -1161,10 +1160,10 @@ behaviour, and the rationale.
 
 ## Edge cases
 
-- An empty source string is a `BlParseError`.
+- An empty source string is a `ParseError`.
 - An expression that evaluates to `null` is a valid result.
-- A compiled `BlExpr` needs no input for expressions that reference no variables (`1 + 1`,
+- A compiled `bl.BlExpr` needs no input for expressions that reference no variables (`1 + 1`,
   `date("2025-01-01")`) — pass `nil` to `Evaluate`.
 - A list index out of range returns `null`; a missing dictionary key returns `null`.
 
-`[@test] ../../expr/edge_cases_test.go`
+`[@test] ../../edge_cases_test.go`
