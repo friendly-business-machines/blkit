@@ -429,6 +429,31 @@ contains(?, "urgent") // the input string contains "urgent"
 -                     // matches anything
 ```
 
+### Form applicability
+
+Not every form applies to every input type. The ordering and interval forms
+need an ordered domain; the equality, disjunction, `not`, `?` expression, and
+wildcard forms work against any type:
+
+| Form | Comparable scalars\* | Unordered types\*\* |
+|---|---|---|
+| value (equality literal) | ✅ | ✅ |
+| comma list (disjunction) | ✅ | ✅ |
+| `not(...)` | ✅ inherits inner | ✅ inherits inner |
+| `?` expression | ✅ | ✅ |
+| wildcard `-` | ✅ | ✅ |
+| `<` `<=` `>` `>=` | ✅ | ❌ `bl.ParseError` at construction |
+| interval `[a..b]` | ✅ | ❌ `bl.ParseError` at construction |
+
+\* **Comparable scalars**: `bl.TypeNumber`, `bl.TypeString`, `bl.TypeDate`,
+`bl.TypeTime`, `bl.TypeDateTime`, `bl.TypeDaysTimeDuration`, `bl.TypeYearsMonthsDuration`.
+
+\*\* **Unordered types**: `bl.TypeBoolean`, `bl.TypeList`, `bl.TypeDictionary`,
+`bl.TypeTable`, `bl.TypeRange`, `bl.TypeCalendar`, `bl.TypeRegex`.
+
+`bl.TypeAny` accepts every form — the parse-time type-checker can't statically
+rule any of them out when the input type is unknown.
+
 ### The `?` placeholder
 
 Inside a unary test, `?` is the **implicit input** — the value the test is being evaluated
@@ -448,6 +473,54 @@ For implicit-input forms (`< 10`, `"valid"`, `[18..65]`, etc.), writing `?` expl
 redundant — `< 10` and `? < 10` are equivalent. Use `?` when the input needs to be passed as
 a function argument or accessed via a path / component.
 
+Because a `?` expression can be **any** language expression that yields a
+`bl.BlBoolean`, the unary-test grammar is fully expressive over every value
+type. Every FEEL idiom for list / context / table queries — `listContains`,
+`count`, predicate filter (`xs[item.field > n]`), projection (`xs.field`),
+`for … return`, `some` / `every`, path access, `getValue`, `getEntries`,
+`dictionaryPut`, `dictionaryMerge`, `instance of` — composes into a cell
+predicate via the `?` form.
+
+### Tests over structured inputs
+
+When a decision-table column has a list, dictionary, or table type, the cells
+use the `?` expression form. Typical idioms:
+
+```
+// expression-language — input is a list
+
+count(?) > 0                          // non-empty list
+listContains(?, "urgent")             // membership
+count(?[item.amount > 100]) >= 1      // at least one matching element (filter + count)
+every x in ? satisfies x.qty > 0      // every element passes
+some  x in ? satisfies x.is_priority  // at least one element passes
+```
+
+```
+// expression-language — input is a dictionary
+
+?.tier = "gold"                       // field equality (implicit equality form also works: just "gold" on a tier-typed column)
+?.applicant.income >= 50000           // nested path
+has(?, "approver")                    // key presence
+getValue(?, "tier") = "gold"          // explicit lookup (equivalent to ?.tier)
+size(?) > 0                           // non-empty dictionary
+```
+
+```
+// expression-language — input is a table (BlTable = list of uniformly-keyed rows)
+
+count(?) > 0                            // non-empty
+some r in ? satisfies r.amount > 1000   // any row predicate
+every r in ? satisfies r.status = "ok"  // every row predicate
+count(?[item.flagged]) = 0              // no flagged rows (filter shorthand)
+```
+
+The functions and operators used above are documented in their type's spoke
+spec ([list.spec.md](list.spec.md), [dictionary.spec.md](dictionary.spec.md),
+[table.spec.md](table.spec.md)). The cross-cutting forms (`for … return`,
+`some` / `every`, filter `[predicate]`) live in [§ Loops](#loops-for--return)
+and [§ Quantified expressions](#quantified-expressions-some--every) above.
+
 ### Host-side usage
 
 Host Go code compiles a unary test once and evaluates it against many inputs — typical
@@ -460,10 +533,12 @@ will hold).
 // host-side (Go)
 
 // bl.UnaryTest compiles a unary-test source string. inputType is the type the
-// implicit ? will hold at evaluation time; the engine uses it to type-check the
-// test body and verifies the result is a bl.BlBoolean (or bl.BlNull). Pass
-// bl.TypeAny for inputs whose type isn't known statically (e.g. when the test
-// must accept the wildcard "-" against any value).
+// implicit ? will hold at evaluation time. The engine uses it to type-check the
+// test body and verifies the result is a bl.BlBoolean (or bl.BlNull); forms
+// that require an ordered domain (<, <=, >, >=, interval [a..b]) are rejected
+// at construction when inputType is unordered (list, dictionary, table,
+// boolean, etc. — see § Form applicability). Pass bl.TypeAny for inputs whose
+// type isn't known statically.
 func UnaryTest(source string, inputType Type) (BlExpr, error)
 ```
 
