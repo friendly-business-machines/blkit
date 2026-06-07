@@ -2,7 +2,7 @@
 name: bl.BlNumber
 description: The number type in the blkit expression language — an arbitrary-precision decimal. Covers numeric literals, arithmetic/comparison operators, the numeric built-in functions, and the Go layer (bl.BlNumber + expr operator/function registrations) that implements them on expr-lang/expr.
 targets:
-  - ../../number.go
+  - ../../expr_number.go
 ---
 
 # bl.BlNumber — the `number` type
@@ -36,7 +36,7 @@ accepted; a leading `-` is the unary minus operator applied to a non-negative li
   [bl-expr.spec.md](bl-expr.spec.md#relationship-to-feel-and-future-direction)).
 - `NaN` and `Infinity` are not representable — a source/host value of either is a `bl.TypeError`.
 
-`[@test] ../../number_test.go`
+`[@test] ../../expr_number_test.go`
 
 ---
 
@@ -92,7 +92,7 @@ engine (see [§ Semantics & behaviour](#semantics--behaviour)).
 - `**` with a result that would be complex (e.g. negative base, fractional exponent) → `null`:
   `(-2) ** 0.5 // → null`.
 
-`[@test] ../../number_operators_test.go`
+`[@test] ../../expr_number_operators_test.go`
 
 ---
 
@@ -129,7 +129,7 @@ Aggregates over lists (`min`, `max`, `sum`, `mean`, `median`, `product`, `stddev
 `string(n)` — is documented under [§ Go implementation](#go-implementation-expr-extension) and
 [string.spec.md](string.spec.md).
 
-`[@test] ../../number_functions_test.go`
+`[@test] ../../expr_number_functions_test.go`
 
 ### Interval algebra
 
@@ -149,7 +149,7 @@ A number is a *point*; the FEEL interval-algebra built-ins (`before`, `after`, `
   divisor (→ `null`).
 - **Equality** is by numeric value, ignoring trailing zeros.
 
-`[@test] ../../number_semantics_test.go`
+`[@test] ../../expr_number_semantics_test.go`
 
 ---
 
@@ -378,7 +378,7 @@ parses formatted text; `string(n)` renders. Native `int`/`float64`/decimal-`stri
 wrapped to `bl.BlNumber` by the engine bridge; a thousands-separated string is rejected — use
 `number(...)`.
 
-`[@test] ../../number_test.go`
+`[@test] ../../expr_number_test.go`
 
 ---
 

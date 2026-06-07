@@ -2,7 +2,7 @@
 name: bl.BlRange
 description: The range (interval) type in the blkit expression language. Covers interval literals and boundary semantics, membership, the interval-algebra built-ins, and the Go layer (bl.BlRange + expr registrations).
 targets:
-  - ../../range.go
+  - ../../expr_range.go
 ---
 
 # bl.BlRange — the `range` type
@@ -45,7 +45,7 @@ Ranges work over any comparable type — numbers, strings (code-point order), an
 (null..0)      // "negative"
 ```
 
-`[@test] ../../range_test.go`
+`[@test] ../../expr_range_test.go`
 
 ---
 
@@ -94,7 +94,7 @@ with a `null` endpoint → `bl.TypeError`.
 `in` has an equivalent function form, `includes(r, x)`, documented under
 [§ Interval algebra](#interval-algebra-built-ins).
 
-`[@test] ../../range_operators_test.go`
+`[@test] ../../expr_range_operators_test.go`
 
 ---
 
@@ -109,7 +109,7 @@ Components are read with the dot operator ([bl-expr.spec.md](bl-expr.spec.md#acc
 | `.startIncluded` | `[1..10].startIncluded` | `true` |
 | `.endIncluded` | `[1..10).endIncluded` | `false` |
 
-`[@test] ../../range_components_test.go`
+`[@test] ../../expr_range_components_test.go`
 
 ---
 
@@ -142,7 +142,7 @@ returns `true` for an empty range (that's its purpose).
 | `coincides(a, b)` | `coincides([1..5], [1..5])` | `true` (identical intervals; self-inverse) |
 | `isEmpty(r)` **ext** | `isEmpty((3..3))` | `true` (no values in the range) |
 
-`[@test] ../../range_algebra_test.go`
+`[@test] ../../expr_range_algebra_test.go`
 
 ---
 
@@ -172,7 +172,7 @@ The distinction matters: `null` (missing data) and an empty range (a well-define
 happens to contain nothing) are different concepts. `isEmpty(null)` → `null` (input was
 missing); `isEmpty([5..3])` → `true` (input was an empty range).
 
-`[@test] ../../range_empty_test.go`
+`[@test] ../../expr_range_empty_test.go`
 
 ---
 
@@ -336,7 +336,7 @@ func rangeOptions() []expr.Option {
 }
 ```
 
-`[@test] ../../range_test.go`
+`[@test] ../../expr_range_test.go`
 
 ---
 

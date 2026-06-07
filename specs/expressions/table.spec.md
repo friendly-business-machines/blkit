@@ -2,7 +2,7 @@
 name: bl.BlTable
 description: The table (relation) type in the blkit expression language — an ordered list of uniformly-keyed dictionaries. Covers construction as a list-of-dictionaries, row/column access, the table built-ins, and the Go layer (bl.BlTable + expr registrations).
 targets:
-  - ../../table.go
+  - ../../expr_table.go
 ---
 
 # bl.BlTable — the `table` type
@@ -39,7 +39,7 @@ table([...]).region             // → ["domestic", "europe"]
 table([...])[item.rate > 10]    // → rows with rate > 10
 ```
 
-`[@test] ../../table_test.go`
+`[@test] ../../expr_table_test.go`
 
 ---
 
@@ -66,7 +66,7 @@ All blkit extensions (**ext** — no DMN equivalent); relations in DMN are other
 A table is also a list, so list aggregates/operations apply over its rows (e.g. `count`, filtering,
 `for x in t return …`). `sum(t.rate)` sums a projected column.
 
-`[@test] ../../table_functions_test.go`
+`[@test] ../../expr_table_functions_test.go`
 
 ---
 
@@ -78,7 +78,7 @@ A table is also a list, so list aggregates/operations apply over its rows (e.g. 
 | `t.col` / `t[predicate]` | column projection / row filter | `t.region`, `t[item.rate > 10]` |
 | `=` `!=` | equality (row-wise, order-sensitive; shape is part of identity) | `t1 = t2` |
 
-`[@test] ../../table_operators_test.go`
+`[@test] ../../expr_table_operators_test.go`
 
 ---
 
@@ -161,7 +161,7 @@ mismatch. **Reuse.** Row indexing, projection, filtering, and list aggregates ar
 list machinery (`bl.BlTable` embeds/satisfies `bl.BlList`, so it is accepted wherever a `bl.BlList` is). Native
 Go `[]map[string]any` inputs wrap to `bl.BlTable` when uniform.
 
-`[@test] ../../table_test.go`
+`[@test] ../../expr_table_test.go`
 
 ---
 

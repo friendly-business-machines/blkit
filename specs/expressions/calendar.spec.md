@@ -2,7 +2,7 @@
 name: bl.BlCalendar
 description: The calendar type in the blkit expression language — a named, ordered collection of temporal entries (dates, datetimes, or date/datetime ranges) for holidays, schedules, blackout periods, maintenance windows, and the like. Covers entry construction, calendar construction with optional validity bounds, query/mutation built-ins, and the Go layer (bl.BlCalendar + expr registrations).
 targets:
-  - ../../calendar.go
+  - ../../expr_calendar.go
 ---
 
 # bl.BlCalendar — the `calendar` type
@@ -254,7 +254,7 @@ calling — the strip/attach functions are in
 [datetime.spec.md § Zone stripping](datetime.spec.md#zone-stripping-ext) and
 [datetime.spec.md § Zone conversion](datetime.spec.md#zone-conversion-ext).
 
-`[@test] ../../calendar_test.go`
+`[@test] ../../expr_calendar_test.go`
 
 ---
 
@@ -348,7 +348,7 @@ without poisoning the result — scanning continues. Use the conversion function
 [date.spec.md § Conversion](date.spec.md) / [datetime.spec.md § Conversion](datetime.spec.md)
 to coerce explicitly when you need cross-temporal-kind matching to succeed.
 
-`[@test] ../../calendar_query_test.go`
+`[@test] ../../expr_calendar_query_test.go`
 
 ---
 
@@ -597,7 +597,7 @@ func CalendarMerge(calendars []BlCalendar, opts ...MergeOption) (BlCalendar, err
 Validity bounds are not unioned (matching the expression-language behaviour); the returned
 calendar has none unless re-supplied via a follow-up `bl.Calendar(..., WithValidity(...))`.
 
-`[@test] ../../calendar_mutation_test.go`
+`[@test] ../../expr_calendar_mutation_test.go`
 
 ---
 
@@ -620,7 +620,7 @@ between overlap and containment semantics, which `in` doesn't).
 
 Calendars have no arithmetic operators and no ordering operators (`<`/`<=`/`>`/`>=`).
 
-`[@test] ../../calendar_operators_test.go`
+`[@test] ../../expr_calendar_operators_test.go`
 
 ---
 
@@ -966,7 +966,7 @@ func calendarOptions() []expr.Option {
 a `bl.BlCalendar` (named `phCalendar`). Iterating variants raise `bl.CalendarRangeError` past the
 validity bounds only when `strictCalendarRange: true` is supplied.
 
-`[@test] ../../calendar_test.go`
+`[@test] ../../expr_calendar_test.go`
 
 ---
 
