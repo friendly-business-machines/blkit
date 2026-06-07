@@ -66,8 +66,12 @@ var schema, _ = bl.Schema(
     bl.Field{Name: "ukHolidays",    Type: bl.TypeCalendar},
 )
 var checkHoliday, _ = bl.Expr(`isPublicHoliday(applicantDate, ukHolidays)`, schema)
-var result, _ = checkHoliday.Evaluate(
-    map[string]any{"applicantDate": "2025-12-25", "ukHolidays": ukHolidays})
+var applicantDate, _ = bl.String("2025-12-25")
+var inputs, _ = bl.Dictionary(map[string]bl.BlValue{
+    "applicantDate": applicantDate,
+    "ukHolidays":    ukHolidays,
+})
+var result, _ = checkHoliday.Evaluate(inputs)
 ```
 
 `CalendarEntry` is infallible — it just wraps a value and optional name. Type validation (the

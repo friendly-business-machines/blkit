@@ -244,8 +244,12 @@ var schema, _ = bl.Schema(
     bl.Field{Name: "emailRe", Type: bl.TypePattern},
 )
 var matchEmail, _ = bl.Expr(`matches(addr, emailRe)`, schema)
-var result, _ = matchEmail.Evaluate(
-    map[string]any{"addr": "alice@example.com", "emailRe": emailRe})
+var addr, _   = bl.String("alice@example.com")
+var inputs, _ = bl.Dictionary(map[string]bl.BlValue{
+    "addr":    addr,
+    "emailRe": emailRe,
+})
+var result, _ = matchEmail.Evaluate(inputs)
 ```
 
 `pattern(s)` accepts only a single argument — the source string. Flags (`"i"`, `"m"`, `"s"`)

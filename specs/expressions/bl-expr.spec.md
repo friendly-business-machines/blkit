@@ -43,16 +43,15 @@ func Expr(source string, schema BlSchema) (BlExpr, error)
 
 // BlExpr is a compiled source-text expression.
 type BlExpr interface {
-    Evaluate(input map[string]any) (BlValue, error)
+    Evaluate(input BlValue) (BlValue, error)
     Source() string
 }
 ```
 
 A `bl.BlExpr` is a compiled expression: parse a source string once with `bl.Expr`, then `Evaluate` it
-repeatedly. Input variables are supplied as **native Go values** (`int`, `float64`, `string`, `bool`,
-slices, maps, `time.Time`, …) which the engine wraps into the corresponding `Bl*` value; the result
-is a `bl.BlValue` (see [§ Engine internals](#engine-internals-go) for the bridging rules and host
-accessors). There are no `bl.Number(…)`-style expression factories.
+repeatedly. The input is a single `bl.BlValue` — typically a `bl.BlDictionary` whose keys match the
+declared schema's fields. The result is a `bl.BlValue` (see [§ Engine internals](#engine-internals-go)
+for the bridging rules and host accessors). There are no `bl.Number(…)`-style expression factories.
 
 ```go
 // host-side (Go)
@@ -62,10 +61,13 @@ var schema, _ = bl.Schema(
 )
 var eligible, _ = bl.Expr("age >= 18 and income > 50000", schema)
 
-var result, _ = eligible.Evaluate(map[string]any{
-    "age":    21,
-    "income": 60000,
+var age,    _ = bl.Number(21)
+var income, _ = bl.Number(60000)
+var inputs, _ = bl.Dictionary(map[string]bl.BlValue{
+    "age":    age,
+    "income": income,
 })
+var result, _ = eligible.Evaluate(inputs)
 // result is the bl.BlBoolean true
 ```
 
@@ -185,7 +187,7 @@ Because `isDefined` distinguishes "unbound name" from "bound to anything (includ
 cannot be expressed as a normal `bl.BlValue → bl.BlValue` impl — by the time a normal impl runs, the
 argument has already been resolved and unbound names are a parse error. Instead, the engine's AST
 patcher (see [§ Patchers](#patchers-ast-rewriting)) intercepts `isDefined(name)` calls before
-resolution and rewrites them to a lookup against the input map plus declared `bl.BlSchema` bindings.
+resolution and rewrites them to a lookup against the input value plus declared `bl.BlSchema` bindings.
 The impl is registered in `engine.go` alongside the other engine-level options.
 
 `[@test] ../../is_defined_test.go`
@@ -450,27 +452,24 @@ a function argument or accessed via a path / component.
 ### Host-side usage
 
 Host Go code compiles a unary test once and evaluates it against many inputs — typical
-pattern when a decision-table row's cells are checked against repeated input data. The host
-API mirrors `bl.Expr` but adds an `inputType` parameter so the engine can
-type-check the test body at parse time (e.g. `< 10` is only valid when the input is a
-`bl.BlNumber`).
+pattern when a decision-table row's cells are checked against repeated input data. The
+host API is the same `bl.BlExpr` returned by `bl.Expr`; the only difference is the
+constructor accepts the unary-test grammar and an `inputType` (the type the implicit `?`
+will hold).
 
 ```go
 // host-side (Go)
 
 // bl.UnaryTest compiles a unary-test source string. inputType is the type the
 // implicit ? will hold at evaluation time; the engine uses it to type-check the
-// test body. Pass bl.TypeAny for inputs whose type isn't known statically (e.g.
-// when the test must accept the wildcard "-" against any value).
-func UnaryTest(source string, inputType Type) (BlUnaryTest, error)
-
-// bl.BlUnaryTest is a compiled unary-test expression, evaluated repeatedly against
-// different inputs.
-type BlUnaryTest interface {
-    Test(input BlValue) (BlBoolean, error)   // → true / false / null
-    Source() string                          // the original source string
-}
+// test body and verifies the result is a bl.BlBoolean (or bl.BlNull). Pass
+// bl.TypeAny for inputs whose type isn't known statically (e.g. when the test
+// must accept the wildcard "-" against any value).
+func UnaryTest(source string, inputType Type) (BlExpr, error)
 ```
+
+The returned `bl.BlExpr` is evaluated like any other: pass the input value directly
+(no need to wrap into a dictionary, since there's only the single implicit `?`).
 
 Worked example:
 
@@ -481,48 +480,56 @@ var isUrgent,  _ = bl.UnaryTest(`contains(?, "urgent")`, bl.TypeString)
 var inRange,   _ = bl.UnaryTest("[18..65]", bl.TypeNumber)
 var wildcard,  _ = bl.UnaryTest("-", bl.TypeAny)
 
-// Test against typed inputs. The result is a bl.BlBoolean (true / false) on success,
-// or bl.BlNull if the comparison would propagate null (e.g. numeric ordering against
-// a missing operand — see null.spec.md § Propagation).
+// Evaluate against typed inputs. The engine has verified at construction that
+// every result will be bl.BlBoolean (true / false) or bl.BlNull (when null
+// propagation kicks in — see null.spec.md § Propagation).
 var n21, _    = bl.Number(21)
-var ok,  _    = atLeast18.Test(n21)                              // → bl.BlBoolean(true)
+var ok,  _    = atLeast18.Evaluate(n21)                          // → bl.BlBoolean(true)
+
 var noteIn    = bl.String("urgent notice")
-var ok2, _    = isUrgent.Test(noteIn)                            // → bl.BlBoolean(true)
+var ok2, _    = isUrgent.Evaluate(noteIn)                        // → bl.BlBoolean(true)
+
 var n70, _    = bl.Number(70)
-var ok3, _    = inRange.Test(n70)                                // → bl.BlBoolean(false)
-var ok4, _    = wildcard.Test(n70)                               // → bl.BlBoolean(true) — wildcard matches anything
-var ok5, _    = wildcard.Test(bl.Null())                            // → bl.BlBoolean(true) — even Null
+var ok3, _    = inRange.Evaluate(n70)                            // → bl.BlBoolean(false)
+var ok4, _    = wildcard.Evaluate(n70)                           // → bl.BlBoolean(true) — wildcard matches anything
+var ok5, _    = wildcard.Evaluate(bl.Null())                     // → bl.BlBoolean(true) — even Null
 ```
 
 The fallible cases:
 
-- **Parse-time errors** — `bl.UnaryTest` returns `(nil, bl.ParseError)` if the source string
-  isn't a valid unary test. Common causes: unknown identifier, malformed range, type mismatch
-  between the test body and the declared `inputType` (e.g. `>= 18` with `bl.TypeString`).
-- **Evaluation-time errors** — `Test(input)` returns `(zero-value, bl.TypeError)` if the
-  supplied `input`'s type doesn't match the compiled `inputType`. This shouldn't happen with
-  correct host code, but the runtime check catches mismatches (e.g. an input wrongly bridged
-  from a `map[string]any` value).
-- **`bl.BlNull` results** — a test against a null input returns `bl.BlNull`, not an error.
-  Wildcards (`-`) explicitly return `true` for null; all other tests propagate null per the
-  standard rules (see [null.spec.md](null.spec.md)).
+- **Parse-time errors** — `bl.UnaryTest` returns `(nil, bl.ParseError)` if the source
+  string isn't a valid unary test. Common causes: unknown identifier, malformed range,
+  type mismatch between the test body and the declared `inputType` (e.g. `>= 18` with
+  `bl.TypeString`), or a body whose result isn't a boolean (e.g. `?` alone with
+  `bl.TypeNumber`).
+- **Evaluation-time errors** — `Evaluate(input)` returns `(nil, bl.TypeError)` if the
+  supplied `input`'s type doesn't match the compiled `inputType`. This shouldn't happen
+  with correct host code, but the runtime check catches mismatches.
+- **`bl.BlNull` results** — a test against a null input returns `bl.BlNull`, not an
+  error. Wildcards (`-`) explicitly return `true` for null; all other tests propagate
+  null per the standard rules (see [null.spec.md](null.spec.md)).
+
+The engine's pre-validation guarantees the result type, but `Evaluate` returns
+`bl.BlValue` like any other `bl.BlExpr`; callers that need a `bl.BlBoolean` value can
+type-assert the result.
 
 The decision-table runtime ([decision-table.spec.md](../decision-tasks/decision-table.spec.md))
 uses this API internally: at table-construction time, each cell's unary-test source is
-compiled once via `bl.UnaryTest` and the resulting `bl.BlUnaryTest` is cached on the cell. At
-evaluation time, the column-input value is fed through `Test(input)`, and the per-cell
-booleans are combined per the table's hit policy.
+compiled once via `bl.UnaryTest` and the resulting `bl.BlExpr` is cached on the cell. At
+evaluation time, the column-input value is fed through `Evaluate(input)`, and the
+per-cell booleans are combined per the table's hit policy.
 
-**Relationship to `bl.Expr`.** `bl.UnaryTest` is internally implemented on top of the same
-`expr-lang/expr` pipeline `bl.Expr` uses, with two extra steps in front: a **source
-normaliser** rewrites the unary-test forms into ordinary expressions referencing `?` (e.g.
-`< 10` → `? < 10`, `2, 3` → `? = 2 or ? = 3`, `-` → `true`, `[18..65]` → `? in [18..65]`,
-`contains(?, "urgent")` left as-is), and a single-field `bl.BlSchema` declaring `?` with type
-`inputType` is supplied to the parse / patch / type-check / compile chain. The result is functionally a
-`bl.BlExpr` whose evaluation receives `?` from `Test(input)` rather than from a host
-`map[string]any`. The separate public entry point exists so the test grammar (the
-left-implicit and comma-disjunction forms above) doesn't have to be valid plain-expression
-syntax — those forms only parse in unary-test mode.
+**Relationship to `bl.Expr`.** `bl.UnaryTest` is a constructor variant of `bl.Expr`:
+it shares the same parse / patch / type-check / compile pipeline, with two extra steps
+in front. A **source normaliser** rewrites the unary-test forms into ordinary
+expressions referencing `?` (e.g. `< 10` → `? < 10`, `2, 3` → `? = 2 or ? = 3`, `-` →
+`true`, `[18..65]` → `? in [18..65]`, `contains(?, "urgent")` left as-is), and a
+single-field `bl.BlSchema` declaring `?` with type `inputType` is supplied for the
+type-check step. The result is an ordinary `bl.BlExpr` whose evaluation receives the
+input value bound to `?`. The separate constructor exists so the unary-test grammar
+(the left-implicit and comma-disjunction forms) doesn't have to be valid
+plain-expression syntax — those forms only parse in unary-test mode. `Source()`
+returns the original (un-normalised) string the caller supplied.
 
 `[@test] ../../unary_tests_test.go`
 
@@ -896,7 +903,7 @@ func Expr(source string, schema BlSchema) (BlExpr, error)
 
 // bl.BlExpr is a compiled expression (wraps a *vm.Program).
 type BlExpr interface {
-    Evaluate(input map[string]any) (BlValue, error)
+    Evaluate(input BlValue) (BlValue, error)
     Source() string
 }
 
@@ -917,8 +924,10 @@ const (
 
 **Pipeline.** `bl.Expr` runs: **normalise** (source-level fixups `expr`'s lexer needs — see Operators)
 → **parse** (`expr`'s parser) → **patch** (`expr.Patch`, rewrite FEEL-only syntax) → **type-check**
-(against the `bl.BlSchema`) → **compile** to a `*vm.Program`. `Evaluate` wraps the input map into `Bl*`
-values, runs the program on the sandboxed VM, and unwraps the result.
+(against the `bl.BlSchema`) → **compile** to a `*vm.Program`. `Evaluate` takes a `bl.BlValue` input
+(typically a `bl.BlDictionary` for multi-variable expressions, or a single value for unary-test
+`bl.BlExpr`s where the schema declares `?`), runs the program on the sandboxed VM, and returns the
+result as a `bl.BlValue`.
 
 ```go
 // host-side (Go)

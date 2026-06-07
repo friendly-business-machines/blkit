@@ -395,7 +395,7 @@ result, err := penalties.Evaluate(map[string]any{
 - The first row is headers: hit policy indicator in the first cell, then input column labels, then output names.
 - The hit policy indicator is the standard single-letter abbreviation (`U`, `F`, `C`, …). For `Collect` with an aggregation, the aggregation symbol is appended (`C+`, `C<`, `C>`, `C#`).
 - A visual separator column is placed between the last input column and the first output column. The header cell is empty, and every data row contains `█` (Unicode full block).
-- Each subsequent row is a rule: rule index, then (if `showRuleIDs=true`) the rule id in a `rule-id` column, then input entries rendered via `bl.BlUnaryTest.Source()` (with `"-"` for omitted/wildcard inputs), then the `█` separator, then output values rendered via `bl.BlValue.String()` (with `""` for omitted outputs).
+- Each subsequent row is a rule: rule index, then (if `showRuleIDs=true`) the rule id in a `rule-id` column, then input entries rendered via `bl.BlExpr.Source()` (with `"-"` for omitted/wildcard inputs), then the `█` separator, then output values rendered via `bl.BlValue.String()` (with `""` for omitted outputs).
 - When `showInputMappings=true`, a table mapping each input label to its expression is rendered above the decision table.
 - When `showRuleDescriptions=true`, a numbered list of rule descriptions is appended below the table.
 
