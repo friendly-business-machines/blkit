@@ -416,6 +416,7 @@ supplied implicitly.
 | interval | falls in the range | `[2..5]`, `(2..5]` |
 | comma list | equals any (disjunction) | `2, 3, 4`, `< 10, > 50` |
 | `not(...)` | does **not** match the inner test | `not("valid")`, `not(2, 3)` |
+| leading-dot path | the path access on the input compares true | `.status = "active"`, `.amount > 100` |
 | `?` expression | the expression (with `?` = input) is true | `contains(?, "good")`, `endsWith(?, "@blkit.io")` |
 | `-` | always (wildcard) | `-` |
 
@@ -470,8 +471,11 @@ isPublicHoliday(?, ukHolidays)      // input is a date; check against a calendar
 ```
 
 For implicit-input forms (`< 10`, `"valid"`, `[18..65]`, etc.), writing `?` explicitly is
-redundant — `< 10` and `? < 10` are equivalent. Use `?` when the input needs to be passed as
-a function argument or accessed via a path / component.
+redundant — `< 10` and `? < 10` are equivalent. A **leading dot** is shorthand for path
+access on the implicit input: `.status = "active"` is equivalent to `?.status = "active"`,
+and `.items.amount > 100` is equivalent to `?.items.amount > 100`. Use `?` explicitly when
+the input needs to be passed as a function argument (e.g. `contains(?, "x")`) rather than
+projected by a path.
 
 Because a `?` expression can be **any** language expression that yields a
 `bl.BlBoolean`, the unary-test grammar is fully expressive over every value
@@ -499,10 +503,10 @@ some  x in ? satisfies x.is_priority  // at least one element passes
 ```
 // expression-language — input is a dictionary
 
-?.tier = "gold"                       // field equality (implicit equality form also works: just "gold" on a tier-typed column)
-?.applicant.income >= 50000           // nested path
+.tier = "gold"                        // field equality (leading-dot shorthand for ?.tier)
+.applicant.income >= 50000            // nested path
 has(?, "approver")                    // key presence
-getValue(?, "tier") = "gold"          // explicit lookup (equivalent to ?.tier)
+getValue(?, "tier") = "gold"          // explicit lookup (equivalent to .tier)
 size(?) > 0                           // non-empty dictionary
 ```
 
@@ -597,9 +601,9 @@ per-cell booleans are combined per the table's hit policy.
 it shares the same parse / patch / type-check / compile pipeline, with two extra steps
 in front. A **source normaliser** rewrites the unary-test forms into ordinary
 expressions referencing `?` (e.g. `< 10` → `? < 10`, `2, 3` → `? = 2 or ? = 3`, `-` →
-`true`, `[18..65]` → `? in [18..65]`, `contains(?, "urgent")` left as-is), and a
-single-field `bl.BlSchema` declaring `?` with type `inputType` is supplied for the
-type-check step. The result is an ordinary `bl.BlExpr` whose evaluation receives the
+`true`, `[18..65]` → `? in [18..65]`, `.status = "active"` → `?.status = "active"`,
+`contains(?, "urgent")` left as-is), and a single-field `bl.BlSchema` declaring `?`
+with type `inputType` is supplied for the type-check step. The result is an ordinary `bl.BlExpr` whose evaluation receives the
 input value bound to `?`. The separate constructor exists so the unary-test grammar
 (the left-implicit and comma-disjunction forms) doesn't have to be valid
 plain-expression syntax — those forms only parse in unary-test mode. `Source()`
