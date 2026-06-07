@@ -58,7 +58,7 @@ var schema, _ = bl.Schema(
     bl.Field{Name: "age",    Type: bl.TypeNumber},
     bl.Field{Name: "income", Type: bl.TypeNumber},
 )
-var eligible, _ = bl.Expr("age >= 18 and income > 50000", schema)
+var eligible, _ = bl.Expr(`age >= 18 and income > 50000`, schema)
 
 var age,    _ = bl.Number(21)
 var income, _ = bl.Number(60000)
@@ -549,10 +549,10 @@ Worked example:
 
 ```go
 // host-side (Go) — compile-once, test-many.
-var atLeast18, _ = bl.UnaryTest(">= 18", bl.TypeNumber)
+var atLeast18, _ = bl.UnaryTest(`>= 18`, bl.TypeNumber)
 var isUrgent,  _ = bl.UnaryTest(`contains(?, "urgent")`, bl.TypeString)
-var inRange,   _ = bl.UnaryTest("[18..65]", bl.TypeNumber)
-var wildcard,  _ = bl.UnaryTest("-", bl.TypeAny)
+var inRange,   _ = bl.UnaryTest(`[18..65]`, bl.TypeNumber)
+var wildcard,  _ = bl.UnaryTest(`-`, bl.TypeAny)
 
 // Evaluate against typed inputs. The engine has verified at construction that
 // every result will be bl.BlBoolean (true / false) or bl.BlNull (when null
