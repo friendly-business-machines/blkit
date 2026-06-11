@@ -996,6 +996,8 @@ const (
     TypeDaysTimeDuration; TypeYearsMonthsDuration
     TypeList; TypeDictionary; TypeRange; TypeTable; TypeCalendar
     TypeRegex
+    TypeGroupedTable  // transient t.groupBy(...) handle; only valid as the .agg(...) receiver
+    TypeSortKey       // transient asc/desc/inOrder sort key; only valid as a t.sort(...) argument
     TypeAny
 )
 ```

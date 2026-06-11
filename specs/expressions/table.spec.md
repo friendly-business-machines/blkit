@@ -1,6 +1,6 @@
 ---
 name: BlTable
-description: The table (relation) type in the blkit expression language — an ordered list of uniformly-keyed dictionaries. Covers row/column access, table built-ins, the transformation methods (filter/filterOut/select/rename/sort/slice/distinct/withColumn/join), the inherited list semantics, and the Go layer (bl.BlTable + expr registrations).
+description: The table (relation) type in the blkit expression language — an ordered list of uniformly-keyed dictionaries. Covers row/column access, table built-ins, the transformation methods (filter/filterOut/select/rename/sort/slice/distinct/withColumn/join), grouping (groupBy/agg), the inherited list semantics, and the Go layer (bl.BlTable + expr registrations).
 targets:
   - ../../expr_table.go
 ---
@@ -19,8 +19,9 @@ shapes: a few **function** built-ins ([§ Built-in functions](#built-in-function
 ([§ Transformation methods](#transformation-methods)) — `filter` / `filterOut`,
 `select`, `rename`, `sort`, `slice`, `distinct`, `withColumn`, and `join` — for
 filtering, projection, schema reshaping, sorting, derived columns, and joins. `union`
-and `join` carry both surfaces. See also [dictionary.spec.md](dictionary.spec.md) for
-the row shape.
+and `join` carry both surfaces. **Grouping** ([§ Grouping](#grouping--groupby-and-agg)) —
+`groupBy` / `agg` — partitions rows and reduces each group to an aggregate row. See also
+[dictionary.spec.md](dictionary.spec.md) for the row shape.
 
 ---
 
@@ -420,11 +421,14 @@ All blkit extensions (**ext** — no DMN equivalent); DMN treats relations as li
 | `hasColumn(t, name)` | `hasColumn(t, "rate")` | `true` |
 | `union(t, others…[, how])` | `union(q1, q2)` | new table stacking all rows of `t` then each other table (UNION ALL — duplicates kept; `how` reconciles mismatched columns, see [§ Stacking tables](#stacking-tables--union)); also the method `t.union(...)` |
 | `join(t, other, on[, how])` | `join(t, orders, "id", "left")` | relational join (see [§ Joining tables](#joining-tables--join)); also the method `t.join(...)` |
+| `asc(column)` / `desc(column)` | `desc("rate")` | a **sort key** (ascending / descending on `column`) for `t.sort(...)` — see [§ Sort keys](#sort-keys) |
+| `inOrder(column, order)` | `inOrder("region", ["europe", "domestic"])` | a **sort key** ranking `column` by an explicit value `order`; for `t.sort(...)` — see [§ Sort keys](#sort-keys) |
 
 The relational transformation verbs — `filter`, `filterOut`, `select`, `rename`, `sort`,
 `slice`, `distinct`, `withColumn` — are **methods**, not functions; see
 [§ Transformation methods](#transformation-methods). `union` and `join` carry both
-surfaces.
+surfaces. `asc` / `desc` / `inOrder` are functions only — they build the sort keys that
+`t.sort(...)` consumes.
 
 There is no `addRow` / `removeRow` / `drop` built-in. Compose instead: **append rows**
 by `union`-ing a single-row table (`t.union(table([{region: "intl", rate: 25.99}]))`),
@@ -456,7 +460,7 @@ shippingRates
   .filter(rate > 5)                      // keep rows where the predicate holds
   .withColumn("with_tax", rate * 1.2)    // derive a column from each row
   .select("region", "with_tax")          // keep just these columns, in this order
-  .sort("with_tax", true)                // stable sort, descending
+  .sort(desc("with_tax"))                // stable sort, descending
 ```
 
 | Method | Example | Result |
@@ -465,7 +469,7 @@ shippingRates
 | `t.filterOut(predicate)` | `t.filterOut(rate > 10)` | the **complement** — rows where `predicate` does *not* hold. `t.filterOut(p)` ≡ `t.filter(not (p))`. |
 | `t.select(names…)` | `t.select("region", "rate")` | new table with only the named columns, **in the listed order**. Unknown column → `bl.TypeError`. (The method form of the former `project` built-in.) |
 | `t.rename(from, to)` | `t.rename("rate", "price")` | new table with column `from` renamed to `to`. Unknown `from`, or `to` colliding with an existing column → `bl.TypeError`. |
-| `t.sort(column[, descending])` | `t.sort("rate", true)` | **stable** sort by `column`'s values; optional `descending` flag (default ascending). Non-comparable cells → `bl.TypeError`. (The method form of the former `sortBy` built-in.) |
+| `t.sort(keys…)` | `t.sort("region", desc("rate"))` | **stable** multi-column sort by one or more **sort keys**, precedence left→right. A key is a bare column name (ascending), `asc(col)` / `desc(col)`, or `inOrder(col, [values…])` for an explicit value order. Non-comparable cells → `bl.TypeError`. (The method form of the former `sortBy` built-in.) See the [§ Sort keys](#sort-keys) notes. |
 | `t.slice(rows)` | `t.slice(2:4)` | the rows picked by the single `rows` selector — a 1-based index, a list of indices, or a range `i:j`. Exactly the bracket row selector `t[rows]`: `t.slice(2:4)` ≡ `t[2:4]`, `t.slice([1, 3])` ≡ `t[[1, 3]]`, `t.slice(2)` ≡ `t[2]`. Same skip-past-end behaviour. |
 | `t.distinct()` | `t.distinct()` | duplicate rows removed (full-row equality); first occurrence wins, input order preserved. |
 | `t.withColumn(name, expr)` | `t.withColumn("with_tax", rate * 1.2)` | new table with column `name` **added, or replaced in place if it already exists**. `expr` is evaluated per row with the row's columns in scope by name (and `item` bound to the whole row — the same scope as `filter`). |
@@ -478,10 +482,43 @@ methods are interchangeable. `select` / `rename` / `sort` / `distinct` are the m
 spellings of operations the spec previously exposed as the `project` / `rename` /
 `sortBy` / `distinct` functions; those function names are **no longer registered**.
 
-`sort` inherits the comparability rules of the old `sortBy`: cells comparing as `bl.Null`
-(e.g. naive-vs-zoned datetime comparison) sort to the **end** in ascending order, and
-**lead** in descending. A column whose cells aren't mutually comparable → `bl.TypeError`
-(see [§ Per-column value type](#per-column-value-type)).
+### Sort keys
+
+`sort` takes one or more **sort keys** and orders rows by them with **left→right
+precedence** — the first key is primary, later keys break ties — so multi-column sorting is
+written in one call: `t.sort("region", desc("rate"))` sorts by `region` ascending, then by
+`rate` descending within each region. At least one key is required (`t.sort()` →
+`bl.TypeError`). A key is one of:
+
+| Key | Meaning |
+|---|---|
+| `column` (a bare `bl.BlString`) | ascending on `column` — sugar for `asc(column)` |
+| `asc(column)` | ascending on `column` |
+| `desc(column)` | descending on `column` |
+| `inOrder(column, order)` | explicit value order — `column`'s cells are ranked by their position in the `order` list (a `bl.BlList`) |
+
+`asc` / `desc` / `inOrder` are **registered functions** ([§ Built-in functions](#built-in-functions))
+that build a sort key; a column named `"asc"`/`"desc"` is therefore never ambiguous
+(`desc("asc")` sorts the column `asc` descending). An unknown column in any key →
+`bl.TypeError`.
+
+`sort` inherits the comparability rules of the old `sortBy`: for `asc` / `desc` keys, cells
+comparing as `bl.Null` (e.g. naive-vs-zoned datetime comparison) sort to the **end** under
+`asc`, and **lead** under `desc`. A column whose cells aren't mutually comparable →
+`bl.TypeError` (see [§ Per-column value type](#per-column-value-type)).
+
+An `inOrder(column, order)` key ranks rows by the position of their `column` cell in `order`
+(matched by `bl.BlValue` equality). Values listed earlier in `order` come first; **duplicate
+entries in `order` are ignored after their first occurrence**. Rows whose cell value is
+**not** in `order` are ranked after every listed value, in ascending fallback order (the
+same `asc` rules, so `bl.Null` cells sort last). Because listed values are matched by
+equality, the listed portion needs no ordering relation; only the unlisted fallback requires
+the column's cells to be mutually comparable, so an unlisted, non-comparable cell →
+`bl.TypeError`. The `order` list may name values not present in the column — they simply
+match no rows.
+
+The whole sort is **stable**: rows that compare equal across *all* keys keep their input
+order, as do rows tied within an `inOrder` key's trailing unlisted group.
 
 `[@test] ../../expr_table_methods_test.go`
 
@@ -606,6 +643,66 @@ the default `"error"` it only matches another no-column table.
 
 ---
 
+## Grouping — groupBy and agg
+
+`groupBy` partitions a table's rows into groups that share the same value(s) in one or more
+**key columns**, producing a transient `bl.BlGroupedTable`. Its sole operation is `agg`,
+which collapses each group to a single row, returning a new `bl.BlTable` with the key
+column(s) followed by the named aggregate columns. `groupBy` is a **method only** (no
+function form) and **must** be consumed by `agg`: a bare `t.groupBy(…)` not followed by
+`.agg(…)` is a `bl.ParseError` at construction.
+
+```
+// expression-language
+shippingRates
+  .groupBy("region")
+  .agg(
+    "total",   sum(rate),       // sum of the group's rate column
+    "avgRate", mean(rate),
+    "n",       count(item),     // group size — item is the group's rows
+  )
+// → one row per region; columns: region, total, avgRate, n
+```
+
+**Keys.** `groupBy(names…)` takes one or more column names (`bl.BlString`); at least one is
+required (`t.groupBy()` → `bl.TypeError`) and an unknown column → `bl.TypeError`. Rows are
+grouped by **key-tuple equality** under `bl.BlValue` equality across all key columns — two
+rows share a group when every key cell is equal. `bl.Null` key cells group together (all
+rows whose key is null form one group).
+
+**Aggregation expressions.** `agg(name, expr, …)` takes alternating `bl.BlString` names and
+aggregate expressions; an odd argument count, or a non-string in a name position, →
+`bl.TypeError`. Each `expr` is **captured unevaluated** (the same mechanism as
+[`withColumn`](#transformation-methods)) and run once per group with the group's columns in
+scope **as lists** — a bare column name is the `bl.BlList` of that column's cells across the
+group's rows — and `item` bound to the group's rows as a sub-`bl.BlTable`. So the list
+aggregates ([list.spec.md § Built-in functions](list.spec.md#built-in-functions)) apply
+directly: `sum(rate)`, `mean(rate)`, `min(rate)`, `max(rate)`, `count(item)` (group size),
+and arbitrary expressions like `sum(for r in item return r.rate * r.qty)`.
+
+**Result shape.** The result's columns are the key column(s) in `groupBy` order, then the
+aggregate columns in `agg` order. An aggregate name colliding with a key column or with
+another aggregate name → `bl.TypeError`. There is **one row per group**, in the **first
+appearance order** of each group's key (stable, matching `distinct`). The uniform-keys and
+per-column value-type invariants hold on the result (an aggregate whose value type differs
+across groups → `bl.TypeError`).
+
+| Expression | Result |
+|---|---|
+| `t.groupBy("region").agg("n", count(item))` | `region` + row count per region |
+| `t.groupBy("region", "tier").agg("total", sum(rate))` | composite-key grouping; one row per (region, tier) |
+| `t.groupBy("region")` (no `.agg`) | `bl.ParseError` — `groupBy` must be consumed by `agg` |
+| `t.groupBy()` | `bl.TypeError` — at least one key column required |
+| `t.groupBy("region").agg("region", count(item))` | `bl.TypeError` — aggregate name collides with the key column |
+| `t.groupBy("region").agg("a", sum(rate), "b")` | `bl.TypeError` — dangling name with no expression |
+
+Grouping over a zero-row table has no groups, so `.agg(…)` yields a zero-row table that
+still carries the key and aggregate columns.
+
+`[@test] ../../expr_table_group_test.go`
+
+---
+
 ## Semantics & behaviour
 
 ### Uniform-keys invariant
@@ -699,6 +796,25 @@ func (t BlTable) NCols() int                          // column count
 func (t BlTable) ToList() BlList                      // 1 column → cell values; else rows (dicts)
 func (t BlTable) ToDict() (BlDictionary, error)      // exactly 1 row required; else TypeError
 func (t BlTable) ToValue() (BlValue, error)          // exactly 1×1 required; else TypeError
+
+// Transient grouping handle produced by t.groupBy(...); its only consumer is .agg(...).
+// Holds the key columns and one sub-table per group, in first-appearance order.
+type BlGroupedTable struct {
+    keys   []string
+    groups []BlTable
+}
+func (BlGroupedTable) Type() Type { return TypeGroupedTable }
+func (BlGroupedTable) isBlValue() {}
+
+// Transient sort key produced by asc(col) / desc(col) / inOrder(col, order); consumed by
+// t.sort(keys…). `order` is non-nil only for the inOrder form.
+type BlSortKey struct {
+    column     string
+    descending bool
+    order      BlList   // explicit value order (inOrder); nil for asc/desc
+}
+func (BlSortKey) Type() Type { return TypeSortKey }
+func (BlSortKey) isBlValue() {}
 ```
 
 ### Backing implementations (unexported, suffix `Fn`)
@@ -717,8 +833,31 @@ func selectFn(t BlTable, names ...BlString) (BlTable, error)        // unknown c
 func renameFn(t BlTable, from, to BlString) (BlTable, error)        // unknown from / collision → TypeError
 func distinctFn(t BlTable) BlTable                                  // full-row dedup via dictionary equality
 
-// t.sort(column[, descending]): stable sort by the column's values (method lowering).
-func sortFn(t BlTable, column BlString, descending ...BlBoolean) (BlTable, error)
+// t.sort(keys…): stable multi-column sort (method lowering). Each key is a BlString (a bare
+// column name → ascending) or a BlSortKey from asc/desc/inOrder. Keys apply left→right
+// (first key primary, later keys break ties). No keys / unknown column → TypeError; a
+// non-comparable cell under an asc/desc key (or an inOrder key's unlisted fallback) → TypeError.
+func sortFn(t BlTable, keys ...BlValue) (BlTable, error)
+
+// asc / desc / inOrder: registered functions that build a sort key for t.sort(...).
+// inOrder's `order` ranks the column's cells by list position; unlisted cells fall back to
+// ascending. Unknown column is validated by sortFn (the key only carries the column name).
+func ascFn(column BlString) BlSortKey                          // descending = false
+func descFn(column BlString) BlSortKey                         // descending = true
+func inOrderFn(column BlString, order BlList) BlSortKey        // explicit value order
+
+// t.groupBy(columns…): partition rows into groups sharing the key columns; returns the
+// transient grouping handle consumed by agg. No columns / unknown column → TypeError.
+// Method lowering; the patcher fuses the groupBy(...).agg(...) chain (a bare groupBy not
+// followed by agg is a ParseError at construction).
+func groupByFn(t BlTable, columns ...BlString) (BlGroupedTable, error)
+
+// g.agg(name, expr, …): collapse each group to one row → new table (the key columns then
+// the named aggregates). Each expr is captured unevaluated and run per group with the
+// group's columns bound as lists and `item` bound to the group's rows (a sub-table) — the
+// same capture mechanism as withColumn. Odd arg count, non-string name, or a name that
+// collides with a key/another aggregate → TypeError.
+func aggFn(g BlGroupedTable, pairs ...any) (BlTable, error)   // (BlString name, group-expression)…
 
 // t.withColumn(name, expr): per-row column add-or-replace. `expr` is captured
 // unevaluated (like the bracket predicate filter) and run per row with the row's columns
@@ -773,20 +912,34 @@ func tableOptions() []expr.Option {
             new(func(BlTable, BlTable, BlList) BlTable),
             new(func(BlTable, BlTable, BlString, BlString) BlTable),
             new(func(BlTable, BlTable, BlList, BlString) BlTable)),
+        // Sort-key constructors consumed by t.sort(...).
+        expr.Function("asc",     typed1(ascFn),     new(func(BlString) BlSortKey)),
+        expr.Function("desc",    typed1(descFn),    new(func(BlString) BlSortKey)),
+        expr.Function("inOrder", typed2(inOrderFn), new(func(BlString, BlList) BlSortKey)),
     }
 }
 ```
 
 Only the function-form built-ins are registered. The transformation methods
 (`filter` / `filterOut` / `select` / `rename` / `sort` / `slice` / `distinct` /
-`withColumn`), the unwrap methods (`toList` / `toDict` / `toValue`), and the
-attributes (`nRows` / `nCols` / `colNames`) are **not** in this list — they
-aren't user-callable functions. The patcher recognises the `t.method()` and
-`t.attribute` surfaces and lowers them: `select` / `rename` / `sort` /
-`distinct` to the matching `…Fn` accessors, `withColumn` to a per-row
-comprehension, and `filter` / `filterOut` / `slice` to the bracket forms
-`t[P]` / `t[not (P)]` / `t[i:j]` — the same way component access like `x.year`
-lowers to `dateYear(x)`.
+`withColumn`), the grouping methods (`groupBy` / `agg`), the unwrap methods
+(`toList` / `toDict` / `toValue`), and the attributes (`nRows` / `nCols` /
+`colNames`) are **not** in this list — they aren't user-callable functions. The
+patcher recognises the `t.method()` and `t.attribute` surfaces and lowers them:
+`select` / `rename` / `sort` / `distinct` to the matching `…Fn` accessors,
+`withColumn` to a per-row comprehension, and `filter` / `filterOut` / `slice` to
+the bracket forms `t[P]` / `t[not (P)]` / `t[i:j]` — the same way component access
+like `x.year` lowers to `dateYear(x)`. `t.sort(keys…)` lowers to `sortFn(t, keys…)`; the
+`keys` are ordinary values — bare column strings, or the `bl.BlSortKey`s returned by the
+registered `asc` / `desc` / `inOrder` functions, which (unlike the methods) **are** in the
+list above.
+
+The grouping chain `t.groupBy(cols…).agg(name, expr, …)` is lowered as a fused
+unit: `groupByFn` partitions the rows into a `bl.BlGroupedTable` and `aggFn` runs
+each captured aggregate expression per group (columns bound as lists, `item` as the
+group's rows), the same capture mechanism as `withColumn`. Because the grouped
+handle is transient, `groupBy` must be consumed by `agg`; a bare `t.groupBy(…)` is
+a `bl.ParseError` at construction.
 
 `union` and `join` are the two methods that are *also* registered functions:
 the patcher lowers their method forms `t.union(others…[, how])` and `t.join(other,
@@ -818,9 +971,20 @@ to validate.
   argument order (not the input column order).
 - `t.rename(from, to)` where `from` doesn't exist, or where `to` collides with an
   existing column → `bl.TypeError`.
-- `t.sort(col)` on a column whose cells aren't mutually comparable → `bl.TypeError`.
-  Cells comparing as `bl.Null` (e.g. naive-vs-zoned datetime comparison) are sorted to
-  the end in ascending order, leading in descending.
+- `t.sort(keys…)` takes one or more **sort keys** — a bare column name (ascending),
+  `asc(col)` / `desc(col)`, or `inOrder(col, order)` — applied with left→right precedence
+  (first key primary, later keys break ties). No keys → `bl.TypeError`; an unknown column in
+  any key → `bl.TypeError`. The sort is stable across the full key tuple. A bare boolean is
+  **not** a direction (use `asc` / `desc`).
+- For an `asc` / `desc` key on a column whose cells aren't mutually comparable →
+  `bl.TypeError`. Cells comparing as `bl.Null` (e.g. naive-vs-zoned datetime comparison)
+  sort to the end under `asc`, leading under `desc`.
+- `inOrder(col, order)` ranks rows by their cell's position in the `order` list (equality
+  match); rows whose value isn't listed are ranked after the listed values in ascending
+  fallback order, stably. Duplicate `order` entries collapse to their first occurrence;
+  `order` values absent from the column match no rows. A non-comparable cell among the
+  **unlisted** rows → `bl.TypeError` (the listed portion only needs equality, so it imposes
+  no ordering relation).
 - `t.distinct()` uses row equality, which is order-insensitive over the dictionary's
   keys; row order in the result preserves the first occurrence of each unique row.
 - `t.filter(p)` and `t.filterOut(p)` are exact complements over rows where `p` is a
@@ -840,6 +1004,13 @@ to validate.
   it's a `bl.TypeError` for any other `how`, and passing keys with `"cross"` is likewise
   a `bl.TypeError`. Multiple matches emit one row per matching pair, so row count is not
   preserved (except `cross`, which is exactly the product).
+- `t.groupBy(cols…).agg(name, expr, …)`: `groupBy` needs at least one column and must be
+  consumed by `agg` (a bare `t.groupBy(…)` → `bl.ParseError`); an unknown key column, an
+  odd `agg` argument count, a non-string aggregate name, or an aggregate name colliding
+  with a key or another aggregate → `bl.TypeError`. Groups follow first-appearance key
+  order; `bl.Null` keys group together; aggregate expressions see columns as lists and
+  `item` as the group's rows. A zero-row table groups to no rows but keeps the key +
+  aggregate columns. See [§ Grouping](#grouping--groupby-and-agg).
 - `t[i]` with `i` out of range (including `i == 0` and `|i| > t.nRows`) returns
   an empty `bl.BlTable`, not `bl.Null` and not an error — the result type is
   always a sub-table regardless of which row indices the selector hits.
