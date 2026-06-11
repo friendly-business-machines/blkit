@@ -55,37 +55,53 @@ table([...])[rate > 10]               // → sub-table of rows with rate > 10
 
 ## Construction (host-side)
 
-Host Go code constructs a `bl.BlTable` via the variadic `bl.Table(rows ...bl.BlDictionary)
-(bl.BlTable, error)` constructor. The first row fixes the column set (in iteration order
-of the supplied `map[string]bl.BlValue` — keys are sorted to a canonical order per
-[dictionary.spec.md](dictionary.spec.md)); every subsequent row must declare the same
-keys. An empty argument list yields an empty table with no columns — its column set is
-fixed once it is rebuilt with rows (e.g. via `union` with a non-empty table).
+Host Go code constructs a `bl.BlTable` with `bl.Table(columns bl.Cols, rows ...bl.Row)
+(bl.BlTable, error)`: a **compact typed header** (`bl.Cols`) declaring each column's name
+and data type, followed by **positional value rows** (`bl.Row`). The header's order is the
+binding order — value *i* in every row is the cell for column *i* — and cells wrap to the
+matching `bl.BlValue` automatically (see [bl-expr.spec.md § Bridging native ↔
+Bl\*](bl-expr.spec.md#bridging-native--bl-valuego)), so no per-cell `bl.String` / `bl.Number`
+wrapping is needed. The stored column order is the canonical sorted order per
+[dictionary.spec.md](dictionary.spec.md); the header only fixes the column set, types, and
+the rows' binding order. By convention a comment listing the column names, aligned over
+their values, sits above the first `bl.Row`.
 
 ```go
 // host-side (Go)
-var row1, _ = bl.Dictionary(map[string]bl.BlValue{
-    "region":      bl.String("domestic"),
-    "rate":        bl.Number(5.99),
-    "ships_today": bl.Boolean(true),
-})
-var row2, _ = bl.Dictionary(map[string]bl.BlValue{
-    "region":      bl.String("europe"),
-    "rate":        bl.Number(15.99),
-    "ships_today": bl.Boolean(false),
-})
-var shippingRates, _ = bl.Table(row1, row2)
+var shippingRates, _ = bl.Table(
+    bl.Cols{{"region", bl.TypeString}, {"rate", bl.TypeNumber}, {"ships_today", bl.TypeBoolean}},
+    //      region      rate    ships_today
+    bl.Row{"domestic",  5.99,   true},
+    bl.Row{"europe",    15.99,  false},
+)
 
-// Empty table — no columns until it is rebuilt with rows.
-var empty, _ = bl.Table()
+// A null cell is just nil in that position:
+var withGap, _ = bl.Table(
+    bl.Cols{{"region", bl.TypeString}, {"rate", bl.TypeNumber}, {"ships_today", bl.TypeBoolean}},
+    //      region   rate  ships_today
+    bl.Row{"intl",   nil,  false},   // rate is null
+)
+
+// Zero-row table that still carries its columns.
+var noRates, _ = bl.Table(bl.Cols{{"region", bl.TypeString}, {"rate", bl.TypeNumber}})
+
+// Truly empty table — no columns, no rows.
+var empty, _ = bl.Table(bl.Cols{})
 ```
 
 `bl.Table(...)` returns `(bl.BlTable, error)`. The error path fires when:
 
-- Two rows disagree on their key set (extra key, missing key, or differing key spelling)
-  → `bl.TypeError`.
-- Any row is `bl.Null()` — null rows aren't a valid table shape; if you want a row that
-  acts like "all values null", supply a `bl.BlDictionary` whose values are `bl.Null()`.
+- A `bl.Row`'s length differs from the column count → `bl.TypeError`.
+- A non-`nil` cell wraps to a type other than its column's declared `bl.Type` → `bl.TypeError`
+  (the per-column value-type invariant; see
+  [§ Per-column value type](#per-column-value-type)). A `nil` cell is always allowed — it
+  becomes `bl.Null()`, the way to express "all values null" for a row.
+- The header is malformed — a duplicate or empty column name, or a `bl.Type` of
+  `bl.TypeNull` or an unknown value → `bl.TypeError` (the same well-formedness rules
+  [bl.Schema(...)](schema.spec.md#construction-host-side) applies).
+
+`bl.Table(bl.Cols{})` is the empty table with no columns; `bl.Table(cols)` with no rows is
+a zero-row table that still carries its columns.
 
 Tables are immutable: every operation that "modifies" a table — the function built-ins
 (`union`, `join`) and the transformation methods (`select`, `filter` / `filterOut`,
@@ -659,8 +675,13 @@ func (t BlTable) Equal(other BlValue) BlValue   // row-wise, order-sensitive; co
 func (t BlTable) String() string                // canonical list-of-dictionaries literal
 func (BlTable) isBlValue() {}
 
-// Host constructor — validates uniform keys.
-func Table(rows ...BlDictionary) (BlTable, error)
+// Host constructor — a typed header plus positional value rows. Validates the header's
+// well-formedness, each row's length against the column count, and each non-nil cell's
+// type against its column. See § Construction (host-side).
+type Col  struct{ Name string; Type Type }   // one column's name + declared dtype
+type Cols []Col                               // ordered, typed header
+type Row  []any                               // a row's cell values, positional
+func Table(columns Cols, rows ...Row) (BlTable, error)
 
 // Host accessors.
 func (t BlTable) Columns() []string                  // declared column order
@@ -787,7 +808,8 @@ to validate.
 
 - `table([])` is the empty table with no columns; it gains a column set only when rebuilt
   with rows (e.g. `union`-ed with a non-empty table).
-- `bl.Table()` (no rows) is the empty table with no columns. Same shape.
+- `bl.Table(bl.Cols{})` is the empty table with no columns. `bl.Table(cols)` with a
+  non-empty header but no rows is a zero-row table that still carries those columns.
 - To remove rows, filter (`t[predicate]` / `t.filterOut(p)`) or slice (`t.slice(i:j)`) —
   there is no positional row-removal built-in.
 - `t.select(names…)` referencing an absent column → `bl.TypeError`. To drop columns,
