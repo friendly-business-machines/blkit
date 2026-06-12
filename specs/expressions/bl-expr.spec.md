@@ -1160,6 +1160,22 @@ types and the `args ...any` boilerplate is confined to the adapters.
 via `expr.Function`) are tried by operand type. Binding is centralised in `operatorBindings()` because
 one operator spans many types; each spoke contributes the named funcs.
 
+> **Implementation note — patcher-based dispatch (divergence).** `expr.Operator`'s overload
+> resolution is *static*: it matches each operand's compile-time type against the registered
+> signatures. Because every operator impl returns the `bl.BlValue` **interface** (so it can yield
+> `bl.BlNull`), a chained expression like `a + b + c` type-checks the inner `a + b` to `bl.BlValue`,
+> and no `addNumbers(bl.BlNumber, bl.BlNumber)` overload matches an interface-typed operand — `expr`
+> rejects it (`mismatched types`). The implementation therefore **does not use `expr.Operator`**.
+> Instead the patcher lowers every binary operator to a call of a single per-operator dispatch
+> function typed `func(bl.BlValue, bl.BlValue) bl.BlValue` (`__add`, `__sub`, `__lt`, `__eq`, …) that
+> switches on the operands' *runtime* types and delegates to the spoke impls (`addNumbers`,
+> `concatStrings`, …). Interface→interface chains type-check cleanly, and operand-type errors move
+> from parse time to evaluation time (a `bl.TypeError`). The per-spoke typed impls
+> (`addNumbers(a, b bl.BlNumber) bl.BlValue`, etc.) are retained exactly as specified — only the
+> binding mechanism differs. For the same reason, library functions are registered with `bl.BlValue`
+> parameter hints (asserting concrete operand types at runtime), since their arguments are commonly
+> operator results of static type `bl.BlValue`.
+
 ```go
 // host-side (Go)
 func operatorBindings() []expr.Option {
