@@ -19,7 +19,8 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "anthropic.claude-code"
+        "anthropic.claude-code",
+        "golang.go"
       ],
       "settings": {
         "terminal.integrated.defaultProfile.linux": "bash"
