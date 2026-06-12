@@ -31,7 +31,13 @@ accepted; a leading `-` is the unary minus operator applied to a non-negative li
 1.5e3         // → 1500        (scientific notation)
 ```
 
-- Decimals are exact: `0.1 + 0.2 // → 0.3` (not `0.30000000000000004`).
+- Decimals are exact: `0.1 + 0.2 // → 0.3` (not `0.30000000000000004`). This holds for
+  **source literals**, not just `number("…")` / host inputs: because `expr` would lex a
+  decimal/exponent literal to a lossy Go `float64`, the `normalise` step captures each such
+  literal's source text and rewrites it to its exact constructor form (`0.1` → `number("0.1")`,
+  parsed with `decimal.NewFromString`) **before** parsing — see
+  [bl-expr.spec.md § Source normalisation](bl-expr.spec.md#engine-entry-points-expr_enginego).
+  Integer literals are already exact and are left as-is.
 - Scientific notation is accepted. **Hexadecimal is not** (see
   [bl-expr.spec.md](bl-expr.spec.md#relationship-to-feel-and-future-direction)).
 - `NaN` and `Infinity` are not representable — a source/host value of either is a `bl.TypeError`.

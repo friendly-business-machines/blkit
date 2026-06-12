@@ -344,6 +344,15 @@ sub-table has; the column selector sets which columns. To pull a flat
 the unwrap methods `t.toList()` / `t.toDict()` / `t.toValue()` — see
 [§ Unwrapping a table](#unwrapping-a-table).
 
+**How the comma form is realised.** `expr`'s indexing is a single expression, so the
+two-slot forms `t[r, c]` and `t[, c]` are not directly parseable. The `normalise` step
+([bl-expr.spec.md § Source normalisation](bl-expr.spec.md#engine-entry-points-expr_enginego))
+rewrites them to a backing call **before** parsing — `t[r, c]` → `tableIndex(t, r, c)`, the
+empty row slot of `t[, c]` becoming an all-rows marker — distinguishing the comma form from a
+list-literal row selector `t[[a, b]]` and skipping strings / nested brackets. The arity errors
+below (`t[]`, `t[a, b, c]`) are raised by that rewrite; the no-comma `t[i]` stays as ordinary
+single-index access. `tableIndexFn` is documented in [§ Go implementation](#go-implementation-expr-extension).
+
 ### Row selector (first slot)
 
 | Form | Selects | Notes |
@@ -942,6 +951,13 @@ func tableFn(args ...BlValue) (BlTable, error)
 // tableFromDicts(list): validates that every element is a BlDictionary with identical keys.
 func tableFromDictsFn(l BlList) (BlTable, error)
 
+// tableIndex(t, rowSel, colSel): the backing call that `normalise` emits for the comma form
+// t[rowSel, colSel] / t[, colSel] (expr can't parse comma/leading-comma brackets — see
+// bl-expr.spec.md § Source normalisation). rowSel is an index/range/list/predicate or the
+// all-rows marker (from the empty slot); colSel is a column name, list of names, or absent.
+// Returns the selected sub-table per § Result-shape matrix; unknown column → null cells.
+func tableIndexFn(args ...BlValue) (BlTable, error)
+
 // hasColumn(t, name): schema introspection.
 func hasColumnFn(t BlTable, name BlString) BlBoolean
 
@@ -1026,6 +1042,8 @@ func tableOptions() []expr.Option {
         expr.Function("table",          variadic(tableFn),          new(func(...BlValue) BlTable)),
         // tableFromDicts: validates a list of uniformly-keyed dictionaries.
         expr.Function("tableFromDicts", typed1(tableFromDictsFn),   new(func(BlList) BlTable)),
+        // tableIndex: normalise's lowering target for the comma bracket t[r, c] / t[, c].
+        expr.Function("tableIndex",     variadic(tableIndexFn),     new(func(...BlValue) BlTable)),
         expr.Function("hasColumn", typed2(hasColumnFn), new(func(BlTable, BlString) BlBoolean)),
         // union: variadic over tables, with an optional trailing BlString `how`. unionFn
         // pulls a trailing string off the args (a string is never a table operand).

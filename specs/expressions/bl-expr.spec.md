@@ -1028,6 +1028,32 @@ const (
 `bl.BlExpr`s where the schema declares `?`), runs the program on the sandboxed VM, and returns the
 result as a `bl.BlValue`.
 
+**Source normalisation (`normalise`).** `expr`'s lexer/parser is fixed, so anything it can't
+lex or parse — and anything that must be captured *before* lexing — is rewritten in the source
+string first. `normalise` is the only stage that still has the original text, so it owns:
+
+- **`=` → `==`** — FEEL single-equals to `expr`'s equality token (leaving `==` / `<=` / `>=` /
+  `!=` untouched; see [§ Operators](#operators)).
+- **Unary-test forms** — the decision-table input-entry shorthands (see [§ Unary tests](#unary-tests)).
+- **Numeric-literal capture** — `expr` lexes a decimal/exponent literal to a Go `float64` whose
+  AST node keeps **no source text**, so precision beyond ~15 significant digits is lost before
+  any patch can run (and `NewFromFloat` can only recover that ~15-digit shortest round-trip).
+  `normalise` rewrites each fractional/exponent literal to its exact constructor form — `0.1` →
+  `number("0.1")` — so it is parsed with `decimal.NewFromString` and the full decimal128
+  precision survives. Integer literals are already exact (`expr` lexes them to `int`) and are
+  left untouched. See [number.spec.md § Literals](number.spec.md#literals).
+- **Two-slot table bracket** — `expr` indexing is a single expression, so the comma forms
+  `t[r, c]` / `t[, c]` are not parseable, and a post-parse patch can't fix a parse error.
+  `normalise` rewrites the comma form to a backing call before parsing — `t[r, c]` →
+  `tableIndex(t, r, c)`, with the empty row slot of `t[, c]` becoming an all-rows marker —
+  distinguishing it from a list-literal row selector `t[[a, b]]` and skipping strings and
+  nested brackets. The `t[]` / `t[a, b, c]` arity errors are raised by the rewrite; the
+  no-comma `t[i]` stays as ordinary single-index access. See
+  [table.spec.md § Row and column indexing](table.spec.md#row-and-column-indexing).
+
+These are deliberately source-string rewrites, **not** `expr.Patch` visitors: each needs the
+original text or must precede the parse.
+
 ```go
 // host-side (Go)
 func Expr(source string, schema BlSchema) (BlExpr, error) {
@@ -1160,9 +1186,19 @@ Three operator concerns are **not** handled by `expr.Operator`:
   rewrites a single `=` to `==` (leaving `==`, `<=`, `>=`, `!=` untouched) before parsing.
 - **Unary `-`.** `expr.Operator` is binary-only; the patcher rewrites unary `-x` into `negate(x)`,
   a registered function overloaded over `bl.BlNumber`/duration types.
-- **`and` / `or`.** Short-circuit logical operators over Go `bool`; our operands are wrapped `Bl*`
-  values that may be `bl.BlNull`. The patcher rewrites them into calls to the three-valued funcs in
-  [boolean.spec.md](boolean.spec.md) (`blAnd`/`blOr`). `not(x)` is an ordinary `expr.Function`.
+- **`and` / `or`.** Short-circuit logical operators; `expr`'s native `&&` / `||` need Go `bool`
+  operands, but ours are wrapped `Bl*` values that may be `bl.BlNull`. The patcher lowers them to
+  a **lazy conditional** (an `ast.ConditionalNode`, **not** a function call), so the second
+  operand is evaluated only when the first doesn't already decide the result:
+  `a and b` → `let va = a in (if va == false then false else blAnd(va, b))`;
+  `a or b` → `let va = a in (if va == true then true else blOr(va, b))`. Laziness is structural —
+  `b` (and the helper call) sit in the else-branch, which `expr` evaluates only when taken. The
+  guard fires only for a genuine `false` / `true`; a null left operand falls through and
+  evaluates `b` (`null == false` → `false` via `BlNull.Equal`), so the three-valued table holds
+  and `false and X` / `true or X` never evaluate `X` ([boolean.spec.md](boolean.spec.md)).
+  `blAnd` / `blOr` remain as the three-valued truth-table **helpers** the else-branch delegates
+  to, but the conditional — not a function call — owns evaluation order. `not(x)` is an ordinary
+  `expr.Function`.
 
 ### Patchers (`expr_patch.go`)
 
@@ -1171,11 +1207,24 @@ FEEL constructs absent from `expr`'s grammar are produced by an `expr` patcher (
 
 - interval/range membership with open/closed boundaries (`x in [a..b)`, range literals);
 - unary tests (decision-table input entries);
-- `for…return`, `some/every…satisfies`, `if…then…else`;
+- `if…then…else`; and the **comprehensions** — `for x in a, y in b return …` and
+  `some` / `every … satisfies` — which lower to nested iteration because `expr` has no FEEL
+  `for`/quantifier syntax (multi-generator forms become nested maps);
+- the **filter form** `list[predicate]` — when the bracket holds a *boolean* expression rather
+  than a numeric index, the patcher rewrites it to a comprehension that binds the magic `item`
+  to each element (`list[item > 2]`), distinguished from the numeric `list[i]` index;
 - the boolean connectives `and`/`or` and unary `-` (above);
-- **component access** — `x.year`, `d.minutes`, `r.start` resolve to accessor-function calls
-  (`dateYear(x)`, …) because `Bl*` values are opaque structs, not reflectable maps; dictionary member
+- **numeric literal nodes** — `IntegerNode`s are replaced with a `bl.BlNumber` `ast.ConstantNode`
+  (`NewFromInt`), so operators only ever see `Bl*` operands; decimal/exponent literals were
+  already rewritten to `number("…")` by `normalise` (and may be constant-folded here);
+- **component access** — `x.year`, `d.minutes`, `r.start` lower to a single runtime-dispatching
+  accessor `componentAccess(x, "year")` that switches on `x`'s runtime `Type()` (the per-type
+  `dateYearFn` / `durationDaysFn` / … are its internal arms), because the correct accessor
+  depends on the operand type, which isn't reliably available at patch time; dictionary member
   access (`d.key`) lowers to `getValue(d, "key")`;
+- **dictionary forward-references** — a literal whose entry references an earlier sibling
+  (`{a: 2, b: a*2}`) lowers to sequential `let` bindings so each key is in scope for the entries
+  to its right (see [dictionary.spec.md](dictionary.spec.md));
 - the **sequence operator** `start:end` lowers to `seq(start, end, 1)` (see
   [§ Sequences](#sequences-the--operator)); the patcher also enforces the "no bare `:` in a
   dictionary value position" rule by rejecting any `:` it finds inside a dict-literal value

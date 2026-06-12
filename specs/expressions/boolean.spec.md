@@ -202,9 +202,19 @@ func (b BlBoolean) Native() bool                  // underlying Go bool
 `and` and `or` cannot be wired with `expr.Operator` — that mechanism overloads binary arithmetic /
 comparison operators, not the short-circuit logical operators, and our operands are wrapped
 `bl.BlValue`s (possibly `bl.BlNull`) rather than Go `bool`s. Instead, the engine's AST patcher (see
-[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-expr_patchgo)) rewrites `a and b` and
-`a or b` into calls to internal functions `blAnd(a, b)` and `blOr(a, b)`. Both implement the
-three-valued logic table above; a non-boolean operand produces `bl.BlNull`.
+[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-expr_patchgo)) lowers `a and b` and `a or b`
+to a **lazy conditional**, *not* a function call — a function call would evaluate both operands and
+defeat short-circuiting. The lowering binds the left operand once and is:
+
+- `a and b` → `if a == false then false else blAnd(a, b)`
+- `a or b` → `if a == true then true else blOr(a, b)`
+
+The second operand sits in the else-branch, so it — and the helper call — run **only** when the
+left operand doesn't already decide the result (`false and X` / `true or X` never evaluate `X`).
+The guard fires only for a genuine `false` / `true`; a null left operand falls through (`null ==
+false` → `false`) and evaluates the right operand, preserving the three-valued table above. `blAnd`
+/ `blOr` are the three-valued truth-table **helpers** the else-branch delegates to once both
+operands are known (a non-boolean operand → `bl.BlNull`); they do not themselves short-circuit.
 
 `not` is different: the source-level form is already a function call (`not(x)`), so it's registered
 directly under its plain name as an `expr.Function` rather than going through the patcher.
@@ -216,9 +226,12 @@ cross-type comparison uniformly.
 
 ```go
 // host-side (Go)
-// Patcher targets — registered under names blAnd / blOr; not source-callable.
-func blAndFn(a, b BlValue) BlValue   // three-valued; false short-circuits to false
-func blOrFn(a, b BlValue) BlValue    // three-valued; true short-circuits to true
+// Truth-table helpers — registered under names blAnd / blOr; invoked from the else-branch of
+// the and/or conditional lowering (so they only run for the non-short-circuit cases). Not
+// source-callable. Three-valued; a non-boolean operand → BlNull. They do NOT short-circuit —
+// the patcher's conditional owns evaluation order.
+func blAndFn(a, b BlValue) BlValue
+func blOrFn(a, b BlValue) BlValue
 
 // Source-callable — registered under name "not".
 func notFn(x BlValue) BlValue        // not(null) → null; non-boolean → null

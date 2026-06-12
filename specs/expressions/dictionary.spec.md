@@ -197,8 +197,11 @@ func dictionaryPutFn(args ...any) (any, error)                      // (d, BlStr
 
 Member-access patcher dispatch is documented in [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go).
 The engine also models the evaluation scope as a `bl.BlDictionary`. Dictionary literals with
-forward-referencing entries (`{a: 2, b: a*2}`) compile to entries evaluated in order, where
-each entry adds its key to the scope before the next entry evaluates. Native Go
+forward-referencing entries (`{a: 2, b: a*2}`) need each key in scope for the entries to its
+right — `expr`'s native map literal would instead resolve `a` as an environment variable — so
+the patcher lowers such a literal to **sequential `let` bindings** (one per entry, each visible
+to later entries) that build the dictionary in order (see
+[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-expr_patchgo)). Native Go
 `map[string]any` inputs wrap to `bl.BlDictionary` via the engine's input bridge.
 
 ### Registrations (`dictionaryOptions`, unexported)
