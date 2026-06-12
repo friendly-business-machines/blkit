@@ -132,7 +132,7 @@ Equality with `null` yields `false`, never `null` (see [null.spec.md](null.spec.
 
 Related null-handling helpers live alongside the type they introspect:
 [`isDefined`](bl-expr.spec.md#name-resolution-isdefined) (name-resolution, in
-[bl-expr.spec.md](bl-expr.spec.md)) and [`getOrElse`](null.spec.md#default-for-null) (null
+[bl-expr.spec.md](bl-expr.spec.md)) and [`getOrElse`](null.spec.md#built-in-functions) (null
 fallback, in [null.spec.md](null.spec.md)).
 
 `[@test] ../../expr_boolean_functions_test.go`
@@ -202,7 +202,7 @@ func (b BlBoolean) Native() bool                  // underlying Go bool
 `and` and `or` cannot be wired with `expr.Operator` — that mechanism overloads binary arithmetic /
 comparison operators, not the short-circuit logical operators, and our operands are wrapped
 `bl.BlValue`s (possibly `bl.BlNull`) rather than Go `bool`s. Instead, the engine's AST patcher (see
-[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-ast-rewriting)) rewrites `a and b` and
+[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-expr_patchgo)) rewrites `a and b` and
 `a or b` into calls to internal functions `blAnd(a, b)` and `blOr(a, b)`. Both implement the
 three-valued logic table above; a non-boolean operand produces `bl.BlNull`.
 

@@ -98,8 +98,8 @@ engine (see [§ Semantics & behaviour](#semantics--behaviour)).
 
 ## Built-in functions
 
-DMN-inspired functions plus blkit extensions (**ext**, flagged — no DMN equivalent). Signatures use
-`name(arg: type): returnType`. `scale` is a decimal-place count.
+DMN-inspired functions plus blkit extensions (**ext**, flagged — no DMN equivalent). `scale` is a
+decimal-place count.
 
 | Function | Example | Result |
 |---|---|---|
@@ -227,7 +227,7 @@ is unique to `bl.BlNumber`:
 1. The Registrations section below calls `expr.Function("addNumbers", typed2(addNumbers), …)`,
    which makes the engine aware of the function under that exact string name and records its type
    signature.
-2. A central `operatorBindings()` in [bl-expr.spec.md](bl-expr.spec.md#operator-bindings) then
+2. A central `operatorBindings()` in [bl-expr.spec.md](bl-expr.spec.md#operators) then
    calls `expr.Operator("+", "addNumbers", "concatStrings", "addDateYM", …)`, which tells the
    engine "when you see `+` at parse time, try each of these registered functions in turn and
    dispatch to whichever one's signature matches the operand types." This step is centralised in
@@ -367,8 +367,10 @@ func numberOptions() []expr.Option {
         expr.Function("clamp",         typed3(clampFn),         new(func(bl.BlNumber, bl.BlNumber, bl.BlNumber) bl.BlValue)),
 
         // conversion
-        expr.Function("number", numberFn, new(func(bl.BlString, bl.BlString, bl.BlString) bl.BlNumber)),
-        expr.Function("string", stringFn, new(func(bl.BlValue) bl.BlString)), // shared registration; defined in string.spec.md
+        expr.Function("number", numberFn,
+            new(func(bl.BlString) bl.BlNumber),                            // 1-arg: plain decimal string
+            new(func(bl.BlString, bl.BlString, bl.BlString) bl.BlNumber)), // 3-arg: with separators
+        expr.Function("string", stringConvFn, new(func(bl.BlValue) bl.BlString)), // shared registration; defined in string.spec.md
     }
 }
 ```
@@ -390,5 +392,4 @@ wrapped to `bl.BlNumber` by the engine bridge; a thousands-separated string is r
 - `clamp(n, min, max)` with `min > max` → `null`.
 - `modulo` / `divide` with a zero divisor → `null`, never an error.
 - `round` is a strict alias of `roundHalfUp`.
-- `toNativeInt` truncates (does not round) and errors on overflow.
 - `3.0 = 3.00` → `true` (trailing zeros ignored).

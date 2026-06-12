@@ -137,7 +137,7 @@ All resulting entries must share a single zone-kind (per
 import a mixed-zone document, the host can re-run `ImportICal` against a filtered subset, or
 post-process the resulting entries with `withoutOffset` / `withTimezone`
 ([datetime.spec.md § Zone stripping](datetime.spec.md#zone-stripping-ext) /
-[§ Zone conversion](datetime.spec.md#zone-conversion-ext)) before rebuilding via
+[§ Zone stripping](datetime.spec.md#zone-stripping-ext)) before rebuilding via
 `bl.Calendar(...)`.
 
 #### Options
@@ -252,7 +252,7 @@ entry, etc.) return `null` for the mismatched entries; see
 To bridge across zone-kinds at query time, strip or attach zones at the consumer side before
 calling — the strip/attach functions are in
 [datetime.spec.md § Zone stripping](datetime.spec.md#zone-stripping-ext) and
-[datetime.spec.md § Zone conversion](datetime.spec.md#zone-conversion-ext).
+[datetime.spec.md § Zone stripping](datetime.spec.md#zone-stripping-ext).
 
 `[@test] ../../expr_calendar_test.go`
 
@@ -375,7 +375,7 @@ identically, but matching entries are **removed** by `calendarDrop` and **retain
 | `target` type | Match rule |
 |---|---|
 | `bl.BlString` | match entries whose `name` equals `target` (case-sensitive exact match); unnamed entries are never matched |
-| `bl.BlRegex` (from [`pattern(s)`](string.spec.md#precompiled-patterns-patterns--blregex)) | match entries whose `name` matches the precompiled regex (RE2 syntax, anchored at both ends via `^(?:…)$`); unnamed entries are never matched |
+| `bl.BlRegex` (from [`pattern(s)`](string.spec.md#precompiled-patterns-patterns--blblregex)) | match entries whose `name` matches the precompiled regex (RE2 syntax, anchored at both ends via `^(?:…)$`); unnamed entries are never matched |
 | `bl.BlDate` / `bl.BlDateTime` | match entries whose `value` equals `target` (via `bl.BlValue.Equal()`) |
 | `bl.BlRange` | depends on `rangeMatch` (see below); default is structural equality |
 | `bl.BlList` | match entries that satisfy **any** item in the list, applying the rule above per item |
@@ -640,7 +640,7 @@ Iteration outside `[validFrom, validTo]` is silently tolerated by default — th
 contributes no holiday information beyond its bounds. Callers that need a hard guarantee can
 opt in by passing `strictCalendarRange: true` to any iterating business-day function, which
 raises `bl.CalendarRangeError` the moment iteration would step past the boundary (see
-[date.spec.md § Calendar-range strictness](date.spec.md#calendar-range-strictness)).
+[datetime.spec.md § Calendar-range strictness](datetime.spec.md#calendar-range-strictness)).
 
 ---
 
@@ -987,7 +987,7 @@ validity bounds only when `strictCalendarRange: true` is supplied.
   date / datetime / range → `bl.TypeError` at evaluation from either function.
 - A `bl.BlRegex` target whose source was malformed never reaches `calendarDrop` / `calendarKeep` —
   it would have failed at the `pattern(...)` call site with `bl.RegexError`. See
-  [string.spec.md § Precompiled patterns](string.spec.md#precompiled-patterns-patterns--blregex).
+  [string.spec.md § Precompiled patterns](string.spec.md#precompiled-patterns-patterns--blblregex).
 - `calendarMerge` does not union validity bounds (result has none unless re-supplied
   host-side). It performs no deduplication by default; pass `{dedupeBy: "value"}` or
   `{dedupeBy: "valueAndName"}` to dedupe. Unknown keys in the options dictionary, or unknown

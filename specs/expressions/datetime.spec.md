@@ -38,6 +38,11 @@ now()                                       // current datetime
 
 The `T` separator is required; space-separated forms are rejected.
 
+`now()` returns the current moment as a **zoned** (non-naive) `bl.BlDateTime` in the system's
+local zone — the datetime counterpart of date's `today()` (which returns a *naive* date). To
+get a naive "wall-clock now", strip the zone with [`withoutTimezone`](#zone-stripping-ext); for
+the current date or time of day, use `today()` ([date.spec.md](date.spec.md)) or `time(now())`.
+
 `[@test] ../../expr_datetime_test.go`
 
 ---
@@ -220,8 +225,8 @@ sub-day precision).
 `dtDurationBetween(date("2025-01-01"), datetime("2025-03-28T12:00:00"))` is a type error
 (`bl.ParseError` when compiled with a `bl.BlSchema`, or `bl.TypeError` at evaluation). To compare across
 kinds, convert one operand explicitly: `datetime(d)` lifts a `bl.BlDate` to midnight-of-that-day
-`bl.BlDateTime`, and the conversion functions in [date.spec.md](date.spec.md) /
-[datetime.spec.md § Conversion](#conversion) project a `bl.BlDateTime` down to a `bl.BlDate`.
+`bl.BlDateTime`, and the conversion functions in [date.spec.md](date.spec.md) project a
+`bl.BlDateTime` down to a `bl.BlDate`.
 
 `[@test] ../../expr_business_days_test.go`
 
@@ -511,7 +516,7 @@ connection from operator token to function happens in two steps, neither of whic
 1. The Registrations section below calls `expr.Function("addDateTimeDT", typed2(addDateTimeDT), …)`,
    which makes the engine aware of the function under that exact string name and records its type
    signature.
-2. A central `operatorBindings()` in [bl-expr.spec.md](bl-expr.spec.md#operator-bindings) then
+2. A central `operatorBindings()` in [bl-expr.spec.md](bl-expr.spec.md#operators) then
    calls `expr.Operator("+", "addNumbers", "concatStrings", "addDateTimeDT", "addDateTimeYM", …)`,
    which tells the engine "when you see `+` at parse time, try each of these registered functions
    in turn and dispatch to whichever one's signature matches the operand types." Centralised in

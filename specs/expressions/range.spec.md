@@ -234,7 +234,7 @@ func (r BlRange) EndIncluded() bool
 ### Syntax (patcher)
 
 Interval literals (`[a..b]`, `(a..b)`, `[a..b)`, `(a..b]`) and `x in [a..b]` membership are produced
-by the range patcher ([bl-expr.spec.md](bl-expr.spec.md#patchers-ast-rewriting)) — `expr` has no
+by the range patcher ([bl-expr.spec.md](bl-expr.spec.md#patchers-expr_patchgo)) — `expr` has no
 open/closed interval syntax. The patcher emits `newRange(a, b, startIncluded, endIncluded)` for a
 literal and lowers `x in r` to `includes(r, x)`.
 

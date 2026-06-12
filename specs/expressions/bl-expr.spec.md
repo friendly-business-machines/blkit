@@ -92,13 +92,17 @@ Every value belongs to one of the following types. Each has a literal or constru
 | dictionary | `bl.BlDictionary` | `{ ... }` | `{name: "Alice", age: 30}` |
 | range | `bl.BlRange` | interval notation | `[1..10]`, `(1..10)`, `[1..10)` |
 | null | `bl.BlNull` | keyword | `null` |
+| regex | `bl.BlRegex` | `pattern(...)` | `pattern("[0-9]+")` |
+| table | `bl.BlTable` | `table(...)` / `tableFromDicts(...)` | `table(["a"], [1], [2])` |
+| calendar | `bl.BlCalendar` | host-built (no constructor) | — |
 
 - **Numbers** are arbitrary-precision decimals — never floats; precision is preserved through all
   arithmetic (see [number.spec.md](number.spec.md)).
-- The blkit-specific types `bl.BlCalendar` ([calendar.spec.md](calendar.spec.md)) and `bl.BlTable`
-  ([table.spec.md](table.spec.md)) have **no literal syntax** in v1; they are produced
-  programmatically or, for tables, by the `table(...)` / `tableFromDicts(...)` constructor
-  built-ins ([table.spec.md § Literals](table.spec.md#literals)), and may be referenced as variables.
+- The last three rows have **no literal syntax** in v1: `bl.BlRegex`
+  ([string.spec.md § Precompiled patterns](string.spec.md#precompiled-patterns-patterns--blblregex))
+  is built by `pattern(...)`; `bl.BlTable` ([table.spec.md](table.spec.md)) by
+  `table(...)` / `tableFromDicts(...)`; `bl.BlCalendar` ([calendar.spec.md](calendar.spec.md)) is
+  host-built only. All three are produced by a constructor or host code and referenced as variables.
 
 `[@test] ../../expr_data_types_test.go`
 
@@ -130,14 +134,14 @@ String literals use double quotes. Strings are immutable Unicode sequences
 ### Temporal values
 
 Temporal values are created with constructor functions, accepting either an ISO 8601 string or
-numeric components (see [§ Conversion functions](#conversion-functions)).
+numeric components (see [§ Built-in function library](#built-in-function-library)).
 
 ```
 // expression-language
 date("2025-03-28")                       // → a date
 date(2025, 3, 28)                        // → a date
 time("11:45:30+02:00")                   // → a time with offset
-datetime("2025-03-28T11:45:30")          // → a date-time
+datetime("2025-03-28T11:45:30")          // → a datetime
 dtDuration("P4DT12H")                      // → days-time duration (4 days, 12 hours)
 ymDuration("P1Y6M")                        // → years-months duration (1 year, 6 months)
 ```
@@ -181,12 +185,12 @@ isDefined(undeclaredName)        // → false (only when there is no binding)
 `isDefined` operates at the resolution layer, not the value layer — to test whether a value *is*
 `bl.BlNull` once resolved, use `isNull(x)` ([null.spec.md § Testing for null](null.spec.md#testing-for-null)).
 To supply a fallback when a value resolves to `bl.BlNull`, use `getOrElse(x, default)`
-([null.spec.md § Default for null](null.spec.md#default-for-null)).
+([null.spec.md § Default for null](null.spec.md#built-in-functions)).
 
 Because `isDefined` distinguishes "unbound name" from "bound to anything (including `bl.BlNull`)", it
 cannot be expressed as a normal `bl.BlValue → bl.BlValue` impl — by the time a normal impl runs, the
 argument has already been resolved and unbound names are a parse error. Instead, the engine's AST
-patcher (see [§ Patchers](#patchers-ast-rewriting)) intercepts `isDefined(name)` calls before
+patcher (see [§ Patchers](#patchers-expr_patchgo)) intercepts `isDefined(name)` calls before
 resolution and rewrites them to a lookup against the input value plus declared `bl.BlSchema` bindings.
 The impl is registered in `expr_engine.go` alongside the other engine-level options.
 
@@ -270,7 +274,7 @@ it first with `string(...)`.
 "order-" + string(123)            // → "order-123"
 ```
 
-Inspection and transformation use the [§ String functions](#string-functions).
+Inspection and transformation use the [string.spec.md § Built-in functions](string.spec.md#built-in-functions).
 
 ```
 // expression-language
@@ -314,7 +318,7 @@ else "subprime"
 ## Ranges and intervals
 
 A range is a bounded interval with open `( )` or closed `[ ]` boundaries on each side. Ranges are
-used for membership tests (with `in`) and the [§ Range functions](#range-functions). See
+used for membership tests (with `in`) and the [range.spec.md § Interval algebra](range.spec.md#interval-algebra-built-ins). See
 [range.spec.md](range.spec.md).
 
 ```
@@ -651,7 +655,7 @@ Accessing a field on a list of dictionaries projects that field across every ele
 [{name: "Alice", age: 30}, {name: "Bob", age: 34}].age     // → [30, 34]
 ```
 
-List operations are covered by the [§ List functions](#list-functions).
+List operations are covered by the [list.spec.md § Built-in functions](list.spec.md#built-in-functions).
 
 `[@test] ../../expr_list_expressions_test.go`
 
@@ -752,7 +756,7 @@ applicant.address.postcode         // navigate input variables
 ```
 
 See [dictionary.spec.md](dictionary.spec.md). Dictionary manipulation uses the
-[§ Dictionary functions](#dictionary-functions).
+[dictionary.spec.md § Built-in functions](dictionary.spec.md#built-in-functions).
 
 `[@test] ../../expr_dictionaries_test.go`
 
@@ -769,7 +773,6 @@ range.
 date("2025-03-28").year            // → 2025
 date("2025-03-28").month           // → 3
 date("2025-03-28").day             // → 28
-date("2025-03-28").weekday         // → 5    (Friday; Monday = 1)
 
 time("11:45:30+02:00").hour        // → 11
 time("11:45:30+02:00").minute      // → 45
@@ -851,13 +854,17 @@ they're getting, not to add engine work.
 ## Type checking: `instance of`
 
 `x instance of T` tests a value's type, where `T` is a type name from
-[§ Data types](#data-types). Returns a `bl.BlBoolean`.
+[§ Data types](#data-types) — including the non-literal types `regex`, `table`, and
+`calendar`. Returns a `bl.BlBoolean`.
 
 ```
 // expression-language
 42 instance of number              // → true
 "x" instance of number             // → false
 date("2025-01-01") instance of date    // → true
+pattern("[0-9]+") instance of regex    // → true
+myTable instance of table              // → true
+ukHolidays instance of calendar        // → true
 ```
 
 `[@test] ../../expr_instance_of_test.go`
@@ -877,17 +884,17 @@ cases, and Go registration. This catalogue is the index:
 | Null | `isNull`, `getOrElse` | [null.spec.md](null.spec.md) |
 | Resolution | `isDefined` | this spec ([§ Name resolution](#name-resolution-isdefined)) |
 | String | `substring`, `stringLength`, `upperCase`, `contains`, `matches`, `replace`, `split`, `stringJoin`, `pattern` (precompiled `bl.BlRegex`), … | [string.spec.md](string.spec.md) |
-| Numeric | `decimal`, `floor`, `ceiling`, `round*`, `abs`, `modulo`, `sqrt`, `log`, `ln`, `exp`, `odd`, `even`, … | [number.spec.md](number.spec.md) |
+| Numeric | `clamp`, `floor`, `ceiling`, `round*`, `abs`, `modulo`, `sqrt`, `log`, `ln`, `exp`, `odd`, `even`, … | [number.spec.md](number.spec.md) |
 | List | `count`, `min`, `max`, `sum`, `mean`, `sublist`, `append`, `concatenate`, `union`, `distinct`, `flatten`, `sort`, `seq` (and the `:` sequence operator), … | [list.spec.md](list.spec.md) |
 | Dictionary | `getValue`, `getEntries`, `dictionaryPut`, `dictionaryMerge` | [dictionary.spec.md](dictionary.spec.md) |
 | Temporal | `now`, `today`, `lastDayOfMonth`, `addBusinessDays`, `is*`, … (calendar properties such as `.dayName`, `.monthName` are dot accessors, not function calls — see [date.spec.md § Calendar properties](date.spec.md#calendar-properties)) | [date](date.spec.md) / [time](time.spec.md) / [datetime](datetime.spec.md) |
 | Duration | `ymDuration`, `dtDuration`, `ymDurationBetween`, `dtDurationBetween`, components, `abs`, `isNegative`, `round*` (overloaded) | [days_time_duration](days_time_duration.spec.md) / [years_months_duration](years_months_duration.spec.md) |
 | Range (interval algebra) | `before`, `after`, `meets`, `overlaps`, `includes`, `during`, `starts`, `finishes`, `coincides` | [range.spec.md](range.spec.md) |
-| Table | `table`, `project`, `columns`, `rows`, `distinct` | [table.spec.md](table.spec.md) |
+| Table | `table`, `tableFromDicts`, `hasColumn`, `union`, `join`, `asc` / `desc` / `inOrder` (sort keys); transformation **methods** `t.filter` / `t.select` / `t.sort` / `t.withColumn` / `t.groupBy`, … | [table.spec.md](table.spec.md) |
 | Calendar (host-constructed) | `entries`, `find`, `contains`, `overlaps`, `entriesFor`, `entriesIn`, `validFrom` / `validTo` / `validRange`, `calendarDrop` / `calendarKeep` / `calendarMerge` | [calendar.spec.md](calendar.spec.md) |
 
 Multi-word names are lowerCamelCase ([§ Relationship to FEEL](#relationship-to-feel-and-future-direction)).
-Built-ins that exceed the DMN standard (blkit extensions, e.g. `clamp`, `padStart`, `addBusinessDays`)
+Built-ins that exceed the DMN standard (blkit extensions, e.g. `clamp`, `padLeading`, `addBusinessDays`)
 are flagged as such in their spoke. Every built-in is registered with `expr` via the mechanism in
 [§ Engine internals](#engine-internals-go).
 
@@ -935,6 +942,17 @@ a or b and c          // → a or (b and c)
   incompatible types) — are returned by `Evaluate` as a `bl.TypeError`.
   `[@test] ../../expr_eval_error_test.go`
 
+The full error-type catalogue (all defined in `expr_errors.go` / `expr_schema.go` — see
+[§ Engine internals](#engine-internals-go)):
+
+| Error | Raised when |
+|---|---|
+| `bl.ParseError` | `bl.Expr` fails to parse or type-check the source. |
+| `bl.TypeError` | `Evaluate` hits a runtime type mismatch (also returned by host constructors on bad input). |
+| `bl.RegexError` | a malformed pattern in `matches` / `replace` / `extract` / `pattern(...)` ([string.spec.md](string.spec.md)). |
+| `bl.CalendarRangeError` | business-day iteration steps past a calendar's validity bounds under `strictCalendarRange` ([datetime.spec.md § Calendar-range strictness](datetime.spec.md#calendar-range-strictness)). |
+| `bl.SchemaError` | a value fails `bl.BlSchema` validation, carrying a path to the offending node ([schema.spec.md](schema.spec.md)). |
+
 ---
 
 ## Engine internals (Go)
@@ -956,7 +974,7 @@ call sites read `bl.Expr(...)`, `bl.Number(...)`, etc.
 |---|---|
 | `expr_engine.go` | `Expr`, `bl.BlExpr`, `Type`; the option-assembly, operator binding, patcher install, and the input/output bridge. `bl.BlSchema` lives in `expr_schema.go`. |
 | `expr_value.go` | The `bl.BlValue` interface, the `bl.BlNull` singleton, and shared helpers (null propagation, equality, wrapping). |
-| `expr_errors.go` | `ParseError`, `TypeError`, `RegexError`, `CalendarRangeError`. |
+| `expr_errors.go` | `ParseError`, `TypeError`, `RegexError`, `CalendarRangeError` (`SchemaError` lives in `expr_schema.go`). |
 | `expr_patch.go` | The `ast.Visitor` patcher(s) for FEEL-only syntax. |
 | `expr_<type>.go` | One per value type (`expr_number.go`, `expr_string.go`, `expr_date.go`, …): the `Bl*` value type, its exported host API, its unexported `…Options()` registrations, and its backing impl funcs. |
 | `expr_*_test.go` | Tests — the `[@test]` targets throughout these specs. |
@@ -1180,6 +1198,7 @@ type ParseError struct { Source string; Err error } // from Expr (parse/type-che
 type TypeError  struct { /* op, types */ }           // from Evaluate (runtime type mismatch)
 type RegexError struct { Pattern string; Err error } // bad regex in matches/replace/extract
 type CalendarRangeError struct { /* date, bounds */ }// business-day iteration past validity
+type SchemaError struct { Path string; Err error }   // from bl.BlSchema validation (expr_schema.go)
 ```
 
 `[@test] ../../expr_engine_internal_test.go`

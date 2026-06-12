@@ -148,6 +148,8 @@ Per-field semantics (dispatched on `Type`):
 - **`bl.TypeTable`** — `v` is a `bl.BlTable`; the declared columns in `f.Fields` are present on
   every row and each row's column values satisfy the column schemas. `ValidateInput`
   rejects rows with undeclared columns; `ValidateOutput` ignores them.
+- **`bl.TypeAny`** — any non-`bl.BlNull` `bl.BlValue` satisfies the field (the permissive
+  pass-through type — see [§ Edge cases](#edge-cases)); only `bl.BlNull` in a required field fails.
 
 `bl.BlNull` field values:
 

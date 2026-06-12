@@ -207,7 +207,7 @@ input round-trips exactly through the matching total.
 
 Component access is **patcher-lowered** to function calls (`durationYears(d)`,
 `durationMonths(d)`, `durationTotalMonths(d)`, `durationTotalYears(d)`); see
-[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-ast-rewriting).
+[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-expr_patchgo).
 
 `[@test] ../../expr_years_months_duration_components_test.go`
 
@@ -431,7 +431,7 @@ function happens in two steps, neither of which is unique to this type:
    which makes the engine aware of the function under that exact string name and records its type
    signature.
 2. A central `operatorBindings()` in
-   [bl-expr.spec.md](bl-expr.spec.md#operator-bindings) then calls
+   [bl-expr.spec.md](bl-expr.spec.md#operators) then calls
    `expr.Operator("+", "addNumbers", "addYMDuration", …)`, which tells the engine "when you see
    `+` at parse time, try each of these registered functions in turn and dispatch to whichever
    one's signature matches the operand types." This step is centralised in one place because a

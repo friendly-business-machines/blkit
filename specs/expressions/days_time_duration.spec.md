@@ -129,7 +129,7 @@ A **zone-kind mismatch** between operands (one naive, one zoned/offset) yields `
 mirroring the `bl.BlDateTime` comparison policy in
 [datetime.spec.md § Comparison semantics](datetime.spec.md#comparison-semantics). Use
 `withoutOffset` / `withoutTimezone` ([datetime.spec.md § Zone stripping](datetime.spec.md#zone-stripping-ext))
-to drop a zone, or `withOffset` / `withTimezone` ([datetime.spec.md § Zone conversion](datetime.spec.md#zone-conversion-ext))
+to drop a zone, or `withOffset` / `withTimezone` ([datetime.spec.md § Zone stripping](datetime.spec.md#zone-stripping-ext))
 to attach one before calling.
 
 Both operands must additionally be the **same temporal kind** — either both `bl.BlDate` or both
@@ -274,7 +274,7 @@ through the matching total.
 Component access is **patcher-lowered** to function calls (`durationDays(d)`, `durationHours(d)`,
 `durationMinutes(d)`, `durationSeconds(d)`, `durationTotalSeconds(d)`, `durationTotalMinutes(d)`,
 `durationTotalHours(d)`, `durationTotalDays(d)`); see
-[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-ast-rewriting).
+[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-expr_patchgo).
 
 `[@test] ../../expr_days_time_duration_components_test.go`
 
@@ -509,7 +509,7 @@ happens in two steps, neither of which is unique to this type:
    which makes the engine aware of the function under that exact string name and records its
    type signature.
 2. A central `operatorBindings()` in
-   [bl-expr.spec.md](bl-expr.spec.md#operator-bindings) then calls
+   [bl-expr.spec.md](bl-expr.spec.md#operators) then calls
    `expr.Operator("+", "addNumbers", "addDTDuration", …)`, which tells the engine "when you see
    `+` at parse time, try each of these registered functions in turn and dispatch to whichever
    one's signature matches the operand types." This step is centralised in one place because a

@@ -131,7 +131,7 @@ var empty  = bl.List()
 
 `bl.List(...)` returns a `bl.BlList` directly (no error path). For the alternative of letting the
 engine bridge wrap a native Go slice automatically when the list is supplied as an input
-variable, see [bl-expr.spec.md § Bridging native ↔ Bl*](bl-expr.spec.md#bridging-native--bl-valuego);
+variable, see [bl-expr.spec.md § Bridging native ↔ Bl*](bl-expr.spec.md#bridging-native--bl-expr_valuego);
 when the host already holds `bl.BlValue`s, `bl.List(...)` is preferred since it avoids the
 round-trip through the bridge.
 
@@ -228,8 +228,8 @@ zipStringJoin([["a","b","c"], ["1","2","3"]], "-")      // → ["a-1", "b-2", "c
 
 ```
 // expression-language
-zipStringJoin(["a", "b", "c"], "-")                     // single delim → "a-b-c"
-zipStringJoin(["a", "b", "c"], ["-", ":"])              // per-gap delims → "a-b:c"
+zipStringJoin([["a","b"], ["1","2"], ["x","y"]], "-")        // single delim → ["a-1-x", "b-2-y"]
+zipStringJoin([["a","b"], ["1","2"], ["x","y"]], ["-", ":"]) // per-gap delims → ["a-1:x", "b-2:y"]
 ```
 
 **Prefix and suffix** each accept two forms:
@@ -242,13 +242,13 @@ zipStringJoin(["a", "b", "c"], ["-", ":"])              // per-gap delims → "a
 
 ```
 // expression-language
-// Single prefix/suffix: overall wrap
-zipStringJoin(["a", "b", "c"], "-", "[", "]")
-// → "[a-b-c]"
+// Single prefix/suffix: wraps each output element once
+zipStringJoin([["a","b"], ["1","2"], ["x","y"]], "-", "[", "]")
+// → ["[a-1-x]", "[b-2-y]"]
 
-// Per-list prefix/suffix: each list's element is wrapped individually
-zipStringJoin(["a", "b", "c"], "-", ["<", "(", "{"], [">", ")", "}"])
-// → "<a>-(b)-{c}"
+// Per-list prefix/suffix: each inner list's contribution is wrapped individually
+zipStringJoin([["a","b"], ["1","2"], ["x","y"]], "-", ["<", "(", "{"], [">", ")", "}"])
+// → ["<a>-(1)-{x}", "<b>-(2)-{y}"]
 ```
 
 You can mix forms (e.g. single delim with per-list prefix/suffix, or vice versa) — `delim`,

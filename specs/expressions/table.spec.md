@@ -88,7 +88,7 @@ Host Go code constructs a `bl.BlTable` with `bl.Table(columns bl.Cols, rows ...b
 and data type, followed by **positional value rows** (`bl.Row`). The header's order is the
 binding order — value *i* in every row is the cell for column *i* — and cells wrap to the
 matching `bl.BlValue` automatically (see [bl-expr.spec.md § Bridging native ↔
-Bl\*](bl-expr.spec.md#bridging-native--bl-valuego)), so no per-cell `bl.String` / `bl.Number`
+Bl\*](bl-expr.spec.md#bridging-native--bl-expr_valuego)), so no per-cell `bl.String` / `bl.Number`
 wrapping is needed. The stored column order is the canonical sorted order per
 [dictionary.spec.md](dictionary.spec.md); the header only fixes the column set, types, and
 the rows' binding order. By convention a comment listing the column names, aligned over

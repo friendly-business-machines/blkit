@@ -21,7 +21,8 @@ See [bl-expr.spec.md](bl-expr.spec.md) for the engine and component-access synta
 
 There is **no dedicated time literal**: time values are produced by the `time(...)` built-in — for
 example, the `time("14:30:00")` in `time("14:30:00").hour`. The constructor accepts an ISO 8601
-time string, hour/minute/second components, or another temporal value to extract from.
+time string, hour/minute/second components (with an optional trailing UTC-offset
+`dtDuration`), or another temporal value to extract from.
 
 ```
 // expression-language
@@ -30,7 +31,8 @@ time("14:30:00.500")          // fractional seconds
 time("14:30:00Z")             // UTC
 time("11:45:30+02:00")        // fixed offset
 time("14:30:00[Europe/Paris]") // IANA timezone (RFC 9557, DST-aware)
-time(23, 59, 0)               // from components
+time(23, 59, 0)               // from components (naive)
+time(14, 30, 0, dtDuration("PT2H"))  // from components with a UTC offset → 14:30:00+02:00
 time(now())                   // current time of day (from current datetime)
 time(datetime("2025-03-28T14:30:00"))  // extract time component
 ```
@@ -99,7 +101,7 @@ API](#value-type--host-api-exported).
 | `+` `-` | add/subtract a days-time duration (wraps at midnight) | `time("23:00:00") + dtDuration("PT2H")` | `time("01:00:00")` |
 | `< <= > >= = !=` | comparison | `time("14:30:00") < time("17:00:00")` | `true` |
 | `between a and b` | inclusive range | `time("12:00:00") between time("09:00:00") and time("17:00:00")` | `true` |
-| `in` | membership (list / range) | `now() in [time("09:00:00")..time("17:00:00")]` | `true`/`false` |
+| `in` | membership (list / range) | `time(now()) in [time("09:00:00")..time("17:00:00")]` | `true`/`false` |
 
 Only a **days-time** duration may be applied (time has no year/month concept). The date component is
 not tracked — adding `PT25H` to `23:00:00` gives `00:00:00` (day advance discarded); use `datetime`
@@ -216,7 +218,7 @@ operator token to function happens in two steps, neither of which is unique to `
 1. The Registrations section below calls `expr.Function("addTimeDur", typed2(addTimeDur), …)`,
    which makes the engine aware of the function under that exact string name and records its
    type signature.
-2. A central `operatorBindings()` in [bl-expr.spec.md](bl-expr.spec.md#operator-bindings) then
+2. A central `operatorBindings()` in [bl-expr.spec.md](bl-expr.spec.md#operators) then
    calls `expr.Operator("+", "addNumbers", "concatStrings", "addTimeDur", …)`, which tells
    the engine "when you see `+` at parse time, try each of these registered functions in turn
    and dispatch to whichever one's signature matches the operand types." Centralised in one
@@ -262,7 +264,7 @@ from a datetime.
 ```go
 // host-side (Go)
 // Variadic implementation — handles multiple input shapes in expr's raw shape.
-func timeFn(args ...any) (any, error)   // time("…") | time(h, m, s) | time(dt) extraction
+func timeFn(args ...any) (any, error)   // time("…") | time(h, m, s) | time(h, m, s, offset) | time(dt) extraction
 ```
 
 `timeFn` parses ISO 8601 / RFC 9557 strings via Go's [`time.Parse`](https://pkg.go.dev/time#Parse);
@@ -322,7 +324,8 @@ func timeOptions() []expr.Option {
         // construction / extraction
         expr.Function("time", timeFn,
             new(func(bl.BlString) bl.BlTime),                          // time("…")
-            new(func(bl.BlNumber, bl.BlNumber, bl.BlNumber) bl.BlTime),      // time(h, m, s)
+            new(func(bl.BlNumber, bl.BlNumber, bl.BlNumber) bl.BlTime),      // time(h, m, s) — naive
+            new(func(bl.BlNumber, bl.BlNumber, bl.BlNumber, bl.BlDaysTimeDuration) bl.BlTime), // time(h, m, s, offset)
             new(func(bl.BlDateTime) bl.BlTime)),                       // time(dt) extraction
     }
 }
@@ -335,6 +338,10 @@ func timeOptions() []expr.Option {
 ## Edge cases
 
 - Hour outside 0–23, or minute/second outside 0–59 (component form) → `bl.TypeError`.
+- `time(h, m, s, offset)` builds an offset-zoned time; the offset is a days-time
+  `dtDuration` (matching the `.offset` accessor), so `time(t.hour, t.minute, t.second,
+  t.offset)` round-trips a zoned `t`. To build a named-zone time from components, use the
+  string form (`time("14:30:00[Europe/Paris]")`). `time(h, m, s)` with no offset is naive.
 - `time("24:00:00")` (end-of-day) is valid ISO 8601, normalised to `00:00:00`.
 - Unknown IANA zone id → `bl.TypeError`.
 - Applying a years-months duration → `bl.TypeError`.

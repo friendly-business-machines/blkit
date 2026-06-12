@@ -241,7 +241,7 @@ var emailRe, _ = bl.Pattern(`[\w.+-]+@[\w-]+\.[\w.-]+`)
 // Then hand emailRe to the engine as an input variable; expressions reference it by name.
 var schema, _ = bl.Schema(
     bl.Field{Name: "addr",    Type: bl.TypeString},
-    bl.Field{Name: "emailRe", Type: bl.TypePattern},
+    bl.Field{Name: "emailRe", Type: bl.TypeRegex},
 )
 var matchEmail, _ = bl.Expr(`matches(addr, emailRe)`, schema)
 var addr, _   = bl.String("alice@example.com")
@@ -263,7 +263,7 @@ the source, not on the compiled program).
 
 `pattern(s)` is a blkit extension (**ext**); the inline-string forms remain the FEEL-compatible
 path. `bl.BlRegex` is also accepted as a target type by
-[calendar.spec.md § calendarDrop](calendar.spec.md#calendardropc-target) (and the symmetric
+[calendar.spec.md § calendarDrop](calendar.spec.md#calendardropc-target--calendarkeepc-target) (and the symmetric
 `calendarKeep`), where it dispatches to regex-based name matching against calendar entries.
 
 `[@test] ../../expr_string_pattern_test.go`
@@ -376,7 +376,7 @@ which is unique to `bl.BlString`:
 1. The Registrations section below calls `expr.Function("concatStrings", typed2(concatStrings), …)`,
    which makes the engine aware of the function under that exact string name and records its type
    signature.
-2. A central `operatorBindings()` in [bl-expr.spec.md](bl-expr.spec.md#operator-bindings) then
+2. A central `operatorBindings()` in [bl-expr.spec.md](bl-expr.spec.md#operators) then
    calls `expr.Operator("+", "addNumbers", "concatStrings", …)`, which tells the engine "when you
    see `+` at parse time, try each of these registered functions in turn and dispatch to whichever
    one's signature matches the operand types." This step is centralised in one place because a

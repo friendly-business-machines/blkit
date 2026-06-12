@@ -289,7 +289,7 @@ operator token to function happens in two steps, neither of which is unique to `
 1. The Registrations section below calls `expr.Function("addDateDT", typed2(addDateDT), …)`,
    which makes the engine aware of the function under that exact string name and records its
    type signature.
-2. A central `operatorBindings()` in [bl-expr.spec.md](bl-expr.spec.md#operator-bindings) then
+2. A central `operatorBindings()` in [bl-expr.spec.md](bl-expr.spec.md#operators) then
    calls `expr.Operator("+", "addNumbers", "concatStrings", "addDateDT", "addDateYM", …)`,
    which tells the engine "when you see `+` at parse time, try each of these registered
    functions in turn and dispatch to whichever one's signature matches the operand types."
