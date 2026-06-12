@@ -182,7 +182,7 @@ DMN-inspired functions plus blkit extensions (**ext**). Positions are 1-based.
 | `distinct(l)` | `distinct([1,2,2,1])` | `[1, 2]` |
 | `duplicateValues(l)` **ext** | `duplicateValues([1,2,2,1])` | `[1, 2]` |
 | `intersection(lists…)` **ext** | `intersection([1,2],[2,3])` | `[2]` |
-| `sort(l, precedes)` | `sort([3,1,2], function(x,y) x < y)` | `[1, 2, 3]` |
+| `sort(l[, order])` | `sort([3,1,2], "desc")` | `[3, 2, 1]` — `order` is `"asc"` (default), `"desc"`, or an explicit-order list (see [§ Ordering](#ordering-used-by-min--max--sort)) |
 | `stringJoin(l[, sep[, prefix, suffix]])` | `stringJoin(["a","b"], ", ")` | `"a, b"` |
 | `zipStringJoin(lists[, delim[, prefix, suffix]])` **ext** | `zipStringJoin([["a","b","c"],["1","2","3"]], "-")` | `["a-1","b-2","c-3"]` |
 | `seq(start, end[, step])` **ext** | `seq(5, 10)` | `[5, 6, 7, 8, 9, 10]` (materialised numeric sequence) |
@@ -363,10 +363,31 @@ min(["app", "apple"])                // → "app"     (shorter wins when it's a 
 min(["cafz", "café"])                // → "cafz"    (z = U+007A < é = U+00E9, not what Spanish/French locale would expect)
 ```
 
-`sort(l, precedes)` doesn't use these defaults — the caller supplies the comparison function
-explicitly. Use the per-type operators inside the `precedes` function to match the same
-ordering: `sort(items, function(a, b) a < b)` gives the same order as the type's natural
-ordering would produce in `min`/`max`.
+**`sort(l[, order])`.** `sort` orders a list by the **element itself** — the mirror of the
+table `t.sort(...)` method ([table.spec.md § Sort keys](table.spec.md#sort-keys)), but
+without a column since a list element *is* the key. The optional `order` argument is:
+
+| `order` | Meaning |
+|---|---|
+| omitted, or `"asc"` | ascending in the element type's natural ordering (the table above) |
+| `"desc"` | descending |
+| a `bl.BlList` | **explicit value order** — elements are ranked by their position in the list; any element not listed follows the listed ones in ascending order (the list analog of the table's `inOrder`) |
+
+The sort is **stable**: equal-ranked elements keep their input order. Elements comparing as
+`bl.Null` (e.g. a naive-vs-zoned datetime) sort to the **end** under `"asc"`/an explicit
+order and **lead** under `"desc"`. A list whose elements aren't mutually comparable, or an
+`order` string other than `"asc"`/`"desc"`, → `bl.TypeError`.
+
+```
+// expression-language
+sort([3, 1, 2])                              // → [1, 2, 3]
+sort([3, 1, 2], "desc")                      // → [3, 2, 1]
+sort(["m", "s", "l"], ["s", "m", "l"])       // → ["s", "m", "l"]   (explicit order)
+sort(["m", "s", "xl"], ["s", "m", "l"])      // → ["s", "m", "xl"]  ("xl" unlisted → trails, ascending)
+```
+
+This **diverges from DMN FEEL**, whose `sort(list, precedes)` takes a comparator function;
+blkit's `sort` does not accept a comparator.
 
 `[@test] ../../expr_list_functions_test.go`
 
@@ -441,7 +462,12 @@ func listReverseFn(l BlList) BlList                               // list overlo
 func flattenFn(l BlList) BlList                                   // recursive
 func distinctFn(l BlList) BlList                            // preserves first-occurrence order
 func duplicateValuesFn(l BlList) BlList                           // ext; values appearing more than once
-func sortFn(l BlList, precedes BlFunc) BlList
+// sort(l[, order]): ascending natural order by default. order is the BlString "asc"/"desc",
+// or a BlList giving an explicit value order (elements ranked by list position; unlisted
+// elements trail in ascending order). Stable. Non-comparable element types, or an unknown
+// order string → TypeError; null elements sort to the end (asc/explicit) / lead (desc).
+// Mirrors t.sort(...) for tables; no comparator form (a divergence from FEEL's sort).
+func sortFn(l BlList, order ...BlValue) (BlList, error)
 
 // Aggregation impls — return bl.BlValue because empty / wrong-type / mixed-type inputs yield bl.BlNull or TypeError.
 func sumFn(l BlList) BlValue        // accepts number list or single-kind duration list; mixed → TypeError
@@ -531,7 +557,10 @@ func listOptions() []expr.Option {
         expr.Function("reverse",       typed1(listReverseFn),   new(func(bl.BlList) bl.BlList)),          // list overload; string overload in string.spec.md
         expr.Function("flatten",       typed1(flattenFn),       new(func(bl.BlList) bl.BlList)),
         expr.Function("distinct",typed1(distinctFn),new(func(bl.BlList) bl.BlList)),
-        expr.Function("sort",          typed2(sortFn),          new(func(bl.BlList, BlFunc) bl.BlList)),
+        expr.Function("sort",          sortFn,
+            new(func(bl.BlList) bl.BlList),
+            new(func(bl.BlList, bl.BlString) bl.BlList),
+            new(func(bl.BlList, bl.BlList) bl.BlList)),
 
         // aggregation
         expr.Function("sum",     typed1(sumFn),     new(func(bl.BlList) bl.BlValue)),
@@ -577,7 +606,8 @@ Native Go slices wrap to `bl.BlList` via the engine's input bridge.
 - Out-of-range index → `null`.
 - `sublist` with `length = 0` → `[]`; negative `start` counts from the end.
 - `remove` at an out-of-range position → the list unchanged.
-- `sort` with a non-strict-weak-ordering comparator → undefined order.
+- `sort` with an `order` string other than `"asc"`/`"desc"`, or over a list of
+  non-comparable element types → `bl.TypeError`.
 - numeric aggregates over an empty/non-numeric list → `null`.
 - `seq(start, end[, step])` with `step = 0` → `bl.TypeError`. `step` of the wrong sign for the
   start→end direction is treated as auto-direction (`abs(step)` applied in the correct

@@ -85,9 +85,9 @@ Every value belongs to one of the following types. Each has a literal or constru
 | boolean | `bl.BlBoolean` | keywords | `true`, `false` |
 | date | `bl.BlDate` | `date(...)` | `date("2025-03-28")` |
 | time | `bl.BlTime` | `time(...)` | `time("11:45:30")`, `time("11:45:30+02:00")` |
-| date-time | `bl.BlDateTime` | `datetime(...)` | `datetime("2025-03-28T11:45:30")` |
-| days-time duration | `bl.BlDaysTimeDuration` | `dtDuration(...)` | `dtDuration("P4DT12H")` |
-| years-months duration | `bl.BlYearsMonthsDuration` | `ymDuration(...)` | `ymDuration("P1Y6M")` |
+| datetime | `bl.BlDateTime` | `datetime(...)` | `datetime("2025-03-28T11:45:30")` |
+| dtDuration | `bl.BlDaysTimeDuration` | `dtDuration(...)` | `dtDuration("P4DT12H")` |
+| ymDuration | `bl.BlYearsMonthsDuration` | `ymDuration(...)` | `ymDuration("P1Y6M")` |
 | list | `bl.BlList` | `[ ... ]` | `[1, 2, 3]` |
 | dictionary | `bl.BlDictionary` | `{ ... }` | `{name: "Alice", age: 30}` |
 | range | `bl.BlRange` | interval notation | `[1..10]`, `(1..10)`, `[1..10)` |
@@ -97,7 +97,8 @@ Every value belongs to one of the following types. Each has a literal or constru
   arithmetic (see [number.spec.md](number.spec.md)).
 - The blkit-specific types `bl.BlCalendar` ([calendar.spec.md](calendar.spec.md)) and `bl.BlTable`
   ([table.spec.md](table.spec.md)) have **no literal syntax** in v1; they are produced
-  programmatically and may be referenced as variables.
+  programmatically or, for tables, by the `table(...)` / `tableFromDicts(...)` constructor
+  built-ins ([table.spec.md § Literals](table.spec.md#literals)), and may be referenced as variables.
 
 `[@test] ../../expr_data_types_test.go`
 
@@ -810,12 +811,12 @@ FEEL inline functions have the form `function(params) body`:
 ```
 // expression-language
 function(x, y) x + y
-sort([3, 1, 2], function(a, b) a < b)      // → [1, 2, 3]
+listReplace([2, 4, 7], function(i) i < 5, 5)   // → [5, 5, 7]   (predicate form)
 ```
 
 Inline functions are a v1 feature; the engine's `BlFunc` value type is consumed by every
-higher-order built-in in the library (`sort`, the predicate forms of `remove` /
-`listReplace`, etc.). To keep the semantics simple and the engine surface auditable, blkit
+higher-order built-in in the library (the predicate forms of `remove` / `listReplace`,
+etc.). To keep the semantics simple and the engine surface auditable, blkit
 restricts the form to a minimal subset of what FEEL allows:
 
 - **Anonymous only.** The syntactic form is always `function(params) body`. There is no
