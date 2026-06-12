@@ -23,16 +23,16 @@ blkit follows standard Go conventions:
 
 ### Namespace Structure
 
-All blkit classes are organised into sub-namespaces:
+blkit's public API spans the **root package** plus several sub-packages:
 
+- `blkit` (the root package, imported as `bl`) — typed value system and expression engine (`bl.BlNumber`, `bl.BlString`, `bl.BlExpr`, `bl.BlDictionary`, `bl.BlList`, etc.). Unlike the others, this is **not** a sub-package — its code is the root-level `expr_*.go` files.
 - `blkit.processes` — process execution classes (`Process`, `ProcessGraph`, `StartEvent`, `EndEvent`, gateway nodes, tasks)
 - `blkit.decisions` — decision classes (`DecisionTask`, `DecisionTable`, `LiteralExpression`, `BoxedContext`, `Relation`, `Invocation`, `BusinessKnowledgeModel`)
-- `blkit.expr` — typed value system and expression factory (`Bl`, `bl.BlNumber`, `bl.BlString`, `bl.BlExpr`, `bl.BlDictionary`, `bl.BlList`, etc.)
 - `blkit.data` — data contracts, execution context, and the pluggable state store (`InputContract`, `OutputContract`, `ExecutionContext`, `ExecutionHistory`, `StateStore`)
 - `blkit.messagegateway` — producer-side typed client SDK (`MessageGateway` interface, `RedisMessageGateway`, `NATSMessageGateway`, `InMemoryMessageGateway`) for submitting process runs, delivering messages, and observing events from outside the worker pool
 - `blkit.restserver` — HTTP REST server with Server-Sent Events that exposes processes registered on a `MessageGateway`. Optionally embeds a worker in the same binary.
 
-`blkit.expr` is a standalone namespace, not a sub-package of `blkit.decisions`. The type system is consumed by decision models but is independently usable — callers can construct typed values, build expression trees, and evaluate them directly without involving decisions.
+The value/expression type system lives in the **root `blkit` package** (imported as `bl`, the root-level `expr_*.go` files), not a sub-package. It is consumed by decision models but is independently usable — callers can construct typed values, build expression trees, and evaluate them directly without involving decisions.
 
 ## Interface Specification Format
 
@@ -94,9 +94,7 @@ Projects built on blkit extend it by authoring a custom Go package implementing 
 | Package | Purpose |
 |---|---|
 | [`github.com/shopspring/decimal`](https://github.com/shopspring/decimal) | Arbitrary-precision decimal arithmetic backing `bl.BlNumber`. Ensures exact results for decimal operations (`0.1 + 0.2 = 0.3`). |
-| [`github.com/expr-lang/expr`](https://github.com/expr-lang/expr) | Expression language engine underpinning `blkit.expr`. blkit extends it with its own type system (`bl.BlValue`), operators, and built-in function registrations. |
-| [`github.com/apache/arrow/go/v17/arrow`](https://github.com/apache/arrow/go/v17) | Apache Arrow columnar format, used by `bl.BlTable.ToArrow()` to export table values for interop with data-processing tools. |
-| [`github.com/stretchr/testify`](https://github.com/stretchr/testify) | Test-only. Provides richer assertions and suite lifecycle hooks on top of the standard `testing` package. |
+| [`github.com/expr-lang/expr`](https://github.com/expr-lang/expr) | Expression language engine underpinning blkit's value/expression system (the root `blkit` package). blkit extends it with its own type system (`bl.BlValue`), operators, and built-in function registrations. |
 
 ## Influences
 

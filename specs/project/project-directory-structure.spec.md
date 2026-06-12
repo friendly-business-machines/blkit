@@ -17,7 +17,7 @@ blkit is a Go library; the implementation lives at the repository root, not unde
 blkit/
 ├── go.mod
 ├── go.sum
-├── expr/             # blkit/expr — value types and expression trees
+├── expr_*.go         # root blkit package — value types + expression engine (see specs/expressions/)
 ├── decisions/        # blkit/decisions — decision models, decision tables, BKMs
 ├── processes/        # blkit/processes — process graphs, tasks, events, gateways
 ├── data/             # blkit/data — InputContract, OutputContract, ExecutionContext, ExecutionHistory, StateStore
@@ -40,6 +40,10 @@ blkit/
 ```
 
 Test files live alongside source as `*_test.go`.
+
+The value types and expression engine are the root-level `expr_*.go` files — package `blkit`,
+imported as `bl` (see [specs/expressions/](../expressions/)). The other top-level code entries
+are sub-packages (e.g. `blkit/decisions`, `blkit/processes`, `blkit/data`).
 
 ## `docs/`
 

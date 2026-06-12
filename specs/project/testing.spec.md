@@ -11,7 +11,7 @@ blkit's test suite is written directly in Go alongside the implementation. The I
 
 ## Testing Framework
 
-The Go standard-library [`testing`](https://pkg.go.dev/testing) package, augmented with [`testify`](https://github.com/stretchr/testify) for richer assertions and lifecycle hooks. Tests are run with `go test ./...`.
+The Go standard-library [`testing`](https://pkg.go.dev/testing) package **only** — no third-party test framework. Assertions are plain comparisons that fail via `t.Errorf` / `t.Fatalf` (`if got != want { t.Errorf("got %v, want %v", got, want) }`), tables are driven with `t.Run` subtests, and lifecycle/fixtures use `testing` primitives (`t.Cleanup`, `t.Helper`, `TestMain`). Tests are run with `go test ./...`.
 
 All tests run in-process — no separate test process, no browser runtime, no external services beyond what an individual test fixture deliberately spins up (e.g. an embedded Redis for `RedisMessageGateway` tests).
 
@@ -28,7 +28,7 @@ Each spec in `specs/` corresponds to one or more test files in the package that 
 Test files mirror the spec hierarchy directly:
 
 ```
-specs/expressions/number.spec.md           → expr/number_test.go
+specs/expressions/number.spec.md           → expr_number_test.go (root blkit package)
 specs/decision-tasks/decision-table.spec.md → decisions/decision_table_test.go
 specs/processes/task-nodes.spec.md         → processes/task_test.go (and per-task companions)
 specs/data/state-store.spec.md             → data/state_store_test.go
