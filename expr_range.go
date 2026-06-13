@@ -75,7 +75,7 @@ func (r BlRange) isEmptyRange() bool {
 	if c > 0 {
 		return true // reversed
 	}
-	if c == 0 && !(r.startIncluded && r.endIncluded) {
+	if c == 0 && (!r.startIncluded || !r.endIncluded) {
 		return true // degenerate exclusive
 	}
 	return false

@@ -26,3 +26,11 @@ func TestDaysTimeDuration(t *testing.T) {
 		`round(dtDuration("PT37M"), dtDuration("PT15M"))`: "PT30M",
 	})
 }
+
+func TestDaysTimeDurationErrors(t *testing.T) {
+	assertErr(t,
+		`dtDuration("PT1H") + ymDuration("P1M")`,  // cannot mix duration kinds
+		`dtDuration("PT1H") * dtDuration("PT1H")`, // cannot multiply two durations
+		`dtDuration("garbage")`,                   // unparseable duration literal
+	)
+}

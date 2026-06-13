@@ -45,6 +45,14 @@ func TestDateDifference(t *testing.T) {
 	})
 }
 
+func TestDateErrors(t *testing.T) {
+	assertErr(t,
+		`date("not-a-date")`,                                   // unparseable date literal
+		`date("2025-01-01") + date("2025-01-02")`,              // cannot add two dates
+		`firstDayOfWeekInMonth(date("2025-03-15"), "NotADay")`, // bad weekday name
+	)
+}
+
 func TestDateNavigation(t *testing.T) {
 	assertEval(t, map[string]string{
 		`nextWeekday(date("2025-03-28"))`:                         "2025-03-31", // Fri → Mon

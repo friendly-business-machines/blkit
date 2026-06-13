@@ -15,6 +15,21 @@ func TestNumberFromString(t *testing.T) {
 	})
 }
 
+func TestNumberNullResults(t *testing.T) {
+	// these evaluate to null (not errors), per spec
+	assertEval(t, map[string]string{
+		`5 / 0`:       "null", // division by zero
+		`sqrt(-1)`:    "null", // negative root
+		`(-2) ** 0.5`: "null", // complex ** result
+		`null + 1`:    "null", // null propagation
+	})
+}
+
+func TestNumberErrors(t *testing.T) {
+	// arithmetic across incompatible types → TypeError
+	assertErr(t, `1 + "x"`, `2 * "y"`)
+}
+
 func TestNumberConstruction(t *testing.T) {
 	if n, err := Number(30); err != nil || n.String() != "30" {
 		t.Errorf("Number(30) = %v, %v", n, err)

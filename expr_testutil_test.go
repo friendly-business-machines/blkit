@@ -29,3 +29,21 @@ func assertEval(t *testing.T, cases map[string]string) {
 		})
 	}
 }
+
+// assertErr asserts that each source fails — either at compile time or during
+// evaluation (a spec'd ParseError / TypeError / etc.).
+func assertErr(t *testing.T, srcs ...string) {
+	t.Helper()
+	for _, src := range srcs {
+		src := src
+		t.Run(src, func(t *testing.T) {
+			e, err := Expr(src, nil)
+			if err != nil {
+				return // compile-time error is a valid failure
+			}
+			if _, err := e.Evaluate(nil); err == nil {
+				t.Errorf("%s: expected an error, got a value", src)
+			}
+		})
+	}
+}

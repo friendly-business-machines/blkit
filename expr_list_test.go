@@ -52,6 +52,32 @@ func TestListAggregation(t *testing.T) {
 	})
 }
 
+func TestListAggregationErrors(t *testing.T) {
+	// mixing incompatible element types → TypeError (spec: min([1, "a"]),
+	// "mixing numbers with durations")
+	assertErr(t,
+		`min([1, "a"])`,
+		`max([1, "a"])`,
+		`sum([1, dtDuration("PT1H")])`,
+		`product([1, "a"])`,
+		`mean([1, "a"])`,
+		`median([1, "a"])`,
+		`stddev([1, "a"])`,
+	)
+}
+
+func TestListAggregationEmpty(t *testing.T) {
+	// empty input → null (not an error)
+	assertEval(t, map[string]string{
+		`min([])`:    "null",
+		`max([])`:    "null",
+		`sum([])`:    "null",
+		`mean([])`:   "null",
+		`median([])`: "null",
+		`stddev([])`: "null",
+	})
+}
+
 func TestListMutation(t *testing.T) {
 	assertEval(t, map[string]string{
 		`insertAfter([1, 2, 3], 2, 9)`:        "[1, 2, 9, 3]",

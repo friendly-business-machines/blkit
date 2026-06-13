@@ -169,17 +169,17 @@ func firstSequenceColon(s string) int {
 	var stack []byte
 	for i := 0; i < len(s); {
 		c := s[i]
-		switch {
-		case c == '"':
+		switch c {
+		case '"':
 			i = skipString(s, i)
 			continue
-		case c == '(' || c == '[' || c == '{':
+		case '(', '[', '{':
 			stack = append(stack, c)
-		case c == ')' || c == ']' || c == '}':
+		case ')', ']', '}':
 			if len(stack) > 0 {
 				stack = stack[:len(stack)-1]
 			}
-		case c == ':':
+		case ':':
 			if len(stack) == 0 || stack[len(stack)-1] != '{' {
 				return i
 			}
@@ -1070,13 +1070,13 @@ func indexTopLevelKeyword(s, kw string, from int) int {
 	depth := 0
 	for i := from; i < len(s); {
 		c := s[i]
-		switch {
-		case c == '"':
+		switch c {
+		case '"':
 			i = skipString(s, i)
 			continue
-		case c == '(' || c == '[' || c == '{':
+		case '(', '[', '{':
 			depth++
-		case c == ')' || c == ']' || c == '}':
+		case ')', ']', '}':
 			depth--
 		}
 		if depth == 0 && matchKeyword(s, i, kw) {

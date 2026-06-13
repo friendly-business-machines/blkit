@@ -43,3 +43,8 @@ func TestRange(t *testing.T) {
 		`during(date("2025-05-15"), [date("2025-04-01")..date("2025-06-30")])`: "true",
 	})
 }
+
+func TestRangeErrors(t *testing.T) {
+	// endpoints of mismatched types cannot form a range
+	assertErr(t, `[date("2025-01-01")..5]`, `[1.."z"]`)
+}

@@ -76,7 +76,7 @@ func hiBeforeLo(a, b interval) bool {
 		return true
 	}
 	if c == 0 {
-		return !(a.hiInc && b.loInc)
+		return !a.hiInc || !b.loInc
 	}
 	return false
 }

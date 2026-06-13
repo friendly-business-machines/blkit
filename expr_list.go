@@ -478,10 +478,8 @@ func seqFn(args ...any) (any, error) {
 	asc := start.d.Cmp(end.d) <= 0
 	var out []BlValue
 	cur := start.d
-	for {
-		if asc && cur.Cmp(end.d) > 0 {
-			break
-		}
+	for !asc || cur.Cmp(end.d) <= 0 {
+
 		if !asc && cur.Cmp(end.d) < 0 {
 			break
 		}
@@ -507,10 +505,10 @@ func nonNull(items []BlValue) []BlValue {
 	return out
 }
 
-func sumFn(l BlList) BlValue {
+func sumFn(l BlList) (BlValue, error) {
 	items := nonNull(l.items)
 	if len(items) == 0 {
-		return Null()
+		return Null(), nil
 	}
 	switch items[0].(type) {
 	case BlNumber:
@@ -518,128 +516,135 @@ func sumFn(l BlList) BlValue {
 		for _, e := range items {
 			n, ok := e.(BlNumber)
 			if !ok {
-				return Null()
+				return nil, &TypeError{Op: "sum", Detail: "list mixes numbers with other types"}
 			}
 			acc = acc.Add(n.d)
 		}
-		return num(acc)
+		return num(acc), nil
 	case BlDaysTimeDuration:
 		acc := decimal.Zero
 		for _, e := range items {
 			d, ok := e.(BlDaysTimeDuration)
 			if !ok {
-				return Null()
+				return nil, &TypeError{Op: "sum", Detail: "list mixes duration kinds or other types"}
 			}
 			acc = acc.Add(d.secs)
 		}
-		return dtDur(acc)
+		return dtDur(acc), nil
 	case BlYearsMonthsDuration:
 		acc := decimal.Zero
 		for _, e := range items {
 			d, ok := e.(BlYearsMonthsDuration)
 			if !ok {
-				return Null()
+				return nil, &TypeError{Op: "sum", Detail: "list mixes duration kinds or other types"}
 			}
 			acc = acc.Add(d.months)
 		}
-		return ymDur(acc)
+		return ymDur(acc), nil
 	}
-	return Null()
+	return nil, &TypeError{Op: "sum", Detail: "sum is defined for numbers and durations only"}
 }
 
-func productFn(l BlList) BlValue {
+func productFn(l BlList) (BlValue, error) {
 	items := nonNull(l.items)
 	if len(items) == 0 {
-		return Null()
+		return Null(), nil
 	}
 	acc := decimal.NewFromInt(1)
 	for _, e := range items {
 		n, ok := e.(BlNumber)
 		if !ok {
-			return Null()
+			return nil, &TypeError{Op: "product", Detail: "product is defined for numbers only"}
 		}
 		acc = acc.Mul(n.d)
 	}
-	return num(acc)
+	return num(acc), nil
 }
 
-func minFn(l BlList) BlValue { return extremum(l, true) }
-func maxFn(l BlList) BlValue { return extremum(l, false) }
+func minFn(l BlList) (BlValue, error) { return extremum(l, true) }
+func maxFn(l BlList) (BlValue, error) { return extremum(l, false) }
 
-func extremum(l BlList, wantMin bool) BlValue {
+func extremum(l BlList, wantMin bool) (BlValue, error) {
 	items := nonNull(l.items)
 	if len(items) == 0 {
-		return Null()
+		return Null(), nil
 	}
 	best := items[0]
 	for _, e := range items[1:] {
 		c, ok := compareValues(e, best)
 		if !ok {
-			return Null()
+			return nil, &TypeError{Op: "min/max", Detail: "list mixes incomparable element types"}
 		}
 		if (wantMin && c < 0) || (!wantMin && c > 0) {
 			best = e
 		}
 	}
-	return best
+	return best, nil
 }
 
-func meanFn(l BlList) BlValue {
+func meanFn(l BlList) (BlValue, error) {
 	items := nonNull(l.items)
 	if len(items) == 0 {
-		return Null()
+		return Null(), nil
 	}
-	s := sumFn(l)
+	s, err := sumFn(l)
+	if err != nil {
+		return nil, err
+	}
 	n := decimal.NewFromInt(int64(len(items)))
 	switch v := s.(type) {
 	case BlNumber:
-		return num(v.d.DivRound(n, numericPrecision))
+		return num(v.d.DivRound(n, numericPrecision)), nil
 	case BlDaysTimeDuration:
-		return dtDur(v.secs.DivRound(n, numericPrecision))
+		return dtDur(v.secs.DivRound(n, numericPrecision)), nil
 	case BlYearsMonthsDuration:
-		return ymDur(v.months.DivRound(n, numericPrecision))
+		return ymDur(v.months.DivRound(n, numericPrecision)), nil
 	}
-	return Null()
+	return Null(), nil
 }
 
-func medianFn(l BlList) BlValue {
+func medianFn(l BlList) (BlValue, error) {
 	items := nonNull(l.items)
 	if len(items) == 0 {
-		return Null()
+		return Null(), nil
 	}
 	sorted, err := sortFn(BlList{items})
 	if err != nil {
-		return Null()
+		return nil, err
 	}
 	si := sorted.(BlList).items
 	n := len(si)
 	if n%2 == 1 {
-		return si[n/2]
+		return si[n/2], nil
 	}
 	a, b := si[n/2-1], si[n/2]
 	return meanFn(BlList{[]BlValue{a, b}})
 }
 
-func stddevFn(l BlList) BlValue {
+func stddevFn(l BlList) (BlValue, error) {
 	items := nonNull(l.items)
 	if len(items) < 2 {
-		return Null()
+		return Null(), nil
 	}
-	mean, ok := meanFn(l).(BlNumber)
+	m, err := meanFn(l)
+	if err != nil {
+		return nil, err
+	}
+	mean, ok := m.(BlNumber)
 	if !ok {
-		return Null()
+		return nil, &TypeError{Op: "stddev", Detail: "stddev is defined for numbers only"}
 	}
 	acc := decimal.Zero
 	for _, e := range items {
 		n, ok := e.(BlNumber)
 		if !ok {
-			return Null()
+			return nil, &TypeError{Op: "stddev", Detail: "stddev is defined for numbers only"}
 		}
 		diff := n.d.Sub(mean.d)
 		acc = acc.Add(diff.Mul(diff))
 	}
 	variance := acc.DivRound(decimal.NewFromInt(int64(len(items)-1)), numericPrecision)
-	return num(decimalSqrt(variance))
+	return num(decimalSqrt(variance)), nil
 }
 
 func modeFn(l BlList) BlList {
@@ -743,13 +748,13 @@ func listOptions() []expr.Option {
 			new(func(BlValue, BlValue) BlList)),
 
 		// aggregation (listArg lets each accept a BlTable as its row list)
-		expr.Function("sum", listArg(typed1(sumFn)), new(func(BlValue) BlValue)),
-		expr.Function("product", listArg(typed1(productFn)), new(func(BlValue) BlValue)),
-		expr.Function("min", listArg(typed1(minFn)), new(func(BlValue) BlValue)),
-		expr.Function("max", listArg(typed1(maxFn)), new(func(BlValue) BlValue)),
-		expr.Function("mean", listArg(typed1(meanFn)), new(func(BlValue) BlValue)),
-		expr.Function("median", listArg(typed1(medianFn)), new(func(BlValue) BlValue)),
-		expr.Function("stddev", listArg(typed1(stddevFn)), new(func(BlValue) BlValue)),
+		expr.Function("sum", listArg(typed1err(sumFn)), new(func(BlValue) BlValue)),
+		expr.Function("product", listArg(typed1err(productFn)), new(func(BlValue) BlValue)),
+		expr.Function("min", listArg(typed1err(minFn)), new(func(BlValue) BlValue)),
+		expr.Function("max", listArg(typed1err(maxFn)), new(func(BlValue) BlValue)),
+		expr.Function("mean", listArg(typed1err(meanFn)), new(func(BlValue) BlValue)),
+		expr.Function("median", listArg(typed1err(medianFn)), new(func(BlValue) BlValue)),
+		expr.Function("stddev", listArg(typed1err(stddevFn)), new(func(BlValue) BlValue)),
 		expr.Function("mode", listArg(typed1(modeFn)), new(func(BlValue) BlList)),
 		expr.Function("all", listArg(typed1(allFn)), new(func(BlValue) BlValue)),
 		expr.Function("any", listArg(typed1(anyFn)), new(func(BlValue) BlValue)),

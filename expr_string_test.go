@@ -52,7 +52,8 @@ func TestStringFunctions(t *testing.T) {
 		`indexOf("hello", "l")`:       "3",
 		`indexOf("hello", "z")`:       "null",
 		`charAt("hello", 1)`:          "h",
-		`charAt("hello", 99)`:         "",
+		`charAt("hello", 99)`:         "", // out of range → ""
+		`substring("hi", 5)`:          "", // start past end → ""
 		`reverse("abc")`:              "cba",
 		`padLeading("7", 4, "0")`:     "0007",
 		`padTrailing("hi", 5, ".")`:   "hi...",
