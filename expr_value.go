@@ -2,6 +2,7 @@ package blkit
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/shopspring/decimal"
 )
@@ -88,6 +89,10 @@ func wrap(v any) (BlValue, error) {
 		return Number(x)
 	case decimal.Decimal:
 		return BlNumber{x}, nil
+	case time.Time:
+		return BlDateTime{t: x, naive: false}, nil
+	case time.Duration:
+		return dtDur(decimal.New(x.Nanoseconds(), -9)), nil
 	case []any:
 		items := make([]BlValue, len(x))
 		for i, e := range x {
@@ -193,6 +198,31 @@ func typed3[A, B, C BlValue, R BlValue](f func(A, B, C) R) func(...any) (any, er
 
 func argTypeError(v any) error {
 	return &TypeError{Op: "call", Detail: fmt.Sprintf("unexpected argument type %T", v)}
+}
+
+// typed1err / typed2err wrap fallible typed impls (returning (R, error)).
+func typed1err[A BlValue, R any](f func(A) (R, error)) func(...any) (any, error) {
+	return func(args ...any) (any, error) {
+		a, ok := args[0].(A)
+		if !ok {
+			return nil, argTypeError(args[0])
+		}
+		return f(a)
+	}
+}
+
+func typed2err[A, B BlValue, R any](f func(A, B) (R, error)) func(...any) (any, error) {
+	return func(args ...any) (any, error) {
+		a, ok := args[0].(A)
+		if !ok {
+			return nil, argTypeError(args[0])
+		}
+		b, ok := args[1].(B)
+		if !ok {
+			return nil, argTypeError(args[1])
+		}
+		return f(a, b)
+	}
 }
 
 // asBl coerces an arbitrary VM value to a BlValue, wrapping native values the

@@ -124,6 +124,12 @@ var typeRegistrations = []func() []expr.Option{
 	stringOptions,
 	booleanOptions,
 	nullOptions,
+	dateOptions,
+	timeOptions,
+	datetimeOptions,
+	daysTimeDurationOptions,
+	yearsMonthsDurationOptions,
+	overloadOptions,
 }
 
 // Expr compiles a source string once, optionally type-checking it against a

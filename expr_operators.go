@@ -67,6 +67,44 @@ func opAdd(args ...any) (any, error) {
 		if y, ok := b.(BlString); ok {
 			return concatStrings(x, y), nil
 		}
+	case BlDate:
+		switch y := b.(type) {
+		case BlYearsMonthsDuration:
+			return addDateYM(x, y), nil
+		case BlDaysTimeDuration:
+			return addDateDT(x, y), nil
+		}
+	case BlDateTime:
+		switch y := b.(type) {
+		case BlYearsMonthsDuration:
+			return addDateTimeYM(x, y), nil
+		case BlDaysTimeDuration:
+			return addDateTimeDT(x, y), nil
+		}
+	case BlTime:
+		if y, ok := b.(BlDaysTimeDuration); ok {
+			return addTimeDur(x, y), nil
+		}
+	case BlYearsMonthsDuration:
+		switch y := b.(type) {
+		case BlYearsMonthsDuration:
+			return addYMDuration(x, y), nil
+		case BlDate:
+			return addDateYM(y, x), nil
+		case BlDateTime:
+			return addDateTimeYM(y, x), nil
+		}
+	case BlDaysTimeDuration:
+		switch y := b.(type) {
+		case BlDaysTimeDuration:
+			return addDTDuration(x, y), nil
+		case BlDate:
+			return addDateDT(y, x), nil
+		case BlDateTime:
+			return addDateTimeDT(y, x), nil
+		case BlTime:
+			return addTimeDur(y, x), nil
+		}
 	}
 	return nil, &TypeError{Op: "+", Detail: typeName(a.Type()) + " + " + typeName(b.Type())}
 }
@@ -76,9 +114,40 @@ func opSub(args ...any) (any, error) {
 	if propagatesNull(a, b) {
 		return Null(), nil
 	}
-	if x, ok := a.(BlNumber); ok {
+	switch x := a.(type) {
+	case BlNumber:
 		if y, ok := b.(BlNumber); ok {
 			return subNumbers(x, y), nil
+		}
+	case BlDate:
+		switch y := b.(type) {
+		case BlDate:
+			return subDates(x, y), nil
+		case BlYearsMonthsDuration:
+			return subDateYM(x, y), nil
+		case BlDaysTimeDuration:
+			return subDateDT(x, y), nil
+		}
+	case BlDateTime:
+		switch y := b.(type) {
+		case BlDateTime:
+			return subDateTimes(x, y), nil
+		case BlYearsMonthsDuration:
+			return subDateTimeYM(x, y), nil
+		case BlDaysTimeDuration:
+			return subDateTimeDT(x, y), nil
+		}
+	case BlTime:
+		if y, ok := b.(BlDaysTimeDuration); ok {
+			return subTimeDur(x, y), nil
+		}
+	case BlYearsMonthsDuration:
+		if y, ok := b.(BlYearsMonthsDuration); ok {
+			return subYMDuration(x, y), nil
+		}
+	case BlDaysTimeDuration:
+		if y, ok := b.(BlDaysTimeDuration); ok {
+			return subDTDuration(x, y), nil
 		}
 	}
 	return nil, &TypeError{Op: "-", Detail: typeName(a.Type()) + " - " + typeName(b.Type())}
@@ -89,9 +158,23 @@ func opMul(args ...any) (any, error) {
 	if propagatesNull(a, b) {
 		return Null(), nil
 	}
-	if x, ok := a.(BlNumber); ok {
-		if y, ok := b.(BlNumber); ok {
+	switch x := a.(type) {
+	case BlNumber:
+		switch y := b.(type) {
+		case BlNumber:
 			return mulNumbers(x, y), nil
+		case BlDaysTimeDuration:
+			return scaleDTDuration(y, x), nil
+		case BlYearsMonthsDuration:
+			return scaleYMDuration(y, x), nil
+		}
+	case BlDaysTimeDuration:
+		if y, ok := b.(BlNumber); ok {
+			return scaleDTDuration(x, y), nil
+		}
+	case BlYearsMonthsDuration:
+		if y, ok := b.(BlNumber); ok {
+			return scaleYMDuration(x, y), nil
 		}
 	}
 	return nil, &TypeError{Op: "*", Detail: typeName(a.Type()) + " * " + typeName(b.Type())}
@@ -102,9 +185,18 @@ func opDiv(args ...any) (any, error) {
 	if propagatesNull(a, b) {
 		return Null(), nil
 	}
-	if x, ok := a.(BlNumber); ok {
+	switch x := a.(type) {
+	case BlNumber:
 		if y, ok := b.(BlNumber); ok {
 			return divNumbers(x, y), nil
+		}
+	case BlDaysTimeDuration:
+		if y, ok := b.(BlNumber); ok {
+			return divDTDuration(x, y), nil
+		}
+	case BlYearsMonthsDuration:
+		if y, ok := b.(BlNumber); ok {
+			return divYMDuration(x, y), nil
 		}
 	}
 	return nil, &TypeError{Op: "/", Detail: typeName(a.Type()) + " / " + typeName(b.Type())}
@@ -128,8 +220,13 @@ func opNeg(args ...any) (any, error) {
 	if a.IsNull() {
 		return Null(), nil
 	}
-	if x, ok := a.(BlNumber); ok {
+	switch x := a.(type) {
+	case BlNumber:
 		return negNumber(x), nil
+	case BlDaysTimeDuration:
+		return negDTDuration(x), nil
+	case BlYearsMonthsDuration:
+		return negYMDuration(x), nil
 	}
 	return nil, &TypeError{Op: "unary -", Detail: typeName(a.Type())}
 }
@@ -177,6 +274,26 @@ func compareValues(a, b BlValue) (int, bool) {
 			default:
 				return 0, true
 			}
+		}
+	case BlDate:
+		if y, ok := b.(BlDate); ok && x.naive == y.naive {
+			return x.t.Compare(y.t), true
+		}
+	case BlDateTime:
+		if y, ok := b.(BlDateTime); ok && x.naive == y.naive {
+			return x.t.Compare(y.t), true
+		}
+	case BlTime:
+		if y, ok := b.(BlTime); ok && x.naive == y.naive {
+			return x.t.Compare(y.t), true
+		}
+	case BlDaysTimeDuration:
+		if y, ok := b.(BlDaysTimeDuration); ok {
+			return x.secs.Cmp(y.secs), true
+		}
+	case BlYearsMonthsDuration:
+		if y, ok := b.(BlYearsMonthsDuration); ok {
+			return x.months.Cmp(y.months), true
 		}
 	}
 	return 0, false

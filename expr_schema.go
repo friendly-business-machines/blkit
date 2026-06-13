@@ -191,6 +191,18 @@ func exemplar(f Field) any {
 		return BlList{}
 	case TypeDictionary, TypeTable:
 		return BlDictionary{}
+	case TypeDate:
+		return BlDate{}
+	case TypeTime:
+		return BlTime{}
+	case TypeDateTime:
+		return BlDateTime{}
+	case TypeDaysTimeDuration:
+		return BlDaysTimeDuration{}
+	case TypeYearsMonthsDuration:
+		return BlYearsMonthsDuration{}
+	case TypeRegex:
+		return BlRegex{}
 	default:
 		// TypeAny and other shapes: a concrete BlValue witness keeps expr's
 		// reflective env happy; operators/members are patched to accept BlValue.

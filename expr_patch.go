@@ -59,7 +59,40 @@ func (p *feelPatcher) Visit(node *ast.Node) {
 		// from the and/or lowering are built after this Visit and are never
 		// re-walked, so they are untouched.)
 		n.Cond = call("__truthy", n.Cond)
+	case *ast.MemberNode:
+		p.patchMember(node, n)
 	}
+}
+
+// patchMember lowers dot-component / dictionary-key access (a string property)
+// to a single runtime-dispatching componentAccess call. Numeric/other index
+// properties are left for list indexing (handled later).
+func (p *feelPatcher) patchMember(node *ast.Node, n *ast.MemberNode) {
+	if n.Method {
+		return
+	}
+	name, ok := stringProperty(n.Property)
+	if !ok {
+		return
+	}
+	ast.Patch(node, call("componentAccess", n.Node, constNode(BlString{name})))
+}
+
+// stringProperty extracts a constant string property name from a MemberNode's
+// property node (post-patch a ConstantNode{BlString}; pre-patch a StringNode or
+// a bare IdentifierNode for `a.b`).
+func stringProperty(prop ast.Node) (string, bool) {
+	switch p := prop.(type) {
+	case *ast.StringNode:
+		return p.Value, true
+	case *ast.ConstantNode:
+		if s, ok := p.Value.(BlString); ok {
+			return s.s, true
+		}
+	case *ast.IdentifierNode:
+		return p.Value, true
+	}
+	return "", false
 }
 
 func (p *feelPatcher) patchUnary(node *ast.Node, n *ast.UnaryNode) {

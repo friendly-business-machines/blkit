@@ -372,15 +372,8 @@ func trimTrailingZeros(s string) string {
 // runtime (returning a TypeError on a genuine mismatch).
 func numberOptions() []expr.Option {
 	return []expr.Option{
-		expr.Function("roundHalfEven", typed2(roundHalfEvenFn), new(func(BlValue, BlValue) BlNumber)),
 		expr.Function("floor", floorFn, new(func(BlValue) BlNumber), new(func(BlValue, BlValue) BlNumber)),
 		expr.Function("ceiling", ceilingFn, new(func(BlValue) BlNumber), new(func(BlValue, BlValue) BlNumber)),
-		expr.Function("round", typed2(roundFn), new(func(BlValue, BlValue) BlNumber)),
-		expr.Function("roundUp", typed2(roundUpFn), new(func(BlValue, BlValue) BlNumber)),
-		expr.Function("roundDown", typed2(roundDownFn), new(func(BlValue, BlValue) BlNumber)),
-		expr.Function("roundHalfUp", typed2(roundHalfUpFn), new(func(BlValue, BlValue) BlNumber)),
-		expr.Function("roundHalfDown", typed2(roundHalfDownFn), new(func(BlValue, BlValue) BlNumber)),
-		expr.Function("abs", typed1(absFn), new(func(BlValue) BlNumber)),
 		expr.Function("modulo", typed2(moduloFn), new(func(BlValue, BlValue) BlValue)),
 		expr.Function("sqrt", typed1(sqrtFn), new(func(BlValue) BlValue)),
 		expr.Function("exp", typed1(expFn), new(func(BlValue) BlNumber)),
@@ -389,8 +382,9 @@ func numberOptions() []expr.Option {
 		expr.Function("odd", typed1(oddFn), new(func(BlValue) BlBoolean)),
 		expr.Function("even", typed1(evenFn), new(func(BlValue) BlBoolean)),
 		expr.Function("isPositive", typed1(isPositiveFn), new(func(BlValue) BlBoolean)),
-		expr.Function("isNegative", typed1(isNegativeFn), new(func(BlValue) BlBoolean)),
 		expr.Function("isZero", typed1(isZeroFn), new(func(BlValue) BlBoolean)),
+		// abs / isNegative / round* are unified cross-type dispatchers in
+		// expr_overloads.go (they overload number + both durations).
 		expr.Function("clamp", typed3(clampFn), new(func(BlValue, BlValue, BlValue) BlValue)),
 		expr.Function("number", numberFn,
 			new(func(BlValue) BlNumber),
