@@ -26,7 +26,7 @@ func comprehensionOptions() []expr.Option {
 }
 
 func itemsFn(args ...any) (any, error) {
-	l, ok := asBl(args[0]).(BlList)
+	l, ok := coerceRowList(asBl(args[0]))
 	if !ok {
 		return nil, &TypeError{Op: "iterate", Detail: "not a list"}
 	}
@@ -35,6 +35,33 @@ func itemsFn(args ...any) (any, error) {
 		out[i] = e
 	}
 	return out, nil
+}
+
+// coerceRowList accepts a BlList directly, or a BlTable as its list of rows.
+func coerceRowList(v BlValue) (BlList, bool) {
+	switch x := v.(type) {
+	case BlList:
+		return x, true
+	case BlTable:
+		return x.toRowList(), true
+	case BlCalendar:
+		return entriesFn(x), true
+	}
+	return BlList{}, false
+}
+
+// listArg wraps a list-function impl so its first argument may be a BlTable
+// (coerced to its list of row dictionaries).
+func listArg(f func(...any) (any, error)) func(...any) (any, error) {
+	return func(args ...any) (any, error) {
+		switch v := asBl(args[0]).(type) {
+		case BlTable:
+			args[0] = v.toRowList()
+		case BlCalendar:
+			args[0] = entriesFn(v)
+		}
+		return f(args...)
+	}
 }
 
 func wrapListFn(args ...any) (any, error) {
@@ -88,6 +115,13 @@ func allTrueFn(args ...any) (any, error) {
 // indexFn implements 1-based list indexing; negatives count from the end;
 // out-of-range yields null.
 func indexFn(args ...any) (any, error) {
+	if t, ok := asBl(args[0]).(BlTable); ok {
+		idx, ok := asBl(args[1]).(BlNumber)
+		if !ok {
+			return Null(), nil
+		}
+		return t.rowByIndex(int(idx.d.IntPart())), nil
+	}
 	l, ok := asBl(args[0]).(BlList)
 	if !ok {
 		return Null(), nil

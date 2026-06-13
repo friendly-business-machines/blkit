@@ -44,6 +44,10 @@ func componentAccessFn(args ...any) (any, error) {
 		if r, ok := rangeComponent(v, name); ok {
 			return r, nil
 		}
+	case BlTable:
+		if r, ok := tableComponent(v, name); ok {
+			return r, nil
+		}
 	case BlList:
 		// Field access on a list of dictionaries projects the field across
 		// every element (sugar for `for x in list return x.field`).

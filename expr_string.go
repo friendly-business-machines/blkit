@@ -57,6 +57,23 @@ func str(s string) BlString { return BlString{s} }
 
 func concatStrings(a, b BlString) BlValue { return str(a.s + b.s) }
 
+// containsDispatch routes `contains(...)` to string substring containment or
+// calendar point-coverage by the first operand's type.
+func containsDispatch(args ...any) (any, error) {
+	switch v := asBl(args[0]).(type) {
+	case BlString:
+		m, ok := asBl(args[1]).(BlString)
+		if !ok {
+			return nil, argTypeError(args[1])
+		}
+		return containsFn(v, m), nil
+	case BlCalendar:
+		return calContainsFn(v, asBl(args[1])), nil
+	default:
+		return nil, &TypeError{Op: "contains", Detail: "first argument must be a string or calendar"}
+	}
+}
+
 // --- library impls --------------------------------------------------------
 
 func stringLengthFn(s BlString) BlNumber {
@@ -412,7 +429,7 @@ func stringOptions() []expr.Option {
 		// contains/startsWith/endsWith/matches are hard-coded as infix operators
 		// in expr's lexer; normalise renames their call-form to these internal
 		// names so they parse as ordinary function calls.
-		expr.Function("__contains", typed2(containsFn), new(func(BlValue, BlValue) BlBoolean)),
+		expr.Function("__contains", containsDispatch, new(func(BlValue, BlValue) BlBoolean)),
 		expr.Function("__startsWith", typed2(startsWithFn), new(func(BlValue, BlValue) BlBoolean)),
 		expr.Function("__endsWith", typed2(endsWithFn), new(func(BlValue, BlValue) BlBoolean)),
 		expr.Function("__matches", matchesFn,

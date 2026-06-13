@@ -134,6 +134,9 @@ var typeRegistrations = []func() []expr.Option{
 	rangeOptions,
 	intervalOptions,
 	comprehensionOptions,
+	tableOptions,
+	tableMethodOptions,
+	calendarOptions,
 	overloadOptions,
 }
 

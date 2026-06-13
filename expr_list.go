@@ -713,7 +713,7 @@ func quantifyList(l BlList, wantAll bool) BlValue {
 
 func listOptions() []expr.Option {
 	return []expr.Option{
-		expr.Function("count", typed1(countFn), new(func(BlValue) BlNumber)),
+		expr.Function("count", listArg(typed1(countFn)), new(func(BlValue) BlNumber)),
 		expr.Function("listContains", typed2(listContainsFn), new(func(BlValue, BlValue) BlBoolean)),
 		expr.Function("sublist", sublistFn,
 			new(func(BlValue, BlValue) BlList),
@@ -721,7 +721,7 @@ func listOptions() []expr.Option {
 		expr.Function("append", appendFn, new(func(BlValue, ...BlValue) BlList)),
 		expr.Function("prepend", prependFn, new(func(BlValue, ...BlValue) BlList)),
 		expr.Function("concatenate", concatenateFn, new(func(...BlValue) BlList)),
-		expr.Function("union", unionFn, new(func(...BlValue) BlList)),
+		expr.Function("union", unionDispatch, new(func(...BlValue) BlValue)),
 		expr.Function("intersection", intersectionFn, new(func(...BlValue) BlList)),
 		expr.Function("insertBefore", insertBeforeFn, new(func(BlValue, BlValue, BlValue) BlList)),
 		expr.Function("insertAfter", insertAfterFn, new(func(BlValue, BlValue, BlValue) BlList)),
@@ -741,21 +741,32 @@ func listOptions() []expr.Option {
 			new(func(BlValue, BlValue) BlList),
 			new(func(BlValue, BlValue, BlValue) BlList)),
 
-		// aggregation
-		expr.Function("sum", typed1(sumFn), new(func(BlValue) BlValue)),
-		expr.Function("product", typed1(productFn), new(func(BlValue) BlValue)),
-		expr.Function("min", typed1(minFn), new(func(BlValue) BlValue)),
-		expr.Function("max", typed1(maxFn), new(func(BlValue) BlValue)),
-		expr.Function("mean", typed1(meanFn), new(func(BlValue) BlValue)),
-		expr.Function("median", typed1(medianFn), new(func(BlValue) BlValue)),
-		expr.Function("stddev", typed1(stddevFn), new(func(BlValue) BlValue)),
-		expr.Function("mode", typed1(modeFn), new(func(BlValue) BlList)),
-		expr.Function("all", typed1(allFn), new(func(BlValue) BlValue)),
-		expr.Function("any", typed1(anyFn), new(func(BlValue) BlValue)),
+		// aggregation (listArg lets each accept a BlTable as its row list)
+		expr.Function("sum", listArg(typed1(sumFn)), new(func(BlValue) BlValue)),
+		expr.Function("product", listArg(typed1(productFn)), new(func(BlValue) BlValue)),
+		expr.Function("min", listArg(typed1(minFn)), new(func(BlValue) BlValue)),
+		expr.Function("max", listArg(typed1(maxFn)), new(func(BlValue) BlValue)),
+		expr.Function("mean", listArg(typed1(meanFn)), new(func(BlValue) BlValue)),
+		expr.Function("median", listArg(typed1(medianFn)), new(func(BlValue) BlValue)),
+		expr.Function("stddev", listArg(typed1(stddevFn)), new(func(BlValue) BlValue)),
+		expr.Function("mode", listArg(typed1(modeFn)), new(func(BlValue) BlList)),
+		expr.Function("all", listArg(typed1(allFn)), new(func(BlValue) BlValue)),
+		expr.Function("any", listArg(typed1(anyFn)), new(func(BlValue) BlValue)),
 
 		// list constructor emitted by the ArrayNode patcher
 		expr.Function("__mklist", mkListFn, new(func(...BlValue) BlList)),
 	}
+}
+
+// unionDispatch routes `union(...)` to table-union when the first operand is a
+// BlTable, otherwise to list-union.
+func unionDispatch(args ...any) (any, error) {
+	if len(args) > 0 {
+		if _, ok := asBl(args[0]).(BlTable); ok {
+			return unionTablesFn(args...)
+		}
+	}
+	return unionFn(args...)
 }
 
 // mkListFn wraps the (already-Bl) elements of an array literal into a BlList.

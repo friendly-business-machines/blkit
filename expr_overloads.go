@@ -37,6 +37,10 @@ func isEmptyAny(args ...any) (any, error) {
 		return dictIsEmptyFn(v), nil
 	case BlRange:
 		return rangeIsEmptyFn(v), nil
+	case BlTable:
+		return BlBoolean{len(v.rows) == 0}, nil
+	case BlCalendar:
+		return BlBoolean{len(v.entries) == 0}, nil
 	default:
 		return nil, &TypeError{Op: "isEmpty", Detail: "unsupported type"}
 	}

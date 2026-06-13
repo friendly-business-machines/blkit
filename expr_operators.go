@@ -67,8 +67,10 @@ func opIn(args ...any) (any, error) {
 			return Null(), nil
 		}
 		return BlBoolean{in}, nil
+	case BlCalendar:
+		return calContainsFn(container, x), nil
 	default:
-		return nil, &TypeError{Op: "in", Detail: "right operand must be a list or range"}
+		return nil, &TypeError{Op: "in", Detail: "right operand must be a list, range, or calendar"}
 	}
 }
 

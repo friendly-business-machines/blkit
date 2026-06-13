@@ -139,7 +139,17 @@ func meetsFn(args ...any) (any, error) { return binPred(args, hiMeetsLo) }
 func metByFn(args ...any) (any, error) {
 	return binPred(args, func(a, b interval) bool { return hiMeetsLo(b, a) })
 }
-func overlapsFn(args ...any) (any, error) { return binPred(args, intervalsOverlap) }
+func overlapsFn(args ...any) (any, error) {
+	// calendar overlaps(c, range) overload
+	if cal, ok := asBl(args[0]).(BlCalendar); ok {
+		r, ok := asBl(args[1]).(BlRange)
+		if !ok {
+			return nil, argTypeError(args[1])
+		}
+		return calOverlapsFn(cal, r), nil
+	}
+	return binPred(args, intervalsOverlap)
+}
 func overlapsBeforeFn(args ...any) (any, error) {
 	return binPred(args, func(a, b interval) bool { return intervalsOverlap(a, b) && loStrictlyLeft(a, b) })
 }
