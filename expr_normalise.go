@@ -7,6 +7,7 @@ import "strings"
 // and exact decimal-literal capture.
 func normalise(source string) (string, error) {
 	s := eqNorm(source)
+	s = lowerInlinePredicates(s)
 	s = lowerTableIndex(s)
 	s = lowerInstanceOf(s)
 	s = lowerIsDefined(s)
@@ -17,6 +18,131 @@ func normalise(source string) (string, error) {
 	s = convertConditionals(s)
 	s = captureDecimals(s)
 	return s, nil
+}
+
+// lowerInlinePredicates rewrites the predicate (inline-function) forms of
+// remove / listReplace, the one documented use of `function(p) body`:
+//
+//	remove(L, function(i) PRED)        → (L)[not (PRED[i→item])]
+//	listReplace(L, function(i) P, R)   → (for __lr in L return (if P[i→__lr] then R else __lr))
+//
+// The positional forms (numeric position) are left untouched. General
+// first-class function values are not supported.
+func lowerInlinePredicates(s string) string {
+	s = rewriteInlinePredicate(s, "remove")
+	s = rewriteInlinePredicate(s, "listReplace")
+	return s
+}
+
+func rewriteInlinePredicate(s, fn string) string {
+	from := 0
+	for {
+		idx := indexTopLevelCallFrom(s, fn, from)
+		if idx < 0 {
+			return s
+		}
+		j := idx + len(fn)
+		for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+			j++
+		}
+		close := matchGroupEnd(s, j, '(', ')')
+		if close < 0 {
+			return s
+		}
+		args := splitTopLevelCommas(s[j+1 : close])
+		if len(args) >= 2 && strings.HasPrefix(strings.TrimSpace(args[1]), "function(") {
+			list := strings.TrimSpace(args[0])
+			param, body, ok := parseInlineFunction(strings.TrimSpace(args[1]))
+			if ok {
+				var repl string
+				if fn == "remove" {
+					repl = "(" + list + ")[not (" + replaceIdentifier(body, param, "item") + ")]"
+				} else if len(args) >= 3 {
+					rep := strings.TrimSpace(args[2])
+					repl = "(for __lr in " + list + " return (if " + replaceIdentifier(body, param, "__lr") + " then " + rep + " else __lr))"
+				}
+				if repl != "" {
+					s = s[:idx] + repl + s[close+1:]
+					from = idx + len(repl)
+					continue
+				}
+			}
+		}
+		from = idx + len(fn)
+	}
+}
+
+// parseInlineFunction parses `function(p) body` into its first parameter name
+// and body text.
+func parseInlineFunction(s string) (param, body string, ok bool) {
+	open := strings.IndexByte(s, '(')
+	if open < 0 {
+		return "", "", false
+	}
+	close := matchGroupEnd(s, open, '(', ')')
+	if close < 0 {
+		return "", "", false
+	}
+	params := splitTopLevelCommas(s[open+1 : close])
+	if len(params) == 0 {
+		return "", "", false
+	}
+	param = strings.TrimSpace(params[0])
+	body = strings.TrimSpace(s[close+1:])
+	if param == "" || body == "" {
+		return "", "", false
+	}
+	return param, body, true
+}
+
+// replaceIdentifier replaces whole-word occurrences of `from` with `to`,
+// skipping string literals.
+func replaceIdentifier(s, from, to string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c == '"' {
+			end := skipString(s, i)
+			b.WriteString(s[i:end])
+			i = end
+			continue
+		}
+		if isIdentStart(c) {
+			k := i + 1
+			for k < len(s) && isIdentByte(s[k]) {
+				k++
+			}
+			word := s[i:k]
+			if word == from {
+				b.WriteString(to)
+			} else {
+				b.WriteString(word)
+			}
+			i = k
+			continue
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
+}
+
+// indexTopLevelCallFrom is indexTopLevelCall starting the search at `from`.
+func indexTopLevelCallFrom(s, name string, from int) int {
+	for {
+		idx := indexTopLevelKeyword(s, name, from)
+		if idx < 0 {
+			return -1
+		}
+		j := idx + len(name)
+		for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+			j++
+		}
+		if j < len(s) && s[j] == '(' {
+			return idx
+		}
+		from = idx + len(name)
+	}
 }
 
 // lowerTableIndex rewrites the two-slot bracket forms `t[r, c]` → tableIndex(t,

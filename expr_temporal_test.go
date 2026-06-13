@@ -2,7 +2,7 @@ package blkit
 
 import "testing"
 
-func TestTemporalSmoke(t *testing.T) {
+func TestTemporal(t *testing.T) {
 	assertEval(t, map[string]string{
 		// construction + String
 		`date("2025-03-28")`:              "2025-03-28",
