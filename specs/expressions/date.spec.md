@@ -55,7 +55,7 @@ date("2025-03-28+05:30").offset    // → dtDuration("PT5H30M")  (ext; null if n
 date("2025-03-28[Europe/London]").timezone // → "Europe/London" (ext; null if none)
 ```
 
-`[@test] ../../expr_date_components_test.go`
+`[@test] ../../expr_date_test.go`
 
 ---
 
@@ -127,7 +127,7 @@ IANA-zone DST transition the projected midnights can be 23 or 25 hours apart in 
 24-hour window; see [days_time_duration.spec.md § Construction](days_time_duration.spec.md#construction)
 for worked examples on the equivalent `dtDurationBetween` form.
 
-`[@test] ../../expr_date_operators_test.go`
+`[@test] ../../expr_date_test.go`
 
 ---
 

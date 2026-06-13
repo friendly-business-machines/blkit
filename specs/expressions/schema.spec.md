@@ -213,4 +213,4 @@ named aliases at their boundary.
 - `Element` order is irrelevant — it is a set of allowed `bl.Type`s, not a sequence.
   Duplicate entries are a well-formedness error (see § Construction).
 
-`[@test] ../../expr_schema_edge_cases_test.go`
+`[@test] ../../expr_schema_test.go`

@@ -276,7 +276,7 @@ Component access is **patcher-lowered** to function calls (`durationDays(d)`, `d
 `durationTotalHours(d)`, `durationTotalDays(d)`); see
 [bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-expr_patchgo).
 
-`[@test] ../../expr_days_time_duration_components_test.go`
+`[@test] ../../expr_days_time_duration_test.go`
 
 ---
 
@@ -301,7 +301,7 @@ rounding. `dtDuration("PT1H") / 7` yields a duration whose `totalSeconds` is exa
 `bl.BlNumber` with arbitrary precision); the canonical string form puts the resulting fraction on
 the smallest designator used (here, seconds).
 
-`[@test] ../../expr_days_time_duration_ops_test.go`
+`[@test] ../../expr_days_time_duration_test.go`
 
 ---
 
@@ -355,7 +355,7 @@ roundDown(dtDuration("P1DT23H"), dtDuration("P1D"))  // → dtDuration("P1D") (t
 A non-positive `step` (zero or negative) → `bl.TypeError`; rounding to a "nearest zero-sized
 multiple" or "nearest negative multiple" has no sensible meaning.
 
-`[@test] ../../expr_days_time_duration_functions_test.go`
+`[@test] ../../expr_days_time_duration_test.go`
 
 ---
 

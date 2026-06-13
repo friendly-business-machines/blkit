@@ -104,7 +104,7 @@ Every value belongs to one of the following types. Each has a literal or constru
   `table(...)` / `tableFromDicts(...)`; `bl.BlCalendar` ([calendar.spec.md](calendar.spec.md)) is
   host-built only. All three are produced by a constructor or host code and referenced as variables.
 
-`[@test] ../../expr_data_types_test.go`
+`[@test] ../../expr_engine_test.go`
 
 ### Numbers
 
@@ -165,7 +165,7 @@ Variables are supplied at evaluation time via the `input` map and, when an expre
 with a `bl.BlSchema`, are type-checked at parse time. A reference to a name that is neither in scope
 nor declared is a parse error (see [§ Errors and null](#errors-and-null)).
 
-`[@test] ../../expr_variables_test.go`
+`[@test] ../../expr_engine_test.go`
 
 ### Name resolution: `isDefined`
 
@@ -194,7 +194,7 @@ patcher (see [§ Patchers](#patchers-expr_patchgo)) intercepts `isDefined(name)`
 resolution and rewrites them to a lookup against the input value plus declared `bl.BlSchema` bindings.
 The impl is registered in `expr_engine.go` alongside the other engine-level options.
 
-`[@test] ../../expr_is_defined_test.go`
+`[@test] ../../expr_typetest_test.go`
 
 ---
 
@@ -218,7 +218,7 @@ dtDuration("P1D") + dtDuration("PT12H")      // → dtDuration("P1DT12H")
 
 `null` propagates: `null + 1 // → null`. Division by zero yields `null`.
 
-`[@test] ../../expr_arithmetic_test.go`
+`[@test] ../../expr_engine_test.go`
 
 ---
 
@@ -237,7 +237,7 @@ date("2025-01-01") < date("2025-06-01")   // → true
 5 between 1 and 10                 // → true
 ```
 
-`[@test] ../../expr_comparison_test.go`
+`[@test] ../../expr_engine_test.go`
 
 ---
 
@@ -259,7 +259,7 @@ true and null                     // → null
 null or false                     // → null
 ```
 
-`[@test] ../../expr_boolean_logic_test.go`
+`[@test] ../../expr_boolean_test.go`
 
 ---
 
@@ -283,7 +283,7 @@ contains("foobar", "oob")         // → true
 substring("foobar", 3, 2)         // → "ob"
 ```
 
-`[@test] ../../expr_string_expressions_test.go`
+`[@test] ../../expr_string_test.go`
 
 ---
 
@@ -311,7 +311,7 @@ else if score >= 650 then "standard"
 else "subprime"
 ```
 
-`[@test] ../../expr_conditional_test.go`
+`[@test] ../../expr_engine_test.go`
 
 ---
 
@@ -336,7 +336,7 @@ Ranges work over numbers and ordered temporal values:
 [date("2025-01-01")..date("2025-12-31")]
 ```
 
-`[@test] ../../expr_ranges_test.go`
+`[@test] ../../expr_range_test.go`
 
 ---
 
@@ -378,7 +378,7 @@ inside that value is a parse error. Use `seq(start, end)` (or parenthesise:
 {a: 5:10}                    // bl.ParseError — bare `:` in a dict value position
 ```
 
-`[@test] ../../expr_sequences_test.go`
+`[@test] ../../expr_list_test.go`
 
 ---
 
@@ -403,7 +403,7 @@ cross-temporal-kind rules. The left operand for calendar membership must be a `b
 `bl.BlDateTime`; a range left operand → `bl.TypeError` (use the explicit
 `overlaps(c, r)` / `entriesIn(c, r)` for range-on-calendar queries).
 
-`[@test] ../../expr_membership_test.go`
+`[@test] ../../expr_list_test.go`
 
 ---
 
@@ -614,7 +614,7 @@ input value bound to `?`. The separate constructor exists so the unary-test gram
 plain-expression syntax — those forms only parse in unary-test mode. `Source()`
 returns the original (un-normalised) string the caller supplied.
 
-`[@test] ../../expr_unary_tests_test.go`
+`[@test] ../../expr_unarytest_test.go`
 
 ---
 
@@ -657,7 +657,7 @@ Accessing a field on a list of dictionaries projects that field across every ele
 
 List operations are covered by the [list.spec.md § Built-in functions](list.spec.md#built-in-functions).
 
-`[@test] ../../expr_list_expressions_test.go`
+`[@test] ../../expr_list_test.go`
 
 ---
 
@@ -697,7 +697,7 @@ for i in 1..10 return if i <= 2 then 1 else partial[-1] + partial[-2]
 
 Each loop result is a `bl.BlList`.
 
-`[@test] ../../expr_for_test.go`
+`[@test] ../../expr_comprehensions_test.go`
 
 ---
 
@@ -724,7 +724,7 @@ some x in [1, 2], y in [3, 4] satisfies x + y > 5     // → true   (2 + 4 > 5)
 every x in [1, 2], y in [3, 4] satisfies x + y >= 4   // → true   (every pair has sum ≥ 4)
 ```
 
-`[@test] ../../expr_quantified_test.go`
+`[@test] ../../expr_comprehensions_test.go`
 
 ---
 
@@ -758,7 +758,7 @@ applicant.address.postcode         // navigate input variables
 See [dictionary.spec.md](dictionary.spec.md). Dictionary manipulation uses the
 [dictionary.spec.md § Built-in functions](dictionary.spec.md#built-in-functions).
 
-`[@test] ../../expr_dictionaries_test.go`
+`[@test] ../../expr_dictionary_test.go`
 
 ---
 
@@ -792,7 +792,7 @@ ymDuration("P1Y6M").months           // → 6
 Available components follow the relevant `Bl*` type spec (e.g. [date.spec.md](date.spec.md),
 [range.spec.md](range.spec.md)).
 
-`[@test] ../../expr_components_test.go`
+`[@test] ../../expr_engine_test.go`
 
 ---
 
@@ -847,7 +847,7 @@ already disallows I/O, host calls, and arbitrary recursion at the VM layer. The 
 above are stated for clarity at the language-spec level so callers understand the surface
 they're getting, not to add engine work.
 
-`[@test] ../../expr_functions_test.go`
+`[@test] ../../expr_func_test.go`
 
 ---
 
@@ -867,7 +867,7 @@ myTable instance of table              // → true
 ukHolidays instance of calendar        // → true
 ```
 
-`[@test] ../../expr_instance_of_test.go`
+`[@test] ../../expr_typetest_test.go`
 
 ---
 
@@ -924,7 +924,7 @@ a or b and c          // → a or (b and c)
 1 + 2:5 * 2           // → [3, 4, 5, 6, 7, 8, 9, 10]   (: between additive and multiplicative)
 ```
 
-`[@test] ../../expr_precedence_test.go`
+`[@test] ../../expr_engine_test.go`
 
 ---
 
@@ -937,10 +937,10 @@ a or b and c          // → a or (b and c)
 - **Division by zero** → `null`.
 - **Parse / type-check errors** — malformed syntax, an unknown variable (when a `bl.BlSchema` is given),
   or a static type mismatch — are returned by `bl.Expr` as a `bl.ParseError`.
-  `[@test] ../../expr_parse_error_test.go`
+  `[@test] ../../expr_engine_test.go`
 - **Evaluation errors** — a type mismatch only detectable with concrete inputs (e.g. comparing
   incompatible types) — are returned by `Evaluate` as a `bl.TypeError`.
-  `[@test] ../../expr_eval_error_test.go`
+  `[@test] ../../expr_engine_test.go`
 
 The full error-type catalogue (all defined in `expr_errors.go` / `expr_schema.go` — see
 [§ Engine internals](#engine-internals-go)):
@@ -1266,7 +1266,7 @@ type CalendarRangeError struct { /* date, bounds */ }// business-day iteration p
 type SchemaError struct { Path string; Err error }   // from bl.BlSchema validation (expr_schema.go)
 ```
 
-`[@test] ../../expr_engine_internal_test.go`
+`[@test] ../../expr_engine_test.go`
 
 ---
 
@@ -1340,4 +1340,4 @@ behaviour, and the rationale.
   `date("2025-01-01")`) — pass `nil` to `Evaluate`.
 - A list index out of range returns `null`; a missing dictionary key returns `null`.
 
-`[@test] ../../expr_edge_cases_test.go`
+`[@test] ../../expr_engine_test.go`

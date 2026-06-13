@@ -209,7 +209,7 @@ Component access is **patcher-lowered** to function calls (`durationYears(d)`,
 `durationMonths(d)`, `durationTotalMonths(d)`, `durationTotalYears(d)`); see
 [bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-expr_patchgo).
 
-`[@test] ../../expr_years_months_duration_components_test.go`
+`[@test] ../../expr_years_months_duration_test.go`
 
 ---
 
@@ -234,7 +234,7 @@ rounding. `ymDuration("P1Y") / 7` yields a duration whose `totalMonths` is exact
 `bl.BlNumber` with arbitrary precision); the canonical string form puts the resulting fraction on
 the smallest designator used (here, months).
 
-`[@test] ../../expr_years_months_duration_ops_test.go`
+`[@test] ../../expr_years_months_duration_test.go`
 
 ---
 
@@ -285,7 +285,7 @@ roundDown(ymDuration("P1Y11M"), ymDuration("P1Y"))     // → ymDuration("P1Y") 
 A non-positive `step` (zero or negative) → `bl.TypeError`; rounding to a "nearest zero-sized
 multiple" or "nearest negative multiple" has no sensible meaning.
 
-`[@test] ../../expr_years_months_duration_functions_test.go`
+`[@test] ../../expr_years_months_duration_test.go`
 
 ---
 

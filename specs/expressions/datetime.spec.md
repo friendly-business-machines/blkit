@@ -84,7 +84,7 @@ and they share names with the constructors:
 | `date(dt)` | extract the date | a `date` |
 | `time(dt)` | extract the time | a `time` |
 
-`[@test] ../../expr_datetime_components_test.go`
+`[@test] ../../expr_datetime_test.go`
 
 ---
 
@@ -143,7 +143,7 @@ documented in [§ Value type & host API](#value-type--host-api-exported).
 - Duration-returning differences via named functions (`ymDurationBetween`,
   `dtDurationBetween`) are documented under [§ Business-day arithmetic & difference](#business-day-arithmetic--difference-ext).
 
-`[@test] ../../expr_datetime_ops_test.go`
+`[@test] ../../expr_datetime_test.go`
 
 ---
 
@@ -228,7 +228,7 @@ kinds, convert one operand explicitly: `datetime(d)` lifts a `bl.BlDate` to midn
 `bl.BlDateTime`, and the conversion functions in [date.spec.md](date.spec.md) project a
 `bl.BlDateTime` down to a `bl.BlDate`.
 
-`[@test] ../../expr_business_days_test.go`
+`[@test] ../../expr_calendar_test.go`
 
 ---
 
@@ -280,7 +280,7 @@ An invalid `basis` string → `bl.TypeError`.
 A mismatch in zone-kind between two datetime operands (one local, one zoned/offset) → `bl.BlNull`,
 same rule as for `<`/`>` comparisons.
 
-`[@test] ../../expr_date_difference_test.go`
+`[@test] ../../expr_date_test.go`
 
 ---
 
@@ -338,7 +338,7 @@ financialYearQuarter(date("2025-01-15"), "AU")   // → "FY2025Q3"  (AU FY 2025 
 financialYearQuarter(date("2024-08-01"), 7)      // → "FY2025Q1"  (numeric basis equivalent)
 ```
 
-`[@test] ../../expr_financial_year_test.go`
+`[@test] ../../expr_date_test.go`
 
 ---
 
@@ -383,7 +383,7 @@ naive input returns `bl.BlNull`.
 `bl.BlDate` is not supported by either function — a date has no time-of-day to shift across a
 zone boundary.
 
-`[@test] ../../expr_datetime_rezoning_test.go`
+`[@test] ../../expr_datetime_test.go`
 
 ---
 
@@ -404,7 +404,7 @@ instead.
 Each function accepts either a `bl.BlDate` or a `bl.BlDateTime` and returns the same type. A value
 that already has no offset/timezone is returned unchanged.
 
-`[@test] ../../expr_zone_stripping_test.go`
+`[@test] ../../expr_datetime_test.go`
 
 ---
 

@@ -2,9 +2,9 @@ package blkit
 
 import "testing"
 
-func TestCollections(t *testing.T) {
+func TestList(t *testing.T) {
 	assertEval(t, map[string]string{
-		// list literals + functions
+		// literals + functions
 		`[1, 2, 3, 4]`:                 "[1, 2, 3, 4]",
 		`count([1, 2, 3])`:             "3",
 		`isEmpty([])`:                  "true",
@@ -27,10 +27,13 @@ func TestCollections(t *testing.T) {
 		`listReplace([1, 2, 3], 2, 9)`: "[1, 9, 3]",
 		`sort([3, 1, 2])`:              "[1, 2, 3]",
 		`sort([3, 1, 2], "desc")`:      "[3, 2, 1]",
-		`seq(5, 10)`:                   "[5, 6, 7, 8, 9, 10]",
-		`seq(0, 10, 2)`:                "[0, 2, 4, 6, 8, 10]",
-		`seq(10, 5)`:                   "[10, 9, 8, 7, 6, 5]",
-		// aggregation
+		// projection over a list of dictionaries
+		`[{name: "A"}, {name: "B"}].name`: `["A", "B"]`,
+	})
+}
+
+func TestListAggregation(t *testing.T) {
+	assertEval(t, map[string]string{
 		`sum([1, 2, 3])`:               "6",
 		`product([2, 3, 4])`:           "24",
 		`min([3, 1, 2])`:               "1",
@@ -45,25 +48,10 @@ func TestCollections(t *testing.T) {
 		`stringJoin(["a", "b"], ", ")`: "a, b",
 		`min(["banana", "apple"])`:     "apple",
 		`sum([dtDuration("PT1H"), dtDuration("PT2H")])`: "PT3H",
-		// dictionary literals + path + functions
-		`{a: 1, b: 2}`:                            "{a: 1, b: 2}",
-		`{name: "Alice", age: 30}.name`:           "Alice",
-		`{a: {b: 3}}.a.b`:                         "3",
-		`{a: 1}.missing`:                          "null",
-		`getValue({foo: 123}, "foo")`:             "123",
-		`getValue({x: 1, y: {z: 0}}, ["y", "z"])`: "0",
-		`has({a: 1}, "a")`:                        "true",
-		`has({a: 1}, "z")`:                        "false",
-		`size({a: 1, b: 2})`:                      "2",
-		`keys({b: 1, a: 2})`:                      `["a", "b"]`,
-		`dictionaryRemove({a: 1, b: 2}, "a")`:     "{b: 2}",
-		`{a: 1, b: 2} = {b: 2, a: 1}`:             "true",
-		// projection
-		`[{name: "A"}, {name: "B"}].name`: `["A", "B"]`,
 	})
 }
 
-func TestInlinePredicates(t *testing.T) {
+func TestListInlinePredicates(t *testing.T) {
 	assertEval(t, map[string]string{
 		`remove([1, 2, 3], function(i) i = 2)`:         "[1, 3]",
 		`remove([1, 2, 3], 2)`:                         "[1, 3]", // positional still works
@@ -72,8 +60,11 @@ func TestInlinePredicates(t *testing.T) {
 	})
 }
 
-func TestSequenceOperator(t *testing.T) {
+func TestListSequence(t *testing.T) {
 	assertEval(t, map[string]string{
+		`seq(5, 10)`:                "[5, 6, 7, 8, 9, 10]",
+		`seq(0, 10, 2)`:             "[0, 2, 4, 6, 8, 10]",
+		`seq(10, 5)`:                "[10, 9, 8, 7, 6, 5]",
 		`5:10`:                      "[5, 6, 7, 8, 9, 10]",
 		`10:5`:                      "[10, 9, 8, 7, 6, 5]",
 		`1+2:5*2`:                   "[3, 4, 5, 6, 7, 8, 9, 10]",
@@ -85,11 +76,9 @@ func TestSequenceOperator(t *testing.T) {
 	})
 }
 
-func TestDictForwardRefs(t *testing.T) {
+func TestListZipStringJoin(t *testing.T) {
 	assertEval(t, map[string]string{
-		`{a: 2, b: a * 2}`:             "{a: 2, b: 4}",
-		`{a: 2, b: a * 2}.b`:           "4",
-		`{x: 5, y: x + 1, z: y * 2}.z`: "12",
-		`{a: 1, b: 2}`:                 "{a: 1, b: 2}", // no forward-ref still works
+		`zipStringJoin([["a", "b", "c"], ["1", "2", "3"]])`: `["a1", "b2", "c3"]`,
+		`zipStringJoin([["a", "b"], ["1", "2"]], "-")`:      `["a-1", "b-2"]`,
 	})
 }

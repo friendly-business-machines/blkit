@@ -55,7 +55,7 @@ time("11:45:30+02:00").offset       // → dtDuration("PT2H")   (ext)
 time("11:45:30[Europe/Paris]").timezone  // → "Europe/Paris" (ext)
 ```
 
-`[@test] ../../expr_time_components_test.go`
+`[@test] ../../expr_time_test.go`
 
 ---
 
@@ -111,7 +111,7 @@ for day-tracking arithmetic.
 [datetime.spec.md § Re-zoning](datetime.spec.md#re-zoning-ext) — the function accepts both
 `bl.BlTime` and `bl.BlDateTime`.
 
-`[@test] ../../expr_time_ops_test.go`
+`[@test] ../../expr_time_test.go`
 
 ---
 

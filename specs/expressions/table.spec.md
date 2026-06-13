@@ -230,7 +230,7 @@ Tables have no arithmetic operators and no ordering operators (`<` / `<=` / `>` 
 `listContains(t.toList(), x)` if you need element-style membership, or `t[item =
 row].nRows > 0` for whole-row membership.
 
-`[@test] ../../expr_table_operators_test.go`
+`[@test] ../../expr_table_test.go`
 
 ---
 
@@ -288,7 +288,7 @@ The filter form `t[predicate]` (see [§ Operators](#operators)) and
 `sublist(t.toList(), start, length)` (see [list.spec.md § Built-in functions](list.spec.md#built-in-functions))
 are further ways to take a selection of rows.
 
-`[@test] ../../expr_table_indexing_test.go`
+`[@test] ../../expr_table_test.go`
 
 ---
 
@@ -328,7 +328,7 @@ Column projection follows the same rule as list-of-dictionaries projection
 that list extracts the `col` field from each element. The table's uniform-keys
 invariant guarantees the result length equals `t.nRows`.
 
-`[@test] ../../expr_table_indexing_test.go`
+`[@test] ../../expr_table_test.go`
 
 ---
 
@@ -452,7 +452,7 @@ the column name at position `k`); like any bracket form it yields a 1×1
   For large tables this scales linearly. The column selector is applied
   after filtering, so it doesn't multiply the cost.
 
-`[@test] ../../expr_table_indexing_test.go`
+`[@test] ../../expr_table_test.go`
 
 ---
 
@@ -479,7 +479,7 @@ so `nRows`, `nCols`, and `colNames` are **reserved** — a column literally
 named `nRows` is shadowed by the attribute and must be projected with the
 bracket form `t[, "nRows"]`.
 
-`[@test] ../../expr_table_attributes_test.go`
+`[@test] ../../expr_table_test.go`
 
 ---
 
@@ -521,7 +521,7 @@ reachable by the bare path `t.toList` or by `t[, "toList"]`.
 table, and `t.toList()` returns a single-column table's cells as a list (see
 [§ Column indexing](#column-indexing)).
 
-`[@test] ../../expr_table_unwrap_test.go`
+`[@test] ../../expr_table_test.go`
 
 ---
 
@@ -558,7 +558,7 @@ comprehension), `some r in t satisfies r.rate > 10`, `every r in t satisfies r.r
 full list library. For row and column counts use the `t.nRows` / `t.nCols`
 attributes (see [§ Attributes](#attributes)).
 
-`[@test] ../../expr_table_functions_test.go`
+`[@test] ../../expr_table_test.go`
 
 ---
 
@@ -636,7 +636,7 @@ match no rows.
 The whole sort is **stable**: rows that compare equal across *all* keys keep their input
 order, as do rows tied within an `inOrder` key's trailing unlisted group.
 
-`[@test] ../../expr_table_methods_test.go`
+`[@test] ../../expr_table_test.go`
 
 ---
 
@@ -701,7 +701,7 @@ the unmatched `other` rows in `other`'s order. A `"cross"` join emits
 | `rates.join(orders, "region", "full")` | `bl.TypeError` — unknown join type |
 | `rates.join(orders, [])` | `bl.TypeError` — empty key requires `how = "cross"` |
 
-`[@test] ../../expr_table_join_test.go`
+`[@test] ../../expr_table_test.go`
 
 ---
 
@@ -755,7 +755,7 @@ Because a zero-row table still carries its columns, `union(t, empty)` where
 `table([])` unions cleanly under `"all"` (it contributes no columns and no rows); under
 the default `"error"` it only matches another no-column table.
 
-`[@test] ../../expr_table_union_test.go`
+`[@test] ../../expr_table_test.go`
 
 ---
 
@@ -817,7 +817,7 @@ across groups → `bl.TypeError`).
 Grouping over a zero-row table has no groups, so `.agg(…)` yields a zero-row table that
 still carries the key and aggregate columns.
 
-`[@test] ../../expr_table_group_test.go`
+`[@test] ../../expr_table_test.go`
 
 ---
 
@@ -1176,4 +1176,4 @@ explicitly to validate.
   `table([])` onto a table with columns is a mismatch under `"error"` (`bl.TypeError`);
   under `"all"` it contributes nothing and the result is the other operand's rows.
 
-`[@test] ../../expr_table_edge_cases_test.go`
+`[@test] ../../expr_table_test.go`

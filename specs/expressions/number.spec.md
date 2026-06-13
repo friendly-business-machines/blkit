@@ -98,7 +98,7 @@ engine (see [§ Semantics & behaviour](#semantics--behaviour)).
 - `**` with a result that would be complex (e.g. negative base, fractional exponent) → `null`:
   `(-2) ** 0.5 // → null`.
 
-`[@test] ../../expr_number_operators_test.go`
+`[@test] ../../expr_number_test.go`
 
 ---
 
@@ -135,7 +135,7 @@ Aggregates over lists (`min`, `max`, `sum`, `mean`, `median`, `product`, `stddev
 `string(n)` — is documented under [§ Go implementation](#go-implementation-expr-extension) and
 [string.spec.md](string.spec.md).
 
-`[@test] ../../expr_number_functions_test.go`
+`[@test] ../../expr_number_test.go`
 
 ### Interval algebra
 
@@ -155,7 +155,7 @@ A number is a *point*; the FEEL interval-algebra built-ins (`before`, `after`, `
   divisor (→ `null`).
 - **Equality** is by numeric value, ignoring trailing zeros.
 
-`[@test] ../../expr_number_semantics_test.go`
+`[@test] ../../expr_number_test.go`
 
 ---
 

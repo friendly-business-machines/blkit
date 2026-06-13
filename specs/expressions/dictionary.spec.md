@@ -92,7 +92,7 @@ Dictionaries have no arithmetic operators (`+`/`-`/etc.), no ordering operators
 Member access is **patcher-lowered** to a call to `getValue(d, key)`. So `d.name` and
 `d["name"]` are both equivalent to `getValue(d, "name")`.
 
-`[@test] ../../expr_dictionary_operators_test.go`
+`[@test] ../../expr_dictionary_test.go`
 
 ---
 
@@ -115,7 +115,7 @@ DMN-inspired functions plus blkit extensions (**ext**).
 | `isEmpty(d)` **ext** | `isEmpty({})` | `true` |
 | `dictionaryRemove(d, key)` **ext** | `dictionaryRemove({a:1, b:2}, "a")` | `{b: 2}` |
 
-`[@test] ../../expr_dictionary_functions_test.go`
+`[@test] ../../expr_dictionary_test.go`
 
 ---
 

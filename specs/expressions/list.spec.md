@@ -150,7 +150,7 @@ Lists have no arithmetic operators (`+`/`-`/etc.) and no ordering operators (`<`
 projection](#literals-indexing-filter-projection) — they're lowered by the engine per the hub
 (see [bl-expr.spec.md](bl-expr.spec.md)).
 
-`[@test] ../../expr_list_operators_test.go`
+`[@test] ../../expr_list_test.go`
 
 ---
 
@@ -300,7 +300,7 @@ is the largest value not exceeding `end` (for ascending) / not less than `end` (
 **Non-numeric arguments** → `bl.TypeError`. The function is integer-friendly but not
 integer-only — any `bl.BlNumber` is acceptable.
 
-`[@test] ../../expr_list_seq_test.go`
+`[@test] ../../expr_list_test.go`
 
 ### Aggregation
 
@@ -389,7 +389,7 @@ sort(["m", "s", "xl"], ["s", "m", "l"])      // → ["s", "m", "xl"]  ("xl" unli
 This **diverges from DMN FEEL**, whose `sort(list, precedes)` takes a comparator function;
 blkit's `sort` does not accept a comparator.
 
-`[@test] ../../expr_list_functions_test.go`
+`[@test] ../../expr_list_test.go`
 
 ---
 

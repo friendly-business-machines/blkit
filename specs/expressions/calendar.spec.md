@@ -348,7 +348,7 @@ without poisoning the result — scanning continues. Use the conversion function
 [date.spec.md § Conversion](date.spec.md) / [datetime.spec.md § Conversion](datetime.spec.md)
 to coerce explicitly when you need cross-temporal-kind matching to succeed.
 
-`[@test] ../../expr_calendar_query_test.go`
+`[@test] ../../expr_calendar_test.go`
 
 ---
 
@@ -597,7 +597,7 @@ func CalendarMerge(calendars []BlCalendar, opts ...MergeOption) (BlCalendar, err
 Validity bounds are not unioned (matching the expression-language behaviour); the returned
 calendar has none unless re-supplied via a follow-up `bl.Calendar(..., WithValidity(...))`.
 
-`[@test] ../../expr_calendar_mutation_test.go`
+`[@test] ../../expr_calendar_test.go`
 
 ---
 
@@ -620,7 +620,7 @@ between overlap and containment semantics, which `in` doesn't).
 
 Calendars have no arithmetic operators and no ordering operators (`<`/`<=`/`>`/`>=`).
 
-`[@test] ../../expr_calendar_operators_test.go`
+`[@test] ../../expr_calendar_test.go`
 
 ---
 

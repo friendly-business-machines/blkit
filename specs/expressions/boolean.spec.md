@@ -120,7 +120,7 @@ overload of a Go boolean operator — see
 Short-circuits: `false and X → false` (X never evaluated), `true or X → true`. `not(null) → null`.
 Equality with `null` yields `false`, never `null` (see [null.spec.md](null.spec.md)).
 
-`[@test] ../../expr_boolean_logic_test.go`
+`[@test] ../../expr_boolean_test.go`
 
 ---
 
@@ -135,7 +135,7 @@ Related null-handling helpers live alongside the type they introspect:
 [bl-expr.spec.md](bl-expr.spec.md)) and [`getOrElse`](null.spec.md#built-in-functions) (null
 fallback, in [null.spec.md](null.spec.md)).
 
-`[@test] ../../expr_boolean_functions_test.go`
+`[@test] ../../expr_boolean_test.go`
 
 ---
 

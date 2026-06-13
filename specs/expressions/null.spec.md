@@ -108,7 +108,7 @@ encounter a null operand follow the propagation rules in [§ Semantics &
 behaviour](#semantics--behaviour) — most return null, with documented exceptions for the
 short-circuit boolean cases.
 
-`[@test] ../../expr_null_operators_test.go`
+`[@test] ../../expr_null_test.go`
 
 ---
 
@@ -144,7 +144,7 @@ getOrElse(42, 1)                     // → 42
 getOrElse(applicant.middleName, "")  // → "" if the key is missing or null
 ```
 
-`[@test] ../../expr_null_functions_test.go`
+`[@test] ../../expr_null_test.go`
 
 ---
 
@@ -174,7 +174,7 @@ logic table determines a definite result without consulting the null operand
 | `false or null` / `null or false` | `null` |
 | `not(null)` | `null` |
 
-`[@test] ../../expr_null_propagation_test.go`
+`[@test] ../../expr_null_test.go`
 
 ### Producing null
 
