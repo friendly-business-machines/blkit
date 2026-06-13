@@ -62,3 +62,72 @@ func TestCalendar(t *testing.T) {
 		})
 	}
 }
+
+func boundedCal(t *testing.T) BlCalendar {
+	t.Helper()
+	d := func(s string) BlValue { v, _ := Date(s); return v }
+	c, err := Calendar(
+		[]BlCalendarEntry{CalendarEntry(d("2025-12-25"), "Christmas")},
+		WithValidity(mustRange(t, "2025-01-01", "2025-12-31")),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func mustRange(t *testing.T, a, b string) BlRange {
+	da, _ := Date(a)
+	db, _ := Date(b)
+	r, _ := Range(da, db, true, true)
+	return r
+}
+
+func TestStrictCalendarRange(t *testing.T) {
+	cal := boundedCal(t)
+	schema := BlSchema{{Name: "cal", Type: TypeCalendar}}
+	in, _ := Dictionary(map[string]BlValue{"cal": cal})
+	// in-bounds: no error
+	e, _ := Expr(`addBusinessDays(date("2025-06-02"), 3, cal, true)`, schema)
+	if _, err := e.Evaluate(in); err != nil {
+		t.Errorf("in-bounds strict errored: %v", err)
+	}
+	// stepping past validTo with strict → CalendarRangeError
+	e2, _ := Expr(`addBusinessDays(date("2025-12-30"), 5, cal, true)`, schema)
+	_, err := e2.Evaluate(in)
+	if err == nil {
+		t.Errorf("expected CalendarRangeError past validity bound")
+	}
+	// without strict → no error
+	e3, _ := Expr(`addBusinessDays(date("2025-12-30"), 5, cal)`, schema)
+	if _, err := e3.Evaluate(in); err != nil {
+		t.Errorf("non-strict errored: %v", err)
+	}
+}
+
+func TestCalendarDropKeep(t *testing.T) {
+	cal := ukHolidays(t) // from expr_calendar_test.go
+	schema := BlSchema{{Name: "cal", Type: TypeCalendar}}
+	in, _ := Dictionary(map[string]BlValue{"cal": cal})
+	check := func(src, want string) {
+		t.Helper()
+		e, err := Expr(src, schema)
+		if err != nil {
+			t.Fatalf("compile %q: %v", src, err)
+			return
+		}
+		out, err := e.Evaluate(in)
+		if err != nil {
+			t.Fatalf("eval %q: %v", src, err)
+			return
+		}
+		if out.String() != want {
+			t.Errorf("%s = %q, want %q", src, out.String(), want)
+		}
+	}
+	check(`count(calendarDrop(cal, "Boxing Day"))`, "4")                             // drop by name
+	check(`count(calendarKeep(cal, "Christmas Day"))`, "1")                          // keep by name
+	check(`count(calendarDrop(cal, date("2025-12-25")))`, "4")                       // drop by date value
+	check(`count(calendarDrop(cal, pattern(".*Day")))`, "2")                         // drop names ending "Day": New Year's, Good Friday(no), ... regex on names
+	check(`count(calendarKeep(cal, [date("2025-01-01"), date("2025-12-25")]))`, "2") // keep by list of dates
+}

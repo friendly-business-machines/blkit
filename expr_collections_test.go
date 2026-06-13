@@ -71,3 +71,25 @@ func TestInlinePredicates(t *testing.T) {
 		`listReplace([1, 2, 3], 2, 9)`:                 "[1, 9, 3]", // positional still works
 	})
 }
+
+func TestSequenceOperator(t *testing.T) {
+	assertEval(t, map[string]string{
+		`5:10`:                      "[5, 6, 7, 8, 9, 10]",
+		`10:5`:                      "[10, 9, 8, 7, 6, 5]",
+		`1+2:5*2`:                   "[3, 4, 5, 6, 7, 8, 9, 10]",
+		`-2:2`:                      "[-2, -1, 0, 1, 2]",
+		`{a: 1, b: 2}`:              "{a: 1, b: 2}", // dict sep untouched
+		`{a: (3:5)}.a`:              "[3, 4, 5]",    // sequence in dict value (parenthesised)
+		`count(5:10)`:               "6",
+		`for x in 1:3 return x * 2`: "[2, 4, 6]",
+	})
+}
+
+func TestDictForwardRefs(t *testing.T) {
+	assertEval(t, map[string]string{
+		`{a: 2, b: a * 2}`:             "{a: 2, b: 4}",
+		`{a: 2, b: a * 2}.b`:           "4",
+		`{x: 5, y: x + 1, z: y * 2}.z`: "12",
+		`{a: 1, b: 2}`:                 "{a: 1, b: 2}", // no forward-ref still works
+	})
+}

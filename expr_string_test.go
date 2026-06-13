@@ -91,3 +91,13 @@ func TestStringPattern(t *testing.T) {
 		t.Errorf("expected RegexError for malformed pattern")
 	}
 }
+
+func TestNamedArguments(t *testing.T) {
+	assertEval(t, map[string]string{
+		`substring(string: "foobar", startPosition: 3, length: 2)`: "ob",
+		`substring(string: "foobar", startPosition: 3)`:            "obar",
+		`contains(string: "foobar", match: "oob")`:                 "true",
+		`round(n: 2.345, scale: 2)`:                                "2.35",
+		`substring("foobar", 3, 2)`:                                "ob", // positional still works
+	})
+}

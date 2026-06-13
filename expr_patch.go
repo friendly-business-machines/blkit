@@ -68,22 +68,60 @@ func (p *feelPatcher) Visit(node *ast.Node) {
 		// BlList rather than expr's native []any.
 		ast.Patch(node, call("__mklist", n.Nodes...))
 	case *ast.MapNode:
-		// A dictionary literal `{k: v, …}` becomes __mkdict("k", v, …) so it
-		// produces a BlDictionary rather than expr's native map[string]any.
-		var args []ast.Node
-		for _, pr := range n.Pairs {
-			pair, ok := pr.(*ast.PairNode)
-			if !ok {
-				continue
-			}
-			name, ok := stringProperty(pair.Key)
-			if !ok {
-				continue
-			}
-			args = append(args, constNode(BlString{name}), pair.Value)
-		}
-		ast.Patch(node, call("__mkdict", args...))
+		ast.Patch(node, p.lowerMap(n))
 	}
+}
+
+// lowerMap rewrites a dictionary literal `{k: v, …}` to __mkdict("k", v, …),
+// wrapping the entries in sequential `let` bindings so a value may reference an
+// earlier sibling key (`{a: 2, b: a*2}`). Only valid-identifier keys are bound
+// (non-identifier keys can't be referenced).
+func (p *feelPatcher) lowerMap(n *ast.MapNode) ast.Node {
+	type entry struct {
+		key     string
+		isIdent bool
+		value   ast.Node
+	}
+	var entries []entry
+	for _, pr := range n.Pairs {
+		pair, ok := pr.(*ast.PairNode)
+		if !ok {
+			continue
+		}
+		name, ok := stringProperty(pair.Key)
+		if !ok {
+			continue
+		}
+		entries = append(entries, entry{key: name, isIdent: validIdentifier(name), value: pair.Value})
+	}
+	var args []ast.Node
+	for _, e := range entries {
+		ref := e.value
+		if e.isIdent {
+			ref = ident(e.key)
+		}
+		args = append(args, constNode(BlString{e.key}), ref)
+	}
+	inner := call("__mkdict", args...)
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].isIdent {
+			inner = &ast.VariableDeclaratorNode{Name: entries[i].key, Value: entries[i].value, Expr: inner}
+		}
+	}
+	return inner
+}
+
+// validIdentifier reports whether name is a legal expr identifier.
+func validIdentifier(name string) bool {
+	if name == "" || !isIdentStart(name[0]) {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if !isIdentByte(name[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // patchMember lowers dot-component / dictionary-key access (a string property)

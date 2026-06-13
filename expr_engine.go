@@ -118,27 +118,32 @@ func evalEnv(input BlValue) map[string]any {
 const inputPlaceholder = "__input"
 
 // typeRegistrations lists every spoke's option assembler. buildOptions calls
-// each to learn that spoke's value type, functions, and operator impls.
-var typeRegistrations = []func() []expr.Option{
-	numberOptions,
-	stringOptions,
-	booleanOptions,
-	nullOptions,
-	dateOptions,
-	timeOptions,
-	datetimeOptions,
-	daysTimeDurationOptions,
-	yearsMonthsDurationOptions,
-	listOptions,
-	dictionaryOptions,
-	rangeOptions,
-	intervalOptions,
-	comprehensionOptions,
-	tableOptions,
-	tableMethodOptions,
-	calendarOptions,
-	typeTestOptions,
-	overloadOptions,
+// each to learn that spoke's value type, functions, and operator impls. It is a
+// function (not a package var) so the chain funcOptions → apply → BlFunc.Apply →
+// Expr → buildOptions doesn't form a static initialization cycle.
+func typeRegistrations() []func() []expr.Option {
+	return []func() []expr.Option{
+		numberOptions,
+		stringOptions,
+		booleanOptions,
+		nullOptions,
+		dateOptions,
+		timeOptions,
+		datetimeOptions,
+		daysTimeDurationOptions,
+		yearsMonthsDurationOptions,
+		listOptions,
+		dictionaryOptions,
+		rangeOptions,
+		intervalOptions,
+		comprehensionOptions,
+		tableOptions,
+		tableMethodOptions,
+		calendarOptions,
+		typeTestOptions,
+		funcOptions,
+		overloadOptions,
+	}
 }
 
 // Expr compiles a source string once, optionally type-checking it against a
@@ -173,7 +178,7 @@ func buildOptions(schema BlSchema, source string) []expr.Option {
 	} else {
 		opts = append(opts, expr.Env(schema.env()))
 	}
-	for _, reg := range typeRegistrations {
+	for _, reg := range typeRegistrations() {
 		opts = append(opts, reg()...)
 	}
 	opts = append(opts, operatorRegistrations()...)

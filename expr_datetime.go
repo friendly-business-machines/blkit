@@ -385,6 +385,84 @@ func dtDurationBetweenAny(args ...any) (any, error) {
 	return dtDur(decimalSecondsBetween(t1, t2)), nil
 }
 
+// weekdaysInMonth returns every day in t's month falling on weekday wd,
+// preserving t's time-of-day and location.
+func weekdaysInMonth(t time.Time, wd time.Weekday) []time.Time {
+	first := time.Date(t.Year(), t.Month(), 1, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
+	var out []time.Time
+	for d := first; d.Month() == first.Month(); d = d.AddDate(0, 0, 1) {
+		if d.Weekday() == wd {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func weekInMonthArgs(args []any) (time.Time, bool, bool, time.Weekday, bool) {
+	t, naive, dtk, ok := temporalParts(asBl(args[0]))
+	if !ok {
+		return time.Time{}, false, false, 0, false
+	}
+	dow, ok := asBl(args[len(args)-1]).(BlString)
+	if !ok {
+		return time.Time{}, false, false, 0, false
+	}
+	wd, ok := weekdayFromName(dow.s)
+	if !ok {
+		return time.Time{}, false, false, 0, false
+	}
+	return t, naive, dtk, wd, true
+}
+
+func firstDOWInMonthFn(args ...any) (any, error) {
+	t, naive, dtk, wd, ok := weekInMonthArgs(args)
+	if !ok {
+		return nil, &TypeError{Op: "firstDayOfWeekInMonth", Detail: "expected (date, dayName)"}
+	}
+	days := weekdaysInMonth(t, wd)
+	return rebuildTemporal(days[0], naive, dtk), nil
+}
+
+func lastDOWInMonthFn(args ...any) (any, error) {
+	t, naive, dtk, wd, ok := weekInMonthArgs(args)
+	if !ok {
+		return nil, &TypeError{Op: "lastDayOfWeekInMonth", Detail: "expected (date, dayName)"}
+	}
+	days := weekdaysInMonth(t, wd)
+	return rebuildTemporal(days[len(days)-1], naive, dtk), nil
+}
+
+func nthDOWInMonthFn(args ...any) (any, error) {
+	if len(args) != 3 {
+		return nil, &TypeError{Op: "nthDayOfWeekInMonth", Detail: "expected (date, n, dayName)"}
+	}
+	t, naive, dtk, ok := temporalParts(asBl(args[0]))
+	n, okn := asBl(args[1]).(BlNumber)
+	dow, okd := asBl(args[2]).(BlString)
+	if !ok || !okn || !okd {
+		return nil, &TypeError{Op: "nthDayOfWeekInMonth", Detail: "expected (date, n, dayName)"}
+	}
+	wd, ok := weekdayFromName(dow.s)
+	if !ok {
+		return nil, &TypeError{Op: "nthDayOfWeekInMonth", Detail: "unknown day name " + dow.s}
+	}
+	nn := int(n.d.IntPart())
+	if nn == 0 {
+		return nil, &TypeError{Op: "nthDayOfWeekInMonth", Detail: "n must be non-zero"}
+	}
+	days := weekdaysInMonth(t, wd)
+	var idx int
+	if nn > 0 {
+		idx = nn - 1
+	} else {
+		idx = len(days) + nn
+	}
+	if idx < 0 || idx >= len(days) {
+		return Null(), nil
+	}
+	return rebuildTemporal(days[idx], naive, dtk), nil
+}
+
 func monthsBetweenFn(args ...any) (any, error) { return diffUnits(args, false) }
 func yearsBetweenFn(args ...any) (any, error)  { return diffUnits(args, true) }
 
@@ -613,6 +691,9 @@ func datetimeOptions() []expr.Option {
 		expr.Function("prevWeekday", dateUnary(prevWeekdayTime), new(func(BlValue) BlValue)),
 		expr.Function("nextDayOfWeek", dowNav(true), new(func(BlValue, BlValue) BlValue)),
 		expr.Function("prevDayOfWeek", dowNav(false), new(func(BlValue, BlValue) BlValue)),
+		expr.Function("firstDayOfWeekInMonth", firstDOWInMonthFn, new(func(BlValue, BlValue) BlValue)),
+		expr.Function("lastDayOfWeekInMonth", lastDOWInMonthFn, new(func(BlValue, BlValue) BlValue)),
+		expr.Function("nthDayOfWeekInMonth", nthDOWInMonthFn, new(func(BlValue, BlValue, BlValue) BlValue)),
 		expr.Function("weekdaysBetween", weekdaysBetweenFn, new(func(BlValue, BlValue) BlNumber)),
 		expr.Function("daysBetween", daysBetweenFn,
 			new(func(BlValue, BlValue) BlNumber),

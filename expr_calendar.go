@@ -301,19 +301,42 @@ func calDropKeep(args []any, drop bool) (any, error) {
 	if !ok {
 		return nil, argTypeError(args[0])
 	}
-	name, ok := asBl(args[1]).(BlString)
-	if !ok {
-		return nil, &TypeError{Op: "calendarDrop", Detail: "target must be a name string"}
-	}
+	target := asBl(args[1])
 	var kept []BlCalendarEntry
 	for _, e := range c.entries {
-		n, named := e.Name()
-		matches := named && n == name.s
-		if matches != drop {
+		if entryMatchesTarget(e, target) != drop {
 			kept = append(kept, e)
 		}
 	}
 	return BlCalendar{entries: kept, validFrom: c.validFrom, validTo: c.validTo}, nil
+}
+
+// entryMatchesTarget reports whether a calendar entry matches a drop/keep
+// target: a name string, a regex on the name, a temporal point the entry
+// covers, a range the entry overlaps, or any element of a list of targets.
+func entryMatchesTarget(e BlCalendarEntry, target BlValue) bool {
+	switch t := target.(type) {
+	case BlString:
+		n, named := e.Name()
+		return named && n == t.s
+	case BlRegex:
+		n, named := e.Name()
+		return named && t.compiled.MatchString(n)
+	case BlDate, BlDateTime:
+		return calendarCovers(e, target)
+	case BlRange:
+		ei, ok1 := toInterval(e.value)
+		ti, ok2 := toInterval(t)
+		return ok1 && ok2 && intervalsOverlap(ei, ti)
+	case BlList:
+		for _, el := range t.items {
+			if entryMatchesTarget(e, el) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 func calendarMergeFn(l BlList) (BlCalendar, error) {
@@ -366,10 +389,29 @@ func isBusinessDayFn(args ...any) (any, error) {
 	return BlBoolean{true}, nil
 }
 
-func businessDayStep(v BlValue, cal *BlCalendar, forward bool) BlValue {
+// outOfCalendarRange reports whether a point lies outside the calendar's
+// [validFrom, validTo] window (when those bounds are set).
+func outOfCalendarRange(cal *BlCalendar, point BlValue) bool {
+	if cal == nil {
+		return false
+	}
+	if !cal.validFrom.IsNull() {
+		if c, ok := compareValues(point, cal.validFrom); ok && c < 0 {
+			return true
+		}
+	}
+	if !cal.validTo.IsNull() {
+		if c, ok := compareValues(point, cal.validTo); ok && c > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func businessDayStep(v BlValue, cal *BlCalendar, forward, strict bool) (BlValue, error) {
 	t, naive, dtk, ok := temporalParts(v)
 	if !ok {
-		return Null()
+		return Null(), nil
 	}
 	step := 1
 	if !forward {
@@ -378,14 +420,35 @@ func businessDayStep(v BlValue, cal *BlCalendar, forward bool) BlValue {
 	for {
 		t = t.AddDate(0, 0, step)
 		cur := rebuildTemporal(t, naive, dtk)
+		if strict && outOfCalendarRange(cal, cur) {
+			return nil, &CalendarRangeError{Detail: "business-day iteration past calendar validity bounds"}
+		}
 		if isWeekendDay(t) {
 			continue
 		}
 		if cal != nil && isHoliday(*cal, cur) {
 			continue
 		}
-		return cur
+		return cur, nil
 	}
+}
+
+// parseCalStrict reads an optional trailing calendar and strictCalendarRange
+// flag from args[from:].
+func parseCalStrict(args []any, from int) (*BlCalendar, bool) {
+	var cal *BlCalendar
+	strict := false
+	if len(args) > from {
+		if c, ok := asBl(args[from]).(BlCalendar); ok {
+			cal = &c
+		}
+	}
+	if len(args) > from+1 {
+		if b, ok := asBl(args[from+1]).(BlBoolean); ok {
+			strict = b.b
+		}
+	}
+	return cal, strict
 }
 
 func nextBusinessDayFn(args ...any) (any, error) { return businessDayNav(args, true) }
@@ -393,13 +456,8 @@ func prevBusinessDayFn(args ...any) (any, error) { return businessDayNav(args, f
 
 func businessDayNav(args []any, forward bool) (any, error) {
 	v := asBl(args[0])
-	var cal *BlCalendar
-	if len(args) > 1 {
-		if c, ok := asBl(args[1]).(BlCalendar); ok {
-			cal = &c
-		}
-	}
-	return businessDayStep(v, cal, forward), nil
+	cal, strict := parseCalStrict(args, 1)
+	return businessDayStep(v, cal, forward, strict)
 }
 
 func addBusinessDaysFn(args ...any) (any, error)      { return businessDayAdd(args, false) }
@@ -417,18 +475,17 @@ func businessDayAdd(args []any, subtract bool) (any, error) {
 		forward = !forward
 		count = -count
 	}
-	var cal *BlCalendar
-	if len(args) > 2 {
-		if c, ok := asBl(args[2]).(BlCalendar); ok {
-			cal = &c
-		}
-	}
+	cal, strict := parseCalStrict(args, 2)
 	cur := v
 	for i := 0; i < count; i++ {
-		cur = businessDayStep(cur, cal, forward)
-		if cur.IsNull() {
+		next, err := businessDayStep(cur, cal, forward, strict)
+		if err != nil {
+			return nil, err
+		}
+		if next.IsNull() {
 			return Null(), nil
 		}
+		cur = next
 	}
 	return cur, nil
 }
@@ -439,10 +496,10 @@ func businessDaysBetweenFn(args ...any) (any, error) {
 	if !ok1 || !ok2 {
 		return nil, &TypeError{Op: "businessDaysBetween", Detail: "expected temporals"}
 	}
-	var cal *BlCalendar
-	if len(args) > 2 {
-		if c, ok := asBl(args[2]).(BlCalendar); ok {
-			cal = &c
+	cal, strict := parseCalStrict(args, 2)
+	if strict && cal != nil {
+		if outOfCalendarRange(cal, asBl(args[0])) || outOfCalendarRange(cal, asBl(args[1])) {
+			return nil, &CalendarRangeError{Detail: "businessDaysBetween past calendar validity bounds"}
 		}
 	}
 	a, b := midnight(t1), midnight(t2)
@@ -478,18 +535,15 @@ func calendarOptions() []expr.Option {
 		expr.Function("calendarMerge", typed1err(calendarMergeFn), new(func(BlValue) BlCalendar)),
 
 		// business-day functions (consume an optional calendar)
-		expr.Function("isPublicHoliday", isPublicHolidayFn, new(func(BlValue, BlValue) BlBoolean)),
-		expr.Function("isBusinessDay", isBusinessDayFn,
-			new(func(BlValue) BlBoolean), new(func(BlValue, BlValue) BlBoolean)),
-		expr.Function("nextBusinessDay", nextBusinessDayFn,
-			new(func(BlValue) BlValue), new(func(BlValue, BlValue) BlValue)),
-		expr.Function("prevBusinessDay", prevBusinessDayFn,
-			new(func(BlValue) BlValue), new(func(BlValue, BlValue) BlValue)),
-		expr.Function("addBusinessDays", addBusinessDaysFn,
-			new(func(BlValue, BlValue) BlValue), new(func(BlValue, BlValue, BlValue) BlValue)),
-		expr.Function("subtractBusinessDays", subtractBusinessDaysFn,
-			new(func(BlValue, BlValue) BlValue), new(func(BlValue, BlValue, BlValue) BlValue)),
-		expr.Function("businessDaysBetween", businessDaysBetweenFn,
-			new(func(BlValue, BlValue) BlNumber), new(func(BlValue, BlValue, BlValue) BlNumber)),
+		// business-day functions take an optional trailing calendar and
+		// strictCalendarRange flag; registered variadically (a single signature
+		// avoids expr's multi-arity-overload panic when nested in another call).
+		expr.Function("isPublicHoliday", isPublicHolidayFn, new(func(...BlValue) BlBoolean)),
+		expr.Function("isBusinessDay", isBusinessDayFn, new(func(...BlValue) BlBoolean)),
+		expr.Function("nextBusinessDay", nextBusinessDayFn, new(func(...BlValue) BlValue)),
+		expr.Function("prevBusinessDay", prevBusinessDayFn, new(func(...BlValue) BlValue)),
+		expr.Function("addBusinessDays", addBusinessDaysFn, new(func(...BlValue) BlValue)),
+		expr.Function("subtractBusinessDays", subtractBusinessDaysFn, new(func(...BlValue) BlValue)),
+		expr.Function("businessDaysBetween", businessDaysBetweenFn, new(func(...BlValue) BlNumber)),
 	}
 }

@@ -7,7 +7,10 @@ import "strings"
 // and exact decimal-literal capture.
 func normalise(source string) (string, error) {
 	s := eqNorm(source)
+	s = lowerNamedArgs(s)
 	s = lowerInlinePredicates(s)
+	s = lowerInlineFunctions(s)
+	s = lowerSequence(s)
 	s = lowerTableIndex(s)
 	s = lowerInstanceOf(s)
 	s = lowerIsDefined(s)
@@ -18,6 +21,348 @@ func normalise(source string) (string, error) {
 	s = convertConditionals(s)
 	s = captureDecimals(s)
 	return s, nil
+}
+
+// namedArgParams maps a function name to its ordered parameter names, enabling
+// named-argument calls like substring(string: "x", startPosition: 3).
+var namedArgParams = map[string][]string{
+	"substring":       {"string", "startPosition", "length"},
+	"substringBefore": {"string", "match"},
+	"substringAfter":  {"string", "match"},
+	"padLeading":      {"string", "length", "padChar"},
+	"padTrailing":     {"string", "length", "padChar"},
+	"repeat":          {"string", "times"},
+	"charAt":          {"string", "position"},
+	"contains":        {"string", "match"},
+	"startsWith":      {"string", "match"},
+	"endsWith":        {"string", "match"},
+	"matches":         {"input", "pattern", "flags"},
+	"replace":         {"input", "pattern", "replacement", "flags"},
+	"split":           {"string", "delimiter"},
+	"extract":         {"string", "pattern", "flags"},
+	"round":           {"n", "scale"},
+	"roundUp":         {"n", "scale"},
+	"roundDown":       {"n", "scale"},
+	"roundHalfUp":     {"n", "scale"},
+	"roundHalfDown":   {"n", "scale"},
+	"roundHalfEven":   {"n", "scale"},
+	"clamp":           {"n", "min", "max"},
+	"modulo":          {"dividend", "divisor"},
+	"log":             {"n", "base"},
+	"number":          {"from", "groupingSeparator", "decimalSeparator"},
+	"sublist":         {"list", "start", "length"},
+}
+
+// lowerNamedArgs rewrites named-argument calls (`fn(name: value, …)`) into
+// positional form using the parameter-name registry. Runs before the `:`
+// sequence rewrite so named-arg colons aren't mistaken for sequence operators.
+func lowerNamedArgs(s string) string {
+	for fn, params := range namedArgParams {
+		s = rewriteNamedCall(s, fn, params)
+	}
+	return s
+}
+
+func rewriteNamedCall(s, fn string, params []string) string {
+	from := 0
+	for {
+		idx := indexTopLevelCallFrom(s, fn, from)
+		if idx < 0 {
+			return s
+		}
+		j := idx + len(fn)
+		for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+			j++
+		}
+		close := matchGroupEnd(s, j, '(', ')')
+		if close < 0 {
+			return s
+		}
+		args := splitTopLevelCommas(s[j+1 : close])
+		named := map[string]string{}
+		allNamed := len(args) > 0
+		for _, a := range args {
+			name, val, ok := parseNamedArg(a)
+			if !ok {
+				allNamed = false
+				break
+			}
+			named[name] = val
+		}
+		if allNamed {
+			var ordered []string
+			for _, p := range params {
+				if v, ok := named[p]; ok {
+					ordered = append(ordered, v)
+				}
+			}
+			if len(ordered) == len(named) {
+				repl := fn + "(" + strings.Join(ordered, ", ") + ")"
+				s = s[:idx] + repl + s[close+1:]
+				from = idx + len(repl)
+				continue
+			}
+		}
+		from = idx + len(fn)
+	}
+}
+
+// parseNamedArg parses `name: value` (name a bare identifier, value the rest);
+// ok is false if the argument isn't in named form.
+func parseNamedArg(arg string) (name, value string, ok bool) {
+	t := strings.TrimSpace(arg)
+	i := 0
+	for i < len(t) && isIdentByte(t[i]) {
+		i++
+	}
+	if i == 0 || !isIdentStart(t[0]) {
+		return "", "", false
+	}
+	name = t[:i]
+	for i < len(t) && (t[i] == ' ' || t[i] == '\t') {
+		i++
+	}
+	if i >= len(t) || t[i] != ':' {
+		return "", "", false
+	}
+	value = strings.TrimSpace(t[i+1:])
+	if value == "" {
+		return "", "", false
+	}
+	return name, value, true
+}
+
+// lowerSequence rewrites the `start:end` sequence operator to seq(start, end,
+// 1). A `:` whose innermost enclosing bracket is `{` is a dictionary
+// key-separator and is left alone; every other top-level `:` is a sequence
+// operator. Operands bind looser than arithmetic but tighter than comparison /
+// boolean operators.
+func lowerSequence(s string) string {
+	for {
+		colon := firstSequenceColon(s)
+		if colon < 0 {
+			return s
+		}
+		ls := seqOperandLeft(s, colon)
+		re := seqOperandRight(s, colon+1)
+		// keep separating whitespace in the surrounding text so adjacent
+		// keywords/tokens don't merge with the replacement
+		for ls < colon && (s[ls] == ' ' || s[ls] == '\t') {
+			ls++
+		}
+		for re > colon+1 && (s[re-1] == ' ' || s[re-1] == '\t') {
+			re--
+		}
+		left := strings.TrimSpace(s[ls:colon])
+		right := strings.TrimSpace(s[colon+1 : re])
+		if left == "" || right == "" {
+			return s
+		}
+		replacement := "seq(" + left + ", " + right + ", 1)"
+		s = s[:ls] + replacement + s[re:]
+	}
+}
+
+// firstSequenceColon finds the first `:` that is a sequence operator (innermost
+// enclosing bracket is not `{`), skipping strings; -1 if none.
+func firstSequenceColon(s string) int {
+	var stack []byte
+	for i := 0; i < len(s); {
+		c := s[i]
+		switch {
+		case c == '"':
+			i = skipString(s, i)
+			continue
+		case c == '(' || c == '[' || c == '{':
+			stack = append(stack, c)
+		case c == ')' || c == ']' || c == '}':
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		case c == ':':
+			if len(stack) == 0 || stack[len(stack)-1] != '{' {
+				return i
+			}
+		}
+		i++
+	}
+	return -1
+}
+
+// seqBoundaryKeywords break a sequence operand (they bind looser than `:`).
+var seqBoundaryKeywords = []string{"and", "or", "in", "between", "return", "satisfies", "then", "else"}
+
+func seqKeywordAt(s string, i int) (int, bool) {
+	for _, k := range seqBoundaryKeywords {
+		if matchKeyword(s, i, k) {
+			return len(k), true
+		}
+	}
+	return 0, false
+}
+
+// seqGroupStart returns the index just inside the innermost bracket enclosing
+// the colon (or 0 at top level).
+func seqGroupStart(s string, colon int) int {
+	var stack []int
+	for i := 0; i < colon; {
+		c := s[i]
+		if c == '"' {
+			i = skipString(s, i)
+			continue
+		}
+		switch c {
+		case '(', '[', '{':
+			stack = append(stack, i)
+		case ')', ']', '}':
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		}
+		i++
+	}
+	if len(stack) == 0 {
+		return 0
+	}
+	return stack[len(stack)-1] + 1
+}
+
+// seqOperandLeft finds the start of the colon's left operand, scoped to the
+// colon's enclosing bracket group.
+func seqOperandLeft(s string, colon int) int {
+	start := seqGroupStart(s, colon)
+	depth := 0
+	for i := start; i < colon; {
+		c := s[i]
+		switch {
+		case c == '"':
+			i = skipString(s, i)
+			continue
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			depth--
+		case depth == 0 && (c == ',' || c == ':'):
+			start = i + 1
+		case depth == 0 && (c == '<' || c == '>' || c == '=' || c == '!'):
+			start = i + 1
+			if i+1 < colon && s[i+1] == '=' {
+				start = i + 2
+			}
+		default:
+			if depth == 0 {
+				if n, ok := seqKeywordAt(s, i); ok {
+					start = i + n
+					i += n
+					continue
+				}
+			}
+		}
+		i++
+	}
+	return start
+}
+
+// seqOperandRight finds the end of the colon's right operand.
+func seqOperandRight(s string, from int) int {
+	depth := 0
+	for i := from; i < len(s); {
+		c := s[i]
+		switch {
+		case c == '"':
+			i = skipString(s, i)
+			continue
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			if depth == 0 {
+				return i
+			}
+			depth--
+		case depth == 0 && (c == ',' || c == ':'):
+			return i
+		case depth == 0 && (c == '<' || c == '>' || c == '=' || c == '!'):
+			return i
+		default:
+			if depth == 0 {
+				if _, ok := seqKeywordAt(s, i); ok {
+					return i
+				}
+			}
+		}
+		i++
+	}
+	return len(s)
+}
+
+// lowerInlineFunctions rewrites a standalone inline function `function(p1, p2)
+// body` to __mkfunc("p1,p2", "body") (the body becomes an escaped string
+// literal, recompiled when the function is applied). Runs after the
+// remove/listReplace predicate-form rewrite, which consumes those usages first.
+func lowerInlineFunctions(s string) string {
+	for {
+		idx := findKeywordCall(s, "function", 0)
+		if idx < 0 {
+			return s
+		}
+		open := idx + len("function")
+		for open < len(s) && (s[open] == ' ' || s[open] == '\t') {
+			open++
+		}
+		paramClose := matchGroupEnd(s, open, '(', ')')
+		if paramClose < 0 {
+			return s
+		}
+		params := strings.TrimSpace(s[open+1 : paramClose])
+		bodyStart := paramClose + 1
+		bodyEnd := funcBodyEnd(s, bodyStart)
+		body := strings.TrimSpace(s[bodyStart:bodyEnd])
+		if body == "" {
+			return s
+		}
+		repl := `__mkfunc("` + params + `", "` + escapeStringLiteral(body) + `")`
+		s = s[:idx] + repl + s[bodyEnd:]
+	}
+}
+
+// funcBodyEnd finds the end of an inline-function body: the enclosing group's
+// close, a top-level comma, or end of input.
+func funcBodyEnd(s string, from int) int {
+	depth := 0
+	for i := from; i < len(s); {
+		c := s[i]
+		switch {
+		case c == '"':
+			i = skipString(s, i)
+			continue
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			if depth == 0 {
+				return i
+			}
+			depth--
+		case depth == 0 && c == ',':
+			return i
+		}
+		i++
+	}
+	return len(s)
+}
+
+func escapeStringLiteral(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // lowerInlinePredicates rewrites the predicate (inline-function) forms of
@@ -70,6 +415,28 @@ func rewriteInlinePredicate(s, fn string) string {
 		}
 		from = idx + len(fn)
 	}
+}
+
+// findKeywordCall finds a standalone keyword `name` (at any bracket depth)
+// immediately followed by `(`, skipping strings; -1 if none.
+func findKeywordCall(s, name string, from int) int {
+	for i := from; i < len(s); {
+		if s[i] == '"' {
+			i = skipString(s, i)
+			continue
+		}
+		if matchKeyword(s, i, name) {
+			j := i + len(name)
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+				j++
+			}
+			if j < len(s) && s[j] == '(' {
+				return i
+			}
+		}
+		i++
+	}
+	return -1
 }
 
 // parseInlineFunction parses `function(p) body` into its first parameter name

@@ -58,3 +58,14 @@ func TestTemporal(t *testing.T) {
 		`date("2025-01-01Z") < date("2025-06-01")`: "null",
 	})
 }
+
+func TestWeekInMonth(t *testing.T) {
+	assertEval(t, map[string]string{
+		`firstDayOfWeekInMonth(date("2025-03-15"), "Monday")`:                                 "2025-03-03",
+		`lastDayOfWeekInMonth(date("2025-03-15"), "Friday")`:                                  "2025-03-28",
+		`nthDayOfWeekInMonth(date("2025-03-15"), 2, "Monday")`:                                "2025-03-10",
+		`nthDayOfWeekInMonth(date("2025-03-15"), -1, "Monday")`:                               "2025-03-31",
+		`nthDayOfWeekInMonth(date("2025-03-15"), 6, "Monday")`:                                "null",
+		`daysBetween(datetime("2025-01-15T00:00:00"), datetime("2025-01-16T12:00:00"), true)`: "1.5",
+	})
+}

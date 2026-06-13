@@ -157,7 +157,15 @@ func validateField(f Field, v BlValue, path string, closed bool) error {
 	case TypeDictionary:
 		return f.Fields.validate(v, path, closed)
 	case TypeTable:
-		// Validated structurally once BlTable exists; treat each row as a dict.
+		tbl, ok := v.(BlTable)
+		if !ok {
+			return &SchemaError{Path: path, Err: fmt.Errorf("expected table, got %s", typeName(v.Type()))}
+		}
+		for i, row := range tbl.rows {
+			if err := f.Fields.validate(row, fmt.Sprintf("%s[%d]", path, i+1), closed); err != nil {
+				return err
+			}
+		}
 		return nil
 	default: // scalar
 		if v.Type() != f.Type {

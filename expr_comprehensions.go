@@ -116,11 +116,14 @@ func allTrueFn(args ...any) (any, error) {
 // out-of-range yields null.
 func indexFn(args ...any) (any, error) {
 	if t, ok := asBl(args[0]).(BlTable); ok {
-		idx, ok := asBl(args[1]).(BlNumber)
-		if !ok {
+		switch idx := asBl(args[1]).(type) {
+		case BlNumber:
+			return t.rowByIndex(int(idx.d.IntPart())), nil
+		case BlList:
+			return tableSliceFn(t, idx)
+		default:
 			return Null(), nil
 		}
-		return t.rowByIndex(int(idx.d.IntPart())), nil
 	}
 	l, ok := asBl(args[0]).(BlList)
 	if !ok {

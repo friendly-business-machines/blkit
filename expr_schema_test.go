@@ -89,3 +89,19 @@ func TestSchemaNestedDictionary(t *testing.T) {
 		t.Errorf("nested validation failed: %v", err)
 	}
 }
+
+func TestSchemaTableValidation(t *testing.T) {
+	cols, _ := Schema(Field{Name: "region", Type: TypeString}, Field{Name: "rate", Type: TypeNumber})
+	schema, _ := Schema(Field{Name: "rates", Type: TypeTable, Fields: cols})
+	good, _ := Table(Cols{{"region", TypeString}, {"rate", TypeNumber}}, Row{"NA", 5.99})
+	d, _ := Dictionary(map[string]BlValue{"rates": good})
+	if err := schema.ValidateInput(d); err != nil {
+		t.Errorf("valid table rejected: %v", err)
+	}
+	// wrong column type
+	bad, _ := Table(Cols{{"region", TypeString}, {"rate", TypeString}}, Row{"NA", "oops"})
+	d2, _ := Dictionary(map[string]BlValue{"rates": bad})
+	if err := schema.ValidateInput(d2); err == nil {
+		t.Errorf("expected table-column type error")
+	}
+}

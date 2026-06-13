@@ -99,10 +99,23 @@ func collectVarIdents(node ast.Node, declared, bound map[string]bool, bad *strin
 			collectVarIdents(e, declared, bound, bad)
 		}
 	case *ast.MapNode:
-		for _, p := range n.Pairs {
-			collectVarIdents(p, declared, bound, bad)
+		// A dictionary literal's keys are in scope for its value expressions
+		// (forward-references), so bind them before walking the values.
+		inner := map[string]bool{}
+		for k := range bound {
+			inner[k] = true
 		}
-	case *ast.PairNode:
-		collectVarIdents(n.Value, declared, bound, bad)
+		for _, p := range n.Pairs {
+			if pair, ok := p.(*ast.PairNode); ok {
+				if name, ok := stringProperty(pair.Key); ok {
+					inner[name] = true
+				}
+			}
+		}
+		for _, p := range n.Pairs {
+			if pair, ok := p.(*ast.PairNode); ok {
+				collectVarIdents(pair.Value, declared, inner, bad)
+			}
+		}
 	}
 }
