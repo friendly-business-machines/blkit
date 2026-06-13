@@ -55,6 +55,15 @@ func collectVarIdents(node ast.Node, declared, bound map[string]bool, bad *strin
 	case *ast.MemberNode:
 		// Receiver is a value reference; the property name is not.
 		collectVarIdents(n.Node, declared, bound, bad)
+		// A non-string bracket property is an index or a filter predicate; in
+		// the filter form the magic `item` variable is bound.
+		if _, isStr := stringProperty(n.Property); !isStr {
+			inner := map[string]bool{"item": true}
+			for k := range bound {
+				inner[k] = true
+			}
+			collectVarIdents(n.Property, declared, inner, bad)
+		}
 	case *ast.ChainNode:
 		collectVarIdents(n.Node, declared, bound, bad)
 	case *ast.SliceNode:

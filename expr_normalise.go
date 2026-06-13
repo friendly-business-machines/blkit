@@ -9,6 +9,7 @@ func normalise(source string) (string, error) {
 	s := eqNorm(source)
 	s = rewriteIdentifiers(s)
 	s = lowerBetween(s)
+	s = lowerComprehensions(s)
 	s = convertConditionals(s)
 	s = captureDecimals(s)
 	return s, nil

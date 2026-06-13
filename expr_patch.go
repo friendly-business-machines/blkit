@@ -91,12 +91,43 @@ func (p *feelPatcher) patchMember(node *ast.Node, n *ast.MemberNode) {
 	if n.Method {
 		return
 	}
-	name, ok := stringProperty(n.Property)
-	if !ok {
+	if name, ok := stringProperty(n.Property); ok {
+		ast.Patch(node, call("componentAccess", n.Node, constNode(BlString{name})))
 		return
 	}
-	ast.Patch(node, call("componentAccess", n.Node, constNode(BlString{name})))
+	// Non-string bracket access: a predicate referencing the magic `item`
+	// variable is a filter; anything else is a 1-based index.
+	if referencesItem(n.Property) {
+		// filter(__items(l), {let item = #; __truthy(pred)}) then re-wrap.
+		closure := &ast.PredicateNode{Node: &ast.VariableDeclaratorNode{
+			Name:  "item",
+			Value: &ast.PointerNode{},
+			Expr:  call("__truthy", n.Property),
+		}}
+		items := call("__items", n.Node)
+		filtered := &ast.BuiltinNode{Name: "filter", Arguments: []ast.Node{items, closure}}
+		ast.Patch(node, call("__wraplist", filtered))
+		return
+	}
+	ast.Patch(node, call("__index", n.Node, n.Property))
 }
+
+// referencesItem reports whether the subtree references the magic filter
+// variable `item`.
+func referencesItem(node ast.Node) bool {
+	found := false
+	ast.Walk(&node, visitFunc(func(n *ast.Node) {
+		if id, ok := (*n).(*ast.IdentifierNode); ok && id.Value == "item" {
+			found = true
+		}
+	}))
+	return found
+}
+
+// visitFunc adapts a func to ast.Visitor.
+type visitFunc func(*ast.Node)
+
+func (f visitFunc) Visit(node *ast.Node) { f(node) }
 
 // stringProperty extracts a constant string property name from a MemberNode's
 // property node (post-patch a ConstantNode{BlString}; pre-patch a StringNode or
