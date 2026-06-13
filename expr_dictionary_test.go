@@ -19,6 +19,11 @@ func TestDictionary(t *testing.T) {
 		`dictionaryRemove({a: 1, b: 2}, "a")`:     "{b: 2}",
 		// equality is order-independent
 		`{a: 1, b: 2} = {b: 2, a: 1}`: "true",
+		// values + entries (key-sorted ordering)
+		`values({a: 1, b: 2})`:     "[1, 2]",
+		`getEntries({a: 1, b: 2})`: `[{key: "a", value: 1}, {key: "b", value: 2}]`,
+		// dictionaryPut adds/overwrites a key, returning a new dictionary
+		`dictionaryPut({a: 1}, "b", 2)`: "{a: 1, b: 2}",
 	})
 }
 

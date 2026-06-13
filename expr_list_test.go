@@ -48,6 +48,15 @@ func TestListAggregation(t *testing.T) {
 		`stringJoin(["a", "b"], ", ")`: "a, b",
 		`min(["banana", "apple"])`:     "apple",
 		`sum([dtDuration("PT1H"), dtDuration("PT2H")])`: "PT3H",
+		`stddev([2, 4, 7, 5])`:                          "2.0816659994661327352822977069799315", // sample stddev
+	})
+}
+
+func TestListMutation(t *testing.T) {
+	assertEval(t, map[string]string{
+		`insertAfter([1, 2, 3], 2, 9)`:        "[1, 2, 9, 3]",
+		`insertBefore([1, 2, 3], 2, 9)`:       "[1, 9, 2, 3]",
+		`duplicateValues([1, 2, 2, 3, 3, 3])`: "[2, 3]",
 	})
 }
 

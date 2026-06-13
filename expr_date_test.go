@@ -42,6 +42,19 @@ func TestDateDifference(t *testing.T) {
 	})
 }
 
+func TestDateNavigation(t *testing.T) {
+	assertEval(t, map[string]string{
+		`nextWeekday(date("2025-03-28"))`:                         "2025-03-31", // Fri → Mon
+		`prevWeekday(date("2025-03-31"))`:                         "2025-03-28", // Mon → Fri
+		`nextDayOfWeek(date("2025-03-28"), "Monday")`:             "2025-03-31",
+		`prevDayOfWeek(date("2025-03-28"), "Monday")`:             "2025-03-24",
+		`firstDayOfNextMonth(date("2025-03-15"))`:                 "2025-04-01",
+		`lastDayOfPrevMonth(date("2025-03-15"))`:                  "2025-02-28",
+		`weekdaysBetween(date("2025-03-24"), date("2025-03-28"))`: "5", // Mon–Fri inclusive
+		`today() instance of date`:                                "true",
+	})
+}
+
 func TestDateWeekInMonth(t *testing.T) {
 	assertEval(t, map[string]string{
 		`firstDayOfWeekInMonth(date("2025-03-15"), "Monday")`:   "2025-03-03",

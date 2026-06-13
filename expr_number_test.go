@@ -6,6 +6,15 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+func TestNumberFromString(t *testing.T) {
+	assertEval(t, map[string]string{
+		// number(string) parses with full decimal precision (no float rounding)
+		`number("0.1")`:                 "0.1",
+		`number("0.1") + number("0.2")`: "0.3",
+		`number("1500.50")`:             "1500.5",
+	})
+}
+
 func TestNumberConstruction(t *testing.T) {
 	if n, err := Number(30); err != nil || n.String() != "30" {
 		t.Errorf("Number(30) = %v, %v", n, err)

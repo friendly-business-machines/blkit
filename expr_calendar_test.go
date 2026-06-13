@@ -53,6 +53,17 @@ func TestCalendar(t *testing.T) {
 		`businessDaysBetween(date("2025-12-22"), date("2025-12-28"), cal)`: "3",          // Mon,Tue,Wed (24 ok? 25,26 holidays) → 22,23,24
 		`validFrom(cal)`:             "null",
 		`find(cal, "Christmas Day")`: `[2025-12-25: Christmas Day]`,
+		// accessors
+		`count(entries(cal))`:                                             "5",
+		`entriesFor(cal, date("2025-12-25"))`:                             `[2025-12-25: Christmas Day]`,
+		`count(entriesIn(cal, [date("2025-12-01")..date("2025-12-31")]))`: "2",
+		// business-day navigation backwards
+		`prevBusinessDay(date("2025-12-29"), cal)`:         "2025-12-24", // skip weekend + Boxing + Christmas
+		`subtractBusinessDays(date("2025-12-29"), 2, cal)`: "2025-12-23",
+		// entry navigation (strictly after / before a point; n defaults to 1)
+		`next(cal, date("2025-12-25"))`:    "2025-12-26: Boxing Day",
+		`prev(cal, date("2025-12-25"))`:    "2025-04-21: Easter Monday",
+		`next(cal, date("2025-01-01"), 2)`: "2025-04-21: Easter Monday",
 	}
 	for src, want := range cases {
 		t.Run(src, func(t *testing.T) {
@@ -102,6 +113,38 @@ func TestStrictCalendarRange(t *testing.T) {
 	e3, _ := Expr(`addBusinessDays(date("2025-12-30"), 5, cal)`, schema)
 	if _, err := e3.Evaluate(in); err != nil {
 		t.Errorf("non-strict errored: %v", err)
+	}
+}
+
+func TestCalendarValidity(t *testing.T) {
+	cal := boundedCal(t) // validity 2025-01-01..2025-12-31
+	assertEval := func(src, want string) {
+		t.Helper()
+		if got := evalCal(t, src, cal); got != want {
+			t.Errorf("%s = %q, want %q", src, got, want)
+		}
+	}
+	assertEval(`validRange(cal)`, "[2025-01-01..2025-12-31]")
+	assertEval(`validFrom(cal)`, "2025-01-01")
+	assertEval(`validTo(cal)`, "2025-12-31")
+}
+
+func TestCalendarMerge(t *testing.T) {
+	c1 := ukHolidays(t)
+	d, _ := Date("2026-01-01")
+	c2, _ := Calendar([]BlCalendarEntry{CalendarEntry(d, "New Year 2026")})
+	schema := BlSchema{{Name: "a", Type: TypeCalendar}, {Name: "b", Type: TypeCalendar}}
+	e, err := Expr(`count(calendarMerge([a, b]))`, schema)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	in, _ := Dictionary(map[string]BlValue{"a": c1, "b": c2})
+	out, err := e.Evaluate(in)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	if out.String() != "6" { // 5 UK holidays + 1
+		t.Errorf("calendarMerge count = %q, want 6", out.String())
 	}
 }
 
