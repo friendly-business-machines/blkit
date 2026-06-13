@@ -740,6 +740,9 @@ func listOptions() []expr.Option {
 		expr.Function("seq", seqFn,
 			new(func(BlValue, BlValue) BlList),
 			new(func(BlValue, BlValue, BlValue) BlList)),
+		expr.Function("zipStringJoin", zipStringJoinFn,
+			new(func(BlValue) BlList),
+			new(func(BlValue, BlValue) BlList)),
 
 		// aggregation (listArg lets each accept a BlTable as its row list)
 		expr.Function("sum", listArg(typed1(sumFn)), new(func(BlValue) BlValue)),
@@ -756,6 +759,50 @@ func listOptions() []expr.Option {
 		// list constructor emitted by the ArrayNode patcher
 		expr.Function("__mklist", mkListFn, new(func(...BlValue) BlList)),
 	}
+}
+
+// zipStringJoinFn joins N equal-length lists of strings position-wise.
+func zipStringJoinFn(args ...any) (any, error) {
+	outer, ok := asBl(args[0]).(BlList)
+	if !ok {
+		return nil, argTypeError(args[0])
+	}
+	if len(outer.items) == 0 {
+		return BlList{}, nil
+	}
+	lists := make([]BlList, len(outer.items))
+	n := -1
+	for i, e := range outer.items {
+		l, ok := e.(BlList)
+		if !ok {
+			return nil, &TypeError{Op: "zipStringJoin", Detail: "elements must be lists"}
+		}
+		if n == -1 {
+			n = len(l.items)
+		} else if len(l.items) != n {
+			return nil, &TypeError{Op: "zipStringJoin", Detail: "inner lists must be the same length"}
+		}
+		lists[i] = l
+	}
+	delim := ""
+	if len(args) > 1 {
+		if d, ok := asBl(args[1]).(BlString); ok {
+			delim = d.s
+		}
+	}
+	out := make([]BlValue, n)
+	for r := 0; r < n; r++ {
+		parts := make([]string, len(lists))
+		for c, l := range lists {
+			s, ok := l.items[r].(BlString)
+			if !ok {
+				return nil, &TypeError{Op: "zipStringJoin", Detail: "elements must be strings"}
+			}
+			parts[c] = s.s
+		}
+		out[r] = str(strings.Join(parts, delim))
+	}
+	return BlList{out}, nil
 }
 
 // unionDispatch routes `union(...)` to table-union when the first operand is a

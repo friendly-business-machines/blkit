@@ -424,11 +424,99 @@ func wrapTableFn(args ...any) (any, error) {
 	return tableFromDictsFn(BlList{items})
 }
 
+// selectColumns builds a sub-table restricted to the named columns (in the
+// given order). Unknown columns are included with null cells per the spec.
+func (t BlTable) selectColumns(names []string) BlTable {
+	rows := make([]BlDictionary, len(t.rows))
+	for i, r := range t.rows {
+		d := newDictionary()
+		for _, c := range names {
+			if v, present := r.get(c); present {
+				d.set(c, v)
+			} else {
+				d.set(c, Null())
+			}
+		}
+		rows[i] = d
+	}
+	// dedupe column names, first occurrence wins
+	var cols []string
+	seen := map[string]bool{}
+	for _, c := range names {
+		if !seen[c] {
+			seen[c] = true
+			cols = append(cols, c)
+		}
+	}
+	return BlTable{columns: cols, rows: rows}
+}
+
+func columnSelector(sel BlValue) ([]string, error) {
+	switch c := sel.(type) {
+	case BlString:
+		return []string{c.s}, nil
+	case BlList:
+		names := make([]string, len(c.items))
+		for i, e := range c.items {
+			s, ok := e.(BlString)
+			if !ok {
+				return nil, &TypeError{Op: "tableIndex", Detail: "column names must be strings"}
+			}
+			names[i] = s.s
+		}
+		return names, nil
+	default:
+		return nil, &TypeError{Op: "tableIndex", Detail: "column selector must be a name or list of names"}
+	}
+}
+
+// tableColsFn implements the all-rows column form t[, c].
+func tableColsFn(args ...any) (any, error) {
+	t, ok := asBl(args[0]).(BlTable)
+	if !ok {
+		return nil, argTypeError(args[0])
+	}
+	names, err := columnSelector(asBl(args[1]))
+	if err != nil {
+		return nil, err
+	}
+	return t.selectColumns(names), nil
+}
+
+// tableIndexFn implements the two-slot form t[r, c].
+func tableIndexFn(args ...any) (any, error) {
+	t, ok := asBl(args[0]).(BlTable)
+	if !ok {
+		return nil, argTypeError(args[0])
+	}
+	// row selection
+	var rowsSub BlTable
+	switch r := asBl(args[1]).(type) {
+	case BlNumber:
+		rowsSub = t.rowByIndex(int(r.d.IntPart()))
+	case BlList:
+		sub, err := tableSliceFn(t, r)
+		if err != nil {
+			return nil, err
+		}
+		rowsSub = sub
+	default:
+		return nil, &TypeError{Op: "tableIndex", Detail: "row selector must be an index or list"}
+	}
+	names, err := columnSelector(asBl(args[2]))
+	if err != nil {
+		return nil, err
+	}
+	return rowsSub.selectColumns(names), nil
+}
+
 func tableOptions() []expr.Option {
 	return []expr.Option{
 		expr.Function("table", tableFn, new(func(...BlValue) BlTable)),
 		expr.Function("tableFromDicts", typed1err(tableFromDictsFn), new(func(BlValue) BlTable)),
 		expr.Function("hasColumn", typed2(hasColumnFn), new(func(BlValue, BlValue) BlBoolean)),
+		expr.Function("tableIndex", tableIndexFn, new(func(BlValue, BlValue, BlValue) BlTable)),
+		expr.Function("tableCols", tableColsFn, new(func(BlValue, BlValue) BlTable)),
 
 		// row-scoped method backings emitted by the patcher
 		expr.Function("__retable", retableFn, new(func(BlValue, []any) BlValue)),

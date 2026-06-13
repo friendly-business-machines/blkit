@@ -7,6 +7,9 @@ import "strings"
 // and exact decimal-literal capture.
 func normalise(source string) (string, error) {
 	s := eqNorm(source)
+	s = lowerTableIndex(s)
+	s = lowerInstanceOf(s)
+	s = lowerIsDefined(s)
 	s = rewriteIdentifiers(s)
 	s = lowerRanges(s)
 	s = lowerBetween(s)
@@ -14,6 +17,242 @@ func normalise(source string) (string, error) {
 	s = convertConditionals(s)
 	s = captureDecimals(s)
 	return s, nil
+}
+
+// lowerTableIndex rewrites the two-slot bracket forms `t[r, c]` → tableIndex(t,
+// r, c) and `t[, c]` → tableCols(t, c) before parsing (expr can't lex the comma
+// inside an index). Only index brackets (preceded by a value) with a top-level
+// comma are rewritten; list literals `[a, b]` are left alone.
+func lowerTableIndex(s string) string {
+	for {
+		bracket := firstTwoSlotBracket(s)
+		if bracket < 0 {
+			return s
+		}
+		close := matchGroupEnd(s, bracket, '[', ']')
+		if close < 0 {
+			return s
+		}
+		inner := s[bracket+1 : close]
+		commaIdx := indexTopLevelComma(inner)
+		recvStart := scanReceiverStart(s, bracket)
+		recv := lowerTableIndex(s[recvStart:bracket])
+		var replacement string
+		if commaIdx == 0 || strings.TrimSpace(inner[:commaIdx]) == "" {
+			col := lowerTableIndex(strings.TrimSpace(inner[commaIdx+1:]))
+			replacement = "tableCols(" + recv + ", " + col + ")"
+		} else {
+			row := lowerTableIndex(strings.TrimSpace(inner[:commaIdx]))
+			col := lowerTableIndex(strings.TrimSpace(inner[commaIdx+1:]))
+			replacement = "tableIndex(" + recv + ", " + row + ", " + col + ")"
+		}
+		s = s[:recvStart] + replacement + s[close+1:]
+	}
+}
+
+// firstTwoSlotBracket returns the index of the first index-position `[` whose
+// content has a top-level comma, or -1.
+func firstTwoSlotBracket(s string) int {
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c == '"' {
+			i = skipString(s, i)
+			continue
+		}
+		if c == '[' && isIndexBracket(s, i) {
+			close := matchGroupEnd(s, i, '[', ']')
+			if close > i && indexTopLevelComma(s[i+1:close]) >= 0 {
+				return i
+			}
+		}
+		i++
+	}
+	return -1
+}
+
+// bracketKeywords are operator/keyword tokens that may precede a `[` but do not
+// make it an index — the bracket starts a fresh list/range operand.
+var bracketKeywords = map[string]bool{
+	"in": true, "and": true, "or": true, "not": true, "return": true,
+	"satisfies": true, "then": true, "else": true, "if": true,
+	"instance": true, "of": true, "between": true,
+	"true": true, "false": true, "null": true, "nil": true,
+}
+
+// isIndexBracket reports whether the `[` at s[i] follows a value (making it an
+// index/selector) rather than starting a list literal or range operand.
+func isIndexBracket(s string, i int) bool {
+	j := i - 1
+	for j >= 0 && (s[j] == ' ' || s[j] == '\t') {
+		j--
+	}
+	if j < 0 {
+		return false
+	}
+	c := s[j]
+	if c == ')' || c == ']' || c == '"' {
+		return true
+	}
+	if !isIdentByte(c) {
+		return false
+	}
+	// read the preceding identifier and reject operator keywords
+	start := j
+	for start >= 0 && isIdentByte(s[start]) {
+		start--
+	}
+	return !bracketKeywords[s[start+1:j+1]]
+}
+
+// indexTopLevelComma returns the first top-level comma index, or -1.
+func indexTopLevelComma(s string) int {
+	depth := 0
+	for i := 0; i < len(s); {
+		c := s[i]
+		switch {
+		case c == '"':
+			i = skipString(s, i)
+			continue
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			depth--
+		case depth == 0 && c == ',':
+			return i
+		}
+		i++
+	}
+	return -1
+}
+
+// scanReceiverStart finds the start of the postfix-chain receiver expression
+// ending just before the bracket at s[bracket].
+func scanReceiverStart(s string, bracket int) int {
+	i := bracket - 1
+	for i >= 0 {
+		c := s[i]
+		switch {
+		case c == ')' || c == ']' || c == '}':
+			i = matchOpenBackward(s, i) - 1
+		case isIdentByte(c) || c == '.':
+			i--
+		default:
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// matchOpenBackward returns the index of the opening bracket matching the close
+// at s[i], scanning backward (bracket kinds counted uniformly).
+func matchOpenBackward(s string, i int) int {
+	depth := 0
+	for j := i; j >= 0; j-- {
+		switch s[j] {
+		case ')', ']', '}':
+			depth++
+		case '(', '[', '{':
+			depth--
+			if depth == 0 {
+				return j
+			}
+		}
+	}
+	return 0
+}
+
+// lowerInstanceOf rewrites `X instance of T` to __instanceOf(X, "T"). Runs
+// before rewriteIdentifiers so the type name `null` is captured verbatim.
+func lowerInstanceOf(s string) string {
+	for {
+		idx := indexTopLevelKeyword(s, "instance", 0)
+		if idx < 0 {
+			return s
+		}
+		ofIdx := indexTopLevelKeyword(s, "of", idx+len("instance"))
+		if ofIdx < 0 || ofIdx > idx+len("instance")+3 {
+			return s // not the `instance of` pair
+		}
+		leftStart := leftOperandStart(s, idx)
+		left := strings.TrimSpace(s[leftStart:idx])
+		// read the type identifier after `of`
+		i := ofIdx + len("of")
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+			i++
+		}
+		tStart := i
+		for i < len(s) && isIdentByte(s[i]) {
+			i++
+		}
+		typeName := s[tStart:i]
+		if typeName == "" {
+			return s
+		}
+		replacement := "__instanceOf(" + left + `, "` + typeName + `")`
+		s = s[:leftStart] + replacement + s[i:]
+	}
+}
+
+// lowerIsDefined rewrites `isDefined(EXPR)` to __isDefined($env, "root"), where
+// root is the leading identifier of EXPR. This keeps an unbound name from
+// appearing as a variable reference and reports on the root binding for paths.
+func lowerIsDefined(s string) string {
+	for {
+		idx := indexTopLevelCall(s, "isDefined")
+		if idx < 0 {
+			return s
+		}
+		open := idx + len("isDefined")
+		// skip spaces to '('
+		j := open
+		for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+			j++
+		}
+		if j >= len(s) || s[j] != '(' {
+			return s
+		}
+		end := matchGroupEnd(s, j, '(', ')')
+		if end < 0 {
+			return s
+		}
+		arg := strings.TrimSpace(s[j+1 : end])
+		root := leadingIdentifier(arg)
+		if root == "" {
+			return s
+		}
+		replacement := `__isDefined($env, "` + root + `")`
+		s = s[:idx] + replacement + s[end+1:]
+	}
+}
+
+// indexTopLevelCall finds a standalone function-name keyword at depth 0
+// immediately followed (after optional spaces) by '('.
+func indexTopLevelCall(s, name string) int {
+	from := 0
+	for {
+		idx := indexTopLevelKeyword(s, name, from)
+		if idx < 0 {
+			return -1
+		}
+		j := idx + len(name)
+		for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+			j++
+		}
+		if j < len(s) && s[j] == '(' {
+			return idx
+		}
+		from = idx + len(name)
+	}
+}
+
+// leadingIdentifier returns the leading identifier of an expression string.
+func leadingIdentifier(s string) string {
+	s = strings.TrimSpace(s)
+	i := 0
+	for i < len(s) && isIdentByte(s[i]) {
+		i++
+	}
+	return s[:i]
 }
 
 // callRenames maps the FEEL function names that collide with expr's hard-coded
@@ -222,9 +461,6 @@ func leftOperandStart(s string, between int) int {
 			}
 			i += 2
 			continue
-		}
-		if (c == '(' || c == '[' || c == '{') && depth == 1 {
-			start = i + 1
 		}
 		i++
 	}

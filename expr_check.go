@@ -26,7 +26,7 @@ func checkUndefinedVars(normalisedSource string, schema BlSchema) error {
 	for _, f := range schema {
 		declared[f.Name] = true
 	}
-	bound := map[string]bool{inputPlaceholder: true}
+	bound := map[string]bool{inputPlaceholder: true, "$env": true}
 	var bad string
 	collectVarIdents(tree.Node, declared, bound, &bad)
 	if bad != "" {

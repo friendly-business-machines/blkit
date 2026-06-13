@@ -385,6 +385,92 @@ func dtDurationBetweenAny(args ...any) (any, error) {
 	return dtDur(decimalSecondsBetween(t1, t2)), nil
 }
 
+func monthsBetweenFn(args ...any) (any, error) { return diffUnits(args, false) }
+func yearsBetweenFn(args ...any) (any, error)  { return diffUnits(args, true) }
+
+// diffUnits computes signed monthsBetween / yearsBetween under a basis.
+func diffUnits(args []any, years bool) (any, error) {
+	t1, _, _, ok1 := temporalParts(asBl(args[0]))
+	t2, _, _, ok2 := temporalParts(asBl(args[1]))
+	if !ok1 || !ok2 {
+		return nil, &TypeError{Op: "between", Detail: "expected temporals"}
+	}
+	basis := "calendar"
+	if len(args) > 2 {
+		if b, ok := asBl(args[2]).(BlString); ok {
+			basis = b.s
+		}
+	}
+	t1, t2 = midnight(t1), midnight(t2)
+	sign := 1.0
+	if t1.After(t2) {
+		t1, t2 = t2, t1
+		sign = -1.0
+	}
+	val, err := unitsBetween(t1, t2, basis, years)
+	if err != nil {
+		return nil, err
+	}
+	return num(decimal.NewFromFloat(sign * val)), nil
+}
+
+func unitsBetween(t1, t2 time.Time, basis string, years bool) (float64, error) {
+	actualDays := float64(int(decimalSecondsBetween(t1, t2).Div(decSecondsPerDay).IntPart()))
+	switch basis {
+	case "calendar":
+		return calendarUnits(t1, t2, years), nil
+	case "actual/365", "actual/actual":
+		if years {
+			return actualDays / 365.0, nil
+		}
+		return actualDays * 12.0 / 365.0, nil
+	case "actual/360":
+		if years {
+			return actualDays / 360.0, nil
+		}
+		return actualDays / 30.0, nil
+	case "30/360", "30E/360":
+		d1, d2 := t1.Day(), t2.Day()
+		if d1 > 30 {
+			d1 = 30
+		}
+		if d2 > 30 {
+			d2 = 30
+		}
+		days360 := float64((t2.Year()-t1.Year())*360 + (int(t2.Month())-int(t1.Month()))*30 + (d2 - d1))
+		if years {
+			return days360 / 360.0, nil
+		}
+		return days360 / 30.0, nil
+	default:
+		return 0, &TypeError{Op: "between", Detail: "unknown basis " + basis}
+	}
+}
+
+// calendarUnits: whole units plus a fractional remainder anchored on the
+// day-of-month (months) or day-of-year (years).
+func calendarUnits(t1, t2 time.Time, years bool) float64 {
+	step := 1
+	full := wholeMonthsBetween(t1, t2)
+	if years {
+		full = full / 12
+		step = 12
+	}
+	anchor := addMonthsClamped(t1, ymDur(decimal.NewFromInt(int64(full*step))))
+	next := addMonthsClamped(t1, ymDur(decimal.NewFromInt(int64((full+1)*step))))
+	residual := secsFloat(anchor, t2)
+	window := secsFloat(anchor, next)
+	if window == 0 {
+		return float64(full)
+	}
+	return float64(full) + residual/window
+}
+
+func secsFloat(a, b time.Time) float64 {
+	f, _ := decimalSecondsBetween(a, b).Float64()
+	return f
+}
+
 // wholeMonthsBetween returns the signed count of full calendar months from a to b.
 func wholeMonthsBetween(a, b time.Time) int {
 	months := (b.Year()-a.Year())*12 + (int(b.Month()) - int(a.Month()))
@@ -529,6 +615,12 @@ func datetimeOptions() []expr.Option {
 		expr.Function("prevDayOfWeek", dowNav(false), new(func(BlValue, BlValue) BlValue)),
 		expr.Function("weekdaysBetween", weekdaysBetweenFn, new(func(BlValue, BlValue) BlNumber)),
 		expr.Function("daysBetween", daysBetweenFn,
+			new(func(BlValue, BlValue) BlNumber),
+			new(func(BlValue, BlValue, BlValue) BlNumber)),
+		expr.Function("monthsBetween", monthsBetweenFn,
+			new(func(BlValue, BlValue) BlNumber),
+			new(func(BlValue, BlValue, BlValue) BlNumber)),
+		expr.Function("yearsBetween", yearsBetweenFn,
 			new(func(BlValue, BlValue) BlNumber),
 			new(func(BlValue, BlValue, BlValue) BlNumber)),
 		expr.Function("ymDurationBetween", ymDurationBetweenAny, new(func(BlValue, BlValue) BlYearsMonthsDuration)),
