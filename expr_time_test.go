@@ -10,5 +10,6 @@ func TestTime(t *testing.T) {
 		`time("11:45:30").hour`: "11",
 		// arithmetic (wraps within the day)
 		`time("23:00:00") + dtDuration("PT2H")`: "01:00:00",
+		`time("12:00:00") - dtDuration("PT3H")`: "09:00:00",
 	})
 }

@@ -12,10 +12,11 @@ func TestDaysTimeDuration(t *testing.T) {
 		`dtDuration("P2DT3H45M10S").hours`:        "3",
 		`dtDuration("P2DT3H45M10S").totalSeconds`: "186310",
 		// arithmetic
-		`dtDuration("P1D") + dtDuration("PT12H")`: "P1DT12H",
-		`dtDuration("PT1H") * 2.5`:                "PT2H30M",
-		`dtDuration("PT1H") / 4`:                  "PT15M",
-		`-dtDuration("P2DT3H")`:                   "-P2DT3H",
+		`dtDuration("P1D") + dtDuration("PT12H")`:     "P1DT12H",
+		`dtDuration("P1DT12H") - dtDuration("PT12H")`: "P1D",
+		`dtDuration("PT1H") * 2.5`:                    "PT2H30M",
+		`dtDuration("PT1H") / 4`:                      "PT15M",
+		`-dtDuration("P2DT3H")`:                       "-P2DT3H",
 		// comparison
 		`dtDuration("PT60S") = dtDuration("PT1M")`: "true",
 		`dtDuration("PT60S") < dtDuration("PT2M")`: "true",

@@ -15,6 +15,16 @@ func TestDatetime(t *testing.T) {
 	})
 }
 
+func TestDatetimeArithmetic(t *testing.T) {
+	assertEval(t, map[string]string{
+		`datetime("2025-03-28T12:00:00") + ymDuration("P1M")`:               "2025-04-28T12:00:00",
+		`datetime("2025-03-28T12:00:00") + dtDuration("PT3H")`:              "2025-03-28T15:00:00",
+		`datetime("2025-03-28T12:00:00") - ymDuration("P1M")`:               "2025-02-28T12:00:00",
+		`datetime("2025-03-28T12:00:00") - dtDuration("PT3H")`:              "2025-03-28T09:00:00",
+		`datetime("2025-03-28T12:00:00") - datetime("2025-03-27T06:00:00")`: "P1DT6H",
+	})
+}
+
 func TestDatetimeRezoning(t *testing.T) {
 	assertEval(t, map[string]string{
 		// withOffset/withTimezone preserve the instant, shifting wall-clock numbers

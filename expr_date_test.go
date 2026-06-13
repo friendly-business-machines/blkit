@@ -15,8 +15,11 @@ func TestDate(t *testing.T) {
 		`date("2019-09-17").dayOfYear`: "260",
 		`date("2025-09-17").quarter`:   "3",
 		// arithmetic
-		`date("2025-01-31") + ymDuration("P1M")`:  "2025-02-28",
-		`date("2025-03-28") - date("2025-01-01")`: "P86D",
+		`date("2025-01-31") + ymDuration("P1M")`:   "2025-02-28",
+		`date("2025-03-28") - date("2025-01-01")`:  "P86D",
+		`date("2025-03-28") + dtDuration("PT24H")`: "2025-03-29",
+		`date("2025-03-28") - dtDuration("PT24H")`: "2025-03-27",
+		`date("2025-03-28") - ymDuration("P1M")`:   "2025-02-28",
 		// comparison
 		`date("2025-01-01") < date("2025-06-01")`: "true",
 		// cross-kind null (naive vs zoned)

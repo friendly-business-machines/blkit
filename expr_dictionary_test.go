@@ -24,6 +24,9 @@ func TestDictionary(t *testing.T) {
 		`getEntries({a: 1, b: 2})`: `[{key: "a", value: 1}, {key: "b", value: 2}]`,
 		// dictionaryPut adds/overwrites a key, returning a new dictionary
 		`dictionaryPut({a: 1}, "b", 2)`: "{a: 1, b: 2}",
+		// dictionaryMerge folds a list of dictionaries left→right (last wins)
+		`dictionaryMerge([{a: 1}, {b: 2}])`:       "{a: 1, b: 2}",
+		`dictionaryMerge([{a: 1}, {a: 9, b: 2}])`: "{a: 9, b: 2}",
 	})
 }
 
