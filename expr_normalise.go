@@ -8,6 +8,7 @@ import "strings"
 func normalise(source string) (string, error) {
 	s := eqNorm(source)
 	s = rewriteIdentifiers(s)
+	s = lowerRanges(s)
 	s = lowerBetween(s)
 	s = lowerComprehensions(s)
 	s = convertConditionals(s)
@@ -75,6 +76,101 @@ func nextNonSpaceIsParen(s string, i int) bool {
 		i++
 	}
 	return i < len(s) && s[i] == '('
+}
+
+// lowerRanges rewrites range literals `[a..b]` / `(a..b)` / `[a..b)` / `(a..b]`
+// to newRange(a, b, startIncluded, endIncluded). A bracket group whose direct
+// content has a top-level `..` is a range; otherwise it is a list/paren group
+// and is recursed into.
+func lowerRanges(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c == '"' {
+			end := skipString(s, i)
+			b.WriteString(s[i:end])
+			i = end
+			continue
+		}
+		if c == '(' || c == '[' {
+			open := c
+			closeCh := matchingClose(open)
+			j := matchGroupEnd(s, i, open, closeCh)
+			if j < 0 {
+				b.WriteByte(c)
+				i++
+				continue
+			}
+			inner := s[i+1 : j]
+			if dd := indexTopLevelDotDot(inner); dd >= 0 {
+				left := lowerRanges(strings.TrimSpace(inner[:dd]))
+				right := lowerRanges(strings.TrimSpace(inner[dd+2:]))
+				startInc := boolLit(open == '[')
+				endInc := boolLit(s[j] == ']')
+				b.WriteString("newRange(" + left + ", " + right + ", " + startInc + ", " + endInc + ")")
+			} else {
+				b.WriteByte(open)
+				b.WriteString(lowerRanges(inner))
+				b.WriteByte(s[j])
+			}
+			i = j + 1
+			continue
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
+}
+
+func boolLit(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
+}
+
+// matchGroupEnd returns the index where the bracket group opened at s[i] closes.
+// All bracket kinds count toward depth uniformly so a range literal's
+// mismatched delimiters (`[a..b)`, `(a..b]`) are matched correctly.
+func matchGroupEnd(s string, i int, open, closeCh byte) int {
+	depth := 0
+	for j := i; j < len(s); {
+		switch s[j] {
+		case '"':
+			j = skipString(s, j)
+			continue
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+			if depth == 0 {
+				return j
+			}
+		}
+		j++
+	}
+	return -1
+}
+
+// indexTopLevelDotDot returns the index of a top-level `..` in s, or -1.
+func indexTopLevelDotDot(s string) int {
+	depth := 0
+	for i := 0; i+1 < len(s); {
+		c := s[i]
+		switch {
+		case c == '"':
+			i = skipString(s, i)
+			continue
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			depth--
+		case depth == 0 && c == '.' && s[i+1] == '.':
+			return i
+		}
+		i++
+	}
+	return -1
 }
 
 // lowerBetween rewrites `X between A and B` to `(X >= A and X <= B)`, handling
