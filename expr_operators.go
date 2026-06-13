@@ -29,6 +29,8 @@ func operatorRegistrations() []expr.Option {
 		expr.Function("__eq", opEq, new(func(BlValue, BlValue) BlValue)),
 		expr.Function("__ne", opNe, new(func(BlValue, BlValue) BlValue)),
 
+		expr.Function("__in", opIn, new(func(BlValue, BlValue) BlValue)),
+
 		// and/or lowering helpers (emitted by the patcher's conditional form).
 		expr.Function("__isFalse", opIsFalse, new(func(BlValue) bool)),
 		expr.Function("__isTrue", opIsTrue, new(func(BlValue) bool)),
@@ -51,6 +53,23 @@ func opTruthy(args ...any) (any, error) {
 		return b.b, nil
 	}
 	return false, nil
+}
+
+// opIn implements `x in y`: list membership or range containment.
+func opIn(args ...any) (any, error) {
+	x := asBl(args[0])
+	switch container := asBl(args[1]).(type) {
+	case BlList:
+		return listContainsFn(container, x), nil
+	case BlRange:
+		in, ok := container.contains(x)
+		if !ok {
+			return Null(), nil
+		}
+		return BlBoolean{in}, nil
+	default:
+		return nil, &TypeError{Op: "in", Detail: "right operand must be a list or range"}
+	}
 }
 
 func opAdd(args ...any) (any, error) {

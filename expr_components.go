@@ -40,6 +40,26 @@ func componentAccessFn(args ...any) (any, error) {
 		if r, ok := ymDurationComponent(v, name); ok {
 			return r, nil
 		}
+	case BlRange:
+		if r, ok := rangeComponent(v, name); ok {
+			return r, nil
+		}
+	case BlList:
+		// Field access on a list of dictionaries projects the field across
+		// every element (sugar for `for x in list return x.field`).
+		out := make([]BlValue, len(v.items))
+		for i, e := range v.items {
+			if e.IsNull() {
+				out[i] = Null()
+				continue
+			}
+			ev, err := componentAccessFn(e, nameVal)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = asBl(ev)
+		}
+		return BlList{out}, nil
 	}
 	return Null(), nil
 }

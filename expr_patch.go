@@ -61,6 +61,26 @@ func (p *feelPatcher) Visit(node *ast.Node) {
 		n.Cond = call("__truthy", n.Cond)
 	case *ast.MemberNode:
 		p.patchMember(node, n)
+	case *ast.ArrayNode:
+		// A list literal `[a, b, c]` becomes __mklist(a, b, c) so it produces a
+		// BlList rather than expr's native []any.
+		ast.Patch(node, call("__mklist", n.Nodes...))
+	case *ast.MapNode:
+		// A dictionary literal `{k: v, …}` becomes __mkdict("k", v, …) so it
+		// produces a BlDictionary rather than expr's native map[string]any.
+		var args []ast.Node
+		for _, pr := range n.Pairs {
+			pair, ok := pr.(*ast.PairNode)
+			if !ok {
+				continue
+			}
+			name, ok := stringProperty(pair.Key)
+			if !ok {
+				continue
+			}
+			args = append(args, constNode(BlString{name}), pair.Value)
+		}
+		ast.Patch(node, call("__mkdict", args...))
 	}
 }
 
@@ -112,6 +132,9 @@ func (p *feelPatcher) patchBinary(node *ast.Node, n *ast.BinaryNode) {
 		ast.Patch(node, p.lowerLogical(n.Left, n.Right, "__isFalse", "__blAnd"))
 	case "or", "||":
 		ast.Patch(node, p.lowerLogical(n.Left, n.Right, "__isTrue", "__blOr"))
+	case "in":
+		// x in y → __in(x, y): list membership / range containment.
+		ast.Patch(node, call("__in", n.Left, n.Right))
 	default:
 		if fn, ok := binaryDispatch[n.Operator]; ok {
 			ast.Patch(node, call(fn, n.Left, n.Right))

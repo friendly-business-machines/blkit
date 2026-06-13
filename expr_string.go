@@ -427,10 +427,9 @@ func stringOptions() []expr.Option {
 			new(func(BlValue, BlValue, BlValue) BlList)),
 		expr.Function("pattern", typed1bl(patternFnWrap), new(func(BlValue) BlRegex)),
 		expr.Function("isBlank", typed1(isBlankFn), new(func(BlValue) BlBoolean)),
-		expr.Function("indexOf", typed2(strIndexOfFn), new(func(BlValue, BlValue) BlValue)),
-		expr.Function("isEmpty", typed1(strIsEmptyFn), new(func(BlValue) BlBoolean)),
 		expr.Function("charAt", typed2(charAtFn), new(func(BlValue, BlValue) BlString)),
-		expr.Function("reverse", typed1(strReverseFn), new(func(BlValue) BlString)),
+		// isEmpty / reverse / indexOf are unified cross-type dispatchers in
+		// expr_overloads.go.
 		expr.Function("padLeading", padLeadingFn,
 			new(func(BlValue, BlValue) BlString),
 			new(func(BlValue, BlValue, BlValue) BlString)),

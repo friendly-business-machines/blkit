@@ -129,6 +129,9 @@ var typeRegistrations = []func() []expr.Option{
 	datetimeOptions,
 	daysTimeDurationOptions,
 	yearsMonthsDurationOptions,
+	listOptions,
+	dictionaryOptions,
+	rangeOptions,
 	overloadOptions,
 }
 

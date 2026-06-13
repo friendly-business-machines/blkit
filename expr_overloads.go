@@ -21,6 +21,50 @@ func overloadOptions() []expr.Option {
 		expr.Function("roundHalfDown", roundHalfDownAny, new(func(BlValue, BlValue) BlValue)),
 		expr.Function("roundHalfEven", roundHalfEvenAny, new(func(BlValue, BlValue) BlValue)),
 		expr.Function("componentAccess", componentAccessFn, new(func(BlValue, BlValue) BlValue)),
+		expr.Function("isEmpty", isEmptyAny, new(func(BlValue) BlBoolean)),
+		expr.Function("reverse", reverseAny, new(func(BlValue) BlValue)),
+		expr.Function("indexOf", indexOfAny, new(func(BlValue, BlValue) BlValue)),
+	}
+}
+
+func isEmptyAny(args ...any) (any, error) {
+	switch v := asBl(args[0]).(type) {
+	case BlString:
+		return strIsEmptyFn(v), nil
+	case BlList:
+		return listIsEmptyFn(v), nil
+	case BlDictionary:
+		return dictIsEmptyFn(v), nil
+	case BlRange:
+		return rangeIsEmptyFn(v), nil
+	default:
+		return nil, &TypeError{Op: "isEmpty", Detail: "unsupported type"}
+	}
+}
+
+func reverseAny(args ...any) (any, error) {
+	switch v := asBl(args[0]).(type) {
+	case BlString:
+		return strReverseFn(v), nil
+	case BlList:
+		return listReverseFn(v), nil
+	default:
+		return nil, &TypeError{Op: "reverse", Detail: "unsupported type"}
+	}
+}
+
+func indexOfAny(args ...any) (any, error) {
+	switch v := asBl(args[0]).(type) {
+	case BlString:
+		m, ok := asBl(args[1]).(BlString)
+		if !ok {
+			return nil, argTypeError(args[1])
+		}
+		return strIndexOfFn(v, m), nil
+	case BlList:
+		return listIndexOfFn(v, asBl(args[1])), nil
+	default:
+		return nil, &TypeError{Op: "indexOf", Detail: "unsupported type"}
 	}
 }
 
