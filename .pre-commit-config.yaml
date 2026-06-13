@@ -62,3 +62,20 @@ repos:
     hooks:
       - id: golangci-lint-fmt
       - id: golangci-lint-full
+
+  # ---------------------------------------------------------------------------
+  # Generated API reference
+  # ---------------------------------------------------------------------------
+  # Keep docs/reference/ in sync with the godoc comments it is generated from.
+  # When Go source (or the generator itself) changes, regenerate the reference
+  # Markdown. If that produces any change, pre-commit reports the modified files
+  # and fails the commit — stage the regenerated docs and commit again. This is
+  # the same staleness guarantee the CI docs job enforces, caught locally.
+  - repo: local
+    hooks:
+      - id: generate-docs
+        name: Regenerate API reference (docs/reference)
+        entry: scripts/generate-docs.sh
+        language: script
+        pass_filenames: false
+        files: '\.go$|^scripts/generate-docs\.sh$'
