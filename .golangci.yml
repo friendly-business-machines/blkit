@@ -1,0 +1,15 @@
+# golangci-lint configuration (schema v2 — https://golangci-lint.run/).
+version: "2"
+
+linters:
+  # Start from the standard linter set (errcheck, govet, ineffassign,
+  # staticcheck, unused).
+  default: standard
+
+  # The expression engine is under active construction: comparison/format
+  # helpers and struct fields are routinely implemented ahead of being wired
+  # up, so `unused` produces noise that does not reflect real problems.
+  # Disable it for now.
+  # TODO: re-enable `unused` once the engine is feature-complete.
+  disable:
+    - unused

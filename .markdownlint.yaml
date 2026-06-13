@@ -1,0 +1,26 @@
+# markdownlint configuration (https://github.com/DavidAnson/markdownlint).
+# Consumed by the markdownlint-cli pre-commit hook.
+
+# Keep all default rules enabled.
+default: true
+
+# Code blocks and code spans: OFF, completely.
+#
+# markdownlint has no single switch to ignore code regions, and its --fix has
+# repeatedly corrupted our samples (rewriting significant Go/Makefile tabs;
+# stripping a space inside a code span that documents the literal whitespace
+# `\s` matches). Rather than trust per-rule toggles, every rule that reads or
+# rewrites the content, fencing, or style of a fenced/indented code block or an
+# inline code span is disabled.
+MD009: false  # no-trailing-spaces — would strip trailing spaces inside samples
+MD010: false  # no-hard-tabs — would rewrite significant tabs in code
+MD014: false  # commands-show-output — would strip `$ ` from shell samples
+MD031: false  # blanks-around-fences
+MD038: false  # no-space-in-code-spans — strips spaces inside inline code
+MD040: false  # fenced-code-language — fence info string
+MD046: false  # code-block-style — indented vs fenced (also trips admonitions)
+MD048: false  # code-fence-style — ``` vs ~~~
+
+# MD013 (line-length): disabled. Code examples and reference tables routinely
+# exceed any fixed width, and the rule is not auto-fixable.
+MD013: false
