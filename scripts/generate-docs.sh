@@ -20,6 +20,16 @@ set -euo pipefail
 readonly MODULE_PATH="github.com/friendly-business-machines/blkit"
 readonly GOMARKDOC_VERSION="v1.1.0"
 
+# Pin the source-link target. gomarkdoc otherwise auto-detects the git ref for
+# its `blob/<ref>/file#Lnn` links, which is environment-dependent: a local clone
+# resolves the branch name (main), but CI's detached, shallow actions/checkout
+# falls back to the commit SHA. That made every link line differ between local
+# and CI, so the committed reference always looked stale. Override the three
+# repository fields so links are identical everywhere.
+readonly REPO_URL="https://${MODULE_PATH}"
+readonly REPO_BRANCH="main"
+readonly REPO_DOC_PATH="/"
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO_ROOT
 readonly REFERENCE_DIR="${REPO_ROOT}/docs/reference"
@@ -62,7 +72,11 @@ for pkg in "${packages[@]}"; do
   out="${REFERENCE_DIR}/${name}.md"
 
   echo "generate-docs: ${pkg} -> docs/reference/${name}.md"
-  gomarkdoc --output "$out" "$pkg" || fail "gomarkdoc failed for ${pkg}"
+  gomarkdoc \
+    --repository.url "$REPO_URL" \
+    --repository.default-branch "$REPO_BRANCH" \
+    --repository.path "$REPO_DOC_PATH" \
+    --output "$out" "$pkg" || fail "gomarkdoc failed for ${pkg}"
 
   # Prepend the generated-file banner.
   tmp="$(mktemp)"
