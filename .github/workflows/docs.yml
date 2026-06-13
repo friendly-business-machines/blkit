@@ -1,0 +1,78 @@
+name: Docs
+
+# Builds the Zensical documentation site on every push and pull request, and
+# publishes it to GitHub Pages only on pushes to the default branch and on
+# release tags. See specs/project/documentation.spec.md ("CI Requirements").
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+# Allow one concurrent deployment; cancel in-progress runs on the same ref.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install Zensical
+        run: pip install zensical
+
+      - name: Generate API reference
+        run: bash scripts/generate-docs.sh
+
+      - name: Fail if generated reference is stale
+        run: |
+          if ! git diff --quiet -- docs/reference; then
+            echo "::error::docs/reference is out of date. Run scripts/generate-docs.sh and commit the result." >&2
+            git diff --stat -- docs/reference
+            exit 1
+          fi
+
+      - name: Build site
+        run: zensical build --strict
+
+      - name: Upload Pages artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    # Publish only on pushes to the default branch or on release tags — never
+    # on pull requests.
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

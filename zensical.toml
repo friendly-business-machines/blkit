@@ -1,0 +1,37 @@
+# Zensical configuration for the blkit documentation site.
+# See specs/project/documentation.spec.md for the authoritative requirements.
+
+[project]
+site_name = "blkit"
+site_description = "A Go SDK for expressing and executing business rules and processes."
+site_url = "https://friendly-business-machines.github.io/blkit/"
+repo_url = "https://github.com/friendly-business-machines/blkit"
+repo_name = "friendly-business-machines/blkit"
+docs_dir = "docs"
+site_dir = "site"
+copyright = "Friendly Business Machines"
+
+# Six required top-level sections (see documentation.spec.md "Site Structure").
+# Tutorials and Templates are placeholder landing pages until the decisions /
+# processes packages exist; wiring them here keeps the nav free of dead links.
+nav = [
+  { "Home" = "index.md" },
+  { "Getting started" = "getting-started/index.md" },
+  { "Installation" = "installation/index.md" },
+  { "Tutorials" = "tutorials/index.md" },
+  { "Templates" = "templates/index.md" },
+  { "Examples" = "examples/index.md" },
+  { "Reference" = [
+    "reference/blkit.md",
+  ] },
+]
+
+[project.theme]
+variant = "modern"
+
+# Fail the build on broken internal links and anchors. Activated in CI via
+# `zensical build --strict` (documentation.spec.md CI requirement #4).
+[project.validation]
+unresolved_references = true
+invalid_links = true
+invalid_link_anchors = true
