@@ -33,8 +33,8 @@ self-contained library, not a conformance implementation of any of them.
 
 ## Why blkit?
 
-- **Simple, readable business-logic code.** Your business logic stays simple and
-  transparent thanks to an approachable expression language and business-friendly building
+- **Simple, readable business-logic code.** Your business logic stays manageable and
+  transparent thanks to an approachable expression language, and business-friendly building
   blocks like decision tables and process flows.
 - **Stop re-solving solved problems.** Exact decimal math, null-aware logic, schema and
   type checking, and a ready-made value system come built in, so you write rules instead
@@ -158,9 +158,9 @@ list of conditionals.
 ## Components
 
 blkit is made of three components: **Expressions** for individual rules and calculations,
-**Decisions** for grouping related rules into tables, and **Processes** for sequencing it
-all into multi-step workflows. Reach for whichever level fits the job — a single
-expression, a decision table, or a full process — and pick up the next when you need it.
+**Decisions** for composing rules into overall decision logic, and **Processes** for sequencing it
+all into multi-step workflows with conditional pathways. The layers build on each other:
+expressions are the building blocks of decisions, and decisions are the steps within processes.
 
 ### Expressions ✅ *(available today)*
 
@@ -256,7 +256,7 @@ flowchart LR
 
     REST["REST / SSE server<br/><i>built with blkit</i>"]
 
-    Broker[("Message broker<br/>Redis · NATS · Azure SB<br/>Google Pub/Sub · in-memory")]
+    Broker[("Message broker<br/>Redis · NATS · Azure SB<br/>Google Pub/Sub")]
 
     subgraph Workers["Workers"]
         W1["worker<br/><i>built with blkit</i>"]
