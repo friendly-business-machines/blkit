@@ -26,6 +26,8 @@ type DecisionNode interface {
 
 Every concrete generic node type implements this interface regardless of its `Outputs` type parameter, so `[]DecisionNode{eligibility, approval, ...}` accepts nodes with different output shapes uniformly.
 
+Decision nodes *compute* a value and are evaluated. A plain static value with identity is not a node: it is a [`ReferenceData`](reference-data.spec.md) value source, which carries its `Value` rather than implementing `Evaluate`. It is referenced by nodes through its `.Value` handle and never appears in `[]DecisionNode`.
+
 ---
 
 ## Outputs structs

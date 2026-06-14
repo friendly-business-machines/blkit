@@ -2,7 +2,7 @@
 name: DecisionTask
 description: A reusable decision task — directed graph of DecisionNodes with BlSchema-typed InputSchema/OutputSchema that is itself a ProcessNode. Built and cloned via functional options (panicking on invalid definitions); Id/Name/InputMappings/OutputMappings are mandatory at process-graph incorporation time.
 targets:
-  - ../decisions/decision_task.go
+  - ../../core/decision_task.go
 ---
 
 # DecisionTask
@@ -18,9 +18,10 @@ type DecisionTask struct {
     // Decision-logic fields — set via With… options at creation; treated as
     // immutable by convention thereafter. Shared by reference with clones.
     Description   string
-    InputSchema   BlSchema      // optional; nil = absent. Validated via ValidateInput (closed)
-    OutputSchema  BlSchema      // optional; nil = absent. Validated via ValidateOutput (permissive); also drives output projection
-    DecisionGraph DecisionGraph // processed, sorted graph (built by NewDecisionTask)
+    InputSchema   BlSchema        // optional; nil = absent. Validated via ValidateInput (closed)
+    OutputSchema  BlSchema        // optional; nil = absent. Validated via ValidateOutput (permissive); also drives output projection
+    DecisionGraph DecisionGraph   // processed, sorted graph (built by NewDecisionTask)
+    ReferenceData []ReferenceValue // static value sources, bound by Id into the eval context (see reference-data.spec.md)
 
     // Task-level fields — set via With… options at creation; treated as
     // immutable by convention. Reset (not inherited) on Clone.
@@ -43,20 +44,39 @@ type DecisionGraph struct {
     DecisionNodes []DecisionNode // in topologically-sorted evaluation order
 }
 
-// decisionTaskConfig is the unexported staging struct the With… options write
-// into. It holds every configurable field; NewDecisionTask / Clone fill it from
-// the supplied options, validate it, then build the *DecisionTask. Callers never
-// touch it — they configure exclusively through the With… constructors.
-type decisionTaskConfig struct {
-    // Decision-logic fields
-    description  string
-    inputSchema  BlSchema
-    outputSchema BlSchema
+// --- Shared identity options (package-wide) ---
+//
+// identity carries the Id / Name / Description common to every decisions
+// construct. Each construct's config embeds it, so one set of identity options
+// serves NewDecisionTask, NewReferenceData, and any future construct.
+type identity struct{ id, name, description string }
 
-    // Task-level fields — all optional at creation; Id, Name, InputMappings, and
-    // OutputMappings are mandatory at the time of incorporation into a process graph.
-    id                              string
-    name                            string
+func (i *identity) ident() *identity { return i }
+
+// hasIdentity is satisfied by any config that embeds identity.
+type hasIdentity interface{ ident() *identity }
+
+// WithId / WithName / WithDescription are defined once for the whole package,
+// generic over the concrete config. Go infers the type parameter from the option
+// slot (reverse inference), so call sites read bl.WithId("…").
+func WithId[C hasIdentity](id string) func(C)
+func WithName[C hasIdentity](name string) func(C)
+func WithDescription[C hasIdentity](description string) func(C)
+
+// decisionTaskConfig is the unexported staging struct the With… options write
+// into. NewDecisionTask / Clone fill it from the supplied options, validate it,
+// then build the *DecisionTask. Callers never touch it — they configure
+// exclusively through the With… constructors.
+type decisionTaskConfig struct {
+    identity // id, name, description
+
+    // Decision-logic fields (shared by reference with clones)
+    inputSchema   BlSchema
+    outputSchema  BlSchema
+    referenceData []ReferenceValue
+
+    // Task-level fields (reset on Clone). InputMappings and OutputMappings (and
+    // Id / Name from identity) are mandatory at incorporation into a process graph.
     inputMappings                   *VariableMapping
     outputMappings                  *VariableMapping
     loop                            *LoopConfig
@@ -80,12 +100,15 @@ type DecisionTaskOption func(*decisionTaskConfig)
 // (see § Validation). graph may be empty/nil — a no-node task is valid.
 func NewDecisionTask(graph []DecisionNode, opts ...DecisionTaskOption) *DecisionTask
 
-// Option constructors — each returns a DecisionTaskOption that sets one field.
-func WithDescription(description string) DecisionTaskOption
+// DecisionTask-specific option constructors (identity uses the shared
+// WithId / WithName / WithDescription above). Each returns a DecisionTaskOption.
+//
+// Decision-logic options — WithInputSchema, WithOutputSchema, WithReferenceData,
+// and the shared WithDescription — are valid only on NewDecisionTask; passing any
+// of them to Clone panics with a *DecisionDefinitionError (see Clone).
 func WithInputSchema(schema BlSchema) DecisionTaskOption
 func WithOutputSchema(schema BlSchema) DecisionTaskOption
-func WithId(id string) DecisionTaskOption
-func WithName(name string) DecisionTaskOption
+func WithReferenceData(refs ...ReferenceValue) DecisionTaskOption // see reference-data.spec.md
 func WithInputMappings(m *VariableMapping) DecisionTaskOption
 func WithOutputMappings(m *VariableMapping) DecisionTaskOption
 func WithLoop(l *LoopConfig) DecisionTaskOption
@@ -103,12 +126,16 @@ func (d *DecisionTask) Evaluate(input map[string]any) (DecisionResult, error)
 func (d *DecisionTask) ToMarkdown() string
 
 // Clone returns a new *DecisionTask. Decision-logic fields (DecisionGraph,
-// InputSchema, OutputSchema, Description) are shared by reference with the
-// receiver. Task-level fields are taken **only** from the options — the
+// ReferenceData, InputSchema, OutputSchema, Description) are shared by reference
+// with the receiver. Task-level fields are taken **only** from the options — the
 // receiver's task-level fields are reset, not inherited. Specify every
-// task-level field you want set on the clone via With… options. There is no
-// graph option: a clone always shares the receiver's decision logic, so
-// "changing a clone's nodes" is not expressible.
+// task-level field you want set on the clone via With… options.
+//
+// There is no graph option, and the decision-logic options (WithDescription,
+// WithInputSchema, WithOutputSchema, WithReferenceData) panic with a
+// *DecisionDefinitionError if passed to Clone: a clone always shares the
+// receiver's decision logic, so changing a clone's nodes, schemas, or reference
+// data is not expressible.
 func (d *DecisionTask) Clone(opts ...DecisionTaskOption) *DecisionTask
 
 
@@ -154,7 +181,7 @@ The common case is to construct a `DecisionTask` fully baked in a single step �
 
 ```go
 var oneShotDecision = bl.NewDecisionTask(
-    []DecisionNode{eligibility, approval},
+    []bl.DecisionNode{eligibility, approval},
     bl.WithId("decide"),
     bl.WithName("Decide"),
     bl.WithInputSchema(is),
@@ -175,7 +202,7 @@ To reuse the same decision logic across multiple processes, build the decision l
 // loanInputSchema / loanOutputSchema are declared with bl.Schema — see
 // "Building the Decision Logic" below.
 var template = bl.NewDecisionTask(
-    []DecisionNode{eligibility, approval},
+    []bl.DecisionNode{eligibility, approval},
     bl.WithDescription("Approves or denies a loan based on eligibility and amount"),
     bl.WithInputSchema(loanInputSchema),
     bl.WithOutputSchema(loanOutputSchema),
@@ -297,7 +324,7 @@ var loanOutputSchema, _ = bl.Schema(
 )
 
 var loanApproval = bl.NewDecisionTask(
-    []DecisionNode{eligibility, approval},
+    []bl.DecisionNode{eligibility, approval},
     bl.WithDescription("Approves or denies a loan based on eligibility and amount"),
     bl.WithInputSchema(loanInputSchema),
     bl.WithOutputSchema(loanOutputSchema),
@@ -317,6 +344,29 @@ result, err := loanApproval.Evaluate(map[string]any{
 The template's `InputSchema` and `OutputSchema` declare its external interface (callers must supply `applicant` and `loan_amount`; the decision exposes `approval`).
 
 Node-level dependencies are derived from the typed output handles referenced in each node's expression trees (rules, body, entries, rows, bindings). `NewDecisionTask` walks those trees, collects every output handle, and uses the handle's source pointer to build the producer→consumer graph. There are no string-keyed name lookups.
+
+### Including reference data
+
+Static constants — `ReferenceData` value sources (see [reference-data.spec.md](reference-data.spec.md)) — are added to the task with `bl.WithReferenceData` and referenced from node expressions **by their `Id`**. They are not `DecisionNode`s, so they never appear in the `[]bl.DecisionNode` list; the task binds each value into the evaluation context under its `Id` and adds its `Id`/type to the reference scope nodes compile against. Because reference data is decision-logic, clones inherit it by reference (it is never re-added — see [§ Reuse via Clone](#reuse-via-clone)).
+
+```go
+var taxRate = bl.NewReferenceData(bl.Number(0.2),
+    bl.WithId("tax_rate"),
+    bl.WithName("Tax Rate"),
+)
+
+// grossPrice is a node whose body references the constant by name, e.g.
+// `net_price.amount * (1 + tax_rate)`.
+var pricing = bl.NewDecisionTask(
+    []bl.DecisionNode{netPrice, grossPrice},
+    bl.WithReferenceData(taxRate),
+    bl.WithId("pricing"),
+    bl.WithName("Pricing"),
+    bl.WithInputSchema(pricingInputSchema),
+)
+```
+
+Pass several at once — `bl.WithReferenceData(taxRate, baseCurrency, shippingRates)` — or call it more than once; the sources accumulate.
 
 ---
 
@@ -353,6 +403,7 @@ When `Evaluate(input)` runs:
 - `InputSchema` declares the expected input variable names and types.
 - Each node's dependencies are derived statically from the typed output handles referenced inside its expression trees (rules, body, entries, rows, bindings). A handle whose source is another node produces a node-to-node edge; a handle whose source is a DecisionTask-level input is resolved from the caller-provided `input` map at evaluation time.
 - At evaluation time, input values are validated against `InputSchema` (via `ValidateInput`). A mismatch produces a `DataContractValidationError`.
+- Reference data registered via `WithReferenceData` is bound into the evaluation context under each source's `Id` before nodes run, and each source's `Id` and type are added to the environment node expressions are compiled against — a **reference scope** separate from `InputSchema`. Referencing a reference-data name forms no dependency edge; the source is a constant leaf (see [reference-data.spec.md](reference-data.spec.md)).
 
 ---
 
@@ -380,6 +431,7 @@ If `OutputSchema == nil`, `Outputs` contains all node results (equivalent to exp
 - `MaxExecutionsPerProcessInstance >= 0`.
 - Exit-port ids are unique within the task.
 - `Loop` and `MultiInstance` are not both set.
+- Reference-data `Id`s are unique and collide with no node `Id` or `InputSchema` variable name; every name a node references resolves to an input, an upstream node output, or a registered reference-data `Id`.
 
 ```go
 type DecisionDefinitionError struct {
@@ -427,7 +479,8 @@ To render a process's overall structure including instantiated decision tasks, u
 - An empty `bl.NewVariableMapping()` is a valid `InputMappings` or `OutputMappings` value — it explicitly declares "no variables flow in/out." A nil `*VariableMapping` is rejected; use the empty constructor instead.
 - Calling `Clone` repeatedly on the same template produces independent instances. Options applied to one clone do not propagate to others or to the source.
 - `Clone` resets task-level fields — it does not inherit them from the source. Specify every task-level field you want on the clone via `With…` options.
-- Decision-logic fields (`DecisionGraph`, `InputSchema`, `OutputSchema`, `Description`) are shared by reference between a source and its clones. Because `DecisionTask` is immutable after `NewDecisionTask`, this sharing has no observable effect beyond memory layout.
+- Decision-logic fields (`DecisionGraph`, `ReferenceData`, `InputSchema`, `OutputSchema`, `Description`) are shared by reference between a source and its clones. Because `DecisionTask` is immutable after `NewDecisionTask`, this sharing has no observable effect beyond memory layout.
+- Passing a decision-logic option (`WithDescription`, `WithInputSchema`, `WithOutputSchema`, `WithReferenceData`) to `Clone` is a `DecisionDefinitionError` — decision logic is shared from the source, never re-set on the clone. Reference data therefore needs no re-adding: a clone keeps the source's value sources by reference.
 - `Evaluate(input)` is callable on a template or a clone and produces identical results — task-level framing is not exercised by the standalone path.
 - A template with a single node and no contracts is valid and can be cloned.
 - `Evaluate(input)` with an input variable not referenced by any node is silently ignored.
