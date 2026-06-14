@@ -82,7 +82,7 @@ The Examples section of the documentation site contains one page per business pr
 
 Each example is defined at the business level in a spec file under `specs/examples/`. These specs describe what the process does — its input data, decision rules or process steps, outcomes, and worked examples — without any reference to code or implementation details. They are the authoritative description of the business problem that the implementation must solve.
 
-The ten examples currently defined in `specs/examples/` are:
+The eleven examples currently defined in `specs/examples/` are:
 
 | Spec file | Business process |
 |---|---|
@@ -96,13 +96,14 @@ The ten examples currently defined in `specs/examples/` are:
 | `insurance-claim.spec.md` | Motor insurance claim assessment and settlement calculation |
 | `customer-discount.spec.md` | Best-discount selection across multiple applicable rules |
 | `product-return.spec.md` | Product return request handling and refund or replacement routing |
+| `aus-personal-income-tax.spec.md` | Australian personal income tax calculation (FY 2024–25) |
 
 ### Page Structure
 
 Each `docs/examples/<name>.md` page is structured as follows:
 
-1. **Business overview** — a brief plain-English summary of the process, drawn from the corresponding spec.
-2. **Implementation** — a self-contained, runnable Go implementation of the example using blkit.
+1. **Business overview** — a plain-English presentation of the process drawn from the corresponding spec: the overview, input/trigger data, the decision rules or process steps, outcomes, and worked examples. The page should reproduce the spec's natural sections so it stands alone on the documentation site, rather than only linking out. Decision-style and process-style examples will not share identical headings.
+2. **Implementation** — a self-contained, runnable Go implementation of the example using blkit. While the `decisions` / `processes` packages an example depends on are still being built, this section is a clearly-marked **pending placeholder** (an admonition explaining the dependency and linking to the authoritative spec) instead of code. Pages are published in this pending state; the runnable implementation replaces the placeholder once the required packages land.
 3. **Notes** — any caveats, limitations, or points of interest.
 
 ### Implementation File Layout
@@ -113,7 +114,7 @@ Each example implementation is a Markdown file under `docs/examples/`:
 docs/examples/<name>.md
 ```
 
-The Zensical build renders this directly as the example page. If the implementation file is missing, the page is excluded from the site and a warning is emitted at build time.
+The Zensical build renders this directly as the example page. A page is published as soon as its file exists — including when its **Implementation** section is still the pending placeholder described above. If the file is missing entirely, the page is excluded from the site and a warning is emitted at build time.
 
 ## Reference Section
 
