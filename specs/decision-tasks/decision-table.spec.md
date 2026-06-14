@@ -1,15 +1,17 @@
 ---
 name: DecisionTable
-description: A DecisionNode generic over an outputs struct — defines decision logic as input columns, output columns (derived from the outputs struct), and rules with hit policies
+description: A DecisionNode generic over an outputs struct — defines decision logic as input columns, output columns (derived from the outputs struct), and rules whose cells are text expressions (unary tests for inputs, expressions for outputs) compiled against the bl expression language.
 targets:
   - ../decisions/decision_table.go
 ---
 
 # DecisionTable
 
-A `DecisionTable` is a `DecisionNode` that defines decision logic as a table of input conditions and output values. Each row is a `Rule`; a rule matches when all of its input entries are satisfied. The hit policy determines how matching rules are combined into the output.
+A `DecisionTable` is a `DecisionNode` that defines decision logic as a table of input conditions and output values. Each row is a `Rule`; a rule matches when all of its input cells are satisfied. The hit policy determines how matching rules are combined into the output.
 
-`DecisionTable` is generic over an outputs struct (see [decision-node.spec.md](decision-node.spec.md)). The output columns are inferred from the outputs struct's exported fields; the table does not carry a separate output-clause declaration.
+Cells are **text expressions** in the blkit expression language (see [bl-expr.spec.md](../expressions/bl-expr.spec.md)). Input cells are **unary tests** (`>= 18`, `[650..749]`, `"US", "CA"`, `-`); output cells are **expressions** (`3.5`, `"eligible"`). Every cell is compiled once at construction — input cells via `bl.UnaryTest` against the column's type, output cells via `bl.Expr` — so malformed cells fail fast as a `DecisionDefinitionError`.
+
+`DecisionTable` is generic over an outputs struct (see [decision-node.spec.md](decision-node.spec.md)). The output columns are inferred from the outputs struct's exported fields, in declaration order; the table does not carry a separate output-clause declaration.
 
 ```go
 type DecisionTable[Outputs any] struct {
@@ -20,8 +22,10 @@ type DecisionTable[Outputs any] struct {
     HitPolicy   HitPolicy
     Aggregation *Aggregation
 
-    Inputs []TableInput
-    Rules  []Rule
+    Schema       BlSchema          // optional; type-checks input Exprs and output cells at construction
+    Inputs       []Input
+    Rules        Rules
+    Descriptions map[string]string // optional; rule id -> human-readable description
 
     Outputs Outputs // typed handles, populated by NewDecisionTable
 }
@@ -29,16 +33,20 @@ type DecisionTable[Outputs any] struct {
 func NewDecisionTable[Outputs any](opts DecisionTableOpts) *DecisionTable[Outputs]
 
 type DecisionTableOpts struct {
-    Id          string
-    Name        string
-    Description string
-    HitPolicy   HitPolicy    // default: HitPolicyUnique
-    Aggregation *Aggregation // only valid with HitPolicyCollect
-    Inputs      []TableInput
-    Rules       []Rule
+    Id           string
+    Name         string
+    Description  string
+    HitPolicy    HitPolicy    // default: HitPolicyUnique
+    Aggregation  *Aggregation // only valid with HitPolicyCollect
+    Schema       BlSchema     // optional
+    Inputs       []Input
+    Rules        Rules
+    Descriptions map[string]string
 }
 
-// Evaluate the table against the input variables
+// Evaluate the table against the input variables. The map[string]any signature
+// satisfies the DecisionNode interface (see decision-node.spec.md); values are
+// wrapped to a bl.BlDictionary internally before the cells run.
 func (d *DecisionTable[Outputs]) Evaluate(input map[string]any) (BlValue, error)
 
 // Render the table as a markdown string
@@ -49,76 +57,53 @@ func (d *DecisionTable[Outputs]) ToMarkdown(
 ) string
 ```
 
-The output columns on a `DecisionTable[Outputs]` are inferred from `Outputs`'s exported fields (see [decision-node.spec.md](decision-node.spec.md) for the reflection contract and naming rules). `NewDecisionTable` validates that every output name referenced by a rule appears on `Outputs`, and that every declared output is set by at least one rule.
+The output columns on a `DecisionTable[Outputs]` are inferred from `Outputs`'s exported fields (see [decision-node.spec.md](decision-node.spec.md) for the reflection contract and naming rules). `NewDecisionTable` validates that every declared output is set by at least one rule, and that every rule row is the expected width.
 
 ---
 
-## TableInput
+## Input
 
-A `TableInput` is the label-plus-expression pairing that gives a rule predicate a column to read against. Each input column is built by a per-type free constructor that returns a value implementing **both** `TableInput` (for placement in `DecisionTableOpts.Inputs`) and the matching `Bl*` interface (for direct use in rule predicates).
+An `Input` is a labelled, typed column. `Expr` is a source expression in the blkit language, evaluated against the input variables to produce the column value; `Type` is the type that value holds and is used to compile each rule's unary-test cell for this column.
 
 ```go
-type TableInput interface {
-    GetLabel() string
-    GetExpression() BlExpr
-    GetTypeRef() string
+type Input struct {
+    Label string // column header
+    Expr  string // source expression -> column value
+    Type  Type   // the type the column holds; compiles each input cell via bl.UnaryTest
 }
-
-// Per-type input column constructors. The returned column value implements
-// both TableInput and the matching Bl* interface — methods of the Bl* interface
-// are usable directly on the column for building rule predicates.
-func NumberInput(label string, expression BlNumber) NumberInputColumn
-func StringInput(label string, expression BlString) StringInputColumn
-func BooleanInput(label string, expression BlBoolean) BooleanInputColumn
-func DateInput(label string, expression BlDate) DateInputColumn
-func TimeInput(label string, expression BlTime) TimeInputColumn
-func DateTimeInput(label string, expression BlDateTime) DateTimeInputColumn
-func DaysTimeInput(label string, expression BlDaysTimeDuration) DaysTimeInputColumn
-func YearsMonthsInput(label string, expression BlYearsMonthsDuration) YearsMonthsInputColumn
-func ListInput(label string, expression BlList) ListInputColumn
-func DictionaryInput(label string, expression BlDictionary, schema *DictionaryContract) DictionaryInputColumn
 ```
 
-Each concrete `*InputColumn` type embeds the matching `Bl*` interface — `NumberInputColumn` embeds `bl.BlNumber`, `StringInputColumn` embeds `bl.BlString`, etc. — so the column value can be used directly inside rule predicates without an extra `.Ref` hop.
+`Type` is one of the comparable scalars (`TypeNumber`, `TypeString`, `TypeDate`, `TypeTime`, `TypeDateTime`, `TypeDaysTimeDuration`, `TypeYearsMonthsDuration`) or an unordered type (`TypeBoolean`, `TypeList`, `TypeDictionary`, `TypeTable`, `TypeRange`). The ordering and interval unary-test forms (`<`, `<=`, `>`, `>=`, `[a..b]`) require a comparable scalar; using them against an unordered column is a `DecisionDefinitionError` at construction (see [bl-expr.spec.md § Unary tests](../expressions/bl-expr.spec.md#unary-tests)). For structured columns, use the `?`-expression form (e.g. `count(?) > 0`, `listContains(?, "urgent")`).
 
 ---
 
 ## Rule
 
-A single row in the decision table.
+A single row in the decision table. `Rule` is a slice of raw-string cells: input cells (unary tests) followed by output cells (expressions), in column order. An **optional** leading id cell may precede the inputs.
 
 ```go
-type Rule struct {
-    Id          *string  // optional; if set, must be unique within the DecisionTable
-    Description string // human-readable explanation of this rule
-
-    Conditions []InputEntry
-    Results    map[string]BlExpr // keyed by output name (matching an Outputs-struct field)
-}
-
-type InputEntry struct {
-    Column    TableInput // the column being matched
-    Predicate BlExpr     // boolean expression referencing the column
-}
-
-func NewRule(idAndDescription ...string) *Rule
-
-// AddInputEntry takes the column value (returned from a *Input factory) plus
-// the boolean predicate. Passing a column not present in this table's Inputs
-// produces a DecisionDefinitionError at construction.
-func (r *Rule) AddInputEntry(column TableInput, predicate BlExpr) *Rule
-
-// AddOutputEntry sets the value of an output. The outputName must match a
-// field on the table's Outputs struct (lowercased name, or bl: tag).
-func (r *Rule) AddOutputEntry(outputName string, value BlExpr) *Rule
+type Rule []string
+type Rules []Rule
 ```
 
-- `Id` is optional. When set, it must be unique within the `DecisionTable`.
-- `Description` is optional — a human-readable explanation of why this rule exists or when it applies.
-- `Conditions` pair a column with a boolean `bl.BlExpr` predicate. The predicate references the column directly (e.g., `age.GreaterThanOrEqual(bl.Number(18))`).
-- Not every input column needs an entry for every rule — omitted inputs match any value (wildcard, rendered as `"-"` in markdown).
-- A rule matches when **all** specified conditions evaluate to `true`.
-- `Results` are keyed by the output name as declared on the `Outputs` struct. An output that does not appear on the struct produces a `DecisionDefinitionError`. A rule that omits an output produces `bl.BlNull` for it.
+Row layout is one of:
+
+```text
+[ inputCells…, outputCells… ]            // no id column
+[ id, inputCells…, outputCells… ]        // id column present
+```
+
+The id column is **all-or-nothing per table**: either every row carries a leading id cell or none do. The constructor infers which from the uniform row width — `len(Inputs) + nOutputs` means no id column; one more means the first cell is the id. Rows of differing width, or a width matching neither, are a `DecisionDefinitionError`.
+
+Cell conventions:
+
+- **id cell** — empty (`` `` ``) means this rule has no id; a non-empty id must be unique within the table.
+- **input cell** — a unary-test source compiled via `bl.UnaryTest(cell, column.Type)`. `-` is the wildcard (matches any value, including null). An empty input cell is invalid — write `-` for "matches anything".
+- **output cell** — an expression source compiled via `bl.Expr(cell, Schema)`, in `Outputs`-struct field order. An empty output cell (`` `` ``) means "no value" and yields `bl.BlNull` for that output (it is not compiled).
+
+Use Go **raw string literals** (backticks) for cells, so expression-language string literals need no escaping: an output of the string `eligible` is the cell `` `"eligible"` ``.
+
+A rule matches when **all** of its non-wildcard input cells evaluate to `bl.BlBoolean` true. Per-rule descriptions live in the table's optional `Descriptions` map, keyed by rule id (a key with no matching rule id is a `DecisionDefinitionError`).
 
 ### Example — Single Output Column
 
@@ -127,28 +112,19 @@ type EligibilityOutputs struct {
     Eligibility BlString
 }
 
-// Input columns — package-scope, typed.
-var (
-    eligAgeCol    = NumberInput("Age",    applicant.Outputs.Age)
-    eligIncomeCol = NumberInput("Income", applicant.Outputs.Income)
-)
-
 var eligibility = NewDecisionTable[EligibilityOutputs](DecisionTableOpts{
     Id:        "eligibility",
     Name:      "Eligibility Check",
     HitPolicy: HitPolicyUnique,
-    Inputs:    []TableInput{eligAgeCol, eligIncomeCol},
-    Rules: []Rule{
-        *bl.NewRule().
-            AddInputEntry(eligAgeCol,    eligAgeCol.GreaterThanOrEqual(bl.Number(18))).
-            AddInputEntry(eligIncomeCol, eligIncomeCol.GreaterThanOrEqual(bl.Number(30000))).
-            AddOutputEntry("eligibility", bl.String("eligible")),
-        *bl.NewRule().
-            AddInputEntry(eligAgeCol, eligAgeCol.LessThan(bl.Number(18))).
-            AddOutputEntry("eligibility", bl.String("ineligible")),
-        *bl.NewRule().
-            AddInputEntry(eligIncomeCol, eligIncomeCol.LessThan(bl.Number(30000))).
-            AddOutputEntry("eligibility", bl.String("ineligible")),
+    Inputs: []Input{
+        {`Age`,    `applicant.age`,    TypeNumber},
+        {`Income`, `applicant.income`, TypeNumber},
+    },
+    Rules: Rules{
+        // Age    Income      eligibility
+        {`>= 18`, `>= 30000`, `"eligible"`  },
+        {`< 18` , `-`       , `"ineligible"`},
+        {`-`    , `< 30000` , `"ineligible"`},
     },
 })
 ```
@@ -156,14 +132,16 @@ var eligibility = NewDecisionTable[EligibilityOutputs](DecisionTableOpts{
 Output of `eligibility.ToMarkdown(false, false, false)`:
 
 ```text
-| U | Age       | Income          |   | eligibility  |
-|---|-----------|-----------------|---|--------------|
-| 1 | Age >= 18 | Income >= 30000 | █ | "eligible"   |
-| 2 | Age < 18  | -               | █ | "ineligible" |
-| 3 | -         | Income < 30000  | █ | "ineligible" |
+| U | Age   | Income   |   | eligibility  |
+|---|-------|----------|---|--------------|
+| 1 | >= 18 | >= 30000 | █ | "eligible"   |
+| 2 | < 18  | -        | █ | "ineligible" |
+| 3 | -     | < 30000  | █ | "ineligible" |
 ```
 
 ### Example — Multiple Output Columns
+
+Output cells are positional, in `Outputs`-struct field order (`Rate`, then `Term`). This table uses the optional id column.
 
 ```go
 type LoanPricingOutputs struct {
@@ -171,30 +149,19 @@ type LoanPricingOutputs struct {
     Term BlNumber
 }
 
-var (
-    pricingScoreCol  = NumberInput("Score",  applicant.Outputs.CreditScore)
-    pricingAmountCol = NumberInput("Amount", applicant.Outputs.LoanAmount)
-)
-
 var loanPricing = NewDecisionTable[LoanPricingOutputs](DecisionTableOpts{
     Id:        "pricing",
     Name:      "Loan Pricing",
     HitPolicy: HitPolicyUnique,
-    Inputs:    []TableInput{pricingScoreCol, pricingAmountCol},
-    Rules: []Rule{
-        *bl.NewRule("prime").
-            AddInputEntry(pricingScoreCol,  pricingScoreCol.GreaterThanOrEqual(bl.Number(750))).
-            AddInputEntry(pricingAmountCol, pricingAmountCol.LessThanOrEqual(bl.Number(500000))).
-            AddOutputEntry("rate", bl.Number(3.5)).
-            AddOutputEntry("term", bl.Number(360)),
-        *bl.NewRule("standard").
-            AddInputEntry(pricingScoreCol, pricingScoreCol.In(bl.Range(bl.Number(650), bl.Number(749), true, true))).
-            AddOutputEntry("rate", bl.Number(5.0)).
-            AddOutputEntry("term", bl.Number(240)),
-        *bl.NewRule("subprime").
-            AddInputEntry(pricingScoreCol, pricingScoreCol.LessThan(bl.Number(650))).
-            AddOutputEntry("rate", bl.Number(7.5)).
-            AddOutputEntry("term", bl.Number(180)),
+    Inputs: []Input{
+        {`Score`,  `applicant.creditScore`, TypeNumber},
+        {`Amount`, `applicant.loanAmount`,  TypeNumber},
+    },
+    Rules: Rules{
+        // id        Score         Amount       rate   term
+        {`prime`   , `>= 750`    , `<= 500000`, `3.5`, `360`},
+        {`standard`, `[650..749]`, `-`        , `5.0`, `240`},
+        {`subprime`, `< 650`     , `-`        , `7.5`, `180`},
     },
 })
 ```
@@ -202,41 +169,35 @@ var loanPricing = NewDecisionTable[LoanPricingOutputs](DecisionTableOpts{
 Output of `loanPricing.ToMarkdown(true, false, false)`:
 
 ```text
-| U | rule-id  | Score               | Amount           |   | rate | term |
-|---|----------|---------------------|------------------|---|------|------|
-| 1 | prime    | Score >= 750        | Amount <= 500000 | █ | 3.5  | 360  |
-| 2 | standard | Score in [650..749] | -                | █ | 5.0  | 240  |
-| 3 | subprime | Score < 650         | -                | █ | 7.5  | 180  |
+| U | rule-id  | Score      | Amount    |   | rate | term |
+|---|----------|------------|-----------|---|------|------|
+| 1 | prime    | >= 750     | <= 500000 | █ | 3.5  | 360  |
+| 2 | standard | [650..749] | -         | █ | 5.0  | 240  |
+| 3 | subprime | < 650      | -         | █ | 7.5  | 180  |
 ```
 
 ### Example — Range and List Membership
+
+Range membership is the interval unary test (`<= 5`, `(5..20]`); list membership is the comma-disjunction form (`"US", "CA"` matches either value).
 
 ```go
 type ShippingOutputs struct {
     Cost BlNumber
 }
 
-var (
-    shippingWeightCol      = NumberInput("Weight",      pkg.Outputs.Weight)
-    shippingDestinationCol = StringInput("Destination", order.Outputs.Destination)
-)
-
 var shipping = NewDecisionTable[ShippingOutputs](DecisionTableOpts{
     Id:        "shipping",
     Name:      "Shipping Cost",
     HitPolicy: HitPolicyFirst,
-    Inputs:    []TableInput{shippingWeightCol, shippingDestinationCol},
-    Rules: []Rule{
-        *bl.NewRule("light-domestic").
-            AddInputEntry(shippingWeightCol,      shippingWeightCol.LessThanOrEqual(bl.Number(5))).
-            AddInputEntry(shippingDestinationCol, shippingDestinationCol.In(bl.List(bl.String("US"), bl.String("CA")))).
-            AddOutputEntry("cost", bl.Number(9.99)),
-        *bl.NewRule("medium-domestic").
-            AddInputEntry(shippingWeightCol,      shippingWeightCol.In(bl.Range(bl.Number(5), bl.Number(20), false, true))).
-            AddInputEntry(shippingDestinationCol, shippingDestinationCol.In(bl.List(bl.String("US"), bl.String("CA")))).
-            AddOutputEntry("cost", bl.Number(19.99)),
-        *bl.NewRule("fallback").
-            AddOutputEntry("cost", bl.Number(49.99)),
+    Inputs: []Input{
+        {`Weight`,      `pkg.weight`,        TypeNumber},
+        {`Destination`, `order.destination`, TypeString},
+    },
+    Rules: Rules{
+        // id               Weight     Destination   cost
+        {`light-domestic` , `<= 5`   , `"US", "CA"`, `9.99` },
+        {`medium-domestic`, `(5..20]`, `"US", "CA"`, `19.99`},
+        {`fallback`       , `-`      , `-`         , `49.99`},
     },
 })
 ```
@@ -244,12 +205,29 @@ var shipping = NewDecisionTable[ShippingOutputs](DecisionTableOpts{
 Output:
 
 ```text
-| F | rule-id         | Weight            | Destination                 |   | cost  |
-|---|-----------------|-------------------|-----------------------------|---|-------|
-| 1 | light-domestic  | Weight <= 5       | Destination in ["US", "CA"] | █ | 9.99  |
-| 2 | medium-domestic | Weight in (5..20] | Destination in ["US", "CA"] | █ | 19.99 |
-| 3 | fallback        | -                 | -                           | █ | 49.99 |
+| F | rule-id         | Weight  | Destination |   | cost  |
+|---|-----------------|---------|-------------|---|-------|
+| 1 | light-domestic  | <= 5    | "US", "CA"  | █ | 9.99  |
+| 2 | medium-domestic | (5..20] | "US", "CA"  | █ | 19.99 |
+| 3 | fallback        | -       | -           | █ | 49.99 |
 ```
+
+### Example — Referencing upstream nodes
+
+Within a `DecisionTask`, each node's result is bound in the evaluation context under the node's id (see [decision-node.spec.md § Evaluation](decision-node.spec.md#evaluation)). An **input column** reads an upstream output by naming it in the column's `Expr`; the cell then tests the resulting column value with the implicit-input forms. An **output cell**, being a full `bl.Expr` over the input context, may reference upstream outputs directly.
+
+```go
+Inputs: []Input{
+    {`Eligibility`, `eligibility`, TypeString}, // column value = upstream `eligibility` output
+},
+Rules: Rules{
+    // Eligibility      decision
+    {`"eligible"`     , `"approved by " + reviewer`},
+    {`not("eligible")`, `"declined"`               },
+},
+```
+
+The input cell `"eligible"` is the equality unary test (`? = "eligible"`, where `?` is the column value); `not("eligible")` negates it. The output cell `"approved by " + reviewer` references another upstream output, `reviewer`, directly.
 
 ---
 
@@ -302,33 +280,26 @@ type DiscountOutputs struct {
     Discount BlNumber
 }
 
-var (
-    discountTypeCol  = StringInput("Type",  order.Outputs.CustomerType)
-    discountTotalCol = NumberInput("Total", order.Outputs.OrderTotal)
-)
-
 var discount = NewDecisionTable[DiscountOutputs](DecisionTableOpts{
     Id:        "discount",
     Name:      "Discount Rules",
     HitPolicy: HitPolicyFirst,
-    Inputs:    []TableInput{discountTypeCol, discountTotalCol},
-    Rules: []Rule{
-        *bl.NewRule("vip").
-            AddInputEntry(discountTypeCol, discountTypeCol.Equals(bl.String("VIP"))).
-            AddOutputEntry("discount", bl.Number(0.20)),
-        *bl.NewRule("large-order").
-            AddInputEntry(discountTotalCol, discountTotalCol.GreaterThan(bl.Number(500))).
-            AddOutputEntry("discount", bl.Number(0.10)),
-        *bl.NewRule("default").
-            AddOutputEntry("discount", bl.Number(0.0)),
+    Inputs: []Input{
+        {`Type`,  `order.customerType`, TypeString},
+        {`Total`, `order.total`,        TypeNumber},
+    },
+    Rules: Rules{
+        // id           Type     Total    discount
+        {`vip`        , `"VIP"`, `-`    , `0.20`},
+        {`large-order`, `-`    , `> 500`, `0.10`},
+        {`default`    , `-`    , `-`    , `0.0` },
     },
 })
 
-result, err := discount.Evaluate(map[string]any{
-    "customer_type": bl.String("VIP"),
-    "order_total":   bl.Number(1000),
+var result, _ = discount.Evaluate(map[string]any{
+    "order": map[string]any{"customerType": "VIP", "total": 1000},
 })
-// result is bl.BlNumber(0.20) — first rule matched, others not considered
+// result is the bl.BlNumber 0.20 — first rule matched, others not considered
 ```
 
 ### Example — COLLECT with Aggregation
@@ -338,11 +309,6 @@ type PenaltyOutputs struct {
     Fine BlNumber
 }
 
-var (
-    penaltySpeedCol = NumberInput("Speed", incident.Outputs.Speed)
-    penaltyZoneCol  = StringInput("Zone",  incident.Outputs.ZoneType)
-)
-
 var sumAgg = AggregationSum
 
 var penalties = NewDecisionTable[PenaltyOutputs](DecisionTableOpts{
@@ -350,38 +316,34 @@ var penalties = NewDecisionTable[PenaltyOutputs](DecisionTableOpts{
     Name:        "Penalty Assessment",
     HitPolicy:   HitPolicyCollect,
     Aggregation: &sumAgg,
-    Inputs:      []TableInput{penaltySpeedCol, penaltyZoneCol},
-    Rules: []Rule{
-        *bl.NewRule("school-speeding").
-            AddInputEntry(penaltySpeedCol, penaltySpeedCol.GreaterThan(bl.Number(30))).
-            AddInputEntry(penaltyZoneCol,  penaltyZoneCol.Equals(bl.String("school"))).
-            AddOutputEntry("fine", bl.Number(200)),
-        *bl.NewRule("excessive-speed").
-            AddInputEntry(penaltySpeedCol, penaltySpeedCol.GreaterThan(bl.Number(50))).
-            AddOutputEntry("fine", bl.Number(150)),
-        *bl.NewRule("school-zone").
-            AddInputEntry(penaltyZoneCol, penaltyZoneCol.Equals(bl.String("school"))).
-            AddOutputEntry("fine", bl.Number(50)),
+    Inputs: []Input{
+        {`Speed`, `incident.speed`,    TypeNumber},
+        {`Zone`,  `incident.zoneType`, TypeString},
+    },
+    Rules: Rules{
+        // id               Speed   Zone        fine
+        {`school-speeding`, `> 30`, `"school"`, `200`},
+        {`excessive-speed`, `> 50`, `-`       , `150`},
+        {`school-zone`    , `-`   , `"school"`, `50` },
     },
 })
 
-result, err := penalties.Evaluate(map[string]any{
-    "speed":     bl.Number(55),
-    "zone_type": bl.String("school"),
+var result, _ = penalties.Evaluate(map[string]any{
+    "incident": map[string]any{"speed": 55, "zoneType": "school"},
 })
-// All three rules match — result is bl.BlNumber(400) (200 + 150 + 50)
+// All three rules match — result is the bl.BlNumber 400 (200 + 150 + 50)
 ```
 
 ---
 
 ## Evaluation
 
-1. For each `TableInput`, evaluate its `Expression` against the input variables and bind the result to the column's label in a local context.
-2. For each `Rule`, evaluate each specified `InputEntry`'s predicate against the local context. An entry must evaluate to `bl.BlBoolean.TRUE` to match. Input columns not referenced in the rule's `Conditions` always match (wildcard).
-3. A rule matches if **all** specified conditions match.
-4. Apply the hit policy to the set of matching rules to produce the output.
+1. For each `Input`, evaluate its compiled `Expr` against the input variables and bind the result to the column.
+2. For each `Rule`, feed each non-wildcard input cell's column value through that cell's compiled `bl.UnaryTest`. An input cell must yield `bl.BlBoolean` true to match; `-` (and an absent cell when the table has no column for it) always matches.
+3. A rule matches when **all** of its input cells match.
+4. Apply the hit policy to the set of matching rules. Output cells are evaluated via their compiled `bl.Expr` against the input variables; an empty output cell yields `bl.BlNull`.
 5. If no rule matches:
-   - For `Unique`, `First`, `Any`: return `bl.BlNull` output (not an error, unless surrounding semantics treat the output as required).
+   - For `Unique`, `First`, `Priority`, `Any`: return `bl.BlNull` (not an error, unless surrounding semantics treat the output as required).
    - For `Collect`, `RuleOrder`, `OutputOrder`: return an empty list.
 
 ---
@@ -395,9 +357,9 @@ result, err := penalties.Evaluate(map[string]any{
 - The first row is headers: hit policy indicator in the first cell, then input column labels, then output names.
 - The hit policy indicator is the standard single-letter abbreviation (`U`, `F`, `C`, …). For `Collect` with an aggregation, the aggregation symbol is appended (`C+`, `C<`, `C>`, `C#`).
 - A visual separator column is placed between the last input column and the first output column. The header cell is empty, and every data row contains `█` (Unicode full block).
-- Each subsequent row is a rule: rule index, then (if `showRuleIDs=true`) the rule id in a `rule-id` column, then input entries rendered via `bl.BlExpr.Source()` (with `"-"` for omitted/wildcard inputs), then the `█` separator, then output values rendered via `bl.BlValue.String()` (with `""` for omitted outputs).
-- When `showInputMappings=true`, a table mapping each input label to its expression is rendered above the decision table.
-- When `showRuleDescriptions=true`, a numbered list of rule descriptions is appended below the table.
+- Each subsequent row is a rule: rule index, then (if `showRuleIDs=true`) the rule id in a `rule-id` column, then input cells rendered as their unary-test source (`-` for wildcards), then the `█` separator, then output cells rendered as their expression source (empty for omitted outputs).
+- When `showInputMappings=true`, a table mapping each input label to its `Expr` is rendered above the decision table.
+- When `showRuleDescriptions=true`, a numbered list of the `Descriptions` entries is appended below the table.
 
 ### Example
 
@@ -407,25 +369,22 @@ type RiskOutputs struct {
     Reason BlString
 }
 
-var (
-    riskAgeCol   = NumberInput("Age",   applicant.Outputs.Age)
-    riskScoreCol = NumberInput("Score", applicant.Outputs.CreditScore)
-)
-
 var riskLevel = NewDecisionTable[RiskOutputs](DecisionTableOpts{
     Id:        "risk",
     Name:      "Risk Level",
     HitPolicy: HitPolicyUnique,
-    Inputs:    []TableInput{riskAgeCol, riskScoreCol},
-    Rules: []Rule{
-        *bl.NewRule("young-good-credit", "Young applicant with strong credit history").
-            AddInputEntry(riskAgeCol,   riskAgeCol.LessThan(bl.Number(25))).
-            AddInputEntry(riskScoreCol, riskScoreCol.GreaterThan(bl.Number(700))).
-            AddOutputEntry("risk",   bl.String("low")).
-            AddOutputEntry("reason", bl.String("Young with good credit")),
-        *bl.NewRule("older-any-credit", "Standard risk for older applicants").
-            AddInputEntry(riskAgeCol, riskAgeCol.GreaterThanOrEqual(bl.Number(25))).
-            AddOutputEntry("risk", bl.String("medium")),
+    Inputs: []Input{
+        {`Age`,   `applicant.age`,         TypeNumber},
+        {`Score`, `applicant.creditScore`, TypeNumber},
+    },
+    Rules: Rules{
+        // id                 Age      Score    risk        reason
+        {`young-good-credit`, `< 25` , `> 700`, `"low"`   , `"Young with good credit"`},
+        {`older-any-credit` , `>= 25`, `-`    , `"medium"`, ``                        },
+    },
+    Descriptions: map[string]string{
+        `young-good-credit`: `Young applicant with strong credit history`,
+        `older-any-credit`:  `Standard risk for older applicants`,
     },
 })
 
@@ -435,25 +394,25 @@ fmt.Println(riskLevel.ToMarkdown(false, false, false))
 Output:
 
 ```text
-| U | Age       | Score       |   | risk     | reason                   |
-|---|-----------|-------------|---|----------|--------------------------|
-| 1 | Age < 25  | Score > 700 | █ | "low"    | "Young with good credit" |
-| 2 | Age >= 25 | -           | █ | "medium" |                          |
+| U | Age   | Score |   | risk     | reason                   |
+|---|-------|-------|---|----------|--------------------------|
+| 1 | < 25  | > 700 | █ | "low"    | "Young with good credit" |
+| 2 | >= 25 | -     | █ | "medium" |                          |
 ```
 
 ---
 
 ## Edge Cases
 
-- A `DecisionTable` with no input columns is valid; all rules match unconditionally.
-- A `DecisionTable` whose `Outputs` struct has no exported fields is invalid — `NewDecisionTable` raises `DecisionDefinitionError`.
-- A `DecisionTable` with no `Rule` entries evaluates to `bl.BlNull` (or empty list for multi-result policies) without error.
-- A `Rule` with an empty string `Id` is invalid — `bl.NewRule("")` produces `DecisionDefinitionError`.
-- A `Rule` with no `Id` (`bl.NewRule()`) is valid.
-- A `Rule` whose `Id` duplicates an existing rule's id in the table produces `DecisionDefinitionError`.
-- An `AddOutputEntry` call referencing an output name not declared on the outputs struct produces `DecisionDefinitionError`.
-- An `AddInputEntry` call whose column was not added to `DecisionTableOpts.Inputs` produces `DecisionDefinitionError`.
-- A rule with no input entries (all inputs are wildcards) matches unconditionally.
-- Predicates must be `bl.BlExpr` instances evaluating to `bl.BlBoolean`. A predicate that evaluates to a non-boolean type produces a `bl.TypeError` at evaluation time.
-- `HitPolicyCollect` with `AggregationSum` on a non-numeric output is a `DecisionDefinitionError`.
-- An output declared on the outputs struct that is set by no rule is a `DecisionDefinitionError` (every declared output must be reachable).
+- A `DecisionTable` with no input columns is valid; rows carry only output cells (and an optional id) and all rules match unconditionally.
+- A `DecisionTable` whose `Outputs` struct has no exported fields is invalid — `NewDecisionTable` raises `DecisionDefinitionError` (see [decision-node.spec.md](decision-node.spec.md)).
+- A `DecisionTable` with no `Rule` entries evaluates to `bl.BlNull` (or an empty list for multi-result policies) without error.
+- Rows of inconsistent width, or a width matching neither `len(Inputs) + nOutputs` nor one more (id column), are a `DecisionDefinitionError`.
+- A non-empty rule id that duplicates another rule's id in the table is a `DecisionDefinitionError`.
+- An empty input cell is a `DecisionDefinitionError` — wildcards must be written `-`.
+- An input cell that does not compile as a unary test for its column type — including an ordering/interval form against an unordered column — is a `DecisionDefinitionError` (wrapping the `bl.ParseError` from `bl.UnaryTest`).
+- An output cell that does not compile via `bl.Expr` is a `DecisionDefinitionError` (wrapping the `bl.ParseError`).
+- A `Descriptions` key with no matching rule id is a `DecisionDefinitionError`.
+- An output declared on the outputs struct that is set by no rule (every rule's cell for it is empty) is a `DecisionDefinitionError` — every declared output must be reachable.
+- `HitPolicyCollect` with `AggregationSum`, `AggregationMin`, or `AggregationMax` over a non-numeric output is a `DecisionDefinitionError`.
+- An input cell whose runtime column value disagrees with the declared column `Type` produces a `bl.TypeError` at evaluation time.
