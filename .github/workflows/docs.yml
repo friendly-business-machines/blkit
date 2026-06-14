@@ -31,13 +31,8 @@ jobs:
         with:
           go-version: "1.22"
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
-      - name: Install Zensical
-        run: pip install zensical
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
 
       - name: Generate API reference
         run: bash scripts/generate-docs.sh
@@ -51,7 +46,11 @@ jobs:
           fi
 
       - name: Build site
-        run: zensical build --strict
+        # --clean rebuilds from scratch: zensical 0.0.45's incremental cache
+        # resolves cross-references non-deterministically and can falsely report
+        # existing pages as missing under --strict. A from-scratch build is
+        # reliable.
+        run: uvx zensical build --strict --clean
 
       - name: Upload Pages artifact
         if: github.event_name == 'push'

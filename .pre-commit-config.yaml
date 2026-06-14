@@ -64,6 +64,30 @@ repos:
       - id: golangci-lint-full
 
   # ---------------------------------------------------------------------------
+  # Documentation site
+  # ---------------------------------------------------------------------------
+  # Verify the Zensical site still builds whenever documentation source changes.
+  # Zensical has no published pre-commit hook, so this is a local hook that runs
+  # the same strict build as CI — failing on broken internal links, invalid
+  # anchors, or unresolved nav references. It runs only when files under docs/ or
+  # the site config change (pass_filenames is false, so it always builds the
+  # whole site rather than the staged subset). zensical is provided on PATH via
+  # uv (see .devcontainer/Dockerfile).
+  #
+  # `--clean` rebuilds from scratch rather than reusing the incremental cache:
+  # the cache (zensical 0.0.45) resolves cross-references non-deterministically
+  # and intermittently reports existing pages as missing, which would make this
+  # hook flaky. A from-scratch build is reliable and fast for a site this size.
+  - repo: local
+    hooks:
+      - id: zensical-build
+        name: Build docs site (zensical --strict)
+        entry: zensical build --strict --clean
+        language: system
+        pass_filenames: false
+        files: '^docs/.*|^zensical\.toml$'
+
+  # ---------------------------------------------------------------------------
   # Generated API reference
   # ---------------------------------------------------------------------------
   # Keep docs/reference/ in sync with the godoc comments it is generated from.

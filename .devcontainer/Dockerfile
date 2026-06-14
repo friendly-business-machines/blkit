@@ -99,3 +99,18 @@ USER ${USERNAME}
 ADD --chown=${USERNAME}:${USERNAME} --chmod=+x https://get.tessl.io /tmp/install-tessl.sh
 RUN /tmp/install-tessl.sh \
     && rm /tmp/install-tessl.sh
+
+# Install uv — the Python package/tool manager used for all Python tooling in
+# this repo (we standardise on uv rather than pip). The official installer
+# places `uv`/`uvx` in ~/.local/bin for the non-root user; add that to PATH so
+# uv and the tools it installs are resolvable in build steps and shells.
+ENV PATH="/home/${USERNAME}/.local/bin:${PATH}"
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install the Python-based developer tooling as isolated uv-managed tools.
+# uv provisions a managed Python for each automatically, so no system pip is
+# needed.
+# - zensical: documentation site builder (see specs/project/documentation.spec.md).
+# - pre-commit: git hook runner (see .pre-commit-config.yaml).
+RUN uv tool install zensical \
+    && uv tool install pre-commit
