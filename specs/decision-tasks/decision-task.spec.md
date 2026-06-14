@@ -1,6 +1,6 @@
 ---
 name: DecisionTask
-description: A reusable decision task — directed graph of DecisionNodes with InputContract/OutputContract that is itself a ProcessNode. Cloneable for use across multiple processes; Id/Name/InputMappings/OutputMappings are mandatory at process-graph incorporation time.
+description: A reusable decision task — directed graph of DecisionNodes with BlSchema-typed InputSchema/OutputSchema that is itself a ProcessNode. Built and cloned via functional options (panicking on invalid definitions); Id/Name/InputMappings/OutputMappings are mandatory at process-graph incorporation time.
 targets:
   - ../decisions/decision_task.go
 ---
@@ -9,20 +9,20 @@ targets:
 
 `DecisionTask` is the top-level container for a blkit decision, inspired by the DMN standard. It holds a directed acyclic graph of `DecisionNode`s with typed input and output contracts, and is itself a `ProcessNode` that can be placed directly in a process graph.
 
-A single `DecisionTask` template can be reused across multiple processes by calling `task.Clone(opts)`. Each clone is an independent `*DecisionTask` whose decision-logic fields are shared by reference with the source and whose task-level fields come **only from `opts`** — the source's task-level fields are reset, not inherited.
+A single `DecisionTask` template can be reused across multiple processes by calling `task.Clone(...)`. Each clone is an independent `*DecisionTask` whose decision-logic fields are shared by reference with the source and whose task-level fields come **only from the options passed to `Clone`** — the source's task-level fields are reset, not inherited.
 
 This collapses the prior `DecisionModel` + `DecisionModelTask` two-type split into a single type. Decision logic and task-level metadata live on the same struct; reuse is via `Clone`, not via wrapping.
 
 ```go
 type DecisionTask struct {
-    // Decision-logic fields — set in DecisionTaskOpts at creation; treated as
+    // Decision-logic fields — set via With… options at creation; treated as
     // immutable by convention thereafter. Shared by reference with clones.
-    Description    string
-    InputContract  *InputContract  // optional; see ../data/data-contract.spec.md
-    OutputContract *OutputContract // optional; see ../data/data-contract.spec.md
-    DecisionGraph  DecisionGraph   // processed, sorted graph (built by NewDecisionTask)
+    Description   string
+    InputSchema   BlSchema      // optional; nil = absent. Validated via ValidateInput (closed)
+    OutputSchema  BlSchema      // optional; nil = absent. Validated via ValidateOutput (permissive); also drives output projection
+    DecisionGraph DecisionGraph // processed, sorted graph (built by NewDecisionTask)
 
-    // Task-level fields — set in DecisionTaskOpts at creation; treated as
+    // Task-level fields — set via With… options at creation; treated as
     // immutable by convention. Reset (not inherited) on Clone.
     Id                              string
     Name                            string
@@ -38,39 +38,60 @@ type DecisionTask struct {
 // graph: validated (no cycles among nodes — derived from output-handle
 // references inside each node's expression trees — no duplicate ids, no
 // duplicate output names) and topologically sorted in evaluation order. Built
-// by NewDecisionTask from opts.DecisionGraph.
+// by NewDecisionTask from the graph argument.
 type DecisionGraph struct {
     DecisionNodes []DecisionNode // in topologically-sorted evaluation order
 }
 
-// Construct a DecisionTask. Validates the raw node list in opts.DecisionGraph
-// (no cycles among nodes — derived from output-handle references inside each
-// node's expression trees — no duplicate node ids, no duplicate output names,
-// every node has a non-empty id, OutputContract type compatibility where
-// statically determinable) and stores the topologically-sorted result on
-// DecisionTask.DecisionGraph. A validation failure raises a
-// DecisionDefinitionError. Any other field in opts is set verbatim;
-// unspecified fields default to their zero values.
-func NewDecisionTask(opts DecisionTaskOpts) *DecisionTask
-
-type DecisionTaskOpts struct {
+// decisionTaskConfig is the unexported staging struct the With… options write
+// into. It holds every configurable field; NewDecisionTask / Clone fill it from
+// the supplied options, validate it, then build the *DecisionTask. Callers never
+// touch it — they configure exclusively through the With… constructors.
+type decisionTaskConfig struct {
     // Decision-logic fields
-    Description    string
-    InputContract  *InputContract
-    OutputContract *OutputContract
-    DecisionGraph  []DecisionNode // raw list; validated + sorted by NewDecisionTask into DecisionTask.DecisionGraph
+    description  string
+    inputSchema  BlSchema
+    outputSchema BlSchema
 
     // Task-level fields — all optional at creation; Id, Name, InputMappings, and
     // OutputMappings are mandatory at the time of incorporation into a process graph.
-    Id                              string
-    Name                            string
-    InputMappings                   *VariableMapping
-    OutputMappings                  *VariableMapping
-    Loop                            *LoopConfig
-    MultiInstance                   *MultiInstanceConfig
-    MaxExecutionsPerProcessInstance int
-    ExitPorts                       []ExitPort // converted to the keyed map internally
+    id                              string
+    name                            string
+    inputMappings                   *VariableMapping
+    outputMappings                  *VariableMapping
+    loop                            *LoopConfig
+    multiInstance                   *MultiInstanceConfig
+    maxExecutionsPerProcessInstance int
+    exitPorts                       []ExitPort // converted to the keyed map internally
 }
+
+// DecisionTaskOption configures a DecisionTask. Options are plain setters that
+// write into the staging config; they do not validate. All validation is
+// centralized in the constructor — see § Validation.
+type DecisionTaskOption func(*decisionTaskConfig)
+
+// Construct a DecisionTask from the raw decision-node graph plus options. The
+// graph is validated (no cycles among nodes — derived from output-handle
+// references inside each node's expression trees — no duplicate node ids, no
+// duplicate output names, every node has a non-empty id, OutputSchema type
+// compatibility where statically determinable) and the topologically-sorted
+// result is stored on DecisionTask.DecisionGraph. Definition errors are
+// accumulated and the constructor panics once with a *DecisionDefinitionError
+// (see § Validation). graph may be empty/nil — a no-node task is valid.
+func NewDecisionTask(graph []DecisionNode, opts ...DecisionTaskOption) *DecisionTask
+
+// Option constructors — each returns a DecisionTaskOption that sets one field.
+func WithDescription(description string) DecisionTaskOption
+func WithInputSchema(schema BlSchema) DecisionTaskOption
+func WithOutputSchema(schema BlSchema) DecisionTaskOption
+func WithId(id string) DecisionTaskOption
+func WithName(name string) DecisionTaskOption
+func WithInputMappings(m *VariableMapping) DecisionTaskOption
+func WithOutputMappings(m *VariableMapping) DecisionTaskOption
+func WithLoop(l *LoopConfig) DecisionTaskOption
+func WithMultiInstance(mi *MultiInstanceConfig) DecisionTaskOption
+func WithMaxExecutionsPerProcessInstance(n int) DecisionTaskOption
+func WithExitPorts(ports ...ExitPort) DecisionTaskOption
 
 // Standalone evaluation, bypassing task-level framing (mappings, loop,
 // multi-instance, exit ports). Useful for unit-testing the decision logic in
@@ -82,19 +103,20 @@ func (d *DecisionTask) Evaluate(input map[string]any) (DecisionResult, error)
 func (d *DecisionTask) ToMarkdown() string
 
 // Clone returns a new *DecisionTask. Decision-logic fields (DecisionGraph,
-// contracts, Description) are shared by reference with the receiver
-// — opts.DecisionGraph and the other decision-logic fields in opts are
-// ignored at Clone time. Task-level fields are taken **only** from opts —
-// the receiver's task-level fields are reset, not inherited. Specify every
-// task-level field you want set on the clone.
-func (d *DecisionTask) Clone(opts DecisionTaskOpts) *DecisionTask
+// InputSchema, OutputSchema, Description) are shared by reference with the
+// receiver. Task-level fields are taken **only** from the options — the
+// receiver's task-level fields are reset, not inherited. Specify every
+// task-level field you want set on the clone via With… options. There is no
+// graph option: a clone always shares the receiver's decision logic, so
+// "changing a clone's nodes" is not expressible.
+func (d *DecisionTask) Clone(opts ...DecisionTaskOption) *DecisionTask
 
 
 // Result of standalone evaluation.
 type DecisionResult struct {
-    // The declared outputs — keyed by OutputContract field names. Only populated
-    // for fields declared in the output contract (or all node results if
-    // OutputContract is nil).
+    // The declared outputs — keyed by OutputSchema field names. Only populated
+    // for fields declared in the output schema (or all node results if
+    // OutputSchema is nil).
     Outputs map[string]BlValue
 
     // All evaluated node results — keyed by node Id, including intermediaries.
@@ -120,7 +142,7 @@ Most task-level fields are optional at creation time, but four become mandatory 
 
 as a `ProcessDefinitionError`.
 
-Mappings are mandatory **even when the decision has no `InputContract` or `OutputContract`**. If the decision genuinely takes no inputs or produces no outputs, an empty `bl.NewVariableMapping()` is a valid explicit declaration — but the field must be set deliberately rather than left nil. This forces every decision incorporation to make its data-flow boundaries explicit.
+Mappings are mandatory **even when the decision has no `InputSchema` or `OutputSchema`**. If the decision genuinely takes no inputs or produces no outputs, an empty `bl.NewVariableMapping()` is a valid explicit declaration — but the field must be set deliberately rather than left nil. This forces every decision incorporation to make its data-flow boundaries explicit.
 
 `Loop`, `MultiInstance`, `MaxExecutionsPerProcessInstance`, and `ExitPorts` remain individually optional always.
 
@@ -131,15 +153,15 @@ Mappings are mandatory **even when the decision has no `InputContract` or `Outpu
 The common case is to construct a `DecisionTask` fully baked in a single step — decision logic and task-level fields together — when it is only used in one place:
 
 ```go
-var oneShotDecision = bl.NewDecisionTask(DecisionTaskOpts{
-    Id:             "decide",
-    Name:           "Decide",
-    InputContract:  ic,
-    OutputContract: oc,
-    InputMappings:  im,
-    OutputMappings: om,
-    DecisionGraph:  []DecisionNode{eligibility, approval},
-})
+var oneShotDecision = bl.NewDecisionTask(
+    []DecisionNode{eligibility, approval},
+    bl.WithId("decide"),
+    bl.WithName("Decide"),
+    bl.WithInputSchema(is),
+    bl.WithOutputSchema(os),
+    bl.WithInputMappings(im),
+    bl.WithOutputMappings(om),
+)
 ```
 
 (`eligibility` and `approval` are package-scope `var` declarations — see **Building the Decision Logic** below.)
@@ -149,51 +171,48 @@ var oneShotDecision = bl.NewDecisionTask(DecisionTaskOpts{
 To reuse the same decision logic across multiple processes, build the decision logic once as a template (no task-level fields), then `Clone` for each use:
 
 ```go
-// Build the template — decision logic only
-var template = bl.NewDecisionTask(DecisionTaskOpts{
-    Description: "Approves or denies a loan based on eligibility and amount",
-    InputContract: bl.NewInputContract(
-        bl.RequiredField("applicant", applicantSchema),
-        bl.RequiredField("loan_amount", bl.BlNumber),
-    ),
-    OutputContract: bl.NewOutputContract(
-        bl.RequiredField("approval", bl.BlString),
-    ),
-    DecisionGraph: []DecisionNode{eligibility, approval},
-})
+// Build the template — decision logic only.
+// loanInputSchema / loanOutputSchema are declared with bl.Schema — see
+// "Building the Decision Logic" below.
+var template = bl.NewDecisionTask(
+    []DecisionNode{eligibility, approval},
+    bl.WithDescription("Approves or denies a loan based on eligibility and amount"),
+    bl.WithInputSchema(loanInputSchema),
+    bl.WithOutputSchema(loanOutputSchema),
+)
 
 // Use in process A — Id, Name, InputMappings, OutputMappings all required
-var riskCheckA = template.Clone(DecisionTaskOpts{
-    Id:   "risk-check",
-    Name: "Risk Assessment",
-    InputMappings: bl.NewVariableMapping(
+var riskCheckA = template.Clone(
+    bl.WithId("risk-check"),
+    bl.WithName("Risk Assessment"),
+    bl.WithInputMappings(bl.NewVariableMapping(
         [2]string{"start.applicant",   "applicant"},
         [2]string{"start.loan_amount", "loan_amount"},
-    ),
-    OutputMappings: bl.NewVariableMapping(
+    )),
+    bl.WithOutputMappings(bl.NewVariableMapping(
         [2]string{"approval", "risk-check.approval"},
-    ),
-})
+    )),
+)
 
 // Use in process B with different mappings, a Loop, and an SLA exit port
 var slaTimer = bl.NewInterruptingTimerExitPort("sla", bl.DaysTimeDuration("PT1M"))
 
-var riskEvalB = template.Clone(DecisionTaskOpts{
-    Id:   "risk-eval",
-    Name: "Risk Evaluation",
-    InputMappings: bl.NewVariableMapping(
+var riskEvalB = template.Clone(
+    bl.WithId("risk-eval"),
+    bl.WithName("Risk Evaluation"),
+    bl.WithInputMappings(bl.NewVariableMapping(
         [2]string{"start.applicant_v2", "applicant"},
         [2]string{"start.loan_amount",  "loan_amount"},
-    ),
-    OutputMappings: bl.NewVariableMapping(
+    )),
+    bl.WithOutputMappings(bl.NewVariableMapping(
         [2]string{"approval", "risk-eval.approval"},
-    ),
-    Loop: bl.NewLoopConfig(
+    )),
+    bl.WithLoop(bl.NewLoopConfig(
         bl.StringVar("risk-eval.approval").Equals(bl.String("indeterminate")),
         3,
-    ),
-    ExitPorts: []ExitPort{slaTimer},
-})
+    )),
+    bl.WithExitPorts(slaTimer),
+)
 
 // Process A
 var processA = bl.NewProcess("loan-app-a", "1.0", ProcessOpts{
@@ -218,9 +237,9 @@ var processB = bl.NewProcess("loan-app-b", "2.0", ProcessOpts{
 Each concrete decision node is built via its generic constructor (`NewDecisionTable`, `NewLiteralExpression`, etc. — see [decision-node.spec.md](decision-node.spec.md)). Nodes are package-scope `var` declarations; downstream nodes reference upstream outputs through typed `.Outputs.X` fields. The constructor functions used in the previous spec revision are gone.
 
 ```go
-var applicantSchema = bl.NewDictionaryContract(
-    bl.RequiredField("age", bl.BlNumber),
-    bl.RequiredField("income", bl.BlNumber),
+var applicantSchema, _ = bl.Schema(
+    bl.Field{Name: "age",    Type: bl.TypeNumber},
+    bl.Field{Name: "income", Type: bl.TypeNumber},
 )
 
 // `applicant` and `loanAmount` are typed handles supplied by the surrounding
@@ -269,17 +288,20 @@ var approval = NewLiteralExpression[ApprovalOutputs](LiteralExpressionOpts{
     ),
 })
 
-var loanApproval = bl.NewDecisionTask(DecisionTaskOpts{
-    Description: "Approves or denies a loan based on eligibility and amount",
-    InputContract: bl.NewInputContract(
-        bl.RequiredField("applicant", applicantSchema),
-        bl.RequiredField("loan_amount", bl.BlNumber),
-    ),
-    OutputContract: bl.NewOutputContract(
-        bl.RequiredField("approval", bl.BlString),
-    ),
-    DecisionGraph: []DecisionNode{eligibility, approval},
-})
+var loanInputSchema, _ = bl.Schema(
+    bl.Field{Name: "applicant",   Type: bl.TypeDictionary, Fields: applicantSchema},
+    bl.Field{Name: "loan_amount", Type: bl.TypeNumber},
+)
+var loanOutputSchema, _ = bl.Schema(
+    bl.Field{Name: "approval", Type: bl.TypeString},
+)
+
+var loanApproval = bl.NewDecisionTask(
+    []DecisionNode{eligibility, approval},
+    bl.WithDescription("Approves or denies a loan based on eligibility and amount"),
+    bl.WithInputSchema(loanInputSchema),
+    bl.WithOutputSchema(loanOutputSchema),
+)
 
 // Standalone evaluation works on the template — no Clone needed.
 result, err := loanApproval.Evaluate(map[string]any{
@@ -292,7 +314,7 @@ result, err := loanApproval.Evaluate(map[string]any{
 // result.EvaluatedNodes  // ["eligibility", "approval"]
 ```
 
-The template's `InputContract` and `OutputContract` declare its external interface (callers must supply `applicant` and `loan_amount`; the decision exposes `approval`).
+The template's `InputSchema` and `OutputSchema` declare its external interface (callers must supply `applicant` and `loan_amount`; the decision exposes `approval`).
 
 Node-level dependencies are derived from the typed output handles referenced in each node's expression trees (rules, body, entries, rows, bindings). `NewDecisionTask` walks those trees, collects every output handle, and uses the handle's source pointer to build the producer→consumer graph. There are no string-keyed name lookups.
 
@@ -305,9 +327,9 @@ Node-level dependencies are derived from the typed output handles referenced in 
 When the runtime reaches an instantiated `DecisionTask` node:
 
 1. Apply `InputMappings` to the current `ExecutionContext` to compute the decision's `input` map.
-2. Validate `input` against `InputContract` (if set). Failure produces a `DataContractValidationError`.
+2. Validate `input` against `InputSchema` (if set), via `ValidateInput`. Failure produces a `DataContractValidationError`.
 3. Run the decision-logic algorithm (below) against `input`.
-4. Filter results by `OutputContract` (if set).
+4. Filter results by `OutputSchema` (if set), via `ValidateOutput`.
 5. Apply `OutputMappings` to map result fields into target variable names.
 6. Merge the mapped result into the `ExecutionContext` under the task's `Id`.
 
@@ -324,41 +346,58 @@ When `Evaluate(input)` runs:
 3. Each node's output is stored in the evaluation context under its `Id`. Multi-output nodes' results are `bl.BlDictionary` values keyed by the per-field output names declared on their outputs struct.
 4. Downstream nodes receive the accumulated context (caller inputs + upstream outputs).
 5. All nodes are evaluated, regardless of whether they appear in the output contract.
-6. The `DecisionResult` contains the full results, with `Outputs` filtered to fields declared in `OutputContract`.
+6. The `DecisionResult` contains the full results, with `Outputs` filtered to fields declared in `OutputSchema`.
 
 ### Input Resolution
 
-- `InputContract` declares the expected input variable names and types.
+- `InputSchema` declares the expected input variable names and types.
 - Each node's dependencies are derived statically from the typed output handles referenced inside its expression trees (rules, body, entries, rows, bindings). A handle whose source is another node produces a node-to-node edge; a handle whose source is a DecisionTask-level input is resolved from the caller-provided `input` map at evaluation time.
-- At evaluation time, input values are validated against `InputContract` types. A mismatch produces a `DataContractValidationError`.
+- At evaluation time, input values are validated against `InputSchema` (via `ValidateInput`). A mismatch produces a `DataContractValidationError`.
 
 ---
 
-## Input and Output Contracts
+## Input and Output Schemas
 
-`InputContract` and `OutputContract` are independent and optional (see [data-contract.spec.md](../data/data-contract.spec.md)).
+`InputSchema` and `OutputSchema` are independent and optional, and are both `bl.BlSchema` values (see [schema.spec.md](../expressions/schema.spec.md)). Direction is expressed by which field a schema occupies rather than by distinct Go types.
 
-- **`InputContract`** — declares the named, typed variables the decision expects from callers. Validated at evaluation entry.
-- **`OutputContract`** — declares which computed values are exposed in `DecisionResult.Outputs` and their expected types. The field names must match a node `Id` (for single-output nodes) or a `<node-id>.<output-name>` path (for individual fields of multi-output nodes). All nodes are still evaluated (intermediary results may be needed by output nodes), but only fields declared in `OutputContract` appear in `Outputs`. Full results are available in `AllResults`.
+- **`InputSchema`** — declares the named, typed variables the decision expects from callers. Validated at evaluation entry via `ValidateInput` (closed: undeclared input variables are rejected).
+- **`OutputSchema`** — declares which computed values are exposed in `DecisionResult.Outputs` and their expected types, validated via `ValidateOutput` (permissive). The field names must match a node `Id` (for single-output nodes) or a `<node-id>.<output-name>` path (for individual fields of multi-output nodes); this field-name set also drives output projection. All nodes are still evaluated (intermediary results may be needed by output nodes), but only fields declared in `OutputSchema` appear in `Outputs`. Full results are available in `AllResults`.
 
-If `OutputContract == nil`, `Outputs` contains all node results (equivalent to exposing everything). If `InputContract == nil`, no input validation runs.
+If `OutputSchema == nil`, `Outputs` contains all node results (equivalent to exposing everything). If `InputSchema == nil`, no input validation runs.
+
+> **Scope note.** This `bl.BlSchema` typing currently applies to `DecisionTask` only. Decision-node constructors and the `StartEvent`/`EndEvent` `InputContract`/`OutputContract` ([data-contract.spec.md](../data/data-contract.spec.md)) still use the older contract types, pending the family-wide migration described in [schema.spec.md § Migration](../expressions/schema.spec.md#migration).
 
 ---
 
 ## Validation
 
-Decision-logic validation runs inside `NewDecisionTask` — see the constructor's documentation. Task-level validation runs later, when the task is incorporated into a process graph.
+### Definition validation (in `NewDecisionTask` / `Clone`)
+
+`NewDecisionTask` and `Clone` validate the definition, accumulate **every** problem, and panic once with a `*DecisionDefinitionError`. The `With…` options are plain setters and do not validate individually — centralising the checks in the constructor is what lets it report all problems together (a panic inside an option would abort at the first one). Checks:
+
+- Graph validity: no cycles among nodes (derived from output-handle references inside each node's expression trees), no duplicate node ids, no duplicate output names, every node has a non-empty id.
+- `OutputSchema` field names each match a node `Id` or `<node-id>.<output-name>` path; node output types are compatible with the declared types where statically determinable.
+- `MaxExecutionsPerProcessInstance >= 0`.
+- Exit-port ids are unique within the task.
+- `Loop` and `MultiInstance` are not both set.
+
+```go
+type DecisionDefinitionError struct {
+    TaskId   string
+    Problems []string // one actionable message per violation
+}
+```
+
+Because tasks are typically declared as package-scope `var`s, a bad definition panics during package initialisation (program start / `go test`); the panic value lists each problem and the stack trace pins the offending declaration. `bl.Schema(...)` is independently fallible (`(BlSchema, error)`), so a malformed `InputSchema`/`OutputSchema` surfaces there, before it reaches the constructor.
 
 ### Task-level validation (at process construction)
 
-When `bl.NewProcess()` walks the graph and encounters a `DecisionTask`, it checks:
+When `bl.NewProcess()` walks the graph and encounters a `DecisionTask`, it checks the incorporation-mandatory fields and mapping references:
 
 - `Id` is non-empty.
 - `Name` is non-empty.
 - `InputMappings` is non-nil.
 - `OutputMappings` is non-nil.
-- `Loop` and `MultiInstance` are not both set (inherited Task constraint).
-- `MaxExecutionsPerProcessInstance >= 0`.
 - Mappings reference variables that exist in the surrounding process input or upstream task outputs (subject to the same rules as other Tasks).
 
 A violation produces a `ProcessDefinitionError`.
@@ -373,8 +412,8 @@ A violation produces a `ProcessDefinitionError`.
 
 - **Title** — the task's `Name` (or `Id`) as a level-1 heading.
 - **Description** — the task's `Description`, if set.
-- **Inputs** — a table listing each `InputContract` field name, its `Bl` type, and required/optional status.
-- **Outputs** — a table listing each `OutputContract` field name, its `Bl` type, and required/optional status.
+- **Inputs** — a table listing each `InputSchema` field name, its type, and required/optional status.
+- **Outputs** — a table listing each `OutputSchema` field name, its type, and required/optional status.
 - **Nodes** — each node rendered via its own `ToMarkdown()`, in dependency order, separated by horizontal rules.
 - **Dependencies** — a summary listing each node and the upstream nodes whose outputs it references in its expression trees.
 
@@ -386,19 +425,19 @@ To render a process's overall structure including instantiated decision tasks, u
 
 - A `DecisionTask` whose `Id`, `Name`, `InputMappings`, or `OutputMappings` is empty/nil cannot be added to a process graph. `bl.NewProcess()` raises `ProcessDefinitionError`.
 - An empty `bl.NewVariableMapping()` is a valid `InputMappings` or `OutputMappings` value — it explicitly declares "no variables flow in/out." A nil `*VariableMapping` is rejected; use the empty constructor instead.
-- Calling `Clone` repeatedly on the same template produces independent instances. Mutations on one (in opts at clone time) do not propagate to others or to the source.
-- `Clone` resets task-level fields — it does not inherit them from the source. Specify every task-level field you want on the clone via opts.
-- Decision-logic fields (`DecisionGraph`, `InputContract`, `OutputContract`, `Description`) are shared by reference between a source and its clones. Because `DecisionTask` is immutable after `NewDecisionTask`, this sharing has no observable effect beyond memory layout.
+- Calling `Clone` repeatedly on the same template produces independent instances. Options applied to one clone do not propagate to others or to the source.
+- `Clone` resets task-level fields — it does not inherit them from the source. Specify every task-level field you want on the clone via `With…` options.
+- Decision-logic fields (`DecisionGraph`, `InputSchema`, `OutputSchema`, `Description`) are shared by reference between a source and its clones. Because `DecisionTask` is immutable after `NewDecisionTask`, this sharing has no observable effect beyond memory layout.
 - `Evaluate(input)` is callable on a template or a clone and produces identical results — task-level framing is not exercised by the standalone path.
 - A template with a single node and no contracts is valid and can be cloned.
 - `Evaluate(input)` with an input variable not referenced by any node is silently ignored.
-- A missing required input variable is resolved as `bl.BlNull` — but `InputContract` validation runs first and may reject it before evaluation begins.
+- A missing required input variable is resolved as `bl.BlNull` — but `InputSchema` validation runs first and may reject it before evaluation begins.
 - Invalid decision graphs (cycles among nodes, duplicate node ids, duplicate output names, empty node ids) are rejected by `NewDecisionTask` with a `DecisionDefinitionError`; a `*DecisionTask` value therefore always holds a valid graph. An output handle from outside the graph (referencing a node that is not in `DecisionGraph`) is also a `DecisionDefinitionError`.
 - If a node faults during evaluation, the error propagates — downstream dependents also fault. Nodes not in the dependency chain of the faulted node are still evaluated.
 - A `DecisionTask` with no nodes evaluates successfully, returning an empty result.
-- A task with `InputContract == nil` accepts any input variables without type checking.
-- A task with `OutputContract == nil` exposes all node results in `Outputs`.
+- A task with `InputSchema == nil` accepts any input variables without type checking.
+- A task with `OutputSchema == nil` exposes all node results in `Outputs`.
 - A clone with `Loop` and `MultiInstance` both set produces a `ProcessDefinitionError`.
-- Exit ports are configured **only** via `opts.ExitPorts`. The inherited `Task.AddInterruptingWaitForDuration(...)` / `AddErrorExitPort(...)` / `AddInterruptingConditional(...)` etc. methods do not apply to `DecisionTask`. Use the standalone constructors (`NewInterruptingTimerExitPort`, `NewErrorExitPort`, etc. — see [../processes/task-nodes.spec.md](../processes/task-nodes.spec.md)) to build exit ports for `opts.ExitPorts`.
+- Exit ports are configured **only** via the `WithExitPorts(...)` option. The inherited `Task.AddInterruptingWaitForDuration(...)` / `AddErrorExitPort(...)` / `AddInterruptingConditional(...)` etc. methods do not apply to `DecisionTask`. Use the standalone constructors (`NewInterruptingTimerExitPort`, `NewErrorExitPort`, etc. — see [../processes/task-nodes.spec.md](../processes/task-nodes.spec.md)) to build the exit ports you pass to `WithExitPorts(...)`.
 - Exit-port flow targets are wired via `task.ExitPort(id).To(...)` in the graph block, as for any other Task. This is graph-construction wiring, not task mutation.
 - Exit-port ids must be unique within a single `DecisionTask` instance. Ids are not shared across clones — two clones of the same template can each have an exit port called `"sla"`.
