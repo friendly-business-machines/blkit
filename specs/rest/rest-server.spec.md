@@ -315,9 +315,9 @@ When `Run` is called:
 
    Until the snapshot phase completes, the registry-read endpoints (`GET /list-processes`, `GET /describe-processes`, `GET /describe-process/...`, `GET /check-process-registration/...`) return `503 Service Unavailable` and submission attempts return `404`.
 
-4. **HTTP server** — construct an `http.Server{Addr: opts.Addr, Handler: mux}` where `mux` is a configured `*http.ServeMux` with the routes documented above. Call `srv.ListenAndServe()`.
+3. **HTTP server** — construct an `http.Server{Addr: opts.Addr, Handler: mux}` where `mux` is a configured `*http.ServeMux` with the routes documented above. Call `srv.ListenAndServe()`.
 
-5. **Block** on the HTTP server until `ctx` is cancelled or the server returns an error.
+4. **Block** on the HTTP server until `ctx` is cancelled or the server returns an error.
 
 ---
 
@@ -379,7 +379,7 @@ import (
     "os/signal"
     "syscall"
 
-    "blkit"
+    bl "github.com/friendly-business-machines/blkit/core"
     "blkit/messagegateway"
     "blkit/restserver"
 
@@ -398,7 +398,7 @@ func main() {
     }
     defer gw.Close()
 
-    store := blkit.NewPostgresStateStore(os.Getenv("BLKIT_DB_URL"), "lending")
+    store := bl.NewPostgresStateStore(os.Getenv("BLKIT_DB_URL"), "lending")
 
     err = restserver.Run(ctx, gw, restserver.Options{
         Addr: ":8080",

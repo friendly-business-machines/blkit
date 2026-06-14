@@ -197,7 +197,7 @@ import (
     "os/signal"
     "syscall"
 
-    "blkit"
+    bl "github.com/friendly-business-machines/blkit/core"
     "blkit/messagegateway"
     "blkit/mcpserver"
 
@@ -216,7 +216,7 @@ func main() {
     }
     defer gw.Close()
 
-    store := blkit.NewPostgresStateStore(os.Getenv("BLKIT_DB_URL"), "lending")
+    store := bl.NewPostgresStateStore(os.Getenv("BLKIT_DB_URL"), "lending")
 
     err = mcpserver.Run(ctx, gw, mcpserver.Options{
         ServerName:    "lending-mcp",

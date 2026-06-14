@@ -23,16 +23,19 @@ blkit follows standard Go conventions:
 
 ### Namespace Structure
 
-blkit's public API spans the **root package** plus several sub-packages:
+blkit's public API is a single **core package** plus a few optional infrastructure sub-packages. The repository root holds no Go source; the core package lives in `core/`.
 
-- `blkit` (the root package, imported as `bl`) — typed value system and expression engine (`bl.BlNumber`, `bl.BlString`, `bl.BlExpr`, `bl.BlDictionary`, `bl.BlList`, etc.). Unlike the others, this is **not** a sub-package — its code is the root-level `expr_*.go` files.
-- `blkit.processes` — process execution classes (`Process`, `ProcessGraph`, `StartEvent`, `EndEvent`, gateway nodes, tasks)
-- `blkit.decisions` — decision classes (`DecisionTask`, `DecisionTable`, `LiteralExpression`, `BoxedContext`, `Relation`, `Invocation`, `BusinessKnowledgeModel`)
-- `blkit.data` — data contracts, execution context, and the pluggable state store (`InputContract`, `OutputContract`, `ExecutionContext`, `ExecutionHistory`, `StateStore`)
-- `blkit.messagegateway` — producer-side typed client SDK (`MessageGateway` interface, `RedisMessageGateway`, `NATSMessageGateway`, `InMemoryMessageGateway`) for submitting process runs, delivering messages, and observing events from outside the worker pool
-- `blkit.restserver` — HTTP REST server with Server-Sent Events that exposes processes registered on a `MessageGateway`. Optionally embeds a worker in the same binary.
+- `core` (imported as `bl` — `import bl "github.com/friendly-business-machines/blkit/core"`) — the single logic import. One package holding the whole logic layer, so callers reach all of it through one `bl.` alias:
+  - the typed value system and expression engine (`bl.BlNumber`, `bl.BlString`, `bl.BlExpr`, `bl.BlDictionary`, `bl.BlList`, etc.);
+  - the decision classes (`bl.DecisionTask`, `bl.DecisionTable`, `bl.LiteralExpression`, `bl.BoxedContext`, `bl.Relation`, `bl.Invocation`, `bl.BusinessKnowledgeModel`);
+  - the process classes (`bl.Process`, `bl.ProcessGraph`, `bl.StartEvent`, `bl.EndEvent`, gateway nodes, tasks);
+  - the data contracts and pluggable state store (`bl.InputContract`, `bl.OutputContract`, `bl.ExecutionContext`, `bl.ExecutionHistory`, `bl.StateStore`).
+- `blkit/messagegateway` — producer-side typed client SDK (`MessageGateway` interface, `RedisMessageGateway`, `NATSMessageGateway`, `InMemoryMessageGateway`) for submitting process runs, delivering messages, and observing events from outside the worker pool.
+- `blkit/worker` — process-execution worker pool.
+- `blkit/restserver` — HTTP REST server with Server-Sent Events that exposes processes registered on a `MessageGateway`. Optionally embeds a worker in the same binary.
+- `blkit/mcp` — MCP server integration.
 
-The value/expression type system lives in the **root `blkit` package** (imported as `bl`, the root-level `expr_*.go` files), not a sub-package. It is consumed by decision models but is independently usable — callers can construct typed values, build expression trees, and evaluate them directly without involving decisions.
+The infrastructure sub-packages are imported separately and depend on `core`. They carry heavy, optional dependencies (Redis, NATS, `net/http`), so importing `core` for the logic layer never pulls them in. Within `core`, the value/expression type system is independently usable — callers can construct typed values, build expression trees, and evaluate them directly without involving decisions or processes.
 
 ## Interface Specification Format
 
@@ -56,10 +59,12 @@ blkit implements a fluent interface: method chains read as meaningful, human-fri
 Process graphs are declared by chaining `.to()` calls from a `start()` node through tasks and gateways to an `end()` node. The chain expressions are passed as a list to the `graph` parameter of `Process.create()`. Gateways are `ProcessNode`s — `and_()`, `or_()`, `xor()`, and `join()` each create a gateway node that is passed into `.to()` like any other node. `Process.create()` walks the edges to discover the full graph structure and stores the result as a `ProcessGraph`.
 
 ```go
-myProcess := bl.NewProcess("my-process", "1.0", []Edge{
+import bl "github.com/friendly-business-machines/blkit/core"
+
+var myProcess = bl.NewProcess("my-process", "1.0", []bl.Edge{
     bl.Start("start", "Start", bl.NewInputContract()).To(taskA),
-    taskA.To(Xor(conditions, map[string]ProcessNode{"b": taskB, "c": taskC})),
-    Join(taskB, taskC).To(taskD),
+    taskA.To(bl.Xor(conditions, map[string]bl.ProcessNode{"b": taskB, "c": taskC})),
+    bl.Join(taskB, taskC).To(taskD),
     taskD.To(bl.End("done", "Done")),
 })
 ```

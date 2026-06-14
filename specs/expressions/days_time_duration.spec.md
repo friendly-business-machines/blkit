@@ -2,7 +2,7 @@
 name: bl.BlDaysTimeDuration
 description: The days-and-time duration type in the blkit expression language (ISO 8601 PnDTnHnMnS). Covers construction, component access, the arithmetic/comparison operators, the duration built-ins, and the Go layer (bl.BlDaysTimeDuration + expr registrations).
 targets:
-  - ../../expr_days_time_duration.go
+  - ../../core/days_time_duration.go
 ---
 
 # bl.BlDaysTimeDuration — the days-and-time `duration`
@@ -138,7 +138,7 @@ via `datetime(d)` or `date(dt)` first. See
 [datetime.spec.md § Business-day arithmetic & difference](datetime.spec.md#business-day-arithmetic--difference-ext)
 for the registered overloads.
 
-`[@test] ../../expr_days_time_duration_test.go`
+`[@test] ../../core/days_time_duration_test.go`
 
 ---
 
@@ -274,9 +274,9 @@ through the matching total.
 Component access is **patcher-lowered** to function calls (`durationDays(d)`, `durationHours(d)`,
 `durationMinutes(d)`, `durationSeconds(d)`, `durationTotalSeconds(d)`, `durationTotalMinutes(d)`,
 `durationTotalHours(d)`, `durationTotalDays(d)`); see
-[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-expr_patchgo).
+[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-patchgo).
 
-`[@test] ../../expr_days_time_duration_test.go`
+`[@test] ../../core/days_time_duration_test.go`
 
 ---
 
@@ -301,7 +301,7 @@ rounding. `dtDuration("PT1H") / 7` yields a duration whose `totalSeconds` is exa
 `bl.BlNumber` with arbitrary precision); the canonical string form puts the resulting fraction on
 the smallest designator used (here, seconds).
 
-`[@test] ../../expr_days_time_duration_test.go`
+`[@test] ../../core/days_time_duration_test.go`
 
 ---
 
@@ -355,7 +355,7 @@ roundDown(dtDuration("P1DT23H"), dtDuration("P1D"))  // → dtDuration("P1D") (t
 A non-positive `step` (zero or negative) → `bl.TypeError`; rounding to a "nearest zero-sized
 multiple" or "nearest negative multiple" has no sensible meaning.
 
-`[@test] ../../expr_days_time_duration_test.go`
+`[@test] ../../core/days_time_duration_test.go`
 
 ---
 
@@ -657,7 +657,7 @@ The date / time / datetime `+` / `-` overloads that consume a days-time duration
 spokes own one operand of the pair). Native Go `time.Duration` inputs wrap to
 `bl.BlDaysTimeDuration` via the engine's input bridge.
 
-`[@test] ../../expr_days_time_duration_test.go`
+`[@test] ../../core/days_time_duration_test.go`
 
 ---
 

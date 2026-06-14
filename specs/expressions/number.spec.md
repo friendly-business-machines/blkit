@@ -2,7 +2,7 @@
 name: bl.BlNumber
 description: The number type in the blkit expression language — an arbitrary-precision decimal. Covers numeric literals, arithmetic/comparison operators, the numeric built-in functions, and the Go layer (bl.BlNumber + expr operator/function registrations) that implements them on expr-lang/expr.
 targets:
-  - ../../expr_number.go
+  - ../../core/number.go
 ---
 
 # bl.BlNumber — the `number` type
@@ -36,13 +36,13 @@ accepted; a leading `-` is the unary minus operator applied to a non-negative li
   decimal/exponent literal to a lossy Go `float64`, the `normalise` step captures each such
   literal's source text and rewrites it to its exact constructor form (`0.1` → `number("0.1")`,
   parsed with `decimal.NewFromString`) **before** parsing — see
-  [bl-expr.spec.md § Source normalisation](bl-expr.spec.md#engine-entry-points-expr_enginego).
+  [bl-expr.spec.md § Source normalisation](bl-expr.spec.md#engine-entry-points-enginego).
   Integer literals are already exact and are left as-is.
 - Scientific notation is accepted. **Hexadecimal is not** (see
   [bl-expr.spec.md](bl-expr.spec.md#relationship-to-feel-and-future-direction)).
 - `NaN` and `Infinity` are not representable — a source/host value of either is a `bl.TypeError`.
 
-`[@test] ../../expr_number_test.go`
+`[@test] ../../core/number_test.go`
 
 ---
 
@@ -98,7 +98,7 @@ engine (see [§ Semantics & behaviour](#semantics--behaviour)).
 - `**` with a result that would be complex (e.g. negative base, fractional exponent) → `null`:
   `(-2) ** 0.5 // → null`.
 
-`[@test] ../../expr_number_test.go`
+`[@test] ../../core/number_test.go`
 
 ---
 
@@ -135,7 +135,7 @@ Aggregates over lists (`min`, `max`, `sum`, `mean`, `median`, `product`, `stddev
 `string(n)` — is documented under [§ Go implementation](#go-implementation-expr-extension) and
 [string.spec.md](string.spec.md).
 
-`[@test] ../../expr_number_test.go`
+`[@test] ../../core/number_test.go`
 
 ### Interval algebra
 
@@ -155,7 +155,7 @@ A number is a *point*; the FEEL interval-algebra built-ins (`before`, `after`, `
   divisor (→ `null`).
 - **Equality** is by numeric value, ignoring trailing zeros.
 
-`[@test] ../../expr_number_test.go`
+`[@test] ../../core/number_test.go`
 
 ---
 
@@ -386,7 +386,7 @@ parses formatted text; `string(n)` renders. Native `int`/`float64`/decimal-`stri
 wrapped to `bl.BlNumber` by the engine bridge; a thousands-separated string is rejected — use
 `number(...)`.
 
-`[@test] ../../expr_number_test.go`
+`[@test] ../../core/number_test.go`
 
 ---
 

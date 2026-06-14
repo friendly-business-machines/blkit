@@ -2,7 +2,7 @@
 name: bl.BlTime
 description: The time-of-day type in the blkit expression language. Covers the time constructor, component access, duration arithmetic, comparison, timezone/offset semantics, and the Go layer (bl.BlTime + expr registrations).
 targets:
-  - ../../expr_time.go
+  - ../../core/time.go
 ---
 
 # bl.BlTime — the `time` type
@@ -40,7 +40,7 @@ time(datetime("2025-03-28T14:30:00"))  // extract time component
 blkit distinguishes a fixed **offset** (`+01:00`, not DST-aware), a named **timezone**
 (`[Europe/Paris]`, DST-aware), and a **local** time (no UTC relationship).
 
-`[@test] ../../expr_time_test.go`
+`[@test] ../../core/time_test.go`
 
 ---
 
@@ -55,7 +55,7 @@ time("11:45:30+02:00").offset       // → dtDuration("PT2H")   (ext)
 time("11:45:30[Europe/Paris]").timezone  // → "Europe/Paris" (ext)
 ```
 
-`[@test] ../../expr_time_test.go`
+`[@test] ../../core/time_test.go`
 
 ---
 
@@ -111,7 +111,7 @@ for day-tracking arithmetic.
 [datetime.spec.md § Re-zoning](datetime.spec.md#re-zoning-ext) — the function accepts both
 `bl.BlTime` and `bl.BlDateTime`.
 
-`[@test] ../../expr_time_test.go`
+`[@test] ../../core/time_test.go`
 
 ---
 
@@ -331,7 +331,7 @@ func timeOptions() []expr.Option {
 }
 ```
 
-`[@test] ../../expr_time_test.go`
+`[@test] ../../core/time_test.go`
 
 ---
 

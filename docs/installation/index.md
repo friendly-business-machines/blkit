@@ -29,14 +29,16 @@ commit SHA, though released tags are recommended for production use.
 
 ## Importing
 
-The root package is imported as `bl`:
+The core package is imported as `bl`:
 
 ```go
-import bl "github.com/friendly-business-machines/blkit"
+import bl "github.com/friendly-business-machines/blkit/core"
 ```
 
-Sub-packages (for example `blkit/decisions` and `blkit/processes`) are imported
-under their own paths as they become available.
+This single import provides the whole logic layer — value types, the expression
+engine, decision models, process classes, and data contracts. The optional
+infrastructure packages (for example `blkit/messagegateway` and
+`blkit/restserver`) are imported under their own paths as they become available.
 
 ## Keeping current
 

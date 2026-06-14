@@ -2,7 +2,7 @@
 name: bl.BlSchema
 description: Unified shape declaration for Bl* values — named fields, optionality, and arbitrary nesting. Drives parse-time typing for bl.Expr and is intended to replace the InputContract / OutputContract / DictionaryContract / ListContract / TableContract family and the reflected Parameters / Outputs structs used by BusinessKnowledgeModel and DecisionNode.
 targets:
-  - ../../expr_schema.go
+  - ../../core/schema.go
 ---
 
 # bl.BlSchema
@@ -160,7 +160,7 @@ Failures produce a `bl.SchemaError` carrying a path to the offending node
 (`applicant.address.postalCode: expected bl.BlString, got bl.BlNumber`) so a single error message
 locates the problem in a deeply nested value.
 
-`[@test] ../../expr_schema_test.go`
+`[@test] ../../core/schema_test.go`
 
 ## Parse-time use by `bl.Expr`
 
@@ -213,4 +213,4 @@ named aliases at their boundary.
 - `Element` order is irrelevant — it is a set of allowed `bl.Type`s, not a sequence.
   Duplicate entries are a well-formedness error (see § Construction).
 
-`[@test] ../../expr_schema_test.go`
+`[@test] ../../core/schema_test.go`

@@ -2,7 +2,7 @@
 name: bl.BlBoolean
 description: The boolean type in the blkit expression language — true/false with three-valued (null-propagating) logic. Covers boolean literals, the and/or/not operators, the boolean built-ins, and the Go layer (bl.BlBoolean + expr registrations).
 targets:
-  - ../../expr_boolean.go
+  - ../../core/boolean.go
 ---
 
 # bl.BlBoolean — the `boolean` type
@@ -35,7 +35,7 @@ reserved as boolean literals, a variable named `True`, `TRUE`, etc. is **not** a
 input keys that collide with a boolean literal in any casing produce a `bl.ParseError` at
 expression compile time.
 
-`[@test] ../../expr_boolean_test.go`
+`[@test] ../../core/boolean_test.go`
 
 ---
 
@@ -120,7 +120,7 @@ overload of a Go boolean operator — see
 Short-circuits: `false and X → false` (X never evaluated), `true or X → true`. `not(null) → null`.
 Equality with `null` yields `false`, never `null` (see [null.spec.md](null.spec.md)).
 
-`[@test] ../../expr_boolean_test.go`
+`[@test] ../../core/boolean_test.go`
 
 ---
 
@@ -135,7 +135,7 @@ Related null-handling helpers live alongside the type they introspect:
 [bl-expr.spec.md](bl-expr.spec.md)) and [`getOrElse`](null.spec.md#built-in-functions) (null
 fallback, in [null.spec.md](null.spec.md)).
 
-`[@test] ../../expr_boolean_test.go`
+`[@test] ../../core/boolean_test.go`
 
 ---
 
@@ -202,7 +202,7 @@ func (b BlBoolean) Native() bool                  // underlying Go bool
 `and` and `or` cannot be wired with `expr.Operator` — that mechanism overloads binary arithmetic /
 comparison operators, not the short-circuit logical operators, and our operands are wrapped
 `bl.BlValue`s (possibly `bl.BlNull`) rather than Go `bool`s. Instead, the engine's AST patcher (see
-[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-expr_patchgo)) lowers `a and b` and `a or b`
+[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-patchgo)) lowers `a and b` and `a or b`
 to a **lazy conditional**, *not* a function call — a function call would evaluate both operands and
 defeat short-circuiting. The lowering binds the left operand once and is:
 
@@ -273,7 +273,7 @@ func booleanOptions() []expr.Option {
 
 Native Go `bool` inputs wrap to `bl.BlBoolean` via the engine's input bridge.
 
-`[@test] ../../expr_boolean_test.go`
+`[@test] ../../core/boolean_test.go`
 
 ---
 

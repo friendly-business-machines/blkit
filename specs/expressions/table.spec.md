@@ -2,7 +2,7 @@
 name: BlTable
 description: The table (relation) type in the blkit expression language — an ordered list of uniformly-keyed dictionaries. Covers row/column access, table built-ins, the transformation methods (filter/filterOut/select/rename/sort/slice/distinct/withColumn/join), grouping (groupBy/agg), the inherited list semantics, and the Go layer (bl.BlTable + expr registrations).
 targets:
-  - ../../expr_table.go
+  - ../../core/table.go
 ---
 
 # bl.BlTable — the `table` type
@@ -77,7 +77,7 @@ myTable.region                         // → ["domestic", "europe"]
 myTable[rate > 10]                     // → sub-table of rows with rate > 10
 ```
 
-`[@test] ../../expr_table_test.go`
+`[@test] ../../core/table_test.go`
 
 ---
 
@@ -88,7 +88,7 @@ Host Go code constructs a `bl.BlTable` with `bl.Table(columns bl.Cols, rows ...b
 and data type, followed by **positional value rows** (`bl.Row`). The header's order is the
 binding order — value *i* in every row is the cell for column *i* — and cells wrap to the
 matching `bl.BlValue` automatically (see [bl-expr.spec.md § Bridging native ↔
-Bl\*](bl-expr.spec.md#bridging-native--bl-expr_valuego)), so no per-cell `bl.String` / `bl.Number`
+Bl\*](bl-expr.spec.md#bridging-native--bl-valuego)), so no per-cell `bl.String` / `bl.Number`
 wrapping is needed. The stored column order is the canonical sorted order per
 [dictionary.spec.md](dictionary.spec.md); the header only fixes the column set, types, and
 the rows' binding order. By convention a comment listing the column names, aligned over
@@ -230,7 +230,7 @@ Tables have no arithmetic operators and no ordering operators (`<` / `<=` / `>` 
 `listContains(t.toList(), x)` if you need element-style membership, or `t[item =
 row].nRows > 0` for whole-row membership.
 
-`[@test] ../../expr_table_test.go`
+`[@test] ../../core/table_test.go`
 
 ---
 
@@ -288,7 +288,7 @@ The filter form `t[predicate]` (see [§ Operators](#operators)) and
 `sublist(t.toList(), start, length)` (see [list.spec.md § Built-in functions](list.spec.md#built-in-functions))
 are further ways to take a selection of rows.
 
-`[@test] ../../expr_table_test.go`
+`[@test] ../../core/table_test.go`
 
 ---
 
@@ -328,7 +328,7 @@ Column projection follows the same rule as list-of-dictionaries projection
 that list extracts the `col` field from each element. The table's uniform-keys
 invariant guarantees the result length equals `t.nRows`.
 
-`[@test] ../../expr_table_test.go`
+`[@test] ../../core/table_test.go`
 
 ---
 
@@ -346,7 +346,7 @@ the unwrap methods `t.toList()` / `t.toDict()` / `t.toValue()` — see
 
 **How the comma form is realised.** `expr`'s indexing is a single expression, so the
 two-slot forms `t[r, c]` and `t[, c]` are not directly parseable. The `normalise` step
-([bl-expr.spec.md § Source normalisation](bl-expr.spec.md#engine-entry-points-expr_enginego))
+([bl-expr.spec.md § Source normalisation](bl-expr.spec.md#engine-entry-points-enginego))
 rewrites them to a backing call **before** parsing — `t[r, c]` → `tableIndex(t, r, c)`, the
 empty row slot of `t[, c]` becoming an all-rows marker — distinguishing the comma form from a
 list-literal row selector `t[[a, b]]` and skipping strings / nested brackets. The arity errors
@@ -452,7 +452,7 @@ the column name at position `k`); like any bracket form it yields a 1×1
   For large tables this scales linearly. The column selector is applied
   after filtering, so it doesn't multiply the cost.
 
-`[@test] ../../expr_table_test.go`
+`[@test] ../../core/table_test.go`
 
 ---
 
@@ -479,7 +479,7 @@ so `nRows`, `nCols`, and `colNames` are **reserved** — a column literally
 named `nRows` is shadowed by the attribute and must be projected with the
 bracket form `t[, "nRows"]`.
 
-`[@test] ../../expr_table_test.go`
+`[@test] ../../core/table_test.go`
 
 ---
 
@@ -521,7 +521,7 @@ reachable by the bare path `t.toList` or by `t[, "toList"]`.
 table, and `t.toList()` returns a single-column table's cells as a list (see
 [§ Column indexing](#column-indexing)).
 
-`[@test] ../../expr_table_test.go`
+`[@test] ../../core/table_test.go`
 
 ---
 
@@ -558,7 +558,7 @@ comprehension), `some r in t satisfies r.rate > 10`, `every r in t satisfies r.r
 full list library. For row and column counts use the `t.nRows` / `t.nCols`
 attributes (see [§ Attributes](#attributes)).
 
-`[@test] ../../expr_table_test.go`
+`[@test] ../../core/table_test.go`
 
 ---
 
@@ -636,7 +636,7 @@ match no rows.
 The whole sort is **stable**: rows that compare equal across *all* keys keep their input
 order, as do rows tied within an `inOrder` key's trailing unlisted group.
 
-`[@test] ../../expr_table_test.go`
+`[@test] ../../core/table_test.go`
 
 ---
 
@@ -701,7 +701,7 @@ the unmatched `other` rows in `other`'s order. A `"cross"` join emits
 | `rates.join(orders, "region", "full")` | `bl.TypeError` — unknown join type |
 | `rates.join(orders, [])` | `bl.TypeError` — empty key requires `how = "cross"` |
 
-`[@test] ../../expr_table_test.go`
+`[@test] ../../core/table_test.go`
 
 ---
 
@@ -755,7 +755,7 @@ Because a zero-row table still carries its columns, `union(t, empty)` where
 `table([])` unions cleanly under `"all"` (it contributes no columns and no rows); under
 the default `"error"` it only matches another no-column table.
 
-`[@test] ../../expr_table_test.go`
+`[@test] ../../core/table_test.go`
 
 ---
 
@@ -817,7 +817,7 @@ across groups → `bl.TypeError`).
 Grouping over a zero-row table has no groups, so `.agg(…)` yields a zero-row table that
 still carries the key and aggregate columns.
 
-`[@test] ../../expr_table_test.go`
+`[@test] ../../core/table_test.go`
 
 ---
 
@@ -870,7 +870,7 @@ which validates uniform keys.
 
 ## Go implementation (expr extension)
 
-Lives in `expr_table.go`. Shared mechanics in
+Lives in `table.go`. Shared mechanics in
 [bl-expr.spec.md § Engine internals](bl-expr.spec.md#engine-internals-go).
 
 ### Value type & host API (exported)
@@ -1094,7 +1094,7 @@ via the engine's input bridge when the maps share keys; non-uniform inputs wrap 
 `bl.BlList<bl.BlDictionary>` instead, and the caller must invoke `tableFromDicts(...)`
 explicitly to validate.
 
-`[@test] ../../expr_table_test.go`
+`[@test] ../../core/table_test.go`
 
 ---
 
@@ -1176,4 +1176,4 @@ explicitly to validate.
   `table([])` onto a table with columns is a mismatch under `"error"` (`bl.TypeError`);
   under `"all"` it contributes nothing and the result is the other operand's rows.
 
-`[@test] ../../expr_table_test.go`
+`[@test] ../../core/table_test.go`

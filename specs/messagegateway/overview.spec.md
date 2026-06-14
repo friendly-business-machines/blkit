@@ -425,7 +425,7 @@ type InstanceError struct {
 
 ### `Submit`
 
-1. Look up the process via the in-memory registry: `blkit.LookupProcess(Namespace, ProcessID, Version)`. Missing → `ErrUnknownProcess`.
+1. Look up the process via the in-memory registry: `bl.LookupProcess(Namespace, ProcessID, Version)`. Missing → `ErrUnknownProcess`.
 2. Find the `StartEvent` matching `StartID`. Missing → `ErrUnknownStartID`.
 3. Validate `Input` against the StartEvent's `InputContract` (see [../data/data-contract.spec.md](../data/data-contract.spec.md)). Failure → `DataContractValidationError`.
 4. Generate a `ProcessInstanceID` (UUIDv7 or similar).
@@ -445,7 +445,7 @@ The worker that holds (or fetches) the suspended instance loads state, confirms 
 
 ### `Cancel`
 
-1. Look up the process via `blkit.LookupProcess(...)`. Missing → `ErrUnknownProcess`.
+1. Look up the process via `bl.LookupProcess(...)`. Missing → `ErrUnknownProcess`.
 2. Inspect the broker-held status record for the instance:
    - Already `Completed` → `ErrAlreadyCompleted`. `Cancelled` → `ErrAlreadyCancelled`. `Failed` → `ErrAlreadyFailed`.
    - `Pending` (not yet picked up by a worker): atomically remove the `JobStart` from the queue. Return nil. (No opt-in check — pre-execution cancellation is always allowed.)
@@ -455,7 +455,7 @@ A worker handling a `JobCancel` appends a synthetic `CancelEvent` to history, dr
 
 ### `Terminate`
 
-1. Look up the process via `blkit.LookupProcess(...)`. Missing → `ErrUnknownProcess`.
+1. Look up the process via `bl.LookupProcess(...)`. Missing → `ErrUnknownProcess`.
 2. Inspect the broker-held status record:
    - Already `Completed` / `Cancelled` / `Failed` → corresponding `ErrAlready*`.
 3. Check `AllowExternalTerminate`. Not opted in → `ErrTerminateNotAllowed`.
@@ -478,7 +478,7 @@ The implementation queries the broker's KV / metadata store for the snapshot and
 
 ### `RegisterProcesses` / `Heartbeat` / `Unregister`
 
-The worker calls `RegisterProcesses` once on startup with one `ProcessRegistration` per process in `blkit.AllProcesses()`. The gateway stores them in the broker's registry KV with a TTL.
+The worker calls `RegisterProcesses` once on startup with one `ProcessRegistration` per process in `bl.AllProcesses()`. The gateway stores them in the broker's registry KV with a TTL.
 
 `Heartbeat` is called by a worker-owned heartbeat goroutine on a configurable interval (default 30s). It refreshes the TTL on every registration this `workerID` published. If the worker stops heartbeating (crash, network partition), entries expire and a `RegistryUpdateHeartbeatLost` is delivered to registry subscribers.
 
@@ -613,7 +613,7 @@ import (
     "context"
     "log"
 
-    "github.com/friendly-business-machines/blkit"
+    bl "github.com/friendly-business-machines/blkit/core"
     "github.com/friendly-business-machines/blkit/messagegateway"
 
     _ "example.com/processes/lending" // blank import registers the process via bl.NewProcess()

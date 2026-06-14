@@ -28,7 +28,7 @@ Each spec in `specs/` corresponds to one or more test files in the package that 
 Test files mirror the spec hierarchy directly:
 
 ```
-specs/expressions/number.spec.md           → expr_number_test.go (root blkit package)
+specs/expressions/number.spec.md           → number_test.go (root blkit package)
 specs/decision-tasks/decision-table.spec.md → decisions/decision_table_test.go
 specs/processes/task-nodes.spec.md         → processes/task_test.go (and per-task companions)
 specs/data/state-store.spec.md             → data/state_store_test.go

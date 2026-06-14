@@ -88,7 +88,7 @@ package main
 import (
 	"fmt"
 
-	bl "github.com/friendly-business-machines/blkit"
+	bl "github.com/friendly-business-machines/blkit/core"
 )
 
 func main() {

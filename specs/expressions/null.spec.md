@@ -2,7 +2,7 @@
 name: bl.BlNull
 description: The null type in the blkit expression language — a fieldless value type meaning absence or unknown, with SQL-style propagation. Covers the null literal, the equality / instance-of operators, propagation semantics, the null-handling built-ins, and the Go layer (bl.BlNull + expr registrations).
 targets:
-  - ../../expr_null.go
+  - ../../core/null.go
 ---
 
 # bl.BlNull — the `null` type
@@ -40,7 +40,7 @@ expression compile time.
 This parallels the case-insensitive-input / lowercase-canonical rule for `true` / `false`
 ([boolean.spec.md § Literals](boolean.spec.md#literals)).
 
-`[@test] ../../expr_null_test.go`
+`[@test] ../../core/null_test.go`
 
 ---
 
@@ -108,7 +108,7 @@ encounter a null operand follow the propagation rules in [§ Semantics &
 behaviour](#semantics--behaviour) — most return null, with documented exceptions for the
 short-circuit boolean cases.
 
-`[@test] ../../expr_null_test.go`
+`[@test] ../../core/null_test.go`
 
 ---
 
@@ -144,7 +144,7 @@ getOrElse(42, 1)                     // → 42
 getOrElse(applicant.middleName, "")  // → "" if the key is missing or null
 ```
 
-`[@test] ../../expr_null_test.go`
+`[@test] ../../core/null_test.go`
 
 ---
 
@@ -174,7 +174,7 @@ logic table determines a definite result without consulting the null operand
 | `false or null` / `null or false` | `null` |
 | `not(null)` | `null` |
 
-`[@test] ../../expr_null_test.go`
+`[@test] ../../core/null_test.go`
 
 ### Producing null
 
@@ -340,7 +340,7 @@ literal `bl.BlNull{}` — they're indistinguishable). The engine bridge maps Go 
 input-map keys to a `bl.BlNull` at the input boundary; `instance of null` and `isNull(x)` test
 for it; every `bl.BlValue` exposes `IsNull()` for host callers.
 
-`[@test] ../../expr_null_test.go`
+`[@test] ../../core/null_test.go`
 
 ---
 

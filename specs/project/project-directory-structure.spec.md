@@ -11,16 +11,15 @@ targets:
 
 # Project Directory Structure
 
-blkit is a Go library; the implementation lives at the repository root, not under a language subdirectory. The following top-level entries are present:
+blkit is a Go library. The repository root holds no Go source — the core package lives in `core/`, and the optional infrastructure packages are sibling directories. The following top-level entries are present:
 
 ```
 blkit/
 ├── go.mod
 ├── go.sum
-├── expr_*.go         # root blkit package — value types + expression engine (see specs/expressions/)
-├── decisions/        # blkit/decisions — decision models, decision tables, BKMs
-├── processes/        # blkit/processes — process graphs, tasks, events, gateways
-├── data/             # blkit/data — InputContract, OutputContract, ExecutionContext, ExecutionHistory, StateStore
+├── core/             # package core, imported as `bl` — value types, expression engine,
+│                     #   decision models, process classes, and data contracts in one
+│                     #   package (see specs/expressions/, specs/decision-tasks/, etc.)
 ├── messagegateway/    # blkit/messagegateway — MessageGateway interface and Redis/NATS/in-memory implementations
 ├── worker/           # blkit/worker — worker.Run, ProcessTask lifecycle, writer pool
 ├── restserver/       # blkit/restserver — HTTP REST + SSE server for the MessageGateway
@@ -41,9 +40,11 @@ blkit/
 
 Test files live alongside source as `*_test.go`.
 
-The value types and expression engine are the root-level `expr_*.go` files — package `blkit`,
-imported as `bl` (see [specs/expressions/](../expressions/)). The other top-level code entries
-are sub-packages (e.g. `blkit/decisions`, `blkit/processes`, `blkit/data`).
+The value types, expression engine, decision models, process classes, and data contracts
+all live in the `core/` package — `package core`, imported as `bl` (see
+[specs/expressions/](../expressions/)). The other top-level code entries
+(`blkit/messagegateway`, `blkit/worker`, `blkit/restserver`) are separate sibling packages
+that import `core`.
 
 ## `docs/`
 

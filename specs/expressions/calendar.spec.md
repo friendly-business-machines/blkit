@@ -2,7 +2,7 @@
 name: bl.BlCalendar
 description: The calendar type in the blkit expression language — a named, ordered collection of temporal entries (dates, datetimes, or date/datetime ranges) for holidays, schedules, blackout periods, maintenance windows, and the like. Covers entry construction, calendar construction with optional validity bounds, query/mutation built-ins, and the Go layer (bl.BlCalendar + expr registrations).
 targets:
-  - ../../expr_calendar.go
+  - ../../core/calendar.go
 ---
 
 # bl.BlCalendar — the `calendar` type
@@ -161,7 +161,7 @@ func WithICalStrict(bool) ICalOption
 func ImportICal(r io.Reader, opts ...ICalOption) (BlCalendar, error)
 ```
 
-#### Edge cases
+#### iCal import edge cases
 
 - A `VEVENT` with no `DTSTART` is malformed; `ImportICal` returns a parse error naming the
   offending event (`UID`, if present).
@@ -254,7 +254,7 @@ calling — the strip/attach functions are in
 [datetime.spec.md § Zone stripping](datetime.spec.md#zone-stripping-ext) and
 [datetime.spec.md § Zone stripping](datetime.spec.md#zone-stripping-ext).
 
-`[@test] ../../expr_calendar_test.go`
+`[@test] ../../core/calendar_test.go`
 
 ---
 
@@ -348,7 +348,7 @@ without poisoning the result — scanning continues. Use the conversion function
 [date.spec.md § Conversion](date.spec.md) / [datetime.spec.md § Conversion](datetime.spec.md)
 to coerce explicitly when you need cross-temporal-kind matching to succeed.
 
-`[@test] ../../expr_calendar_test.go`
+`[@test] ../../core/calendar_test.go`
 
 ---
 
@@ -597,7 +597,7 @@ func CalendarMerge(calendars []BlCalendar, opts ...MergeOption) (BlCalendar, err
 Validity bounds are not unioned (matching the expression-language behaviour); the returned
 calendar has none unless re-supplied via a follow-up `bl.Calendar(..., WithValidity(...))`.
 
-`[@test] ../../expr_calendar_test.go`
+`[@test] ../../core/calendar_test.go`
 
 ---
 
@@ -620,7 +620,7 @@ between overlap and containment semantics, which `in` doesn't).
 
 Calendars have no arithmetic operators and no ordering operators (`<`/`<=`/`>`/`>=`).
 
-`[@test] ../../expr_calendar_test.go`
+`[@test] ../../core/calendar_test.go`
 
 ---
 
@@ -688,6 +688,7 @@ comparison in [datetime.spec.md § Comparison semantics](datetime.spec.md#compar
 for naive calendars, positions compare as **wall-clock**. A calendar's zone-kind is uniform
 ([§ Zone-kind homogeneity](#zone-kind-homogeneity)), so the comparison kind never varies within
 a single calendar.
+
 - Equality is structural: same entries in the same order, with matching names, values, and
   validity bounds.
 - Validity bounds (`validFrom` / `validTo`) are advisory metadata for the business-day
@@ -966,7 +967,7 @@ func calendarOptions() []expr.Option {
 a `bl.BlCalendar` (named `phCalendar`). Iterating variants raise `bl.CalendarRangeError` past the
 validity bounds only when `strictCalendarRange: true` is supplied.
 
-`[@test] ../../expr_calendar_test.go`
+`[@test] ../../core/calendar_test.go`
 
 ---
 

@@ -2,7 +2,7 @@
 name: bl.BlDictionary
 description: The dictionary type in the blkit expression language — an unordered key-value map. Covers dictionary literals, path access, the dictionary built-in library (incl. blkit extensions), and the Go layer (bl.BlDictionary + expr registrations).
 targets:
-  - ../../expr_dictionary.go
+  - ../../core/dictionary.go
 ---
 
 # bl.BlDictionary — the `dictionary` type
@@ -45,7 +45,7 @@ evaluated in source order against the partial scope built up by the entries to i
 (`{a: 2, b: a*2}` → `{a: 2, b: 4}`). After evaluation, the dictionary holds resolved values
 with no remaining expression dependencies; iteration order is not preserved.
 
-`[@test] ../../expr_dictionary_test.go`
+`[@test] ../../core/dictionary_test.go`
 
 ---
 
@@ -92,7 +92,7 @@ Dictionaries have no arithmetic operators (`+`/`-`/etc.), no ordering operators
 Member access is **patcher-lowered** to a call to `getValue(d, key)`. So `d.name` and
 `d["name"]` are both equivalent to `getValue(d, "name")`.
 
-`[@test] ../../expr_dictionary_test.go`
+`[@test] ../../core/dictionary_test.go`
 
 ---
 
@@ -115,7 +115,7 @@ DMN-inspired functions plus blkit extensions (**ext**).
 | `isEmpty(d)` **ext** | `isEmpty({})` | `true` |
 | `dictionaryRemove(d, key)` **ext** | `dictionaryRemove({a:1, b:2}, "a")` | `{b: 2}` |
 
-`[@test] ../../expr_dictionary_test.go`
+`[@test] ../../core/dictionary_test.go`
 
 ---
 
@@ -201,7 +201,7 @@ forward-referencing entries (`{a: 2, b: a*2}`) need each key in scope for the en
 right — `expr`'s native map literal would instead resolve `a` as an environment variable — so
 the patcher lowers such a literal to **sequential `let` bindings** (one per entry, each visible
 to later entries) that build the dictionary in order (see
-[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-expr_patchgo)). Native Go
+[bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-patchgo)). Native Go
 `map[string]any` inputs wrap to `bl.BlDictionary` via the engine's input bridge.
 
 ### Registrations (`dictionaryOptions`, unexported)
@@ -250,7 +250,7 @@ func dictionaryOptions() []expr.Option {
 }
 ```
 
-`[@test] ../../expr_dictionary_test.go`
+`[@test] ../../core/dictionary_test.go`
 
 ---
 

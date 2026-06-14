@@ -51,7 +51,7 @@ The first parameter is named `workerCtx` rather than `ctx` to distinguish it fro
 
 A worker process has four concurrent actors. Together they keep work moving from the broker, through evaluation, to durable storage in the [`StateStore`](../data/state-store.spec.md).
 
-- **Fetch loop** — one goroutine, owned by the caller of `worker.Run`. Selectively reads `Job`s from `gw.FetchJobs(...)` (filtered to processes registered in this binary) and hands each to a fresh executor goroutine. Acquires a permit from a process semaphore before each read, so the worker only pulls work it can immediately execute. Stops when `workerCtx` is cancelled. See [Concurrency Model](#concurrency-model) for semaphore details.
+- **Fetch loop** — one goroutine, owned by the caller of `worker.Run`. Selectively reads `Job`s from `gw.FetchJobs(...)` (filtered to processes registered in this binary) and hands each to a fresh executor goroutine. Acquires a permit from a process semaphore before each read, so the worker only pulls work it can immediately execute. Stops when `workerCtx` is cancelled. See [Fetch](#fetch) for semaphore details.
 
 - **Executor goroutines** — one goroutine per in-flight `Job`, spawned by the fetch loop. Each executor drives its process through its full lifecycle: load state from the StateStore, call `process.Evaluate(...)`, publish events via the gateway's `MarkRunning` / `PostError` / status verbs during/after, persist boundary metadata via `Save`, and signal outcome by calling exactly one of `gw.MarkCompleted` / `gw.MarkCancelled` / `gw.MarkFailed` / `gw.ReenqueueSuspended`. Those four verbs implicitly ack the job — there is no separate Ack/Nack step. Up to `MaxConcurrent` executors run in parallel.
 
@@ -80,7 +80,7 @@ The worker also publishes its capability set to the **broker-held registry** so 
 
 When `worker.Run` is called, before the fetch loop starts:
 
-1. Walk `blkit.AllProcesses()` to get the list of processes registered in this binary.
+1. Walk `bl.AllProcesses()` to get the list of processes registered in this binary.
 2. For each, build a `ProcessRegistration` (see [../messagegateway/overview.spec.md](../messagegateway/overview.spec.md)) with `Namespace` / `ProcessID` / `Version` / `Name` / `Description`, the `StartEvents` (with their `InputContract`s), `EndEvents` (with optional `OutputContract`s), `AllowExternalCancel` / `AllowExternalTerminate`, and `Markdown` rendered via `process.ToMarkdown()`.
 3. Set `WorkerID` on each registration to `opts.WorkerID`.
 4. Call `gw.RegisterProcesses(workerCtx, opts.WorkerID, regs)`.
@@ -99,7 +99,7 @@ A process semaphore — `make(chan struct{}, MaxConcurrent)` — caps how many p
 
 ```go
 // Conceptual outline (not the literal target API)
-keys := registry.Keys() // ProcessKey for each process in blkit.AllProcesses()
+keys := registry.Keys() // ProcessKey for each process in bl.AllProcesses()
 jobs, err := gw.FetchJobs(workerCtx, keys)
 if err != nil { return err }
 
@@ -309,7 +309,7 @@ import (
     "os/signal"
     "syscall"
 
-    "github.com/friendly-business-machines/blkit"
+    bl "github.com/friendly-business-machines/blkit/core"
     "github.com/friendly-business-machines/blkit/messagegateway"
     "github.com/friendly-business-machines/blkit/worker"
 
@@ -343,7 +343,7 @@ func main() {
     defer gw.Close()
 
     // StateStore is still owned by the worker — the gateway never touches it.
-    stateStore := blkit.NewPostgresStateStore(
+    stateStore := bl.NewPostgresStateStore(
         os.Getenv("BLKIT_DB_URL"),
         "loan_app",
     )

@@ -9,9 +9,10 @@
 # docs/reference/. The output is committed and consumed by Zensical as ordinary
 # source files; it must not be edited by hand.
 #
-# Today only the root `blkit` package exists. As decisions/processes/etc. land,
-# they are documented automatically — the package list is discovered with
-# `go list ./...`, so nothing here needs to change.
+# Today only the `core` package exists (imported as `bl`; documented as
+# blkit.md). As the messagegateway/worker/restserver packages land, they are
+# documented automatically — the package list is discovered with `go list
+# ./...`, so nothing here needs to change.
 #
 # Exits non-zero with a structured message if generation fails.
 
@@ -63,12 +64,14 @@ done < <(go list ./... 2>/dev/null) || fail "go list failed — module does not 
 mkdir -p "$REFERENCE_DIR"
 
 for pkg in "${packages[@]}"; do
-  # Derive a stable, flat file name from the import path: the root package
-  # becomes blkit.md, sub-packages become e.g. decisions.md, data.md.
+  # Derive a stable, flat file name from the import path: the core package
+  # becomes blkit.md (it is the project's primary reference page and the site
+  # nav links to reference/blkit.md), sub-packages become e.g. messagegateway.md.
   rel="${pkg#"$MODULE_PATH"}"
   rel="${rel#/}"
   name="${rel:-blkit}"
   name="${name//\//-}"
+  [ "$name" = "core" ] && name="blkit"
   out="${REFERENCE_DIR}/${name}.md"
 
   echo "generate-docs: ${pkg} -> docs/reference/${name}.md"
