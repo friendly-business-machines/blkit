@@ -141,11 +141,19 @@ var grossPrice = bl.NewLiteralExpression[GrossPriceOutputs](bl.LiteralExpression
     Body: `net_price.amount * (1 + tax_rate)`,
 })
 
+// The task's external input contract — what netPrice consumes. (net_price is an
+// internal node output; tax_rate is reference data, resolved in the reference
+// scope — neither is part of InputSchema.)
+var pricingInputs, _ = bl.Schema(
+    bl.Field{Name: "list_price", Type: bl.TypeNumber},
+)
+
 var pricing = bl.NewDecisionTask(
-    []bl.DecisionNode{netPrice, grossPrice},
-    bl.WithReferenceData(taxRate), // registers the Go value `taxRate`, whose Id is "tax_rate"
     bl.WithId("pricing"),
     bl.WithName("Pricing"),
+    bl.WithNodes(netPrice, grossPrice),
+    bl.WithInputSchema(pricingInputs),
+    bl.WithReferenceData(taxRate), // registers the Go value `taxRate`, whose Id is "tax_rate"
 )
 ```
 
