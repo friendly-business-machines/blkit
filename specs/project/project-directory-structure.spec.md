@@ -83,6 +83,7 @@ Contains shell scripts that codify automation workflows:
 - `scripts/create-pull-request.sh` — pre-pull-request process (see [pull-request-workflow.spec.md](pull-request-workflow.spec.md))
 - `scripts/create-release.sh` — release process (see [release-workflow.spec.md](release-workflow.spec.md))
 - `scripts/generate-docs.sh` — regenerates programmatically generated API reference Markdown in `docs/reference/` (see [documentation.spec.md](documentation.spec.md))
+- `scripts/generate-llms.sh` — regenerates the `docs/llms.txt` and `docs/llms-full.txt` LLM discovery files from `zensical.toml` and the docs pages (see [documentation.spec.md](documentation.spec.md))
 
 ## `copier/`
 

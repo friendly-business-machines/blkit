@@ -37,11 +37,15 @@ jobs:
       - name: Generate API reference
         run: bash scripts/generate-docs.sh
 
-      - name: Fail if generated reference is stale
+      - name: Generate llms.txt files
+        # Runs after the reference so llms-full.txt embeds the fresh reference.
+        run: bash scripts/generate-llms.sh
+
+      - name: Fail if generated docs are stale
         run: |
-          if ! git diff --quiet -- docs/reference; then
-            echo "::error::docs/reference is out of date. Run scripts/generate-docs.sh and commit the result." >&2
-            git diff --stat -- docs/reference
+          if ! git diff --quiet -- docs/reference docs/llms.txt docs/llms-full.txt; then
+            echo "::error::Generated docs are out of date. Run scripts/generate-docs.sh and scripts/generate-llms.sh and commit the result." >&2
+            git diff --stat -- docs/reference docs/llms.txt docs/llms-full.txt
             exit 1
           fi
 

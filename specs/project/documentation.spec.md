@@ -1,11 +1,14 @@
 ---
 name: Documentation
-description: Documentation site structure, toolchain, and authoring conventions — compiled from Markdown using Zensical and hosted on GitHub Pages, including auto-generated Go API reference
+description: Documentation site structure, toolchain, and authoring conventions — compiled from Markdown using Zensical and hosted on GitHub Pages, including auto-generated Go API reference and llms.txt discovery files
 targets:
   - ../docs/**/*.md
   - ../docs/**/*.yml
   - ../docs/**/*.yaml
+  - ../docs/llms.txt
+  - ../docs/llms-full.txt
   - ../scripts/generate-docs.sh
+  - ../scripts/generate-llms.sh
   - ../.github/workflows/docs*.yml
 ---
 
@@ -122,6 +125,66 @@ The Reference section contains the Go API reference, generated from `//` godoc c
 
 Generated Markdown is committed to `docs/reference/` and consumed by Zensical as ordinary source files. The generation step runs in CI on every release.
 
+## LLM Discovery Files
+
+The site publishes two files for large-language-model consumers, following the
+[`llms.txt` convention](https://llmstxt.org/):
+
+| File | Purpose |
+|---|---|
+| `docs/llms.txt` | A concise, curated **index** of the documentation — an H1 site name, a one-line summary, and grouped links to every page with short descriptions. |
+| `docs/llms-full.txt` | The **full text** of the documentation concatenated into a single file, so a model can ingest everything in one fetch. |
+
+Both files are generated, committed, and copied verbatim to the site output by
+Zensical (non-Markdown files under `docs_dir` are passed through unchanged).
+Because the site is served from a project GitHub Pages subpath, they are reached
+at `<site_url>llms.txt` and `<site_url>llms-full.txt` (i.e. under `/blkit/`),
+not at the domain root.
+
+### Content Requirements
+
+- **`llms.txt`** is derived from `zensical.toml`:
+  - An HTML-comment generated-by banner on the first line.
+  - An H1 with the configured `site_name`, followed by a blockquote with the
+    `site_description`.
+  - One H2 section per nav group. Top-level single-page nav entries are grouped
+    under a **Documentation** heading; each nav entry whose value is a list
+    (e.g. Examples, Reference) becomes its own H2 section.
+  - Each link is an absolute URL built from `site_url`, using Zensical's
+    directory-URL form (`examples/loan-eligibility.md` → `examples/loan-eligibility/`,
+    `index.md` → the section root). Link titles come from the nav label for
+    top-level pages and from the page's first H1 for list children. Where a page
+    opens with a blockquote summary, it is appended after the link as a
+    description.
+- **`llms-full.txt`** concatenates the raw Markdown of **every** page in nav
+  order, **including** the generated API Reference, each preceded by a
+  `<!-- Source: <url> -->` marker. Including the Reference is deliberate: the
+  API signatures are the highest-value content for a model assisting with blkit
+  code.
+
+### Generation and Staleness
+
+Both files are produced by `scripts/generate-llms.sh` (see below), committed to
+`docs/`, and **must not be edited by hand**. Their freshness is enforced the
+same way as the Reference Markdown: a pre-commit hook regenerates them when
+documentation source or `zensical.toml` changes, and the `docs` CI job
+regenerates and diffs them, failing if the committed copy is stale. Because
+`llms-full.txt` embeds the generated Reference, generation runs *after*
+`scripts/generate-docs.sh`.
+
+## `scripts/generate-llms.sh`
+
+`scripts/generate-llms.sh` is the entry point for regenerating `docs/llms.txt`
+and `docs/llms-full.txt`. It reads `zensical.toml` for the site metadata and nav
+and reads the referenced pages under `docs/`, then writes the two files. It
+requires `python3` with the `tomllib` module (Python 3.11+) to parse the
+configuration; it exits non-zero with a structured error message if that
+prerequisite is missing or if a nav page cannot be found.
+
+The script is invoked in the same three contexts as `scripts/generate-docs.sh`
+(local pre-pull-request / pre-release verification, CI staleness check, and
+manual regeneration after editing docs).
+
 ## `scripts/generate-docs.sh`
 
 `scripts/generate-docs.sh` is the entry point for regenerating the API reference Markdown. It runs the godoc-to-Markdown generation tool and writes the output into `docs/reference/`.
@@ -154,6 +217,9 @@ The documentation workflow must:
 
 1. Install Zensical and the godoc-to-Markdown generation toolchain.
 2. Run source-to-Markdown generation for the Reference section.
-3. Run `zensical build` (or equivalent) to compile the full site.
-4. Fail the build if any broken internal links are detected.
-5. Publish the compiled site to GitHub Pages only on pushes to the default branch or release tags (not on pull requests).
+3. Run `scripts/generate-llms.sh` to regenerate the `llms.txt` discovery files.
+4. Fail the build if the regenerated Reference Markdown or `llms.txt` files
+   differ from what is committed (a staleness check).
+5. Run `zensical build` (or equivalent) to compile the full site.
+6. Fail the build if any broken internal links are detected.
+7. Publish the compiled site to GitHub Pages only on pushes to the default branch or release tags (not on pull requests).
