@@ -81,6 +81,17 @@ for pkg in "${packages[@]}"; do
     --repository.path "$REPO_DOC_PATH" \
     --output "$out" "$pkg" || fail "gomarkdoc failed for ${pkg}"
 
+  # Un-escape parentheses. gomarkdoc targets GitHub-flavored Markdown and
+  # defensively backslash-escapes parentheses in headings and link text (e.g.
+  # `func \(BlBoolean\) IsNull`). GitHub renders `\(` as a bare `(`, but
+  # Zensical's Markdown engine leaves the backslash in heading plain text, so
+  # the literal `\(` `\)` leak into the rendered page. Parentheses carry no
+  # Markdown meaning in the positions they appear here (real link destinations
+  # use the un-escaped `](<#anchor>)` form), so stripping the escape is safe.
+  # Scoped to parentheses only: brackets, angle brackets and backticks are
+  # load-bearing inside link text and code spans and are left untouched.
+  sed -i 's/\\(/(/g; s/\\)/)/g' "$out"
+
   # Prepend the generated-file banner.
   tmp="$(mktemp)"
   { printf '%s\n\n' "$GENERATED_BANNER"; cat "$out"; } >"$tmp"

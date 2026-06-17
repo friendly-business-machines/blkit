@@ -189,6 +189,8 @@ manual regeneration after editing docs).
 
 `scripts/generate-docs.sh` is the entry point for regenerating the API reference Markdown. It runs the godoc-to-Markdown generation tool and writes the output into `docs/reference/`.
 
+The generation tool targets GitHub-flavored Markdown and defensively backslash-escapes parentheses in headings and link text (e.g. `func \(BlBoolean\) IsNull`). GitHub renders `\(` as a bare `(`, but Zensical's Markdown engine leaves the backslash in heading plain text, so the literal slashes would otherwise leak into the rendered page. The script therefore post-processes each generated file to un-escape parentheses (`\(` → `(`, `\)` → `)`). This is scoped to parentheses only: they carry no Markdown meaning in the positions they appear here, whereas brackets, angle brackets and backticks are load-bearing inside link text and code spans and must remain escaped.
+
 The script is invoked in three contexts:
 
 - **Locally** — by `scripts/create-pull-request.sh` and `scripts/create-release.sh` as part of the docs regen verification step, to check that committed reference docs are not stale.

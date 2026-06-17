@@ -11,197 +11,197 @@ import "github.com/friendly-business-machines/blkit/core"
 ## Index
 
 - [type BlBoolean](<#BlBoolean>)
-  - [func Boolean\[T BooleanInput\]\(v T\) \(BlBoolean, error\)](<#Boolean>)
-  - [func \(b BlBoolean\) Equal\(other BlValue\) BlValue](<#BlBoolean.Equal>)
-  - [func \(BlBoolean\) IsNull\(\) bool](<#BlBoolean.IsNull>)
-  - [func \(b BlBoolean\) Native\(\) bool](<#BlBoolean.Native>)
-  - [func \(b BlBoolean\) String\(\) string](<#BlBoolean.String>)
-  - [func \(BlBoolean\) Type\(\) Type](<#BlBoolean.Type>)
+  - [func Boolean\[T BooleanInput\](v T) (BlBoolean, error)](<#Boolean>)
+  - [func (b BlBoolean) Equal(other BlValue) BlValue](<#BlBoolean.Equal>)
+  - [func (BlBoolean) IsNull() bool](<#BlBoolean.IsNull>)
+  - [func (b BlBoolean) Native() bool](<#BlBoolean.Native>)
+  - [func (b BlBoolean) String() string](<#BlBoolean.String>)
+  - [func (BlBoolean) Type() Type](<#BlBoolean.Type>)
 - [type BlCalendar](<#BlCalendar>)
-  - [func Calendar\(entries \[\]BlCalendarEntry, opts ...CalendarOption\) \(BlCalendar, error\)](<#Calendar>)
-  - [func ImportICal\(r io.Reader, opts ...ICalOption\) \(BlCalendar, error\)](<#ImportICal>)
-  - [func \(c BlCalendar\) Entries\(\) \[\]BlCalendarEntry](<#BlCalendar.Entries>)
-  - [func \(c BlCalendar\) Equal\(other BlValue\) BlValue](<#BlCalendar.Equal>)
-  - [func \(BlCalendar\) IsNull\(\) bool](<#BlCalendar.IsNull>)
-  - [func \(c BlCalendar\) String\(\) string](<#BlCalendar.String>)
-  - [func \(BlCalendar\) Type\(\) Type](<#BlCalendar.Type>)
-  - [func \(c BlCalendar\) ValidFrom\(\) BlValue](<#BlCalendar.ValidFrom>)
-  - [func \(c BlCalendar\) ValidTo\(\) BlValue](<#BlCalendar.ValidTo>)
+  - [func Calendar(entries \[\]BlCalendarEntry, opts ...CalendarOption) (BlCalendar, error)](<#Calendar>)
+  - [func ImportICal(r io.Reader, opts ...ICalOption) (BlCalendar, error)](<#ImportICal>)
+  - [func (c BlCalendar) Entries() \[\]BlCalendarEntry](<#BlCalendar.Entries>)
+  - [func (c BlCalendar) Equal(other BlValue) BlValue](<#BlCalendar.Equal>)
+  - [func (BlCalendar) IsNull() bool](<#BlCalendar.IsNull>)
+  - [func (c BlCalendar) String() string](<#BlCalendar.String>)
+  - [func (BlCalendar) Type() Type](<#BlCalendar.Type>)
+  - [func (c BlCalendar) ValidFrom() BlValue](<#BlCalendar.ValidFrom>)
+  - [func (c BlCalendar) ValidTo() BlValue](<#BlCalendar.ValidTo>)
 - [type BlCalendarEntry](<#BlCalendarEntry>)
-  - [func CalendarEntry\(value BlValue, name ...string\) BlCalendarEntry](<#CalendarEntry>)
-  - [func \(e BlCalendarEntry\) Equal\(other BlValue\) BlValue](<#BlCalendarEntry.Equal>)
-  - [func \(BlCalendarEntry\) IsNull\(\) bool](<#BlCalendarEntry.IsNull>)
-  - [func \(e BlCalendarEntry\) Name\(\) \(string, bool\)](<#BlCalendarEntry.Name>)
-  - [func \(e BlCalendarEntry\) String\(\) string](<#BlCalendarEntry.String>)
-  - [func \(BlCalendarEntry\) Type\(\) Type](<#BlCalendarEntry.Type>)
-  - [func \(e BlCalendarEntry\) Value\(\) BlValue](<#BlCalendarEntry.Value>)
+  - [func CalendarEntry(value BlValue, name ...string) BlCalendarEntry](<#CalendarEntry>)
+  - [func (e BlCalendarEntry) Equal(other BlValue) BlValue](<#BlCalendarEntry.Equal>)
+  - [func (BlCalendarEntry) IsNull() bool](<#BlCalendarEntry.IsNull>)
+  - [func (e BlCalendarEntry) Name() (string, bool)](<#BlCalendarEntry.Name>)
+  - [func (e BlCalendarEntry) String() string](<#BlCalendarEntry.String>)
+  - [func (BlCalendarEntry) Type() Type](<#BlCalendarEntry.Type>)
+  - [func (e BlCalendarEntry) Value() BlValue](<#BlCalendarEntry.Value>)
 - [type BlDate](<#BlDate>)
-  - [func Date\[T DateInput\]\(v T\) \(BlDate, error\)](<#Date>)
-  - [func Today\(\) BlDate](<#Today>)
-  - [func \(d BlDate\) Equal\(other BlValue\) BlValue](<#BlDate.Equal>)
-  - [func \(d BlDate\) IsNaive\(\) bool](<#BlDate.IsNaive>)
-  - [func \(BlDate\) IsNull\(\) bool](<#BlDate.IsNull>)
-  - [func \(d BlDate\) String\(\) string](<#BlDate.String>)
-  - [func \(d BlDate\) Time\(\) time.Time](<#BlDate.Time>)
-  - [func \(BlDate\) Type\(\) Type](<#BlDate.Type>)
+  - [func Date\[T DateInput\](v T) (BlDate, error)](<#Date>)
+  - [func Today() BlDate](<#Today>)
+  - [func (d BlDate) Equal(other BlValue) BlValue](<#BlDate.Equal>)
+  - [func (d BlDate) IsNaive() bool](<#BlDate.IsNaive>)
+  - [func (BlDate) IsNull() bool](<#BlDate.IsNull>)
+  - [func (d BlDate) String() string](<#BlDate.String>)
+  - [func (d BlDate) Time() time.Time](<#BlDate.Time>)
+  - [func (BlDate) Type() Type](<#BlDate.Type>)
 - [type BlDateTime](<#BlDateTime>)
-  - [func DateTime\[T DateTimeInput\]\(v T\) \(BlDateTime, error\)](<#DateTime>)
-  - [func Now\(\) BlDateTime](<#Now>)
-  - [func \(dt BlDateTime\) Equal\(other BlValue\) BlValue](<#BlDateTime.Equal>)
-  - [func \(dt BlDateTime\) IsNaive\(\) bool](<#BlDateTime.IsNaive>)
-  - [func \(BlDateTime\) IsNull\(\) bool](<#BlDateTime.IsNull>)
-  - [func \(dt BlDateTime\) String\(\) string](<#BlDateTime.String>)
-  - [func \(dt BlDateTime\) Time\(\) time.Time](<#BlDateTime.Time>)
-  - [func \(BlDateTime\) Type\(\) Type](<#BlDateTime.Type>)
+  - [func DateTime\[T DateTimeInput\](v T) (BlDateTime, error)](<#DateTime>)
+  - [func Now() BlDateTime](<#Now>)
+  - [func (dt BlDateTime) Equal(other BlValue) BlValue](<#BlDateTime.Equal>)
+  - [func (dt BlDateTime) IsNaive() bool](<#BlDateTime.IsNaive>)
+  - [func (BlDateTime) IsNull() bool](<#BlDateTime.IsNull>)
+  - [func (dt BlDateTime) String() string](<#BlDateTime.String>)
+  - [func (dt BlDateTime) Time() time.Time](<#BlDateTime.Time>)
+  - [func (BlDateTime) Type() Type](<#BlDateTime.Type>)
 - [type BlDaysTimeDuration](<#BlDaysTimeDuration>)
-  - [func DTDuration\[T DTDurationInput\]\(v T\) \(BlDaysTimeDuration, error\)](<#DTDuration>)
-  - [func \(d BlDaysTimeDuration\) Days\(\) int](<#BlDaysTimeDuration.Days>)
-  - [func \(d BlDaysTimeDuration\) Equal\(other BlValue\) BlValue](<#BlDaysTimeDuration.Equal>)
-  - [func \(d BlDaysTimeDuration\) Hours\(\) int](<#BlDaysTimeDuration.Hours>)
-  - [func \(BlDaysTimeDuration\) IsNull\(\) bool](<#BlDaysTimeDuration.IsNull>)
-  - [func \(d BlDaysTimeDuration\) Minutes\(\) int](<#BlDaysTimeDuration.Minutes>)
-  - [func \(d BlDaysTimeDuration\) NativeDuration\(\) time.Duration](<#BlDaysTimeDuration.NativeDuration>)
-  - [func \(d BlDaysTimeDuration\) Seconds\(\) decimal.Decimal](<#BlDaysTimeDuration.Seconds>)
-  - [func \(d BlDaysTimeDuration\) String\(\) string](<#BlDaysTimeDuration.String>)
-  - [func \(d BlDaysTimeDuration\) TotalSeconds\(\) decimal.Decimal](<#BlDaysTimeDuration.TotalSeconds>)
-  - [func \(BlDaysTimeDuration\) Type\(\) Type](<#BlDaysTimeDuration.Type>)
+  - [func DTDuration\[T DTDurationInput\](v T) (BlDaysTimeDuration, error)](<#DTDuration>)
+  - [func (d BlDaysTimeDuration) Days() int](<#BlDaysTimeDuration.Days>)
+  - [func (d BlDaysTimeDuration) Equal(other BlValue) BlValue](<#BlDaysTimeDuration.Equal>)
+  - [func (d BlDaysTimeDuration) Hours() int](<#BlDaysTimeDuration.Hours>)
+  - [func (BlDaysTimeDuration) IsNull() bool](<#BlDaysTimeDuration.IsNull>)
+  - [func (d BlDaysTimeDuration) Minutes() int](<#BlDaysTimeDuration.Minutes>)
+  - [func (d BlDaysTimeDuration) NativeDuration() time.Duration](<#BlDaysTimeDuration.NativeDuration>)
+  - [func (d BlDaysTimeDuration) Seconds() decimal.Decimal](<#BlDaysTimeDuration.Seconds>)
+  - [func (d BlDaysTimeDuration) String() string](<#BlDaysTimeDuration.String>)
+  - [func (d BlDaysTimeDuration) TotalSeconds() decimal.Decimal](<#BlDaysTimeDuration.TotalSeconds>)
+  - [func (BlDaysTimeDuration) Type() Type](<#BlDaysTimeDuration.Type>)
 - [type BlDictionary](<#BlDictionary>)
-  - [func Dictionary\(entries map\[string\]BlValue\) \(BlDictionary, error\)](<#Dictionary>)
-  - [func \(d BlDictionary\) Equal\(other BlValue\) BlValue](<#BlDictionary.Equal>)
-  - [func \(BlDictionary\) IsNull\(\) bool](<#BlDictionary.IsNull>)
-  - [func \(d BlDictionary\) Native\(\) map\[string\]BlValue](<#BlDictionary.Native>)
-  - [func \(d BlDictionary\) String\(\) string](<#BlDictionary.String>)
-  - [func \(BlDictionary\) Type\(\) Type](<#BlDictionary.Type>)
+  - [func Dictionary(entries map\[string\]BlValue) (BlDictionary, error)](<#Dictionary>)
+  - [func (d BlDictionary) Equal(other BlValue) BlValue](<#BlDictionary.Equal>)
+  - [func (BlDictionary) IsNull() bool](<#BlDictionary.IsNull>)
+  - [func (d BlDictionary) Native() map\[string\]BlValue](<#BlDictionary.Native>)
+  - [func (d BlDictionary) String() string](<#BlDictionary.String>)
+  - [func (BlDictionary) Type() Type](<#BlDictionary.Type>)
 - [type BlExpr](<#BlExpr>)
-  - [func Expr\(source string, schema BlSchema\) \(BlExpr, error\)](<#Expr>)
-  - [func UnaryTest\(source string, inputType Type\) \(BlExpr, error\)](<#UnaryTest>)
+  - [func Expr(source string, schema BlSchema) (BlExpr, error)](<#Expr>)
+  - [func UnaryTest(source string, inputType Type) (BlExpr, error)](<#UnaryTest>)
 - [type BlFunc](<#BlFunc>)
-  - [func \(f BlFunc\) Apply\(args \[\]BlValue\) \(BlValue, error\)](<#BlFunc.Apply>)
-  - [func \(f BlFunc\) Equal\(other BlValue\) BlValue](<#BlFunc.Equal>)
-  - [func \(BlFunc\) IsNull\(\) bool](<#BlFunc.IsNull>)
-  - [func \(f BlFunc\) Params\(\) \[\]string](<#BlFunc.Params>)
-  - [func \(f BlFunc\) String\(\) string](<#BlFunc.String>)
-  - [func \(BlFunc\) Type\(\) Type](<#BlFunc.Type>)
+  - [func (f BlFunc) Apply(args \[\]BlValue) (BlValue, error)](<#BlFunc.Apply>)
+  - [func (f BlFunc) Equal(other BlValue) BlValue](<#BlFunc.Equal>)
+  - [func (BlFunc) IsNull() bool](<#BlFunc.IsNull>)
+  - [func (f BlFunc) Params() \[\]string](<#BlFunc.Params>)
+  - [func (f BlFunc) String() string](<#BlFunc.String>)
+  - [func (BlFunc) Type() Type](<#BlFunc.Type>)
 - [type BlList](<#BlList>)
-  - [func List\(items ...BlValue\) BlList](<#List>)
-  - [func \(l BlList\) Equal\(other BlValue\) BlValue](<#BlList.Equal>)
-  - [func \(BlList\) IsNull\(\) bool](<#BlList.IsNull>)
-  - [func \(l BlList\) Native\(\) \[\]BlValue](<#BlList.Native>)
-  - [func \(l BlList\) String\(\) string](<#BlList.String>)
-  - [func \(BlList\) Type\(\) Type](<#BlList.Type>)
+  - [func List(items ...BlValue) BlList](<#List>)
+  - [func (l BlList) Equal(other BlValue) BlValue](<#BlList.Equal>)
+  - [func (BlList) IsNull() bool](<#BlList.IsNull>)
+  - [func (l BlList) Native() \[\]BlValue](<#BlList.Native>)
+  - [func (l BlList) String() string](<#BlList.String>)
+  - [func (BlList) Type() Type](<#BlList.Type>)
 - [type BlNull](<#BlNull>)
-  - [func Null\(\) BlNull](<#Null>)
-  - [func \(BlNull\) Equal\(BlValue\) BlValue](<#BlNull.Equal>)
-  - [func \(BlNull\) IsNull\(\) bool](<#BlNull.IsNull>)
-  - [func \(BlNull\) String\(\) string](<#BlNull.String>)
-  - [func \(BlNull\) Type\(\) Type](<#BlNull.Type>)
+  - [func Null() BlNull](<#Null>)
+  - [func (BlNull) Equal(BlValue) BlValue](<#BlNull.Equal>)
+  - [func (BlNull) IsNull() bool](<#BlNull.IsNull>)
+  - [func (BlNull) String() string](<#BlNull.String>)
+  - [func (BlNull) Type() Type](<#BlNull.Type>)
 - [type BlNumber](<#BlNumber>)
-  - [func Number\[T NumberInput\]\(v T\) \(BlNumber, error\)](<#Number>)
-  - [func \(n BlNumber\) Decimal\(\) decimal.Decimal](<#BlNumber.Decimal>)
-  - [func \(n BlNumber\) Equal\(other BlValue\) BlValue](<#BlNumber.Equal>)
-  - [func \(BlNumber\) IsNull\(\) bool](<#BlNumber.IsNull>)
-  - [func \(n BlNumber\) String\(\) string](<#BlNumber.String>)
-  - [func \(BlNumber\) Type\(\) Type](<#BlNumber.Type>)
+  - [func Number\[T NumberInput\](v T) (BlNumber, error)](<#Number>)
+  - [func (n BlNumber) Decimal() decimal.Decimal](<#BlNumber.Decimal>)
+  - [func (n BlNumber) Equal(other BlValue) BlValue](<#BlNumber.Equal>)
+  - [func (BlNumber) IsNull() bool](<#BlNumber.IsNull>)
+  - [func (n BlNumber) String() string](<#BlNumber.String>)
+  - [func (BlNumber) Type() Type](<#BlNumber.Type>)
 - [type BlRange](<#BlRange>)
-  - [func Range\(start, end BlValue, startIncluded, endIncluded bool\) \(BlRange, error\)](<#Range>)
-  - [func \(r BlRange\) End\(\) BlValue](<#BlRange.End>)
-  - [func \(r BlRange\) EndIncluded\(\) bool](<#BlRange.EndIncluded>)
-  - [func \(r BlRange\) Equal\(other BlValue\) BlValue](<#BlRange.Equal>)
-  - [func \(BlRange\) IsNull\(\) bool](<#BlRange.IsNull>)
-  - [func \(r BlRange\) Start\(\) BlValue](<#BlRange.Start>)
-  - [func \(r BlRange\) StartIncluded\(\) bool](<#BlRange.StartIncluded>)
-  - [func \(r BlRange\) String\(\) string](<#BlRange.String>)
-  - [func \(BlRange\) Type\(\) Type](<#BlRange.Type>)
+  - [func Range(start, end BlValue, startIncluded, endIncluded bool) (BlRange, error)](<#Range>)
+  - [func (r BlRange) End() BlValue](<#BlRange.End>)
+  - [func (r BlRange) EndIncluded() bool](<#BlRange.EndIncluded>)
+  - [func (r BlRange) Equal(other BlValue) BlValue](<#BlRange.Equal>)
+  - [func (BlRange) IsNull() bool](<#BlRange.IsNull>)
+  - [func (r BlRange) Start() BlValue](<#BlRange.Start>)
+  - [func (r BlRange) StartIncluded() bool](<#BlRange.StartIncluded>)
+  - [func (r BlRange) String() string](<#BlRange.String>)
+  - [func (BlRange) Type() Type](<#BlRange.Type>)
 - [type BlRegex](<#BlRegex>)
-  - [func Pattern\(source string\) \(BlRegex, error\)](<#Pattern>)
-  - [func \(r BlRegex\) Equal\(other BlValue\) BlValue](<#BlRegex.Equal>)
-  - [func \(BlRegex\) IsNull\(\) bool](<#BlRegex.IsNull>)
-  - [func \(r BlRegex\) Native\(\) \*regexp.Regexp](<#BlRegex.Native>)
-  - [func \(r BlRegex\) Source\(\) string](<#BlRegex.Source>)
-  - [func \(r BlRegex\) String\(\) string](<#BlRegex.String>)
-  - [func \(BlRegex\) Type\(\) Type](<#BlRegex.Type>)
+  - [func Pattern(source string) (BlRegex, error)](<#Pattern>)
+  - [func (r BlRegex) Equal(other BlValue) BlValue](<#BlRegex.Equal>)
+  - [func (BlRegex) IsNull() bool](<#BlRegex.IsNull>)
+  - [func (r BlRegex) Native() \*regexp.Regexp](<#BlRegex.Native>)
+  - [func (r BlRegex) Source() string](<#BlRegex.Source>)
+  - [func (r BlRegex) String() string](<#BlRegex.String>)
+  - [func (BlRegex) Type() Type](<#BlRegex.Type>)
 - [type BlSchema](<#BlSchema>)
-  - [func Schema\(fields ...Field\) \(BlSchema, error\)](<#Schema>)
-  - [func \(s BlSchema\) ValidateInput\(v BlValue\) error](<#BlSchema.ValidateInput>)
-  - [func \(s BlSchema\) ValidateOutput\(v BlValue\) error](<#BlSchema.ValidateOutput>)
+  - [func Schema(fields ...Field) (BlSchema, error)](<#Schema>)
+  - [func (s BlSchema) ValidateInput(v BlValue) error](<#BlSchema.ValidateInput>)
+  - [func (s BlSchema) ValidateOutput(v BlValue) error](<#BlSchema.ValidateOutput>)
 - [type BlSortKey](<#BlSortKey>)
-  - [func \(BlSortKey\) Equal\(BlValue\) BlValue](<#BlSortKey.Equal>)
-  - [func \(BlSortKey\) IsNull\(\) bool](<#BlSortKey.IsNull>)
-  - [func \(k BlSortKey\) String\(\) string](<#BlSortKey.String>)
-  - [func \(BlSortKey\) Type\(\) Type](<#BlSortKey.Type>)
+  - [func (BlSortKey) Equal(BlValue) BlValue](<#BlSortKey.Equal>)
+  - [func (BlSortKey) IsNull() bool](<#BlSortKey.IsNull>)
+  - [func (k BlSortKey) String() string](<#BlSortKey.String>)
+  - [func (BlSortKey) Type() Type](<#BlSortKey.Type>)
 - [type BlString](<#BlString>)
-  - [func String\[T StringInput\]\(v T\) \(BlString, error\)](<#String>)
-  - [func \(s BlString\) Equal\(other BlValue\) BlValue](<#BlString.Equal>)
-  - [func \(BlString\) IsNull\(\) bool](<#BlString.IsNull>)
-  - [func \(s BlString\) Native\(\) string](<#BlString.Native>)
-  - [func \(s BlString\) String\(\) string](<#BlString.String>)
-  - [func \(BlString\) Type\(\) Type](<#BlString.Type>)
+  - [func String\[T StringInput\](v T) (BlString, error)](<#String>)
+  - [func (s BlString) Equal(other BlValue) BlValue](<#BlString.Equal>)
+  - [func (BlString) IsNull() bool](<#BlString.IsNull>)
+  - [func (s BlString) Native() string](<#BlString.Native>)
+  - [func (s BlString) String() string](<#BlString.String>)
+  - [func (BlString) Type() Type](<#BlString.Type>)
 - [type BlTable](<#BlTable>)
-  - [func Table\(columns Cols, rows ...Row\) \(BlTable, error\)](<#Table>)
-  - [func \(t BlTable\) Columns\(\) \[\]string](<#BlTable.Columns>)
-  - [func \(t BlTable\) Equal\(other BlValue\) BlValue](<#BlTable.Equal>)
-  - [func \(BlTable\) IsNull\(\) bool](<#BlTable.IsNull>)
-  - [func \(t BlTable\) NCols\(\) int](<#BlTable.NCols>)
-  - [func \(t BlTable\) NRows\(\) int](<#BlTable.NRows>)
-  - [func \(t BlTable\) Rows\(\) \[\]BlDictionary](<#BlTable.Rows>)
-  - [func \(t BlTable\) String\(\) string](<#BlTable.String>)
-  - [func \(BlTable\) Type\(\) Type](<#BlTable.Type>)
+  - [func Table(columns Cols, rows ...Row) (BlTable, error)](<#Table>)
+  - [func (t BlTable) Columns() \[\]string](<#BlTable.Columns>)
+  - [func (t BlTable) Equal(other BlValue) BlValue](<#BlTable.Equal>)
+  - [func (BlTable) IsNull() bool](<#BlTable.IsNull>)
+  - [func (t BlTable) NCols() int](<#BlTable.NCols>)
+  - [func (t BlTable) NRows() int](<#BlTable.NRows>)
+  - [func (t BlTable) Rows() \[\]BlDictionary](<#BlTable.Rows>)
+  - [func (t BlTable) String() string](<#BlTable.String>)
+  - [func (BlTable) Type() Type](<#BlTable.Type>)
 - [type BlTime](<#BlTime>)
-  - [func Time\[T TimeInput\]\(v T\) \(BlTime, error\)](<#Time>)
-  - [func \(t BlTime\) Equal\(other BlValue\) BlValue](<#BlTime.Equal>)
-  - [func \(t BlTime\) IsNaive\(\) bool](<#BlTime.IsNaive>)
-  - [func \(BlTime\) IsNull\(\) bool](<#BlTime.IsNull>)
-  - [func \(t BlTime\) Native\(\) time.Time](<#BlTime.Native>)
-  - [func \(t BlTime\) String\(\) string](<#BlTime.String>)
-  - [func \(BlTime\) Type\(\) Type](<#BlTime.Type>)
+  - [func Time\[T TimeInput\](v T) (BlTime, error)](<#Time>)
+  - [func (t BlTime) Equal(other BlValue) BlValue](<#BlTime.Equal>)
+  - [func (t BlTime) IsNaive() bool](<#BlTime.IsNaive>)
+  - [func (BlTime) IsNull() bool](<#BlTime.IsNull>)
+  - [func (t BlTime) Native() time.Time](<#BlTime.Native>)
+  - [func (t BlTime) String() string](<#BlTime.String>)
+  - [func (BlTime) Type() Type](<#BlTime.Type>)
 - [type BlValue](<#BlValue>)
 - [type BlYearsMonthsDuration](<#BlYearsMonthsDuration>)
-  - [func YMDuration\[T YMDurationInput\]\(v T\) \(BlYearsMonthsDuration, error\)](<#YMDuration>)
-  - [func \(d BlYearsMonthsDuration\) Equal\(other BlValue\) BlValue](<#BlYearsMonthsDuration.Equal>)
-  - [func \(BlYearsMonthsDuration\) IsNull\(\) bool](<#BlYearsMonthsDuration.IsNull>)
-  - [func \(d BlYearsMonthsDuration\) Months\(\) decimal.Decimal](<#BlYearsMonthsDuration.Months>)
-  - [func \(d BlYearsMonthsDuration\) String\(\) string](<#BlYearsMonthsDuration.String>)
-  - [func \(d BlYearsMonthsDuration\) TotalMonths\(\) decimal.Decimal](<#BlYearsMonthsDuration.TotalMonths>)
-  - [func \(BlYearsMonthsDuration\) Type\(\) Type](<#BlYearsMonthsDuration.Type>)
-  - [func \(d BlYearsMonthsDuration\) Years\(\) int](<#BlYearsMonthsDuration.Years>)
+  - [func YMDuration\[T YMDurationInput\](v T) (BlYearsMonthsDuration, error)](<#YMDuration>)
+  - [func (d BlYearsMonthsDuration) Equal(other BlValue) BlValue](<#BlYearsMonthsDuration.Equal>)
+  - [func (BlYearsMonthsDuration) IsNull() bool](<#BlYearsMonthsDuration.IsNull>)
+  - [func (d BlYearsMonthsDuration) Months() decimal.Decimal](<#BlYearsMonthsDuration.Months>)
+  - [func (d BlYearsMonthsDuration) String() string](<#BlYearsMonthsDuration.String>)
+  - [func (d BlYearsMonthsDuration) TotalMonths() decimal.Decimal](<#BlYearsMonthsDuration.TotalMonths>)
+  - [func (BlYearsMonthsDuration) Type() Type](<#BlYearsMonthsDuration.Type>)
+  - [func (d BlYearsMonthsDuration) Years() int](<#BlYearsMonthsDuration.Years>)
 - [type BooleanInput](<#BooleanInput>)
 - [type CalendarOption](<#CalendarOption>)
-  - [func WithValidity\(r BlRange\) CalendarOption](<#WithValidity>)
+  - [func WithValidity(r BlRange) CalendarOption](<#WithValidity>)
 - [type CalendarRangeError](<#CalendarRangeError>)
-  - [func \(e \*CalendarRangeError\) Error\(\) string](<#CalendarRangeError.Error>)
+  - [func (e \*CalendarRangeError) Error() string](<#CalendarRangeError.Error>)
 - [type Col](<#Col>)
 - [type Cols](<#Cols>)
 - [type DHMSNumberInput](<#DHMSNumberInput>)
 - [type DTDurationInput](<#DTDurationInput>)
 - [type DateComponents](<#DateComponents>)
-  - [func ToDateComponentsAsNaive\(t time.Time\) DateComponents](<#ToDateComponentsAsNaive>)
+  - [func ToDateComponentsAsNaive(t time.Time) DateComponents](<#ToDateComponentsAsNaive>)
 - [type DateInput](<#DateInput>)
 - [type DateTimeComponents](<#DateTimeComponents>)
-  - [func ToDateTimeComponentsAsNaive\(t time.Time\) DateTimeComponents](<#ToDateTimeComponentsAsNaive>)
+  - [func ToDateTimeComponentsAsNaive(t time.Time) DateTimeComponents](<#ToDateTimeComponentsAsNaive>)
 - [type DateTimeInput](<#DateTimeInput>)
 - [type Field](<#Field>)
 - [type ICalOption](<#ICalOption>)
-  - [func WithICalExpansionWindow\(r BlRange\) ICalOption](<#WithICalExpansionWindow>)
-  - [func WithICalStrict\(strict bool\) ICalOption](<#WithICalStrict>)
-  - [func WithICalValidity\(r BlRange\) ICalOption](<#WithICalValidity>)
+  - [func WithICalExpansionWindow(r BlRange) ICalOption](<#WithICalExpansionWindow>)
+  - [func WithICalStrict(strict bool) ICalOption](<#WithICalStrict>)
+  - [func WithICalValidity(r BlRange) ICalOption](<#WithICalValidity>)
 - [type NumberInput](<#NumberInput>)
 - [type ParseError](<#ParseError>)
-  - [func \(e \*ParseError\) Error\(\) string](<#ParseError.Error>)
-  - [func \(e \*ParseError\) Unwrap\(\) error](<#ParseError.Unwrap>)
+  - [func (e \*ParseError) Error() string](<#ParseError.Error>)
+  - [func (e \*ParseError) Unwrap() error](<#ParseError.Unwrap>)
 - [type RegexError](<#RegexError>)
-  - [func \(e \*RegexError\) Error\(\) string](<#RegexError.Error>)
-  - [func \(e \*RegexError\) Unwrap\(\) error](<#RegexError.Unwrap>)
+  - [func (e \*RegexError) Error() string](<#RegexError.Error>)
+  - [func (e \*RegexError) Unwrap() error](<#RegexError.Unwrap>)
 - [type Row](<#Row>)
 - [type SchemaError](<#SchemaError>)
-  - [func \(e \*SchemaError\) Error\(\) string](<#SchemaError.Error>)
-  - [func \(e \*SchemaError\) Unwrap\(\) error](<#SchemaError.Unwrap>)
+  - [func (e \*SchemaError) Error() string](<#SchemaError.Error>)
+  - [func (e \*SchemaError) Unwrap() error](<#SchemaError.Unwrap>)
 - [type StringInput](<#StringInput>)
 - [type TimeComponents](<#TimeComponents>)
-  - [func ToTimeComponentsAsNaive\(t time.Time\) TimeComponents](<#ToTimeComponentsAsNaive>)
+  - [func ToTimeComponentsAsNaive(t time.Time) TimeComponents](<#ToTimeComponentsAsNaive>)
 - [type TimeInput](<#TimeInput>)
 - [type Type](<#Type>)
 - [type TypeError](<#TypeError>)
-  - [func \(e \*TypeError\) Error\(\) string](<#TypeError.Error>)
+  - [func (e \*TypeError) Error() string](<#TypeError.Error>)
 - [type YMDurationInput](<#YMDurationInput>)
 - [type YMNumberInput](<#YMNumberInput>)
 
@@ -224,10 +224,10 @@ type BlBoolean struct {
 func Boolean[T BooleanInput](v T) (BlBoolean, error)
 ```
 
-Boolean constructs a BlBoolean from a Go bool \(direct\), any integer \(0→false, non\-zero→true\), or a case\-insensitive "true"/"false" string. The error fires only for an unrecognised string.
+Boolean constructs a BlBoolean from a Go bool (direct), any integer (0→false, non\-zero→true), or a case\-insensitive "true"/"false" string. The error fires only for an unrecognised string.
 
 <a name="BlBoolean.Equal"></a>
-### func \(BlBoolean\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/boolean.go#L16>)
+### func (BlBoolean) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/boolean.go#L16>)
 
 ```go
 func (b BlBoolean) Equal(other BlValue) BlValue
@@ -236,7 +236,7 @@ func (b BlBoolean) Equal(other BlValue) BlValue
 
 
 <a name="BlBoolean.IsNull"></a>
-### func \(BlBoolean\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/boolean.go#L31>)
+### func (BlBoolean) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/boolean.go#L31>)
 
 ```go
 func (BlBoolean) IsNull() bool
@@ -245,7 +245,7 @@ func (BlBoolean) IsNull() bool
 
 
 <a name="BlBoolean.Native"></a>
-### func \(BlBoolean\) [Native](<https://github.com/friendly-business-machines/blkit/blob/main/core/boolean.go#L36>)
+### func (BlBoolean) [Native](<https://github.com/friendly-business-machines/blkit/blob/main/core/boolean.go#L36>)
 
 ```go
 func (b BlBoolean) Native() bool
@@ -254,7 +254,7 @@ func (b BlBoolean) Native() bool
 Native hands the underlying Go bool back to host code.
 
 <a name="BlBoolean.String"></a>
-### func \(BlBoolean\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/boolean.go#L24>)
+### func (BlBoolean) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/boolean.go#L24>)
 
 ```go
 func (b BlBoolean) String() string
@@ -263,7 +263,7 @@ func (b BlBoolean) String() string
 
 
 <a name="BlBoolean.Type"></a>
-### func \(BlBoolean\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/boolean.go#L14>)
+### func (BlBoolean) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/boolean.go#L14>)
 
 ```go
 func (BlBoolean) Type() Type
@@ -289,7 +289,7 @@ type BlCalendar struct {
 func Calendar(entries []BlCalendarEntry, opts ...CalendarOption) (BlCalendar, error)
 ```
 
-Calendar builds a calendar from entries \(sorted into canonical chronological order\) plus options. A non\-temporal entry value → error.
+Calendar builds a calendar from entries (sorted into canonical chronological order) plus options. A non\-temporal entry value → error.
 
 <a name="ImportICal"></a>
 ### func [ImportICal](<https://github.com/friendly-business-machines/blkit/blob/main/core/ical.go#L40>)
@@ -301,7 +301,7 @@ func ImportICal(r io.Reader, opts ...ICalOption) (BlCalendar, error)
 ImportICal parses an RFC 5545 iCalendar document into a BlCalendar. VEVENTs become point or range entries; SUMMARY becomes the entry name; RRULE/RDATE recurrences are expanded within the expansion window.
 
 <a name="BlCalendar.Entries"></a>
-### func \(BlCalendar\) [Entries](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L149>)
+### func (BlCalendar) [Entries](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L149>)
 
 ```go
 func (c BlCalendar) Entries() []BlCalendarEntry
@@ -310,7 +310,7 @@ func (c BlCalendar) Entries() []BlCalendarEntry
 Entries returns a defensive copy of the entries.
 
 <a name="BlCalendar.Equal"></a>
-### func \(BlCalendar\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L66>)
+### func (BlCalendar) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L66>)
 
 ```go
 func (c BlCalendar) Equal(other BlValue) BlValue
@@ -319,7 +319,7 @@ func (c BlCalendar) Equal(other BlValue) BlValue
 
 
 <a name="BlCalendar.IsNull"></a>
-### func \(BlCalendar\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L87>)
+### func (BlCalendar) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L87>)
 
 ```go
 func (BlCalendar) IsNull() bool
@@ -328,7 +328,7 @@ func (BlCalendar) IsNull() bool
 
 
 <a name="BlCalendar.String"></a>
-### func \(BlCalendar\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L79>)
+### func (BlCalendar) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L79>)
 
 ```go
 func (c BlCalendar) String() string
@@ -337,7 +337,7 @@ func (c BlCalendar) String() string
 
 
 <a name="BlCalendar.Type"></a>
-### func \(BlCalendar\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L64>)
+### func (BlCalendar) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L64>)
 
 ```go
 func (BlCalendar) Type() Type
@@ -346,7 +346,7 @@ func (BlCalendar) Type() Type
 
 
 <a name="BlCalendar.ValidFrom"></a>
-### func \(BlCalendar\) [ValidFrom](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L150>)
+### func (BlCalendar) [ValidFrom](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L150>)
 
 ```go
 func (c BlCalendar) ValidFrom() BlValue
@@ -355,7 +355,7 @@ func (c BlCalendar) ValidFrom() BlValue
 
 
 <a name="BlCalendar.ValidTo"></a>
-### func \(BlCalendar\) [ValidTo](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L151>)
+### func (BlCalendar) [ValidTo](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L151>)
 
 ```go
 func (c BlCalendar) ValidTo() BlValue
@@ -366,7 +366,7 @@ func (c BlCalendar) ValidTo() BlValue
 <a name="BlCalendarEntry"></a>
 ## type [BlCalendarEntry](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L12-L15>)
 
-BlCalendarEntry is an immutable \(optional\-name, temporal\-value\) pair.
+BlCalendarEntry is an immutable (optional\-name, temporal\-value) pair.
 
 ```go
 type BlCalendarEntry struct {
@@ -384,7 +384,7 @@ func CalendarEntry(value BlValue, name ...string) BlCalendarEntry
 CalendarEntry builds an entry; validation is deferred to Calendar.
 
 <a name="BlCalendarEntry.Equal"></a>
-### func \(BlCalendarEntry\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L19>)
+### func (BlCalendarEntry) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L19>)
 
 ```go
 func (e BlCalendarEntry) Equal(other BlValue) BlValue
@@ -393,7 +393,7 @@ func (e BlCalendarEntry) Equal(other BlValue) BlValue
 
 
 <a name="BlCalendarEntry.IsNull"></a>
-### func \(BlCalendarEntry\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L35>)
+### func (BlCalendarEntry) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L35>)
 
 ```go
 func (BlCalendarEntry) IsNull() bool
@@ -402,7 +402,7 @@ func (BlCalendarEntry) IsNull() bool
 
 
 <a name="BlCalendarEntry.Name"></a>
-### func \(BlCalendarEntry\) [Name](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L39>)
+### func (BlCalendarEntry) [Name](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L39>)
 
 ```go
 func (e BlCalendarEntry) Name() (string, bool)
@@ -411,7 +411,7 @@ func (e BlCalendarEntry) Name() (string, bool)
 Name returns the entry's name and whether it is named.
 
 <a name="BlCalendarEntry.String"></a>
-### func \(BlCalendarEntry\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L28>)
+### func (BlCalendarEntry) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L28>)
 
 ```go
 func (e BlCalendarEntry) String() string
@@ -420,7 +420,7 @@ func (e BlCalendarEntry) String() string
 
 
 <a name="BlCalendarEntry.Type"></a>
-### func \(BlCalendarEntry\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L17>)
+### func (BlCalendarEntry) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L17>)
 
 ```go
 func (BlCalendarEntry) Type() Type
@@ -429,7 +429,7 @@ func (BlCalendarEntry) Type() Type
 
 
 <a name="BlCalendarEntry.Value"></a>
-### func \(BlCalendarEntry\) [Value](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L46>)
+### func (BlCalendarEntry) [Value](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L46>)
 
 ```go
 func (e BlCalendarEntry) Value() BlValue
@@ -467,7 +467,7 @@ func Today() BlDate
 Today returns the current date as a naive BlDate in the local zone.
 
 <a name="BlDate.Equal"></a>
-### func \(BlDate\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/date.go#L18>)
+### func (BlDate) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/date.go#L18>)
 
 ```go
 func (d BlDate) Equal(other BlValue) BlValue
@@ -476,7 +476,7 @@ func (d BlDate) Equal(other BlValue) BlValue
 
 
 <a name="BlDate.IsNaive"></a>
-### func \(BlDate\) [IsNaive](<https://github.com/friendly-business-machines/blkit/blob/main/core/date.go#L44>)
+### func (BlDate) [IsNaive](<https://github.com/friendly-business-machines/blkit/blob/main/core/date.go#L44>)
 
 ```go
 func (d BlDate) IsNaive() bool
@@ -485,7 +485,7 @@ func (d BlDate) IsNaive() bool
 IsNaive reports whether the value is timezone\-naive.
 
 <a name="BlDate.IsNull"></a>
-### func \(BlDate\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/date.go#L36>)
+### func (BlDate) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/date.go#L36>)
 
 ```go
 func (BlDate) IsNull() bool
@@ -494,7 +494,7 @@ func (BlDate) IsNull() bool
 
 
 <a name="BlDate.String"></a>
-### func \(BlDate\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/date.go#L32>)
+### func (BlDate) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/date.go#L32>)
 
 ```go
 func (d BlDate) String() string
@@ -503,16 +503,16 @@ func (d BlDate) String() string
 
 
 <a name="BlDate.Time"></a>
-### func \(BlDate\) [Time](<https://github.com/friendly-business-machines/blkit/blob/main/core/date.go#L41>)
+### func (BlDate) [Time](<https://github.com/friendly-business-machines/blkit/blob/main/core/date.go#L41>)
 
 ```go
 func (d BlDate) Time() time.Time
 ```
 
-Time returns the wrapped time.Time \(date portion meaningful\).
+Time returns the wrapped time.Time (date portion meaningful).
 
 <a name="BlDate.Type"></a>
-### func \(BlDate\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/date.go#L16>)
+### func (BlDate) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/date.go#L16>)
 
 ```go
 func (BlDate) Type() Type
@@ -550,7 +550,7 @@ func Now() BlDateTime
 Now returns the current moment as a non\-naive BlDateTime.
 
 <a name="BlDateTime.Equal"></a>
-### func \(BlDateTime\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/datetime.go#L20>)
+### func (BlDateTime) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/datetime.go#L20>)
 
 ```go
 func (dt BlDateTime) Equal(other BlValue) BlValue
@@ -559,7 +559,7 @@ func (dt BlDateTime) Equal(other BlValue) BlValue
 
 
 <a name="BlDateTime.IsNaive"></a>
-### func \(BlDateTime\) [IsNaive](<https://github.com/friendly-business-machines/blkit/blob/main/core/datetime.go#L54>)
+### func (BlDateTime) [IsNaive](<https://github.com/friendly-business-machines/blkit/blob/main/core/datetime.go#L54>)
 
 ```go
 func (dt BlDateTime) IsNaive() bool
@@ -568,7 +568,7 @@ func (dt BlDateTime) IsNaive() bool
 IsNaive reports whether the value is timezone\-naive.
 
 <a name="BlDateTime.IsNull"></a>
-### func \(BlDateTime\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/datetime.go#L46>)
+### func (BlDateTime) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/datetime.go#L46>)
 
 ```go
 func (BlDateTime) IsNull() bool
@@ -577,7 +577,7 @@ func (BlDateTime) IsNull() bool
 
 
 <a name="BlDateTime.String"></a>
-### func \(BlDateTime\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/datetime.go#L38>)
+### func (BlDateTime) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/datetime.go#L38>)
 
 ```go
 func (dt BlDateTime) String() string
@@ -586,7 +586,7 @@ func (dt BlDateTime) String() string
 
 
 <a name="BlDateTime.Time"></a>
-### func \(BlDateTime\) [Time](<https://github.com/friendly-business-machines/blkit/blob/main/core/datetime.go#L51>)
+### func (BlDateTime) [Time](<https://github.com/friendly-business-machines/blkit/blob/main/core/datetime.go#L51>)
 
 ```go
 func (dt BlDateTime) Time() time.Time
@@ -595,7 +595,7 @@ func (dt BlDateTime) Time() time.Time
 Time returns the wrapped time.Time.
 
 <a name="BlDateTime.Type"></a>
-### func \(BlDateTime\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/datetime.go#L18>)
+### func (BlDateTime) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/datetime.go#L18>)
 
 ```go
 func (BlDateTime) Type() Type
@@ -624,7 +624,7 @@ func DTDuration[T DTDurationInput](v T) (BlDaysTimeDuration, error)
 DTDuration constructs a BlDaysTimeDuration. See the spec for the full input matrix.
 
 <a name="BlDaysTimeDuration.Days"></a>
-### func \(BlDaysTimeDuration\) [Days](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L39>)
+### func (BlDaysTimeDuration) [Days](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L39>)
 
 ```go
 func (d BlDaysTimeDuration) Days() int
@@ -633,7 +633,7 @@ func (d BlDaysTimeDuration) Days() int
 Days returns the integer days portion, truncated toward zero, sign carried.
 
 <a name="BlDaysTimeDuration.Equal"></a>
-### func \(BlDaysTimeDuration\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L19>)
+### func (BlDaysTimeDuration) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L19>)
 
 ```go
 func (d BlDaysTimeDuration) Equal(other BlValue) BlValue
@@ -642,16 +642,16 @@ func (d BlDaysTimeDuration) Equal(other BlValue) BlValue
 
 
 <a name="BlDaysTimeDuration.Hours"></a>
-### func \(BlDaysTimeDuration\) [Hours](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L44>)
+### func (BlDaysTimeDuration) [Hours](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L44>)
 
 ```go
 func (d BlDaysTimeDuration) Hours() int
 ```
 
-Hours returns the hours remainder \(|h| \< 24\), same sign as the value.
+Hours returns the hours remainder (|h| \< 24), same sign as the value.
 
 <a name="BlDaysTimeDuration.IsNull"></a>
-### func \(BlDaysTimeDuration\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L29>)
+### func (BlDaysTimeDuration) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L29>)
 
 ```go
 func (BlDaysTimeDuration) IsNull() bool
@@ -660,16 +660,16 @@ func (BlDaysTimeDuration) IsNull() bool
 
 
 <a name="BlDaysTimeDuration.Minutes"></a>
-### func \(BlDaysTimeDuration\) [Minutes](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L51>)
+### func (BlDaysTimeDuration) [Minutes](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L51>)
 
 ```go
 func (d BlDaysTimeDuration) Minutes() int
 ```
 
-Minutes returns the minutes remainder \(|m| \< 60\), same sign as the value.
+Minutes returns the minutes remainder (|m| \< 60), same sign as the value.
 
 <a name="BlDaysTimeDuration.NativeDuration"></a>
-### func \(BlDaysTimeDuration\) [NativeDuration](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L67>)
+### func (BlDaysTimeDuration) [NativeDuration](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L67>)
 
 ```go
 func (d BlDaysTimeDuration) NativeDuration() time.Duration
@@ -678,16 +678,16 @@ func (d BlDaysTimeDuration) NativeDuration() time.Duration
 NativeDuration hands back a time.Duration, saturating at its ±290y bounds.
 
 <a name="BlDaysTimeDuration.Seconds"></a>
-### func \(BlDaysTimeDuration\) [Seconds](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L58>)
+### func (BlDaysTimeDuration) [Seconds](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L58>)
 
 ```go
 func (d BlDaysTimeDuration) Seconds() decimal.Decimal
 ```
 
-Seconds returns the seconds remainder \(|s| \< 60\), possibly fractional, same sign.
+Seconds returns the seconds remainder (|s| \< 60), possibly fractional, same sign.
 
 <a name="BlDaysTimeDuration.String"></a>
-### func \(BlDaysTimeDuration\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L27>)
+### func (BlDaysTimeDuration) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L27>)
 
 ```go
 func (d BlDaysTimeDuration) String() string
@@ -696,7 +696,7 @@ func (d BlDaysTimeDuration) String() string
 
 
 <a name="BlDaysTimeDuration.TotalSeconds"></a>
-### func \(BlDaysTimeDuration\) [TotalSeconds](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L36>)
+### func (BlDaysTimeDuration) [TotalSeconds](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L36>)
 
 ```go
 func (d BlDaysTimeDuration) TotalSeconds() decimal.Decimal
@@ -705,7 +705,7 @@ func (d BlDaysTimeDuration) TotalSeconds() decimal.Decimal
 TotalSeconds returns the signed exact decimal total used for all arithmetic.
 
 <a name="BlDaysTimeDuration.Type"></a>
-### func \(BlDaysTimeDuration\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L17>)
+### func (BlDaysTimeDuration) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L17>)
 
 ```go
 func (BlDaysTimeDuration) Type() Type
@@ -734,7 +734,7 @@ func Dictionary(entries map[string]BlValue) (BlDictionary, error)
 Dictionary constructs a BlDictionary from a map of BlValues.
 
 <a name="BlDictionary.Equal"></a>
-### func \(BlDictionary\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/dictionary.go#L19>)
+### func (BlDictionary) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/dictionary.go#L19>)
 
 ```go
 func (d BlDictionary) Equal(other BlValue) BlValue
@@ -743,7 +743,7 @@ func (d BlDictionary) Equal(other BlValue) BlValue
 
 
 <a name="BlDictionary.IsNull"></a>
-### func \(BlDictionary\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/dictionary.go#L45>)
+### func (BlDictionary) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/dictionary.go#L45>)
 
 ```go
 func (BlDictionary) IsNull() bool
@@ -752,7 +752,7 @@ func (BlDictionary) IsNull() bool
 
 
 <a name="BlDictionary.Native"></a>
-### func \(BlDictionary\) [Native](<https://github.com/friendly-business-machines/blkit/blob/main/core/dictionary.go#L94>)
+### func (BlDictionary) [Native](<https://github.com/friendly-business-machines/blkit/blob/main/core/dictionary.go#L94>)
 
 ```go
 func (d BlDictionary) Native() map[string]BlValue
@@ -761,7 +761,7 @@ func (d BlDictionary) Native() map[string]BlValue
 Native returns a defensive copy of the underlying map.
 
 <a name="BlDictionary.String"></a>
-### func \(BlDictionary\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/dictionary.go#L36>)
+### func (BlDictionary) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/dictionary.go#L36>)
 
 ```go
 func (d BlDictionary) String() string
@@ -770,7 +770,7 @@ func (d BlDictionary) String() string
 
 
 <a name="BlDictionary.Type"></a>
-### func \(BlDictionary\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/dictionary.go#L17>)
+### func (BlDictionary) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/dictionary.go#L17>)
 
 ```go
 func (BlDictionary) Type() Type
@@ -806,12 +806,12 @@ Expr compiles a source string once, optionally type\-checking it against a decla
 func UnaryTest(source string, inputType Type) (BlExpr, error)
 ```
 
-UnaryTest compiles a unary\-test source string. inputType is the type the implicit \`?\` placeholder will hold at evaluation time. The unary\-test forms are normalised into ordinary \`?\`\-referencing expressions \(with \`?\` bound to the input\), then run through the same parse/patch/type\-check/compile pipeline as Expr. The returned BlExpr is evaluated by passing the input value directly \(no dictionary wrapping\).
+UnaryTest compiles a unary\-test source string. inputType is the type the implicit \`?\` placeholder will hold at evaluation time. The unary\-test forms are normalised into ordinary \`?\`\-referencing expressions (with \`?\` bound to the input), then run through the same parse/patch/type\-check/compile pipeline as Expr. The returned BlExpr is evaluated by passing the input value directly (no dictionary wrapping).
 
 <a name="BlFunc"></a>
 ## type [BlFunc](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L13-L16>)
 
-BlFunc is an inline user\-defined function value: \`function\(params\) body\`. It captures its parameter names and body source; it is applied by binding the arguments to the parameters and evaluating the body. The body sees only its parameters \(no outer\-scope closure\), matching the spec's pure, bounded model.
+BlFunc is an inline user\-defined function value: \`function(params) body\`. It captures its parameter names and body source; it is applied by binding the arguments to the parameters and evaluating the body. The body sees only its parameters (no outer\-scope closure), matching the spec's pure, bounded model.
 
 ```go
 type BlFunc struct {
@@ -820,7 +820,7 @@ type BlFunc struct {
 ```
 
 <a name="BlFunc.Apply"></a>
-### func \(BlFunc\) [Apply](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L39>)
+### func (BlFunc) [Apply](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L39>)
 
 ```go
 func (f BlFunc) Apply(args []BlValue) (BlValue, error)
@@ -829,7 +829,7 @@ func (f BlFunc) Apply(args []BlValue) (BlValue, error)
 Apply binds args to the parameters and evaluates the body.
 
 <a name="BlFunc.Equal"></a>
-### func \(BlFunc\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L20>)
+### func (BlFunc) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L20>)
 
 ```go
 func (f BlFunc) Equal(other BlValue) BlValue
@@ -838,7 +838,7 @@ func (f BlFunc) Equal(other BlValue) BlValue
 
 
 <a name="BlFunc.IsNull"></a>
-### func \(BlFunc\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L32>)
+### func (BlFunc) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L32>)
 
 ```go
 func (BlFunc) IsNull() bool
@@ -847,7 +847,7 @@ func (BlFunc) IsNull() bool
 
 
 <a name="BlFunc.Params"></a>
-### func \(BlFunc\) [Params](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L36>)
+### func (BlFunc) [Params](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L36>)
 
 ```go
 func (f BlFunc) Params() []string
@@ -856,7 +856,7 @@ func (f BlFunc) Params() []string
 Params returns the function's parameter names.
 
 <a name="BlFunc.String"></a>
-### func \(BlFunc\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L28>)
+### func (BlFunc) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L28>)
 
 ```go
 func (f BlFunc) String() string
@@ -865,7 +865,7 @@ func (f BlFunc) String() string
 
 
 <a name="BlFunc.Type"></a>
-### func \(BlFunc\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L18>)
+### func (BlFunc) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L18>)
 
 ```go
 func (BlFunc) Type() Type
@@ -894,7 +894,7 @@ func List(items ...BlValue) BlList
 List constructs a BlList from the supplied values.
 
 <a name="BlList.Equal"></a>
-### func \(BlList\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/list.go#L17>)
+### func (BlList) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/list.go#L17>)
 
 ```go
 func (l BlList) Equal(other BlValue) BlValue
@@ -903,7 +903,7 @@ func (l BlList) Equal(other BlValue) BlValue
 
 
 <a name="BlList.IsNull"></a>
-### func \(BlList\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/list.go#L38>)
+### func (BlList) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/list.go#L38>)
 
 ```go
 func (BlList) IsNull() bool
@@ -912,7 +912,7 @@ func (BlList) IsNull() bool
 
 
 <a name="BlList.Native"></a>
-### func \(BlList\) [Native](<https://github.com/friendly-business-machines/blkit/blob/main/core/list.go#L43>)
+### func (BlList) [Native](<https://github.com/friendly-business-machines/blkit/blob/main/core/list.go#L43>)
 
 ```go
 func (l BlList) Native() []BlValue
@@ -921,7 +921,7 @@ func (l BlList) Native() []BlValue
 Native returns a defensive copy of the underlying elements.
 
 <a name="BlList.String"></a>
-### func \(BlList\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/list.go#L30>)
+### func (BlList) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/list.go#L30>)
 
 ```go
 func (l BlList) String() string
@@ -930,7 +930,7 @@ func (l BlList) String() string
 
 
 <a name="BlList.Type"></a>
-### func \(BlList\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/list.go#L15>)
+### func (BlList) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/list.go#L15>)
 
 ```go
 func (BlList) Type() Type
@@ -957,16 +957,16 @@ func Null() BlNull
 Null returns a BlNull, matching the same\-name\-minus\-Bl constructor convention.
 
 <a name="BlNull.Equal"></a>
-### func \(BlNull\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/value.go#L34>)
+### func (BlNull) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/value.go#L34>)
 
 ```go
 func (BlNull) Equal(BlValue) BlValue
 ```
 
-Equal always returns BlBoolean\(false\), even against another BlNull — the SQL\-style three\-valued\-logic rule \(null is never equal to anything\).
+Equal always returns BlBoolean(false), even against another BlNull — the SQL\-style three\-valued\-logic rule (null is never equal to anything).
 
 <a name="BlNull.IsNull"></a>
-### func \(BlNull\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/value.go#L38>)
+### func (BlNull) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/value.go#L38>)
 
 ```go
 func (BlNull) IsNull() bool
@@ -975,7 +975,7 @@ func (BlNull) IsNull() bool
 
 
 <a name="BlNull.String"></a>
-### func \(BlNull\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/value.go#L36>)
+### func (BlNull) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/value.go#L36>)
 
 ```go
 func (BlNull) String() string
@@ -984,7 +984,7 @@ func (BlNull) String() string
 
 
 <a name="BlNull.Type"></a>
-### func \(BlNull\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/value.go#L30>)
+### func (BlNull) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/value.go#L30>)
 
 ```go
 func (BlNull) Type() Type
@@ -1010,10 +1010,10 @@ type BlNumber struct {
 func Number[T NumberInput](v T) (BlNumber, error)
 ```
 
-Number constructs a BlNumber from any Go numeric type, bool \(true→1, false→0\), a decimal string \(accepting thousands separators, currency symbols, and surrounding whitespace\), or a decimal.Decimal. The error fires only for a NaN/Inf float or an unparseable string.
+Number constructs a BlNumber from any Go numeric type, bool (true→1, false→0), a decimal string (accepting thousands separators, currency symbols, and surrounding whitespace), or a decimal.Decimal. The error fires only for a NaN/Inf float or an unparseable string.
 
 <a name="BlNumber.Decimal"></a>
-### func \(BlNumber\) [Decimal](<https://github.com/friendly-business-machines/blkit/blob/main/core/number.go#L46>)
+### func (BlNumber) [Decimal](<https://github.com/friendly-business-machines/blkit/blob/main/core/number.go#L46>)
 
 ```go
 func (n BlNumber) Decimal() decimal.Decimal
@@ -1022,7 +1022,7 @@ func (n BlNumber) Decimal() decimal.Decimal
 Decimal hands the underlying shopspring/decimal value back to host code.
 
 <a name="BlNumber.Equal"></a>
-### func \(BlNumber\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/number.go#L29>)
+### func (BlNumber) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/number.go#L29>)
 
 ```go
 func (n BlNumber) Equal(other BlValue) BlValue
@@ -1031,7 +1031,7 @@ func (n BlNumber) Equal(other BlValue) BlValue
 
 
 <a name="BlNumber.IsNull"></a>
-### func \(BlNumber\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/number.go#L41>)
+### func (BlNumber) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/number.go#L41>)
 
 ```go
 func (BlNumber) IsNull() bool
@@ -1040,7 +1040,7 @@ func (BlNumber) IsNull() bool
 
 
 <a name="BlNumber.String"></a>
-### func \(BlNumber\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/number.go#L37>)
+### func (BlNumber) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/number.go#L37>)
 
 ```go
 func (n BlNumber) String() string
@@ -1049,7 +1049,7 @@ func (n BlNumber) String() string
 
 
 <a name="BlNumber.Type"></a>
-### func \(BlNumber\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/number.go#L27>)
+### func (BlNumber) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/number.go#L27>)
 
 ```go
 func (BlNumber) Type() Type
@@ -1060,7 +1060,7 @@ func (BlNumber) Type() Type
 <a name="BlRange"></a>
 ## type [BlRange](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L9-L12>)
 
-BlRange is a contiguous interval of comparable values with configurable endpoint inclusion. Either endpoint may be BlNull \(unbounded\).
+BlRange is a contiguous interval of comparable values with configurable endpoint inclusion. Either endpoint may be BlNull (unbounded).
 
 ```go
 type BlRange struct {
@@ -1078,7 +1078,7 @@ func Range(start, end BlValue, startIncluded, endIncluded bool) (BlRange, error)
 Range constructs a BlRange. Closed boundary with a null endpoint, or cross\-type endpoints, returns an error.
 
 <a name="BlRange.End"></a>
-### func \(BlRange\) [End](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L45>)
+### func (BlRange) [End](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L45>)
 
 ```go
 func (r BlRange) End() BlValue
@@ -1087,7 +1087,7 @@ func (r BlRange) End() BlValue
 
 
 <a name="BlRange.EndIncluded"></a>
-### func \(BlRange\) [EndIncluded](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L47>)
+### func (BlRange) [EndIncluded](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L47>)
 
 ```go
 func (r BlRange) EndIncluded() bool
@@ -1096,7 +1096,7 @@ func (r BlRange) EndIncluded() bool
 
 
 <a name="BlRange.Equal"></a>
-### func \(BlRange\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L16>)
+### func (BlRange) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L16>)
 
 ```go
 func (r BlRange) Equal(other BlValue) BlValue
@@ -1105,7 +1105,7 @@ func (r BlRange) Equal(other BlValue) BlValue
 
 
 <a name="BlRange.IsNull"></a>
-### func \(BlRange\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L39>)
+### func (BlRange) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L39>)
 
 ```go
 func (BlRange) IsNull() bool
@@ -1114,7 +1114,7 @@ func (BlRange) IsNull() bool
 
 
 <a name="BlRange.Start"></a>
-### func \(BlRange\) [Start](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L44>)
+### func (BlRange) [Start](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L44>)
 
 ```go
 func (r BlRange) Start() BlValue
@@ -1123,7 +1123,7 @@ func (r BlRange) Start() BlValue
 Start / End / StartIncluded / EndIncluded host accessors.
 
 <a name="BlRange.StartIncluded"></a>
-### func \(BlRange\) [StartIncluded](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L46>)
+### func (BlRange) [StartIncluded](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L46>)
 
 ```go
 func (r BlRange) StartIncluded() bool
@@ -1132,7 +1132,7 @@ func (r BlRange) StartIncluded() bool
 
 
 <a name="BlRange.String"></a>
-### func \(BlRange\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L28>)
+### func (BlRange) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L28>)
 
 ```go
 func (r BlRange) String() string
@@ -1141,7 +1141,7 @@ func (r BlRange) String() string
 
 
 <a name="BlRange.Type"></a>
-### func \(BlRange\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L14>)
+### func (BlRange) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/range.go#L14>)
 
 ```go
 func (BlRange) Type() Type
@@ -1152,7 +1152,7 @@ func (BlRange) Type() Type
 <a name="BlRegex"></a>
 ## type [BlRegex](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L316-L320>)
 
-BlRegex is the precompiled\-regex value type produced by pattern\(s\).
+BlRegex is the precompiled\-regex value type produced by pattern(s).
 
 ```go
 type BlRegex struct {
@@ -1170,7 +1170,7 @@ func Pattern(source string) (BlRegex, error)
 Pattern compiles a regex source into a BlRegex; a malformed source returns a RegexError.
 
 <a name="BlRegex.Equal"></a>
-### func \(BlRegex\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L324>)
+### func (BlRegex) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L324>)
 
 ```go
 func (r BlRegex) Equal(other BlValue) BlValue
@@ -1179,7 +1179,7 @@ func (r BlRegex) Equal(other BlValue) BlValue
 
 
 <a name="BlRegex.IsNull"></a>
-### func \(BlRegex\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L334>)
+### func (BlRegex) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L334>)
 
 ```go
 func (BlRegex) IsNull() bool
@@ -1188,7 +1188,7 @@ func (BlRegex) IsNull() bool
 
 
 <a name="BlRegex.Native"></a>
-### func \(BlRegex\) [Native](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L352>)
+### func (BlRegex) [Native](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L352>)
 
 ```go
 func (r BlRegex) Native() *regexp.Regexp
@@ -1197,7 +1197,7 @@ func (r BlRegex) Native() *regexp.Regexp
 Native returns the compiled program; do not mutate.
 
 <a name="BlRegex.Source"></a>
-### func \(BlRegex\) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L349>)
+### func (BlRegex) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L349>)
 
 ```go
 func (r BlRegex) Source() string
@@ -1206,7 +1206,7 @@ func (r BlRegex) Source() string
 Source returns the original source string.
 
 <a name="BlRegex.String"></a>
-### func \(BlRegex\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L332>)
+### func (BlRegex) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L332>)
 
 ```go
 func (r BlRegex) String() string
@@ -1215,7 +1215,7 @@ func (r BlRegex) String() string
 
 
 <a name="BlRegex.Type"></a>
-### func \(BlRegex\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L322>)
+### func (BlRegex) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L322>)
 
 ```go
 func (BlRegex) Type() Type
@@ -1242,22 +1242,22 @@ func Schema(fields ...Field) (BlSchema, error)
 Schema builds a BlSchema from the supplied fields and validates well\-formedness. On error the returned BlSchema is nil.
 
 <a name="BlSchema.ValidateInput"></a>
-### func \(BlSchema\) [ValidateInput](<https://github.com/friendly-business-machines/blkit/blob/main/core/schema.go#L95>)
+### func (BlSchema) [ValidateInput](<https://github.com/friendly-business-machines/blkit/blob/main/core/schema.go#L95>)
 
 ```go
 func (s BlSchema) ValidateInput(v BlValue) error
 ```
 
-ValidateInput rejects values whose shape doesn't match the schema and rejects undeclared keys / columns \(closed\).
+ValidateInput rejects values whose shape doesn't match the schema and rejects undeclared keys / columns (closed).
 
 <a name="BlSchema.ValidateOutput"></a>
-### func \(BlSchema\) [ValidateOutput](<https://github.com/friendly-business-machines/blkit/blob/main/core/schema.go#L101>)
+### func (BlSchema) [ValidateOutput](<https://github.com/friendly-business-machines/blkit/blob/main/core/schema.go#L101>)
 
 ```go
 func (s BlSchema) ValidateOutput(v BlValue) error
 ```
 
-ValidateOutput rejects values whose shape doesn't match the schema's declared fields but accepts undeclared keys / columns \(permissive\).
+ValidateOutput rejects values whose shape doesn't match the schema's declared fields but accepts undeclared keys / columns (permissive).
 
 <a name="BlSortKey"></a>
 ## type [BlSortKey](<https://github.com/friendly-business-machines/blkit/blob/main/core/table_methods.go#L10-L14>)
@@ -1271,7 +1271,7 @@ type BlSortKey struct {
 ```
 
 <a name="BlSortKey.Equal"></a>
-### func \(BlSortKey\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/table_methods.go#L17>)
+### func (BlSortKey) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/table_methods.go#L17>)
 
 ```go
 func (BlSortKey) Equal(BlValue) BlValue
@@ -1280,7 +1280,7 @@ func (BlSortKey) Equal(BlValue) BlValue
 
 
 <a name="BlSortKey.IsNull"></a>
-### func \(BlSortKey\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/table_methods.go#L19>)
+### func (BlSortKey) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/table_methods.go#L19>)
 
 ```go
 func (BlSortKey) IsNull() bool
@@ -1289,7 +1289,7 @@ func (BlSortKey) IsNull() bool
 
 
 <a name="BlSortKey.String"></a>
-### func \(BlSortKey\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/table_methods.go#L18>)
+### func (BlSortKey) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/table_methods.go#L18>)
 
 ```go
 func (k BlSortKey) String() string
@@ -1298,7 +1298,7 @@ func (k BlSortKey) String() string
 
 
 <a name="BlSortKey.Type"></a>
-### func \(BlSortKey\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/table_methods.go#L16>)
+### func (BlSortKey) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/table_methods.go#L16>)
 
 ```go
 func (BlSortKey) Type() Type
@@ -1324,10 +1324,10 @@ type BlString struct {
 func String[T StringInput](v T) (BlString, error)
 ```
 
-String constructs a BlString from a Go string \(infallible\) or a UTF\-8 \[\]byte \(validated; invalid UTF\-8 returns an error\).
+String constructs a BlString from a Go string (infallible) or a UTF\-8 \[\]byte (validated; invalid UTF\-8 returns an error).
 
 <a name="BlString.Equal"></a>
-### func \(BlString\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L17>)
+### func (BlString) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L17>)
 
 ```go
 func (s BlString) Equal(other BlValue) BlValue
@@ -1336,7 +1336,7 @@ func (s BlString) Equal(other BlValue) BlValue
 
 
 <a name="BlString.IsNull"></a>
-### func \(BlString\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L27>)
+### func (BlString) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L27>)
 
 ```go
 func (BlString) IsNull() bool
@@ -1345,7 +1345,7 @@ func (BlString) IsNull() bool
 
 
 <a name="BlString.Native"></a>
-### func \(BlString\) [Native](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L32>)
+### func (BlString) [Native](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L32>)
 
 ```go
 func (s BlString) Native() string
@@ -1354,7 +1354,7 @@ func (s BlString) Native() string
 Native hands the underlying Go string back to host code.
 
 <a name="BlString.String"></a>
-### func \(BlString\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L25>)
+### func (BlString) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L25>)
 
 ```go
 func (s BlString) String() string
@@ -1363,7 +1363,7 @@ func (s BlString) String() string
 
 
 <a name="BlString.Type"></a>
-### func \(BlString\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L15>)
+### func (BlString) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L15>)
 
 ```go
 func (BlString) Type() Type
@@ -1374,7 +1374,7 @@ func (BlString) Type() Type
 <a name="BlTable"></a>
 ## type [BlTable](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L12-L15>)
 
-BlTable is a DMN relation: an ordered, immutable list of uniformly\-keyed dictionary rows. Columns are stored in canonical \(sorted\) order.
+BlTable is a DMN relation: an ordered, immutable list of uniformly\-keyed dictionary rows. Columns are stored in canonical (sorted) order.
 
 ```go
 type BlTable struct {
@@ -1392,7 +1392,7 @@ func Table(columns Cols, rows ...Row) (BlTable, error)
 Table constructs a BlTable from a typed header and positional value rows.
 
 <a name="BlTable.Columns"></a>
-### func \(BlTable\) [Columns](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L118>)
+### func (BlTable) [Columns](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L118>)
 
 ```go
 func (t BlTable) Columns() []string
@@ -1401,7 +1401,7 @@ func (t BlTable) Columns() []string
 Columns returns the canonical column order.
 
 <a name="BlTable.Equal"></a>
-### func \(BlTable\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L19>)
+### func (BlTable) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L19>)
 
 ```go
 func (t BlTable) Equal(other BlValue) BlValue
@@ -1410,7 +1410,7 @@ func (t BlTable) Equal(other BlValue) BlValue
 
 
 <a name="BlTable.IsNull"></a>
-### func \(BlTable\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L43>)
+### func (BlTable) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L43>)
 
 ```go
 func (BlTable) IsNull() bool
@@ -1419,7 +1419,7 @@ func (BlTable) IsNull() bool
 
 
 <a name="BlTable.NCols"></a>
-### func \(BlTable\) [NCols](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L125>)
+### func (BlTable) [NCols](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L125>)
 
 ```go
 func (t BlTable) NCols() int
@@ -1428,7 +1428,7 @@ func (t BlTable) NCols() int
 
 
 <a name="BlTable.NRows"></a>
-### func \(BlTable\) [NRows](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L124>)
+### func (BlTable) [NRows](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L124>)
 
 ```go
 func (t BlTable) NRows() int
@@ -1437,7 +1437,7 @@ func (t BlTable) NRows() int
 NRows / NCols.
 
 <a name="BlTable.Rows"></a>
-### func \(BlTable\) [Rows](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L121>)
+### func (BlTable) [Rows](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L121>)
 
 ```go
 func (t BlTable) Rows() []BlDictionary
@@ -1446,7 +1446,7 @@ func (t BlTable) Rows() []BlDictionary
 Rows returns a defensive copy of the rows.
 
 <a name="BlTable.String"></a>
-### func \(BlTable\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L35>)
+### func (BlTable) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L35>)
 
 ```go
 func (t BlTable) String() string
@@ -1455,7 +1455,7 @@ func (t BlTable) String() string
 
 
 <a name="BlTable.Type"></a>
-### func \(BlTable\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L17>)
+### func (BlTable) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L17>)
 
 ```go
 func (BlTable) Type() Type
@@ -1484,7 +1484,7 @@ func Time[T TimeInput](v T) (BlTime, error)
 Time constructs a BlTime from an ISO 8601 / RFC 9557 string, a time.Time, or a TimeComponents bundle.
 
 <a name="BlTime.Equal"></a>
-### func \(BlTime\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/time.go#L20>)
+### func (BlTime) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/time.go#L20>)
 
 ```go
 func (t BlTime) Equal(other BlValue) BlValue
@@ -1493,7 +1493,7 @@ func (t BlTime) Equal(other BlValue) BlValue
 
 
 <a name="BlTime.IsNaive"></a>
-### func \(BlTime\) [IsNaive](<https://github.com/friendly-business-machines/blkit/blob/main/core/time.go#L54>)
+### func (BlTime) [IsNaive](<https://github.com/friendly-business-machines/blkit/blob/main/core/time.go#L54>)
 
 ```go
 func (t BlTime) IsNaive() bool
@@ -1502,7 +1502,7 @@ func (t BlTime) IsNaive() bool
 IsNaive reports whether the value is timezone\-naive.
 
 <a name="BlTime.IsNull"></a>
-### func \(BlTime\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/time.go#L46>)
+### func (BlTime) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/time.go#L46>)
 
 ```go
 func (BlTime) IsNull() bool
@@ -1511,16 +1511,16 @@ func (BlTime) IsNull() bool
 
 
 <a name="BlTime.Native"></a>
-### func \(BlTime\) [Native](<https://github.com/friendly-business-machines/blkit/blob/main/core/time.go#L51>)
+### func (BlTime) [Native](<https://github.com/friendly-business-machines/blkit/blob/main/core/time.go#L51>)
 
 ```go
 func (t BlTime) Native() time.Time
 ```
 
-Native hands back the wrapped time.Time \(time\-of\-day portion meaningful\).
+Native hands back the wrapped time.Time (time\-of\-day portion meaningful).
 
 <a name="BlTime.String"></a>
-### func \(BlTime\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/time.go#L38>)
+### func (BlTime) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/time.go#L38>)
 
 ```go
 func (t BlTime) String() string
@@ -1529,7 +1529,7 @@ func (t BlTime) String() string
 
 
 <a name="BlTime.Type"></a>
-### func \(BlTime\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/time.go#L18>)
+### func (BlTime) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/time.go#L18>)
 
 ```go
 func (BlTime) Type() Type
@@ -1573,7 +1573,7 @@ func YMDuration[T YMDurationInput](v T) (BlYearsMonthsDuration, error)
 YMDuration constructs a BlYearsMonthsDuration. See the spec for the input matrix.
 
 <a name="BlYearsMonthsDuration.Equal"></a>
-### func \(BlYearsMonthsDuration\) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L18>)
+### func (BlYearsMonthsDuration) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L18>)
 
 ```go
 func (d BlYearsMonthsDuration) Equal(other BlValue) BlValue
@@ -1582,7 +1582,7 @@ func (d BlYearsMonthsDuration) Equal(other BlValue) BlValue
 
 
 <a name="BlYearsMonthsDuration.IsNull"></a>
-### func \(BlYearsMonthsDuration\) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L28>)
+### func (BlYearsMonthsDuration) [IsNull](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L28>)
 
 ```go
 func (BlYearsMonthsDuration) IsNull() bool
@@ -1591,16 +1591,16 @@ func (BlYearsMonthsDuration) IsNull() bool
 
 
 <a name="BlYearsMonthsDuration.Months"></a>
-### func \(BlYearsMonthsDuration\) [Months](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L43>)
+### func (BlYearsMonthsDuration) [Months](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L43>)
 
 ```go
 func (d BlYearsMonthsDuration) Months() decimal.Decimal
 ```
 
-Months returns the months remainder \(|m| \< 12\), possibly fractional, same sign.
+Months returns the months remainder (|m| \< 12), possibly fractional, same sign.
 
 <a name="BlYearsMonthsDuration.String"></a>
-### func \(BlYearsMonthsDuration\) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L26>)
+### func (BlYearsMonthsDuration) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L26>)
 
 ```go
 func (d BlYearsMonthsDuration) String() string
@@ -1609,7 +1609,7 @@ func (d BlYearsMonthsDuration) String() string
 
 
 <a name="BlYearsMonthsDuration.TotalMonths"></a>
-### func \(BlYearsMonthsDuration\) [TotalMonths](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L35>)
+### func (BlYearsMonthsDuration) [TotalMonths](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L35>)
 
 ```go
 func (d BlYearsMonthsDuration) TotalMonths() decimal.Decimal
@@ -1618,7 +1618,7 @@ func (d BlYearsMonthsDuration) TotalMonths() decimal.Decimal
 TotalMonths returns the signed exact decimal total used for all arithmetic.
 
 <a name="BlYearsMonthsDuration.Type"></a>
-### func \(BlYearsMonthsDuration\) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L16>)
+### func (BlYearsMonthsDuration) [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L16>)
 
 ```go
 func (BlYearsMonthsDuration) Type() Type
@@ -1627,7 +1627,7 @@ func (BlYearsMonthsDuration) Type() Type
 
 
 <a name="BlYearsMonthsDuration.Years"></a>
-### func \(BlYearsMonthsDuration\) [Years](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L38>)
+### func (BlYearsMonthsDuration) [Years](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L38>)
 
 ```go
 func (d BlYearsMonthsDuration) Years() int
@@ -1676,7 +1676,7 @@ type CalendarRangeError struct {
 ```
 
 <a name="CalendarRangeError.Error"></a>
-### func \(\*CalendarRangeError\) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L54>)
+### func (\*CalendarRangeError) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L54>)
 
 ```go
 func (e *CalendarRangeError) Error() string
@@ -1869,7 +1869,7 @@ type ParseError struct {
 ```
 
 <a name="ParseError.Error"></a>
-### func \(\*ParseError\) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L12>)
+### func (\*ParseError) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L12>)
 
 ```go
 func (e *ParseError) Error() string
@@ -1878,7 +1878,7 @@ func (e *ParseError) Error() string
 
 
 <a name="ParseError.Unwrap"></a>
-### func \(\*ParseError\) [Unwrap](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L19>)
+### func (\*ParseError) [Unwrap](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L19>)
 
 ```go
 func (e *ParseError) Unwrap() error
@@ -1889,7 +1889,7 @@ func (e *ParseError) Unwrap() error
 <a name="RegexError"></a>
 ## type [RegexError](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L37-L40>)
 
-RegexError is returned when a pattern in matches / replace / extract / pattern\(...\) is malformed.
+RegexError is returned when a pattern in matches / replace / extract / pattern(...) is malformed.
 
 ```go
 type RegexError struct {
@@ -1899,7 +1899,7 @@ type RegexError struct {
 ```
 
 <a name="RegexError.Error"></a>
-### func \(\*RegexError\) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L42>)
+### func (\*RegexError) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L42>)
 
 ```go
 func (e *RegexError) Error() string
@@ -1908,7 +1908,7 @@ func (e *RegexError) Error() string
 
 
 <a name="RegexError.Unwrap"></a>
-### func \(\*RegexError\) [Unwrap](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L46>)
+### func (\*RegexError) [Unwrap](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L46>)
 
 ```go
 func (e *RegexError) Unwrap() error
@@ -1938,7 +1938,7 @@ type SchemaError struct {
 ```
 
 <a name="SchemaError.Error"></a>
-### func \(\*SchemaError\) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L65>)
+### func (\*SchemaError) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L65>)
 
 ```go
 func (e *SchemaError) Error() string
@@ -1947,7 +1947,7 @@ func (e *SchemaError) Error() string
 
 
 <a name="SchemaError.Unwrap"></a>
-### func \(\*SchemaError\) [Unwrap](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L72>)
+### func (\*SchemaError) [Unwrap](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L72>)
 
 ```go
 func (e *SchemaError) Unwrap() error
@@ -2037,7 +2037,7 @@ const (
 <a name="TypeError"></a>
 ## type [TypeError](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L23-L26>)
 
-TypeError is returned by Evaluate \(or a host constructor\) on a runtime type mismatch.
+TypeError is returned by Evaluate (or a host constructor) on a runtime type mismatch.
 
 ```go
 type TypeError struct {
@@ -2047,7 +2047,7 @@ type TypeError struct {
 ```
 
 <a name="TypeError.Error"></a>
-### func \(\*TypeError\) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L28>)
+### func (\*TypeError) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L28>)
 
 ```go
 func (e *TypeError) Error() string
