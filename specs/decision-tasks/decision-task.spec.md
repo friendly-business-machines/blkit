@@ -305,7 +305,7 @@ var processB = bl.NewProcess("loan-app-b", "2.0", ProcessOpts{
 
 ## Building the Decision Logic
 
-Each concrete decision node is built via its generic constructor (`NewDecisionTable`, `NewLiteralExpression`, etc. — see [decision-node.spec.md](decision-node.spec.md)). Nodes are package-scope `var` declarations; downstream nodes reference upstream outputs through typed `.Outputs.X` fields. The constructor functions used in the previous spec revision are gone.
+Each concrete decision node is built via its generic constructor (`NewDecisionTable`, `NewDecisionExpression`, etc. — see [decision-node.spec.md](decision-node.spec.md)). Nodes are package-scope `var` declarations; downstream nodes reference upstream outputs by name in their expression sources. The constructor functions used in the previous spec revision are gone.
 
 ```go
 var applicantSchema, _ = bl.Schema(
@@ -358,14 +358,12 @@ type ApprovalOutputs struct {
     Status BlString
 }
 
-var approval = NewLiteralExpression[ApprovalOutputs](LiteralExpressionOpts{
+var approval = NewDecisionExpression[ApprovalOutputs](DecisionExpressionOpts{
     Id:   "approval",
     Name: "Loan Approval",
-    Body: bl.If(
-        eligibility.Outputs.Eligibility.Equals(bl.String("eligible")),
-        bl.String("approved"),
-        bl.String("denied"),
-    ),
+    Entries: Entries{
+        "status": `if eligibility = "eligible" then "approved" else "denied"`,
+    },
 })
 
 var loanInputSchema, _ = bl.Schema(

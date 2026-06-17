@@ -1274,8 +1274,8 @@ type SchemaError struct { Path string; Err error }   // from bl.BlSchema validat
 
 These are forward-looking notes; the referenced specs are **not** modified by this document.
 
-- **`LiteralExpression`** ([literal-expression.spec.md](../decision-tasks/literal-expression.spec.md))
-  could accept a source string compiled with `Expr` as its expression body.
+- **`DecisionExpression`** ([decision-expression.spec.md](../decision-tasks/decision-expression.spec.md))
+  compiles each entry's source string with `Expr`.
 - **`DecisionTable`** ([decision-table.spec.md](../decision-tasks/decision-table.spec.md)) rule
   predicates and input entries could be authored as unary tests (see [§ Unary tests](#unary-tests)),
   parsed against each column's type.

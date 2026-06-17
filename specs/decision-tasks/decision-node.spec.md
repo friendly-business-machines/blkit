@@ -1,17 +1,16 @@
 ---
 name: DecisionNode
-description: Common interface for every decision node — the shared identity surface (Id, Name, Description) and evaluation contract satisfied by the generic DecisionTable, LiteralExpression, BoxedContext, Relation, and Invocation types.
+description: Common interface for every decision node — the shared identity surface (Id, Name, Description) and evaluation contract satisfied by the generic DecisionTable, DecisionExpression, Relation, and Invocation types.
 targets:
   - ../decisions/decision_node.go
 ---
 
 # DecisionNode
 
-`DecisionNode` is the interface every node in a `DecisionTask` satisfies. The five concrete node types are each generic over a caller-supplied outputs struct that declares the node's typed outputs:
+`DecisionNode` is the interface every node in a `DecisionTask` satisfies. The four concrete node types are each generic over a caller-supplied outputs struct that declares the node's typed outputs:
 
 - `DecisionTable[Outputs]` — tabular input/output rules with hit policies
-- `LiteralExpression[Outputs]` — a single expression body
-- `BoxedContext[Outputs]` — an ordered list of named entries with an optional final result
+- `DecisionExpression[Outputs]` — named text-expression entries (single field → scalar, multi-field → dictionary)
 - `Relation[Outputs]` — tabular data that evaluates to a list of contexts
 - `Invocation[Outputs]` — a call to a `BusinessKnowledgeModel` with parameter bindings
 
@@ -54,7 +53,7 @@ When the constructor runs, every outputs-struct field is populated with a typed 
 
 ## Constructing a node
 
-Each concrete type has a generic constructor: `NewDecisionTable[Outputs]`, `NewLiteralExpression[Outputs]`, `NewBoxedContext[Outputs]`, `NewRelation[Outputs]`, `NewInvocation[Outputs]`. The caller passes opts containing the node's logic (rules, body, entries, rows, bindings) and the type parameter pins the outputs struct.
+Each concrete type has a generic constructor: `NewDecisionTable[Outputs]`, `NewDecisionExpression[Outputs]`, `NewRelation[Outputs]`, `NewInvocation[Outputs]`. The caller passes opts containing the node's logic (rules, entries, rows, bindings) and the type parameter pins the outputs struct.
 
 ```go
 var eligibility = NewDecisionTable[EligibilityOutputs](DecisionTableOpts{
@@ -90,25 +89,23 @@ eligibility.Evaluate(input)   // standalone evaluation
 
 ## Cross-node references
 
-A downstream node references upstream outputs by reading the typed `Bl*` field through `.Outputs.X`. The field's static type carries through the Go compiler — type mismatches are caught at compile time.
+A downstream node references an upstream node's output **by name** in an entry or cell source. An upstream node's result is bound in the evaluation context under its `Id` — a single-output node as its value, a multi-output node as a `bl.BlDictionary` keyed by output name (so `eligibility.risk` reads the `risk` field of the multi-output `eligibility` node). See [decision-table.spec.md § Referencing upstream nodes](decision-table.spec.md#example--referencing-upstream-nodes) and [reference-data.spec.md](reference-data.spec.md).
 
 ```go
 type ApprovalOutputs struct {
     Status BlString
 }
 
-var approval = NewLiteralExpression[ApprovalOutputs](LiteralExpressionOpts{
+var approval = NewDecisionExpression[ApprovalOutputs](DecisionExpressionOpts{
     Id:   "approval",
     Name: "Loan Approval",
-    Body: bl.If(
-        eligibility.Outputs.Risk.Equals(bl.String("high")),
-        bl.String("review"),
-        bl.String("approved"),
-    ),
+    Entries: Entries{
+        "status": `if eligibility.risk = "high" then "review" else "approved"`,
+    },
 })
 ```
 
-`NewDecisionTask` derives the dependency graph by walking each node's expression trees (`Rules`, `Body`, `Entries`, `Rows`, `Bindings`) and collecting output handles. Each handle carries a pointer to its source node, so producer→consumer edges are unambiguous and string-free.
+`NewDecisionTask` derives the dependency graph by parsing each node's expression sources (`Rules`, `Entries`, `Rows`, `Bindings`) for the names they reference and matching each to a producing node's output, a task input, or registered reference data (see [decision-task.spec.md § Validation](decision-task.spec.md)). The output types each reference resolves to are reflected from the producing node's `Outputs` struct, so the environment is fully typed even though references are by name.
 
 ---
 

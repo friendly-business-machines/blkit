@@ -16,7 +16,7 @@ generic over the value's type `T`.
 than deriving one. It is registered with a `DecisionTask` at construction via
 `bl.WithReferenceData(...)`; the task binds its `Value` into the evaluation
 context under its `Id`, so decision nodes reference it **by name** in their
-expression bodies, exactly as they reference any other in-scope variable. It is
+expression sources, exactly as they reference any other in-scope variable. It is
 not a node and never appears in a `DecisionTask`'s `[]DecisionNode` or its
 evaluation order.
 
@@ -125,7 +125,7 @@ expressions are compiled against (a **reference scope** distinct from the task's
 `InputSchema`). The expression-language variable a node sees is therefore the
 reference data's `Id` string — **not** the Go variable it was assigned to. Here
 the constant was declared `var taxRate = bl.NewReferenceData(bl.Number(0.2),
-bl.WithId("tax_rate"), …)`, so its `Id` is `"tax_rate"` and node bodies reference
+bl.WithId("tax_rate"), …)`, so its `Id` is `"tax_rate"` and node expressions reference
 it as `tax_rate` (the Go name `taxRate` is irrelevant inside the expression):
 
 ```go
@@ -133,12 +133,14 @@ type GrossPriceOutputs struct {
     Amount bl.BlNumber
 }
 
-var grossPrice = bl.NewLiteralExpression[GrossPriceOutputs](bl.LiteralExpressionOpts{
+var grossPrice = bl.NewDecisionExpression[GrossPriceOutputs](bl.DecisionExpressionOpts{
     Id:   "gross_price",
     Name: "Gross Price",
     // `tax_rate` here is taxRate's Id (bl.WithId("tax_rate")), bound into scope
     // by WithReferenceData below.
-    Body: `net_price.amount * (1 + tax_rate)`,
+    Entries: bl.Entries{
+        "amount": `net_price.amount * (1 + tax_rate)`,
+    },
 })
 
 // The task's external input contract — what netPrice consumes. (net_price is an
