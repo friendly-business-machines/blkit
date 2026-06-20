@@ -28,9 +28,9 @@ type DecisionExpression[Outputs any] struct {
     Outputs Outputs // typed handles, populated by NewDecisionExpression
 }
 
-func NewDecisionExpression[Outputs any](opts DecisionExpressionOpts) *DecisionExpression[Outputs]
+func NewDecisionExpression[Outputs any](config DecisionExpressionConfig) *DecisionExpression[Outputs]
 
-type DecisionExpressionOpts struct {
+type DecisionExpressionConfig struct {
     Id          string
     Name        string
     Description string
@@ -74,23 +74,42 @@ Responsibility splits across two phases:
 A single-field outputs struct is the expression-based way to author a one-value decision; `Evaluate` returns that value directly, not a dictionary.
 
 ```go
+// MonthlyPaymentOutputs is a defined type whose underlying type is a struct,
+// composed of a field list in which each field pairs a name with a type. Its one
+// exported field, Amount, declares a single output of type BlNumber (which
+// implements bl.BlValue).
 type MonthlyPaymentOutputs struct {
     Amount BlNumber
 }
 
-var monthlyPayment = NewDecisionExpression[MonthlyPaymentOutputs](DecisionExpressionOpts{
+// NewDecisionExpression is a generic function whose type parameter is Outputs.
+// Here it is instantiated with the type argument MonthlyPaymentOutputs and
+// called with a DecisionExpressionConfig composite literal as its config argument.
+// The result is bound to the package-scope variable monthlyPayment, whose type
+// is *DecisionExpression[MonthlyPaymentOutputs].
+var monthlyPayment = NewDecisionExpression[MonthlyPaymentOutputs](DecisionExpressionConfig{
     Id:   "monthly_payment",
     Name: "Monthly Payment",
+    // Entries is a map-typed field; this composite literal maps the output name
+    // "amount" (the lowercased field name) to its source expression.
     Entries: Entries{
         "amount": `loan_amount * rate / 12`,
     },
 })
 
+// monthlyPayment.Outputs.Amount is a typed bl.BlNumber handle as soon as the
+// constructor returns; it exists independently of any Evaluate call, and is the
+// token downstream nodes reference to consume this output rather than a computed
+// result. Inspecting its type, for instance:
+fmt.Printf("%T\n", monthlyPayment.Outputs.Amount) // bl.BlNumber
+
+// Evaluate is a method call on monthlyPayment; the map[string]any composite
+// literal supplies the input variables.
 result, err := monthlyPayment.Evaluate(map[string]any{
     "loan_amount": bl.Number(200000),
     "rate":        bl.Number(0.05),
 })
-// result is a bl.BlNumber matching monthlyPayment.Outputs.Amount
+// result is a bl.BlNumber matching the monthlyPayment.Outputs.Amount handle.
 ```
 
 Here `loan_amount` and `rate` are names resolved from the task's inputs (or an upstream node's output) at task construction. `monthlyPayment.Outputs.Amount` is the typed `bl.BlNumber` handle downstream nodes reference.
@@ -98,11 +117,16 @@ Here `loan_amount` and `rate` are names resolved from the task's inputs (or an u
 ### Conditional single output
 
 ```go
+// ApplicationStatusOutputs is a named struct type with one exported field,
+// Status, of type BlString (which implements bl.BlValue).
 type ApplicationStatusOutputs struct {
     Status BlString
 }
 
-var applicationStatus = NewDecisionExpression[ApplicationStatusOutputs](DecisionExpressionOpts{
+// NewDecisionExpression instantiated with the type argument
+// ApplicationStatusOutputs; applicationStatus has type
+// *DecisionExpression[ApplicationStatusOutputs].
+var applicationStatus = NewDecisionExpression[ApplicationStatusOutputs](DecisionExpressionConfig{
     Id:   "status",
     Name: "Application Status",
     Entries: Entries{
@@ -116,13 +140,19 @@ var applicationStatus = NewDecisionExpression[ApplicationStatusOutputs](Decision
 ### Multiple outputs with cross-entry references
 
 ```go
+// MonthlyBreakdownOutputs is a named struct type with three exported fields.
+// Each field declares one output, and every field type implements bl.BlValue.
 type MonthlyBreakdownOutputs struct {
     Principal BlNumber
     Interest  BlNumber
     Total     BlNumber
 }
 
-var monthlyBreakdown = NewDecisionExpression[MonthlyBreakdownOutputs](DecisionExpressionOpts{
+// NewDecisionExpression instantiated with the type argument
+// MonthlyBreakdownOutputs; monthlyBreakdown has type
+// *DecisionExpression[MonthlyBreakdownOutputs]. The Entries composite literal's
+// keys must form a bijection with the struct's effective field names.
+var monthlyBreakdown = NewDecisionExpression[MonthlyBreakdownOutputs](DecisionExpressionConfig{
     Id:   "monthly_breakdown",
     Name: "Monthly Breakdown",
     Entries: Entries{
@@ -137,9 +167,9 @@ result, err := monthlyBreakdown.Evaluate(map[string]any{
     "rate":        bl.Number(0.06),
     "term":        bl.Number(12),
 })
-// result is bl.BlDictionary: {principal: 10000, interest: 600, total: 10600}
+// result is a bl.BlDictionary: {principal: 10000, interest: 600, total: 10600}
 //
-// Downstream typed access:
+// Downstream typed access via the populated handles on the Outputs field:
 // monthlyBreakdown.Outputs.Principal — bl.BlNumber handle
 // monthlyBreakdown.Outputs.Total     — bl.BlNumber handle
 ```

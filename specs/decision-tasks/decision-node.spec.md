@@ -95,7 +95,7 @@ type ApprovalOutputs struct {
     Status BlString
 }
 
-var approval = NewDecisionExpression[ApprovalOutputs](DecisionExpressionOpts{
+var approval = NewDecisionExpression[ApprovalOutputs](DecisionExpressionConfig{
     Id:   "approval",
     Name: "Loan Approval",
     Entries: Entries{

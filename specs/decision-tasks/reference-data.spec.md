@@ -135,7 +135,7 @@ type GrossPriceOutputs struct {
     Amount bl.BlNumber
 }
 
-var grossPrice = bl.NewDecisionExpression[GrossPriceOutputs](bl.DecisionExpressionOpts{
+var grossPrice = bl.NewDecisionExpression[GrossPriceOutputs](bl.DecisionExpressionConfig{
     Id:   "gross_price",
     Name: "Gross Price",
     // `tax_rate` here is taxRate's Id (bl.WithId("tax_rate")), bound into scope
