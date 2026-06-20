@@ -1,17 +1,16 @@
 ---
 name: DecisionNode
-description: Common interface for every decision node — the shared identity surface (Id, Name, Description) and evaluation contract satisfied by the generic DecisionTable, DecisionExpression, Relation, and Invocation types.
+description: Common interface for every decision node — the shared identity surface (Id, Name, Description) and evaluation contract satisfied by the generic DecisionTable, DecisionExpression, and Invocation types.
 targets:
   - ../decisions/decision_node.go
 ---
 
 # DecisionNode
 
-`DecisionNode` is the interface every node in a `DecisionTask` satisfies. The four concrete node types are each generic over a caller-supplied outputs struct that declares the node's typed outputs:
+`DecisionNode` is the interface every node in a `DecisionTask` satisfies. The three concrete node types are each generic over a caller-supplied outputs struct that declares the node's typed outputs:
 
 - `DecisionTable[Outputs]` — tabular input/output rules with hit policies
-- `DecisionExpression[Outputs]` — named text-expression entries (single field → scalar, multi-field → dictionary)
-- `Relation[Outputs]` — tabular data that evaluates to a list of contexts
+- `DecisionExpression[Outputs]` — named text-expression entries (single field → scalar, multi-field → dictionary); a single `BlTable` output built with `table(...)` is how a node computes a whole table
 - `Invocation[Outputs]` — a call to a `BusinessKnowledgeModel` with parameter bindings
 
 ```go
@@ -53,7 +52,7 @@ When the constructor runs, every outputs-struct field is populated with a typed 
 
 ## Constructing a node
 
-Each concrete type has a generic constructor: `NewDecisionTable[Outputs]`, `NewDecisionExpression[Outputs]`, `NewRelation[Outputs]`, `NewInvocation[Outputs]`. The caller passes opts containing the node's logic (rules, entries, rows, bindings) and the type parameter pins the outputs struct.
+Each concrete type has a generic constructor: `NewDecisionTable[Outputs]`, `NewDecisionExpression[Outputs]`, `NewInvocation[Outputs]`. The caller passes opts containing the node's logic (rules, entries, bindings) and the type parameter pins the outputs struct.
 
 ```go
 var eligibility = NewDecisionTable[EligibilityOutputs](DecisionTableOpts{

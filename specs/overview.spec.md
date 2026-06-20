@@ -27,7 +27,7 @@ blkit's public API is a single **core package** plus a few optional infrastructu
 
 - `core` (imported as `bl` — `import bl "github.com/friendly-business-machines/blkit/core"`) — the single logic import. One package holding the whole logic layer, so callers reach all of it through one `bl.` alias:
   - the typed value system and expression engine (`bl.BlNumber`, `bl.BlString`, `bl.BlExpr`, `bl.BlDictionary`, `bl.BlList`, etc.);
-  - the decision classes (`bl.DecisionTask`, `bl.DecisionTable`, `bl.DecisionExpression`, `bl.Relation`, `bl.Invocation`, `bl.BusinessKnowledgeModel`);
+  - the decision classes (`bl.DecisionTask`, `bl.DecisionTable`, `bl.DecisionExpression`, `bl.Invocation`, `bl.BusinessKnowledgeModel`);
   - the process classes (`bl.Process`, `bl.ProcessGraph`, `bl.StartEvent`, `bl.EndEvent`, gateway nodes, tasks);
   - the data contracts and pluggable state store (`bl.InputContract`, `bl.OutputContract`, `bl.ExecutionContext`, `bl.ExecutionHistory`, `bl.StateStore`).
 - `blkit/messagegateway` — producer-side typed client SDK (`MessageGateway` interface, `RedisMessageGateway`, `NATSMessageGateway`, `InMemoryMessageGateway`) for submitting process runs, delivering messages, and observing events from outside the worker pool.

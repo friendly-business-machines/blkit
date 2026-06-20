@@ -26,9 +26,12 @@ inherits it **by reference** — it is never reset or re-added (see
 
 `T` may be any `BlValue` — a scalar (`BlNumber`, `BlString`, `BlDate`,
 `BlBoolean`, …) or a composite (`BlTable`, `BlList`, `BlDictionary`). A `BlTable`
-constant is the static counterpart to a [`Relation`](relation.spec.md):
-`Relation` builds a table from a row struct and per-cell expressions, whereas
-`ReferenceData` holds a pre-built table value directly.
+`ReferenceData` is conceptually DMN's *relation* — a list of uniformly-keyed
+rows held as inline reference data within the decision model. It holds a
+**static**, pre-built table; for a table whose cells are *computed* from task
+inputs or upstream outputs, use a [`DecisionExpression`](decision-expression.spec.md)
+with a single `BlTable` output built via the `table(...)` constructor (see
+[table.spec.md](../expressions/table.spec.md)).
 
 ```go
 type ReferenceData[T BlValue] struct {
@@ -91,8 +94,7 @@ var baseCurrency = bl.NewReferenceData(bl.String("GBP"),
 The positional `value` lets type inference supply `T`, so neither call needs an
 explicit `[BlNumber]` / `[BlString]`.
 
-A composite value — a static lookup table — is held directly, without going
-through `Relation`:
+A composite value — a static lookup table — is held directly:
 
 ```go
 var shippingRatesTable, _ = bl.Table(
