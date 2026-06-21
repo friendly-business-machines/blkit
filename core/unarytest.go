@@ -4,32 +4,50 @@ import (
 	"strings"
 
 	"github.com/expr-lang/expr"
+	"github.com/expr-lang/expr/vm"
 )
 
-// UnaryTest compiles a unary-test source string. inputType is the type the
-// implicit `?` placeholder will hold at evaluation time. The unary-test forms
-// are normalised into ordinary `?`-referencing expressions (with `?` bound to
-// the input), then run through the same parse/patch/type-check/compile pipeline
-// as Expr. The returned BlExpr is evaluated by passing the input value directly
-// (no dictionary wrapping).
-func UnaryTest(source string, inputType Type) (BlExpr, error) {
+// BlUnaryTest is a compiled decision-table cell predicate over a single typed
+// input T (the implicit `?`). Parse once with UnaryTest, then Evaluate each
+// candidate input.
+type BlUnaryTest[T BlValue] struct {
+	source  string
+	program *vm.Program
+}
+
+// unaryEnv binds the single unary-test input to the internal `?` placeholder so
+// the strict struct env type-checks the cell against the input type T.
+type unaryEnv[T BlValue] struct {
+	Input T `expr:"__input"`
+}
+
+// UnaryTest compiles a unary-test source string whose implicit `?` placeholder
+// holds a value of type T at evaluation time. The unary-test forms are
+// normalised into ordinary `?`-referencing expressions (with `?` bound to the
+// input), then run through the same parse/patch/type-check/compile pipeline as
+// Expr. Evaluate is passed the input value directly (no dictionary wrapping).
+func UnaryTest[T BlValue](source string) (*BlUnaryTest[T], error) {
 	if strings.TrimSpace(source) == "" {
 		return nil, &ParseError{Source: source, Err: errEmptySource}
 	}
 	rewritten := normaliseUnaryTest(source)
-	schema := BlSchema{{Name: inputPlaceholder, Type: inputType}}
-	src, err := normalise(rewritten)
+	program, err := compileWithEnv(rewritten, unaryEnv[T]{}, map[string]bool{inputPlaceholder: true})
 	if err != nil {
 		return nil, &ParseError{Source: source, Err: err}
 	}
-	if err := checkUndefinedVars(src, schema); err != nil {
-		return nil, &ParseError{Source: source, Err: err}
-	}
-	program, err := expr.Compile(src, buildOptions(schema, rewritten)...)
+	return &BlUnaryTest[T]{source: source, program: program}, nil
+}
+
+// Source returns the original unary-test source text.
+func (u *BlUnaryTest[T]) Source() string { return u.source }
+
+// Evaluate tests input against the compiled unary-test predicate.
+func (u *BlUnaryTest[T]) Evaluate(input T) (BlValue, error) {
+	out, err := expr.Run(u.program, unaryEnv[T]{Input: input})
 	if err != nil {
-		return nil, &ParseError{Source: source, Err: err}
+		return nil, &TypeError{Op: "evaluate", Detail: err.Error()}
 	}
-	return &compiled{program: program, source: source}, nil
+	return asBl(out), nil
 }
 
 // normaliseUnaryTest rewrites a unary-test source string into an ordinary

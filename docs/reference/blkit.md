@@ -73,8 +73,10 @@ import "github.com/friendly-business-machines/blkit/core"
   - [func (d BlDictionary) String() string](<#BlDictionary.String>)
   - [func (BlDictionary) Type() Type](<#BlDictionary.Type>)
 - [type BlExpr](<#BlExpr>)
-  - [func Expr(source string, schema BlSchema) (BlExpr, error)](<#Expr>)
-  - [func UnaryTest(source string, inputType Type) (BlExpr, error)](<#UnaryTest>)
+  - [func Expr\[E any\](source string) (\*BlExpr\[E\], error)](<#Expr>)
+  - [func ExprNoEnv(source string) (\*BlExpr\[NoEnv\], error)](<#ExprNoEnv>)
+  - [func (e \*BlExpr\[E\]) Evaluate(env E) (BlValue, error)](<#BlExpr[E].Evaluate>)
+  - [func (e \*BlExpr\[E\]) Source() string](<#BlExpr[E].Source>)
 - [type BlFunc](<#BlFunc>)
   - [func (f BlFunc) Apply(args \[\]BlValue) (BlValue, error)](<#BlFunc.Apply>)
   - [func (f BlFunc) Equal(other BlValue) BlValue](<#BlFunc.Equal>)
@@ -154,6 +156,10 @@ import "github.com/friendly-business-machines/blkit/core"
   - [func (t BlTime) Native() time.Time](<#BlTime.Native>)
   - [func (t BlTime) String() string](<#BlTime.String>)
   - [func (BlTime) Type() Type](<#BlTime.Type>)
+- [type BlUnaryTest](<#BlUnaryTest>)
+  - [func UnaryTest\[T BlValue\](source string) (\*BlUnaryTest\[T\], error)](<#UnaryTest>)
+  - [func (u \*BlUnaryTest\[T\]) Evaluate(input T) (BlValue, error)](<#BlUnaryTest[T].Evaluate>)
+  - [func (u \*BlUnaryTest\[T\]) Source() string](<#BlUnaryTest[T].Source>)
 - [type BlValue](<#BlValue>)
 - [type BlYearsMonthsDuration](<#BlYearsMonthsDuration>)
   - [func YMDuration\[T YMDurationInput\](v T) (BlYearsMonthsDuration, error)](<#YMDuration>)
@@ -179,11 +185,24 @@ import "github.com/friendly-business-machines/blkit/core"
 - [type DateTimeComponents](<#DateTimeComponents>)
   - [func ToDateTimeComponentsAsNaive(t time.Time) DateTimeComponents](<#ToDateTimeComponentsAsNaive>)
 - [type DateTimeInput](<#DateTimeInput>)
+- [type DecisionDefinitionError](<#DecisionDefinitionError>)
+  - [func (e \*DecisionDefinitionError) Error() string](<#DecisionDefinitionError.Error>)
+- [type DecisionExpression](<#DecisionExpression>)
+  - [func NewDecisionExpression\[I, O any\](config DecisionExpressionConfig) \*DecisionExpression\[I, O\]](<#NewDecisionExpression>)
+  - [func (d \*DecisionExpression\[I, O\]) Evaluate(inputs I) (O, error)](<#DecisionExpression[I, O].Evaluate>)
+  - [func (d \*DecisionExpression\[I, O\]) GetDescription() string](<#DecisionExpression[I, O].GetDescription>)
+  - [func (d \*DecisionExpression\[I, O\]) GetId() string](<#DecisionExpression[I, O].GetId>)
+  - [func (d \*DecisionExpression\[I, O\]) GetName() string](<#DecisionExpression[I, O].GetName>)
+  - [func (d \*DecisionExpression\[I, O\]) Source(output string) (string, bool)](<#DecisionExpression[I, O].Source>)
+  - [func (d \*DecisionExpression\[I, O\]) ToMarkdown() string](<#DecisionExpression[I, O].ToMarkdown>)
+- [type DecisionExpressionConfig](<#DecisionExpressionConfig>)
+- [type Entries](<#Entries>)
 - [type Field](<#Field>)
 - [type ICalOption](<#ICalOption>)
   - [func WithICalExpansionWindow(r BlRange) ICalOption](<#WithICalExpansionWindow>)
   - [func WithICalStrict(strict bool) ICalOption](<#WithICalStrict>)
   - [func WithICalValidity(r BlRange) ICalOption](<#WithICalValidity>)
+- [type NoEnv](<#NoEnv>)
 - [type NumberInput](<#NumberInput>)
 - [type ParseError](<#ParseError>)
   - [func (e \*ParseError) Error() string](<#ParseError.Error>)
@@ -779,34 +798,51 @@ func (BlDictionary) Type() Type
 
 
 <a name="BlExpr"></a>
-## type [BlExpr](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L77-L80>)
+## type [BlExpr](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L82-L85>)
 
-BlExpr is a compiled source\-text expression. Parse once with Expr, evaluate repeatedly.
+BlExpr is a compiled, type\-checked expression over a concrete env struct E. Parse once with Expr, then Evaluate repeatedly. E's exported fields — renamed by \`expr:"name"\` struct tags — are the variables the source may reference; the Go compiler rejects passing any other type to Evaluate, and an undeclared name is a compile error.
 
 ```go
-type BlExpr interface {
-    Evaluate(input BlValue) (BlValue, error)
-    Source() string
+type BlExpr[E any] struct {
+    // contains filtered or unexported fields
 }
 ```
 
 <a name="Expr"></a>
-### func [Expr](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L152>)
+### func [Expr](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L141>)
 
 ```go
-func Expr(source string, schema BlSchema) (BlExpr, error)
+func Expr[E any](source string) (*BlExpr[E], error)
 ```
 
-Expr compiles a source string once, optionally type\-checking it against a declared schema. Pass nil to skip static variable checking. The returned BlExpr can be evaluated repeatedly.
+Expr compiles a source string once against the concrete env struct E. E's exported fields (renamed by \`expr:"name"\` tags) declare the variables the source may reference; an undeclared name is a compile\-time error. The returned BlExpr can be evaluated repeatedly.
 
-<a name="UnaryTest"></a>
-### func [UnaryTest](<https://github.com/friendly-business-machines/blkit/blob/main/core/unarytest.go#L15>)
+<a name="ExprNoEnv"></a>
+### func [ExprNoEnv](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L154>)
 
 ```go
-func UnaryTest(source string, inputType Type) (BlExpr, error)
+func ExprNoEnv(source string) (*BlExpr[NoEnv], error)
 ```
 
-UnaryTest compiles a unary\-test source string. inputType is the type the implicit \`?\` placeholder will hold at evaluation time. The unary\-test forms are normalised into ordinary \`?\`\-referencing expressions (with \`?\` bound to the input), then run through the same parse/patch/type\-check/compile pipeline as Expr. The returned BlExpr is evaluated by passing the input value directly (no dictionary wrapping).
+ExprNoEnv compiles a variable\-free expression. It is shorthand for Expr\[NoEnv\]; evaluate the result with Evaluate(NoEnv\{\}).
+
+<a name="BlExpr[E].Evaluate"></a>
+### func (\*BlExpr\[E\]) [Evaluate](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L91>)
+
+```go
+func (e *BlExpr[E]) Evaluate(env E) (BlValue, error)
+```
+
+Evaluate runs the compiled program against env and returns the result.
+
+<a name="BlExpr[E].Source"></a>
+### func (\*BlExpr\[E\]) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L88>)
+
+```go
+func (e *BlExpr[E]) Source() string
+```
+
+Source returns the original source text (before normalisation).
 
 <a name="BlFunc"></a>
 ## type [BlFunc](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L13-L16>)
@@ -820,13 +856,13 @@ type BlFunc struct {
 ```
 
 <a name="BlFunc.Apply"></a>
-### func (BlFunc) [Apply](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L39>)
+### func (BlFunc) [Apply](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L41>)
 
 ```go
 func (f BlFunc) Apply(args []BlValue) (BlValue, error)
 ```
 
-Apply binds args to the parameters and evaluates the body.
+Apply binds args to the parameters and evaluates the body. A function body's parameter names come from the parsed source rather than a Go struct, so it compiles on the internal dynamic path (never the public struct\-typed surface).
 
 <a name="BlFunc.Equal"></a>
 ### func (BlFunc) [Equal](<https://github.com/friendly-business-machines/blkit/blob/main/core/func.go#L20>)
@@ -1537,6 +1573,44 @@ func (BlTime) Type() Type
 
 
 
+<a name="BlUnaryTest"></a>
+## type [BlUnaryTest](<https://github.com/friendly-business-machines/blkit/blob/main/core/unarytest.go#L13-L16>)
+
+BlUnaryTest is a compiled decision\-table cell predicate over a single typed input T (the implicit \`?\`). Parse once with UnaryTest, then Evaluate each candidate input.
+
+```go
+type BlUnaryTest[T BlValue] struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="UnaryTest"></a>
+### func [UnaryTest](<https://github.com/friendly-business-machines/blkit/blob/main/core/unarytest.go#L29>)
+
+```go
+func UnaryTest[T BlValue](source string) (*BlUnaryTest[T], error)
+```
+
+UnaryTest compiles a unary\-test source string whose implicit \`?\` placeholder holds a value of type T at evaluation time. The unary\-test forms are normalised into ordinary \`?\`\-referencing expressions (with \`?\` bound to the input), then run through the same parse/patch/type\-check/compile pipeline as Expr. Evaluate is passed the input value directly (no dictionary wrapping).
+
+<a name="BlUnaryTest[T].Evaluate"></a>
+### func (\*BlUnaryTest\[T\]) [Evaluate](<https://github.com/friendly-business-machines/blkit/blob/main/core/unarytest.go#L45>)
+
+```go
+func (u *BlUnaryTest[T]) Evaluate(input T) (BlValue, error)
+```
+
+Evaluate tests input against the compiled unary\-test predicate.
+
+<a name="BlUnaryTest[T].Source"></a>
+### func (\*BlUnaryTest\[T\]) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/unarytest.go#L42>)
+
+```go
+func (u *BlUnaryTest[T]) Source() string
+```
+
+Source returns the original unary\-test source text.
+
 <a name="BlValue"></a>
 ## type [BlValue](<https://github.com/friendly-business-machines/blkit/blob/main/core/value.go#L15-L21>)
 
@@ -1793,6 +1867,129 @@ type DateTimeInput interface {
 }
 ```
 
+<a name="DecisionDefinitionError"></a>
+## type [DecisionDefinitionError](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L75-L78>)
+
+DecisionDefinitionError reports one or more problems found while constructing a decision node. Following the decision\-family convention, the constructor accumulates every problem and panics once with this error, so a malformed package\-scope node fails fast at program (or test) startup.
+
+```go
+type DecisionDefinitionError struct {
+    Node     string
+    Problems []string
+}
+```
+
+<a name="DecisionDefinitionError.Error"></a>
+### func (\*DecisionDefinitionError) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L80>)
+
+```go
+func (e *DecisionDefinitionError) Error() string
+```
+
+
+
+<a name="DecisionExpression"></a>
+## type [DecisionExpression](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L43-L56>)
+
+DecisionExpression defines decision logic as named text\-expression entries over a typed input struct I and output struct O. Each entry binds one output to a bl\-expression that may reference any declared input or sibling output by name. Entries are compiled and topologically sorted at construction; Evaluate(inputs I) walks them in dependency order and returns O.
+
+Inputs and outputs are concrete Go structs, so a caller passing the wrong input shape or reading a non\-existent output is a Go compile error. The two structs are joined at construction into a single combined env type (built with reflect.StructOf, since Go forbids embedding type parameters) against which every entry is type\-checked.
+
+```go
+type DecisionExpression[I, O any] struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="NewDecisionExpression"></a>
+### func [NewDecisionExpression](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L95>)
+
+```go
+func NewDecisionExpression[I, O any](config DecisionExpressionConfig) *DecisionExpression[I, O]
+```
+
+NewDecisionExpression builds a DecisionExpression from the typed input struct I, output struct O, and the configured entries. It validates the contracts (every exported field has a usable expr name, no duplicate or input/output name collisions, at least one output, the entry keys are exactly the output names), compiles every entry against the combined env, and topologically sorts by inter\-entry dependencies. It accumulates every problem and panics once with a \*DecisionDefinitionError.
+
+<a name="DecisionExpression[I, O].Evaluate"></a>
+### func (\*DecisionExpression\[I, O\]) [Evaluate](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L240>)
+
+```go
+func (d *DecisionExpression[I, O]) Evaluate(inputs I) (O, error)
+```
+
+Evaluate runs the entries against the input variables in topological order and returns the produced outputs. An output value whose runtime type disagrees with its declared output field is a bl.TypeError.
+
+<a name="DecisionExpression[I, O].GetDescription"></a>
+### func (\*DecisionExpression\[I, O\]) [GetDescription](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L282>)
+
+```go
+func (d *DecisionExpression[I, O]) GetDescription() string
+```
+
+GetDescription returns the node's description.
+
+<a name="DecisionExpression[I, O].GetId"></a>
+### func (\*DecisionExpression\[I, O\]) [GetId](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L276>)
+
+```go
+func (d *DecisionExpression[I, O]) GetId() string
+```
+
+GetId returns the node's identifier.
+
+<a name="DecisionExpression[I, O].GetName"></a>
+### func (\*DecisionExpression\[I, O\]) [GetName](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L279>)
+
+```go
+func (d *DecisionExpression[I, O]) GetName() string
+```
+
+GetName returns the node's display name.
+
+<a name="DecisionExpression[I, O].Source"></a>
+### func (\*DecisionExpression\[I, O\]) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L285>)
+
+```go
+func (d *DecisionExpression[I, O]) Source(output string) (string, bool)
+```
+
+Source returns the original raw source for an output name.
+
+<a name="DecisionExpression[I, O].ToMarkdown"></a>
+### func (\*DecisionExpression\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L291>)
+
+```go
+func (d *DecisionExpression[I, O]) ToMarkdown() string
+```
+
+ToMarkdown renders the entries as a markdown table in output declaration order.
+
+<a name="DecisionExpressionConfig"></a>
+## type [DecisionExpressionConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L22-L30>)
+
+DecisionExpressionConfig configures a DecisionExpression. The input and output contracts are the type parameters I and O of NewDecisionExpression; the config carries identity and the entry sources.
+
+```go
+type DecisionExpressionConfig struct {
+    Id          string
+    Name        string
+    Description string
+
+    // Entries maps each output name to its source expression. The key set must
+    // be exactly the set of output names (O's expr-tag field names).
+    Entries Entries
+}
+```
+
+<a name="Entries"></a>
+## type [Entries](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L17>)
+
+Entries maps each output name to the raw\-string source expression that produces it. The key is the output's expr\-tag name (the FEEL name entries reference), matching a field of the output struct O.
+
+```go
+type Entries map[string]string
+```
+
 <a name="Field"></a>
 ## type [Field](<https://github.com/friendly-business-machines/blkit/blob/main/core/schema.go#L12-L19>)
 
@@ -1844,6 +2041,15 @@ func WithICalValidity(r BlRange) ICalOption
 ```
 
 WithICalValidity sets the imported calendar's validity bounds.
+
+<a name="NoEnv"></a>
+## type [NoEnv](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L102>)
+
+NoEnv is the env type for variable\-free expressions (\`1 \+ 1\`, \`date("2025\-01\-01")\`); pair it with Expr\[NoEnv\] or the ExprNoEnv shorthand and evaluate with Evaluate(NoEnv\{\}).
+
+```go
+type NoEnv = struct{}
+```
 
 <a name="NumberInput"></a>
 ## type [NumberInput](<https://github.com/friendly-business-machines/blkit/blob/main/core/number.go#L49-L54>)
@@ -2001,7 +2207,7 @@ type TimeInput interface {
 ```
 
 <a name="Type"></a>
-## type [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L11>)
+## type [Type](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L13>)
 
 Type identifies a language type for parse\-time checking and \`instance of\`.
 

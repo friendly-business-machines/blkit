@@ -31,12 +31,20 @@ func instanceOfFn(args ...any) (any, error) {
 	return BlBoolean{v.Type() == want}, nil
 }
 
-// isDefinedFn reports whether a name is bound in the evaluation environment.
-// normalise lowers `isDefined(x)` to __isDefined($env, "rootName"), so an
-// unbound name never appears as a variable reference (avoiding a parse error)
-// and path access reports on the root binding.
-func isDefinedFn(args ...any) (any, error) {
-	env, ok := args[0].(map[string]any)
+// isBoundFn backs `isDefined(name)` for a bare name. Variable names are now
+// concrete env-struct fields known at compile time, so a declared name always
+// resolves; normalise lowers `isDefined(name)` to __isBound(name) — passing the
+// value forces the strict checker to reject an undeclared name — and this impl
+// ignores the value and reports true.
+func isBoundFn(args ...any) (any, error) {
+	return BlBoolean{true}, nil
+}
+
+// hasKeyFn backs `isDefined(d.key)`: normalise lowers a dotted path to
+// __hasKey(d, "key"), and this reports whether the dictionary d actually
+// contains key — a missing key is "not defined", distinct from a present null.
+func hasKeyFn(args ...any) (any, error) {
+	d, ok := asBl(args[0]).(BlDictionary)
 	if !ok {
 		return BlBoolean{false}, nil
 	}
@@ -44,13 +52,14 @@ func isDefinedFn(args ...any) (any, error) {
 	if !ok {
 		return nil, argTypeError(args[1])
 	}
-	_, present := env[name.s]
+	_, present := d.m[name.s]
 	return BlBoolean{present}, nil
 }
 
 func typeTestOptions() []expr.Option {
 	return []expr.Option{
 		expr.Function("__instanceOf", instanceOfFn, new(func(BlValue, BlValue) BlBoolean)),
-		expr.Function("__isDefined", isDefinedFn, new(func(map[string]any, BlValue) BlBoolean)),
+		expr.Function("__isBound", isBoundFn, new(func(BlValue) BlBoolean)),
+		expr.Function("__hasKey", hasKeyFn, new(func(BlValue, BlValue) BlBoolean)),
 	}
 }

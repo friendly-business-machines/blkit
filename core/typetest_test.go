@@ -19,23 +19,30 @@ func TestInstanceOf(t *testing.T) {
 	})
 }
 
+type idEnv struct {
+	Applicant BlDictionary `expr:"applicant"`
+}
+
 func TestIsDefined(t *testing.T) {
-	schema := BlSchema{{Name: "applicant", Type: TypeDictionary}}
+	name, _ := String("Alice")
+	appl, _ := Dictionary(map[string]BlValue{"name": name})
 	mid := func(src string, want string) {
 		t.Helper()
-		e, err := Expr(src, schema)
+		e, err := Expr[idEnv](src)
 		if err != nil {
 			t.Fatalf("compile %q: %v", src, err)
 		}
-		name, _ := String("Alice")
-		appl, _ := Dictionary(map[string]BlValue{"name": name})
-		in, _ := Dictionary(map[string]BlValue{"applicant": appl})
-		out, _ := e.Evaluate(in)
+		out, _ := e.Evaluate(idEnv{Applicant: appl})
 		if out.String() != want {
 			t.Errorf("%s = %q, want %q", src, out.String(), want)
 		}
 	}
-	mid(`isDefined(applicant)`, "true")
-	mid(`isDefined(applicant.middleName)`, "true") // path on a bound dict resolves
-	mid(`isDefined(undeclaredName)`, "false")      // unbound name → false (no parse error)
+	mid(`isDefined(applicant)`, "true")             // a declared field is always defined
+	mid(`isDefined(applicant.name)`, "true")        // present key probes the dictionary
+	mid(`isDefined(applicant.middleName)`, "false") // absent key
+
+	// An undeclared name is now a compile-time error, not a runtime false.
+	if _, err := Expr[idEnv](`isDefined(undeclaredName)`); err == nil {
+		t.Errorf("expected compile error for isDefined(undeclaredName)")
+	}
 }

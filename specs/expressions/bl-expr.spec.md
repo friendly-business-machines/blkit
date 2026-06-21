@@ -32,42 +32,52 @@ same source syntax (e.g. a `bl.BlNumber` renders as `42`, a `bl.BlString` as `"f
 
 ```go
 // host-side (Go)
-// Expr compiles a source string once, optionally type-checking it against a
-// declared schema. The returned bl.BlExpr can be evaluated repeatedly.
-func Expr(source string, schema BlSchema) (BlExpr, error)
+// Expr compiles a source string once against the concrete env struct E. E's
+// exported fields — renamed by `expr:"name"` tags — declare the variables the
+// source may reference; an undeclared name is a compile-time error. The returned
+// bl.BlExpr[E] can be evaluated repeatedly.
+func Expr[E any](source string) (*BlExpr[E], error)
 
-// BlSchema declares the variable names and types an expression may reference, so
-// type errors surface at parse time. Pass nil to skip static checking. See
-// schema.spec.md for the full type definition.
+// BlExpr is a compiled, type-checked expression over a concrete env struct E.
+type BlExpr[E any] struct { /* unexported: original source + compiled program */ }
+func (e *BlExpr[E]) Evaluate(env E) (BlValue, error)
+func (e *BlExpr[E]) Source() string
 
-// BlExpr is a compiled source-text expression.
-type BlExpr interface {
-    Evaluate(input BlValue) (BlValue, error)
-    Source() string
-}
+// NoEnv is the env type for a variable-free expression; ExprNoEnv is shorthand
+// for Expr[NoEnv].
+type NoEnv = struct{}
+func ExprNoEnv(source string) (*BlExpr[NoEnv], error)
 ```
 
-A `bl.BlExpr` is a compiled expression: parse a source string once with `bl.Expr`, then `Evaluate` it
-repeatedly. The input is a single `bl.BlValue` — typically a `bl.BlDictionary` whose keys match the
-declared schema's fields. The result is a `bl.BlValue` (see [§ Engine internals](#engine-internals-go)
-for the bridging rules and host accessors). There are no `bl.Number(…)`-style expression factories.
+A `bl.BlExpr[E]` is a compiled expression: parse a source string once with `bl.Expr[E]`, then
+`Evaluate` it repeatedly. The variables an expression may reference are the **exported fields of the
+concrete Go env struct `E`**, each renamed to its FEEL name by an `expr:"…"` tag. Because the env is a
+real Go type, the variable names and their types are checked at **Go compile time**: passing the wrong
+env to `Evaluate` is a build error, and referencing an undeclared name is a parse error. The result is
+a `bl.BlValue` (see [§ Engine internals](#engine-internals-go) for the bridging rules and host
+accessors). There are no `bl.Number(…)`-style expression factories.
 
 ```go
 // host-side (Go)
-var schema, _ = bl.Schema(
-    bl.Field{Name: "age",    Type: bl.TypeNumber},
-    bl.Field{Name: "income", Type: bl.TypeNumber},
-)
-var eligible, _ = bl.Expr(`age >= 18 and income > 50000`, schema)
+type ApplicantEnv struct {
+    Age    bl.BlNumber `expr:"age"`
+    Income bl.BlNumber `expr:"income"`
+}
+var eligible, _ = bl.Expr[ApplicantEnv](`age >= 18 and income > 50000`)
 
 var age,    _ = bl.Number(21)
 var income, _ = bl.Number(60000)
-var inputs, _ = bl.Dictionary(map[string]bl.BlValue{
-    "age":    age,
-    "income": income,
-})
-var result, _ = eligible.Evaluate(inputs)
+var result, _ = eligible.Evaluate(ApplicantEnv{Age: age, Income: income})
 // result is the bl.BlBoolean true
+```
+
+A variable-free expression needs no env type: compile it with `bl.ExprNoEnv` and evaluate it against
+`bl.NoEnv{}`.
+
+```go
+// host-side (Go)
+var sum, _ = bl.ExprNoEnv(`1 + 1`)
+var two, _ = sum.Evaluate(bl.NoEnv{}) // the bl.BlNumber 2
 ```
 
 `[@test] ../../core/engine_test.go`
@@ -169,30 +179,30 @@ nor declared is a parse error (see [§ Errors and null](#errors-and-null)).
 
 ### Name resolution: `isDefined`
 
-`isDefined(x)` is a built-in that reports whether the engine could resolve `x` to a value. It
-returns `true` when `x` resolves (including when it resolves to `bl.BlNull`) and `false` only when
-the name is unbound at evaluation time. It is the only way for an expression to distinguish "the
-caller supplied this name with a null value" from "the caller supplied no value at all."
+Variable names are the fields of a concrete env struct, fixed at Go-compile time, so a top-level name
+is **always** bound: `isDefined(name)` on a declared field is statically `true`, and naming an
+undeclared variable is a compile-time error rather than a runtime `false`. `isDefined` remains useful
+for **dictionary paths**, where it probes whether a dictionary actually contains a key — a missing key
+is "not defined", distinct from a key present with a `bl.BlNull` value.
 
 ```
-// expression-language
-isDefined(applicant)             // → true if `applicant` is bound, even if its value is null
-isDefined(applicant.middleName)  // → true (path access on a bound dictionary always resolves;
-                                 //   a missing key resolves to bl.BlNull, which is still "defined")
-isDefined(undeclaredName)        // → false (only when there is no binding)
+// expression-language, with `applicant` a declared bl.BlDictionary field
+isDefined(applicant)             // → true  (a declared field is always defined)
+isDefined(applicant.name)        // → true  when the dictionary has key "name"
+isDefined(applicant.middleName)  // → false when the dictionary has no "middleName" key
+isDefined(undeclaredName)        // compile error — not a declared field
 ```
 
-`isDefined` operates at the resolution layer, not the value layer — to test whether a value *is*
-`bl.BlNull` once resolved, use `isNull(x)` ([null.spec.md § Testing for null](null.spec.md#testing-for-null)).
-To supply a fallback when a value resolves to `bl.BlNull`, use `getOrElse(x, default)`
+`isDefined` operates at the resolution layer, not the value layer — to test whether a *present* value
+*is* `bl.BlNull`, use `isNull(x)` ([null.spec.md § Testing for null](null.spec.md#testing-for-null));
+to supply a fallback for a `bl.BlNull`, use `getOrElse(x, default)`
 ([null.spec.md § Default for null](null.spec.md#built-in-functions)).
 
-Because `isDefined` distinguishes "unbound name" from "bound to anything (including `bl.BlNull`)", it
-cannot be expressed as a normal `bl.BlValue → bl.BlValue` impl — by the time a normal impl runs, the
-argument has already been resolved and unbound names are a parse error. Instead, the engine's AST
-patcher (see [§ Patchers](#patchers-patchgo)) intercepts `isDefined(name)` calls before
-resolution and rewrites them to a lookup against the input value plus declared `bl.BlSchema` bindings.
-The impl is registered in `engine.go` alongside the other engine-level options.
+Because the distinction is structural, `isDefined` cannot be a normal `bl.BlValue → bl.BlValue` impl —
+by the time a normal impl runs, a missing dictionary key has already collapsed to `bl.BlNull`. Instead
+`normalise` lowers `isDefined(name)` to a static bound check (the strict env still rejects an
+undeclared name) and `isDefined(d.key)` to a key-presence probe on the dictionary `d`. The impls are
+registered in `engine.go` alongside the other engine-level options.
 
 `[@test] ../../core/typetest_test.go`
 
@@ -541,27 +551,28 @@ will hold).
 ```go
 // host-side (Go)
 
-// bl.UnaryTest compiles a unary-test source string. inputType is the type the
-// implicit ? will hold at evaluation time. The engine uses it to type-check the
-// test body and verifies the result is a bl.BlBoolean (or bl.BlNull); forms
-// that require an ordered domain (<, <=, >, >=, interval [a..b]) are rejected
-// at construction when inputType is unordered (list, dictionary, table,
-// boolean, etc. — see § Form applicability). Pass bl.TypeAny for inputs whose
-// type isn't known statically.
-func UnaryTest(source string, inputType Type) (BlExpr, error)
+// bl.UnaryTest compiles a unary-test source string over a single typed input T
+// (the implicit ?). The result is verified to be a bl.BlBoolean (or bl.BlNull);
+// forms that require an ordered domain (<, <=, >, >=, interval [a..b]) are
+// rejected at construction when T is an unordered type. Use T = bl.BlValue for
+// inputs whose type isn't known statically.
+type BlUnaryTest[T BlValue] struct { /* unexported: source + program */ }
+func UnaryTest[T BlValue](source string) (*BlUnaryTest[T], error)
+func (u *BlUnaryTest[T]) Evaluate(input T) (BlValue, error)
+func (u *BlUnaryTest[T]) Source() string
 ```
 
-The returned `bl.BlExpr` is evaluated like any other: pass the input value directly
-(no need to wrap into a dictionary, since there's only the single implicit `?`).
+The returned `bl.BlUnaryTest[T]` is evaluated by passing the typed input value directly to
+`Evaluate` — there is only the single implicit `?`, so no dictionary wrapping.
 
 Worked example:
 
 ```go
 // host-side (Go) — compile-once, test-many.
-var atLeast18, _ = bl.UnaryTest(`>= 18`, bl.TypeNumber)
-var isUrgent,  _ = bl.UnaryTest(`contains(?, "urgent")`, bl.TypeString)
-var inRange,   _ = bl.UnaryTest(`[18..65]`, bl.TypeNumber)
-var wildcard,  _ = bl.UnaryTest(`-`, bl.TypeAny)
+var atLeast18, _ = bl.UnaryTest[bl.BlNumber](`>= 18`)
+var isUrgent,  _ = bl.UnaryTest[bl.BlString](`contains(?, "urgent")`)
+var inRange,   _ = bl.UnaryTest[bl.BlNumber](`[18..65]`)
+var wildcard,  _ = bl.UnaryTest[bl.BlValue](`-`)
 
 // Evaluate against typed inputs. The engine has verified at construction that
 // every result will be bl.BlBoolean (true / false) or bl.BlNull (when null
@@ -569,7 +580,7 @@ var wildcard,  _ = bl.UnaryTest(`-`, bl.TypeAny)
 var n21, _    = bl.Number(21)
 var ok,  _    = atLeast18.Evaluate(n21)                          // → bl.BlBoolean(true)
 
-var noteIn    = bl.String("urgent notice")
+var noteIn, _ = bl.String("urgent notice")
 var ok2, _    = isUrgent.Evaluate(noteIn)                        // → bl.BlBoolean(true)
 
 var n70, _    = bl.Number(70)
@@ -580,14 +591,13 @@ var ok5, _    = wildcard.Evaluate(bl.Null())                     // → bl.BlBoo
 
 The fallible cases:
 
-- **Parse-time errors** — `bl.UnaryTest` returns `(nil, bl.ParseError)` if the source
+- **Parse-time errors** — `bl.UnaryTest[T]` returns `(nil, bl.ParseError)` if the source
   string isn't a valid unary test. Common causes: unknown identifier, malformed range,
-  type mismatch between the test body and the declared `inputType` (e.g. `>= 18` with
-  `bl.TypeString`), or a body whose result isn't a boolean (e.g. `?` alone with
-  `bl.TypeNumber`).
-- **Evaluation-time errors** — `Evaluate(input)` returns `(nil, bl.TypeError)` if the
-  supplied `input`'s type doesn't match the compiled `inputType`. This shouldn't happen
-  with correct host code, but the runtime check catches mismatches.
+  type mismatch between the test body and the input type `T` (e.g. `>= 18` with
+  `bl.BlString`), or a body whose result isn't a boolean.
+- **Evaluation-time errors** — `Evaluate(input)` returns `(nil, bl.TypeError)` for a
+  runtime type mismatch inside the test body. The input type itself is fixed by the Go
+  type parameter `T`, so supplying the wrong input type is a build error, not a runtime one.
 - **`bl.BlNull` results** — a test against a null input returns `bl.BlNull`, not an
   error. Wildcards (`-`) explicitly return `true` for null; all other tests propagate
   null per the standard rules (see [null.spec.md](null.spec.md)).
@@ -602,14 +612,15 @@ compiled once via `bl.UnaryTest` and the resulting `bl.BlExpr` is cached on the 
 evaluation time, the column-input value is fed through `Evaluate(input)`, and the
 per-cell booleans are combined per the table's hit policy.
 
-**Relationship to `bl.Expr`.** `bl.UnaryTest` is a constructor variant of `bl.Expr`:
+**Relationship to `bl.Expr`.** `bl.UnaryTest[T]` is a constructor variant of `bl.Expr`:
 it shares the same parse / patch / type-check / compile pipeline, with two extra steps
 in front. A **source normaliser** rewrites the unary-test forms into ordinary
 expressions referencing `?` (e.g. `< 10` → `? < 10`, `2, 3` → `? = 2 or ? = 3`, `-` →
 `true`, `[18..65]` → `? in [18..65]`, `.status = "active"` → `?.status = "active"`,
-`contains(?, "urgent")` left as-is), and a single-field `bl.BlSchema` declaring `?`
-with type `inputType` is supplied for the type-check step. The result is an ordinary `bl.BlExpr` whose evaluation receives the
-input value bound to `?`. The separate constructor exists so the unary-test grammar
+`contains(?, "urgent")` left as-is), and a single-field struct env binding the implicit
+`?` placeholder with type `T` is supplied for the type-check step. The result is a
+`bl.BlUnaryTest[T]` whose evaluation receives the input value bound to `?`. The separate
+constructor exists so the unary-test grammar
 (the left-implicit and comma-disjunction forms) doesn't have to be valid
 plain-expression syntax — those forms only parse in unary-test mode. `Source()`
 returns the original (un-normalised) string the caller supplied.
@@ -996,15 +1007,17 @@ call sites read `bl.Expr(...)`, `bl.Number(...)`, etc.
 // All identifiers below live in package core (imported as `bl`). Callers conventionally
 // import as `bl` (so call sites read bl.Expr, bl.Number, etc.).
 
-func Expr(source string, schema BlSchema) (BlExpr, error)
+func Expr[E any](source string) (*BlExpr[E], error)
+func ExprNoEnv(source string) (*BlExpr[NoEnv], error) // E = NoEnv = struct{}
 
-// bl.BlExpr is a compiled expression (wraps a *vm.Program).
-type BlExpr interface {
-    Evaluate(input BlValue) (BlValue, error)
-    Source() string
-}
+// bl.BlExpr is a compiled expression over the concrete env struct E (wraps a *vm.Program).
+type BlExpr[E any] struct { /* unexported: original source + compiled program */ }
+func (e *BlExpr[E]) Evaluate(env E) (BlValue, error)
+func (e *BlExpr[E]) Source() string
 
-// bl.BlSchema declares parse-time variable names and types. See schema.spec.md.
+// An expression's variables are E's exported fields, each renamed by an `expr:"name"`
+// tag; their names and types are checked at Go compile time. (BlSchema is now a
+// separate runtime value-validation utility — see schema.spec.md.)
 
 // Type identifies a language type for parse-time checking and `instance of`.
 type Type int
@@ -1021,12 +1034,11 @@ const (
 )
 ```
 
-**Pipeline.** `bl.Expr` runs: **normalise** (source-level fixups `expr`'s lexer needs — see Operators)
-→ **parse** (`expr`'s parser) → **patch** (`expr.Patch`, rewrite FEEL-only syntax) → **type-check**
-(against the `bl.BlSchema`) → **compile** to a `*vm.Program`. `Evaluate` takes a `bl.BlValue` input
-(typically a `bl.BlDictionary` for multi-variable expressions, or a single value for unary-test
-`bl.BlExpr`s where the schema declares `?`), runs the program on the sandboxed VM, and returns the
-result as a `bl.BlValue`.
+**Pipeline.** `bl.Expr[E]` runs: **normalise** (source-level fixups `expr`'s lexer needs — see
+Operators) → **check** (reject any name that is not a declared field of `E`) → **parse** (`expr`'s
+parser) → **patch** (`expr.Patch`, rewrite FEEL-only syntax) → **type-check** (against the `E` struct
+env) → **compile** to a `*vm.Program`. `Evaluate(env E)` binds the struct's fields as the variables,
+runs the program on the sandboxed VM, and returns the result as a `bl.BlValue`.
 
 **Source normalisation (`normalise`).** `expr`'s lexer/parser is fixed, so anything it can't
 lex or parse — and anything that must be captured *before* lexing — is rewritten in the source
@@ -1056,22 +1068,40 @@ original text or must precede the parse.
 
 ```go
 // host-side (Go)
-func Expr(source string, schema BlSchema) (BlExpr, error) {
-    program, err := expr.Compile(normalise(source), buildOptions(schema)...)
+func Expr[E any](source string) (*BlExpr[E], error) {
+    if source == "" {
+        return nil, &ParseError{Source: source, Err: errEmptySource}
+    }
+    program, err := compileWithEnv(source, *new(E), envFieldNames(reflect.TypeOf((*E)(nil)).Elem()))
     if err != nil {
         return nil, &ParseError{Source: source, Err: err}
     }
-    return &compiled{program: program, source: source}, nil
+    return &BlExpr[E]{source: source, program: program}, nil
 }
 
-// buildOptions assembles every spoke's registrations, the operator bindings,
-// the patcher, and the typed environment.
-func buildOptions(schema BlSchema) []expr.Option {
-    opts := []expr.Option{expr.Env(envType(schema))}
-    for _, reg := range typeRegistrations { // numberOptions, stringOptions, dateOptions, …
+// compileWithEnv normalises, rejects any reference to a name not in declared
+// (blkit's own undefined-name discipline — expr's overloaded operators/functions
+// leave its built-in strict checker lenient in operand/argument position), then
+// compiles against the strict struct env. *new(E) is the zero env exemplar.
+func compileWithEnv(source string, env any, declared map[string]bool) (*vm.Program, error) {
+    src, err := normalise(source)
+    if err != nil {
+        return nil, err
+    }
+    if name, bad := firstUndefined(src, declared); bad {
+        return nil, fmt.Errorf("unknown name %s", name)
+    }
+    return expr.Compile(src, buildOptionsEnv(env)...)
+}
+
+// buildOptionsEnv assembles the strict env plus every spoke's registrations, the
+// operator dispatch functions, and the patcher.
+func buildOptionsEnv(env any) []expr.Option {
+    opts := []expr.Option{expr.Env(env)}
+    for _, reg := range typeRegistrations() { // numberOptions, stringOptions, dateOptions, …
         opts = append(opts, reg()...)
     }
-    opts = append(opts, operatorBindings()...) // the expr.Operator(...) lines
+    opts = append(opts, operatorRegistrations()...)
     opts = append(opts, expr.Patch(newFeelPatcher()))
     return opts
 }
@@ -1252,14 +1282,17 @@ and lets identifiers ride directly on `expr`'s lexer.
 
 ### Environment & errors
 
-`bl.BlSchema` is translated to an `expr.Env` (a `map[string]any` of zero-value `Bl*` exemplars per
-field) so references are type-checked at parse time. Nested `Fields` are walked recursively so
-that member-access expressions (`applicant.address.postalCode`) type-check against the declared
-shape. Errors:
+The env struct `E` is passed straight to `expr.Env(*new(E))`: expr reflects its exported fields (each
+renamed by its `expr:"…"` tag) so every reference is type-checked at compile time against the field's
+Go type. Because expr's overloaded operators and functions accept the `bl.BlValue` interface, its own
+strict checker is lenient about an undefined name in operand or argument position, so `bl.Expr` runs
+its own pre-pass (`firstUndefined`) that rejects any reference to a name that is not a declared field.
+A top-level field typed `bl.BlDictionary` is the way to model nested data: `applicant.address.postalCode`
+resolves through the dictionary at runtime (member access is not deep-type-checked). Errors:
 
 ```go
 // host-side (Go)
-type ParseError struct { Source string; Err error } // from Expr (parse/type-check)
+type ParseError struct { Source string; Err error } // from Expr (parse / undefined name / type-check)
 type TypeError  struct { /* op, types */ }           // from Evaluate (runtime type mismatch)
 type RegexError struct { Pattern string; Err error } // bad regex in matches/replace/extract
 type CalendarRangeError struct { /* date, bounds */ }// business-day iteration past validity
@@ -1336,8 +1369,8 @@ behaviour, and the rationale.
 
 - An empty source string is a `ParseError`.
 - An expression that evaluates to `null` is a valid result.
-- A compiled `bl.BlExpr` needs no input for expressions that reference no variables (`1 + 1`,
-  `date("2025-01-01")`) — pass `nil` to `Evaluate`.
+- A variable-free expression (`1 + 1`, `date("2025-01-01")`) needs no env: compile it with
+  `bl.ExprNoEnv` and evaluate it against `bl.NoEnv{}`.
 - A list index out of range returns `null`; a missing dictionary key returns `null`.
 
 `[@test] ../../core/engine_test.go`

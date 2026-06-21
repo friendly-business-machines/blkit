@@ -2,22 +2,27 @@ package core
 
 import "testing"
 
+type ageIncomeEnv struct {
+	Age    BlNumber `expr:"age"`
+	Income BlNumber `expr:"income"`
+}
+
+type ageEnv struct {
+	Age BlNumber `expr:"age"`
+}
+
+type scoreEnv struct {
+	Score BlNumber `expr:"score"`
+}
+
 func TestEngineEvaluateWithSchema(t *testing.T) {
-	schema, err := Schema(
-		Field{Name: "age", Type: TypeNumber},
-		Field{Name: "income", Type: TypeNumber},
-	)
-	if err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	eligible, err := Expr(`age >= 18 and income > 50000`, schema)
+	eligible, err := Expr[ageIncomeEnv](`age >= 18 and income > 50000`)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
 	age, _ := Number(21)
 	income, _ := Number(60000)
-	inputs, _ := Dictionary(map[string]BlValue{"age": age, "income": income})
-	out, err := eligible.Evaluate(inputs)
+	out, err := eligible.Evaluate(ageIncomeEnv{Age: age, Income: income})
 	if err != nil {
 		t.Fatalf("eval: %v", err)
 	}
@@ -28,7 +33,10 @@ func TestEngineEvaluateWithSchema(t *testing.T) {
 
 func TestEngineSourceRoundTrips(t *testing.T) {
 	src := `age >= 18`
-	e, _ := Expr(src, nil)
+	e, err := Expr[ageEnv](src)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
 	if e.Source() != src {
 		t.Errorf("Source() = %q, want %q", e.Source(), src)
 	}
@@ -79,7 +87,6 @@ func TestConditional(t *testing.T) {
 		`if 12 < 10 then "low" else "high"`: "high",
 		`if null then "low" else "high"`:    "high",
 		`if 5 < 10 then 1 else 2`:           "1",
-		`if score >= 750 then "prime" else if score >= 650 then "standard" else "subprime"`: "subprime",
 	})
 }
 
@@ -88,15 +95,13 @@ func TestConditionalNested(t *testing.T) {
 		score int
 		want  string
 	}{{800, "prime"}, {700, "standard"}, {600, "subprime"}}
-	e, err := Expr(`if score >= 750 then "prime" else if score >= 650 then "standard" else "subprime"`,
-		BlSchema{{Name: "score", Type: TypeNumber}})
+	e, err := Expr[scoreEnv](`if score >= 750 then "prime" else if score >= 650 then "standard" else "subprime"`)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
 	for _, c := range cases {
 		n, _ := Number(c.score)
-		in, _ := Dictionary(map[string]BlValue{"score": n})
-		out, _ := e.Evaluate(in)
+		out, _ := e.Evaluate(scoreEnv{Score: n})
 		if out.String() != c.want {
 			t.Errorf("score=%d got %q want %q", c.score, out.String(), c.want)
 		}
@@ -114,7 +119,7 @@ func TestPrecedence(t *testing.T) {
 
 func TestParseErrors(t *testing.T) {
 	for _, src := range []string{``, `1 +`, `(1 + 2`} {
-		if _, err := Expr(src, nil); err == nil {
+		if _, err := ExprNoEnv(src); err == nil {
 			t.Errorf("expected ParseError for %q", src)
 		} else if _, ok := err.(*ParseError); !ok {
 			t.Errorf("expected *ParseError for %q, got %T", src, err)
@@ -122,9 +127,8 @@ func TestParseErrors(t *testing.T) {
 	}
 }
 
-func TestUnknownVariableWithSchemaIsParseError(t *testing.T) {
-	schema := BlSchema{{Name: "age", Type: TypeNumber}}
-	if _, err := Expr(`unknownName > 1`, schema); err == nil {
+func TestUnknownVariableIsParseError(t *testing.T) {
+	if _, err := Expr[ageEnv](`unknownName > 1`); err == nil {
 		t.Errorf("expected ParseError for unknown variable")
 	}
 }

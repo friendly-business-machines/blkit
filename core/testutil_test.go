@@ -2,15 +2,15 @@ package core
 
 import "testing"
 
-// evalNil compiles src with no schema and evaluates it against no input,
-// returning the canonical string rendering of the result.
+// evalNil compiles a variable-free src and evaluates it, returning the canonical
+// string rendering of the result.
 func evalNil(t *testing.T, src string) string {
 	t.Helper()
-	e, err := Expr(src, nil)
+	e, err := ExprNoEnv(src)
 	if err != nil {
 		t.Fatalf("compile %q: %v", src, err)
 	}
-	out, err := e.Evaluate(nil)
+	out, err := e.Evaluate(NoEnv{})
 	if err != nil {
 		t.Fatalf("eval %q: %v", src, err)
 	}
@@ -37,11 +37,11 @@ func assertErr(t *testing.T, srcs ...string) {
 	for _, src := range srcs {
 		src := src
 		t.Run(src, func(t *testing.T) {
-			e, err := Expr(src, nil)
+			e, err := ExprNoEnv(src)
 			if err != nil {
 				return // compile-time error is a valid failure
 			}
-			if _, err := e.Evaluate(nil); err == nil {
+			if _, err := e.Evaluate(NoEnv{}); err == nil {
 				t.Errorf("%s: expected an error, got a value", src)
 			}
 		})

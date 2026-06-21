@@ -1,6 +1,6 @@
 ---
 name: bl.BlSchema
-description: Unified shape declaration for Bl* values — named fields, optionality, and arbitrary nesting. Drives parse-time typing for bl.Expr and is intended to replace the InputContract / OutputContract / DictionaryContract / ListContract / TableContract family and the reflected Outputs structs used by DecisionNode.
+description: Unified shape declaration for Bl* values — named fields, optionality, and arbitrary nesting. A standalone runtime value-validation utility (ValidateInput / ValidateOutput) for data contracts at process boundaries; intended to replace the InputContract / OutputContract / DictionaryContract / ListContract / TableContract family. Expressions declare their variables with concrete Go env structs, not BlSchema — see bl-expr.spec.md.
 targets:
   - ../../core/schema.go
 ---
@@ -8,10 +8,11 @@ targets:
 # bl.BlSchema
 
 `bl.BlSchema` is a declarative shape for any `Bl*` value: a scalar type, a typed list, a
-dictionary with named fields, or a table with typed columns. One type drives every consumer
-that today carries its own representation — parse-time typing for `bl.Expr`, runtime
-contract validation at process boundaries, decision-node input and output
-declarations, and JSON-schema export.
+dictionary with named fields, or a table with typed columns. It is a **runtime value-validation
+utility** — one type drives the consumers that validate `Bl*` values against a declared shape:
+contract validation at process boundaries, reference-data shape checks, and JSON-schema export.
+(Expressions no longer use `bl.BlSchema`: `bl.Expr[E]` declares its variables with a concrete Go
+env struct `E`, type-checked at Go compile time — see [bl-expr.spec.md](bl-expr.spec.md).)
 
 Validation **policy** (closed vs permissive) lives on the call site, not the schema. The
 same `bl.BlSchema` value can serve as an `InputContract` (closed) and an `OutputContract`
@@ -162,19 +163,13 @@ locates the problem in a deeply nested value.
 
 `[@test] ../../core/schema_test.go`
 
-## Parse-time use by `bl.Expr`
+## Relationship to expressions
 
-`bl.Expr` takes a `bl.BlSchema` directly (see
-[bl-expr.spec.md § Using the engine](bl-expr.spec.md#using-the-engine)): top-level field
-names are the available variables, each variable's `Type` is its parse-time type, and
-nested `Fields` are available to the member-access type-checker (so
-`applicant.address.postalCode` can be statically verified when the relevant fields are
-declared).
-
-```go
-// host-side (Go)
-func Expr(source string, schema BlSchema) (BlExpr, error)
-```
+`bl.BlSchema` is **not** part of the expression compile path. An expression declares its variables
+with a concrete Go env struct, and `bl.Expr[E]` type-checks them at Go compile time (see
+[bl-expr.spec.md § Using the engine](bl-expr.spec.md#using-the-engine)). `bl.BlSchema` remains the
+tool for validating `Bl*` *values* against a declared shape at runtime boundaries — independent of
+how any expression is compiled.
 
 ## Migration
 

@@ -2,6 +2,15 @@ package core
 
 import "testing"
 
+type calEnv struct {
+	Cal BlCalendar `expr:"cal"`
+}
+
+type calPairEnv struct {
+	A BlCalendar `expr:"a"`
+	B BlCalendar `expr:"b"`
+}
+
 func ukHolidays(t *testing.T) BlCalendar {
 	t.Helper()
 	d := func(s string) BlValue { v, _ := Date(s); return v }
@@ -20,13 +29,11 @@ func ukHolidays(t *testing.T) BlCalendar {
 
 func evalCal(t *testing.T, src string, cal BlCalendar) string {
 	t.Helper()
-	schema := BlSchema{{Name: "cal", Type: TypeCalendar}}
-	e, err := Expr(src, schema)
+	e, err := Expr[calEnv](src)
 	if err != nil {
 		t.Fatalf("compile %q: %v", src, err)
 	}
-	in, _ := Dictionary(map[string]BlValue{"cal": cal})
-	out, err := e.Evaluate(in)
+	out, err := e.Evaluate(calEnv{Cal: cal})
 	if err != nil {
 		t.Fatalf("eval %q: %v", src, err)
 	}
@@ -96,22 +103,21 @@ func mustRange(t *testing.T, a, b string) BlRange {
 
 func TestStrictCalendarRange(t *testing.T) {
 	cal := boundedCal(t)
-	schema := BlSchema{{Name: "cal", Type: TypeCalendar}}
-	in, _ := Dictionary(map[string]BlValue{"cal": cal})
+	env := calEnv{Cal: cal}
 	// in-bounds: no error
-	e, _ := Expr(`addBusinessDays(date("2025-06-02"), 3, cal, true)`, schema)
-	if _, err := e.Evaluate(in); err != nil {
+	e, _ := Expr[calEnv](`addBusinessDays(date("2025-06-02"), 3, cal, true)`)
+	if _, err := e.Evaluate(env); err != nil {
 		t.Errorf("in-bounds strict errored: %v", err)
 	}
 	// stepping past validTo with strict → CalendarRangeError
-	e2, _ := Expr(`addBusinessDays(date("2025-12-30"), 5, cal, true)`, schema)
-	_, err := e2.Evaluate(in)
+	e2, _ := Expr[calEnv](`addBusinessDays(date("2025-12-30"), 5, cal, true)`)
+	_, err := e2.Evaluate(env)
 	if err == nil {
 		t.Errorf("expected CalendarRangeError past validity bound")
 	}
 	// without strict → no error
-	e3, _ := Expr(`addBusinessDays(date("2025-12-30"), 5, cal)`, schema)
-	if _, err := e3.Evaluate(in); err != nil {
+	e3, _ := Expr[calEnv](`addBusinessDays(date("2025-12-30"), 5, cal)`)
+	if _, err := e3.Evaluate(env); err != nil {
 		t.Errorf("non-strict errored: %v", err)
 	}
 }
@@ -133,13 +139,11 @@ func TestCalendarMerge(t *testing.T) {
 	c1 := ukHolidays(t)
 	d, _ := Date("2026-01-01")
 	c2, _ := Calendar([]BlCalendarEntry{CalendarEntry(d, "New Year 2026")})
-	schema := BlSchema{{Name: "a", Type: TypeCalendar}, {Name: "b", Type: TypeCalendar}}
-	e, err := Expr(`count(calendarMerge([a, b]))`, schema)
+	e, err := Expr[calPairEnv](`count(calendarMerge([a, b]))`)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	in, _ := Dictionary(map[string]BlValue{"a": c1, "b": c2})
-	out, err := e.Evaluate(in)
+	out, err := e.Evaluate(calPairEnv{A: c1, B: c2})
 	if err != nil {
 		t.Fatalf("eval: %v", err)
 	}
@@ -150,16 +154,15 @@ func TestCalendarMerge(t *testing.T) {
 
 func TestCalendarDropKeep(t *testing.T) {
 	cal := ukHolidays(t) // from calendar_test.go
-	schema := BlSchema{{Name: "cal", Type: TypeCalendar}}
-	in, _ := Dictionary(map[string]BlValue{"cal": cal})
+	env := calEnv{Cal: cal}
 	check := func(src, want string) {
 		t.Helper()
-		e, err := Expr(src, schema)
+		e, err := Expr[calEnv](src)
 		if err != nil {
 			t.Fatalf("compile %q: %v", src, err)
 			return
 		}
-		out, err := e.Evaluate(in)
+		out, err := e.Evaluate(env)
 		if err != nil {
 			t.Fatalf("eval %q: %v", src, err)
 			return

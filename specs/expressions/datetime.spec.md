@@ -223,7 +223,7 @@ sub-day precision).
 `*Between` family above) require both operands to be the **same** temporal kind — either both
 `bl.BlDate` or both `bl.BlDateTime`. A mixed call such as
 `dtDurationBetween(date("2025-01-01"), datetime("2025-03-28T12:00:00"))` is a type error
-(`bl.ParseError` when compiled with a `bl.BlSchema`, or `bl.TypeError` at evaluation). To compare across
+(`bl.ParseError` at compile time, or `bl.TypeError` at evaluation). To compare across
 kinds, convert one operand explicitly: `datetime(d)` lifts a `bl.BlDate` to midnight-of-that-day
 `bl.BlDateTime`, and the conversion functions in [date.spec.md](date.spec.md) project a
 `bl.BlDateTime` down to a `bl.BlDate`.

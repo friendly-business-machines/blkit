@@ -29,11 +29,12 @@ func TestImportICal(t *testing.T) {
 		t.Fatalf("got %d entries, want 2", n)
 	}
 	// point entry: Christmas
-	schema := BlSchema{{Name: "cal", Type: TypeCalendar}}
-	in, _ := Dictionary(map[string]BlValue{"cal": cal})
 	check := func(src, want string) {
-		e, _ := Expr(src, schema)
-		out, err := e.Evaluate(in)
+		e, err := Expr[calEnv](src)
+		if err != nil {
+			t.Fatalf("%s: compile: %v", src, err)
+		}
+		out, err := e.Evaluate(calEnv{Cal: cal})
 		if err != nil {
 			t.Fatalf("%s: %v", src, err)
 		}

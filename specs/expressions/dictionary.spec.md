@@ -64,11 +64,12 @@ var applicant, _ = bl.Dictionary(map[string]bl.BlValue{
     "income": bl.Number(75000),
 })
 
-// Hand it to the engine as an input variable.
-var schema, _ = bl.Schema(bl.Field{Name: "applicant", Type: bl.TypeDictionary})
-var eligible, _ = bl.Expr(`applicant.age >= 18 and applicant.income > 50000`, schema)
-var inputs, _ = bl.Dictionary(map[string]bl.BlValue{"applicant": applicant})
-var result, _ = eligible.Evaluate(inputs)
+// Hand it to the engine as an env field.
+type ApplicantEnv struct {
+    Applicant bl.BlDictionary `expr:"applicant"`
+}
+var eligible, _ = bl.Expr[ApplicantEnv](`applicant.age >= 18 and applicant.income > 50000`)
+var result, _ = eligible.Evaluate(ApplicantEnv{Applicant: applicant})
 // result is bl.BlBoolean(true)
 ```
 

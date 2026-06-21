@@ -238,18 +238,14 @@ build the `bl.BlRegex` host-side via the Go constructor and supply it as an inpu
 // host-side (Go) — compile once.
 var emailRe, _ = bl.Pattern(`[\w.+-]+@[\w-]+\.[\w.-]+`)
 
-// Then hand emailRe to the engine as an input variable; expressions reference it by name.
-var schema, _ = bl.Schema(
-    bl.Field{Name: "addr",    Type: bl.TypeString},
-    bl.Field{Name: "emailRe", Type: bl.TypeRegex},
-)
-var matchEmail, _ = bl.Expr(`matches(addr, emailRe)`, schema)
+// Then hand emailRe to the engine as an env field; expressions reference it by name.
+type MatchEnv struct {
+    Addr    bl.BlString `expr:"addr"`
+    EmailRe bl.BlRegex  `expr:"emailRe"`
+}
+var matchEmail, _ = bl.Expr[MatchEnv](`matches(addr, emailRe)`)
 var addr, _   = bl.String("alice@example.com")
-var inputs, _ = bl.Dictionary(map[string]bl.BlValue{
-    "addr":    addr,
-    "emailRe": emailRe,
-})
-var result, _ = matchEmail.Evaluate(inputs)
+var result, _ = matchEmail.Evaluate(MatchEnv{Addr: addr, EmailRe: emailRe})
 ```
 
 `pattern(s)` accepts only a single argument — the source string. Flags (`"i"`, `"m"`, `"s"`)

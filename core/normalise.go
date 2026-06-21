@@ -686,10 +686,14 @@ func lowerInstanceOf(s string) string {
 	}
 }
 
-// lowerIsDefined rewrites `isDefined(EXPR)` to __isDefined($env, "root"), where
-// root is the leading identifier of EXPR. This keeps an unbound name from
-// appearing as a variable reference and reports on the root binding for paths.
+// lowerIsDefined rewrites `isDefined(EXPR)`. A bare declared name always resolves
+// (it is an env-struct field), so isDefined(name) → __isBound(name) — passing the
+// value so the strict checker still rejects an undeclared name, while the impl
+// reports true. A dotted path → __hasKey(parent, "leaf"), which probes whether
+// the parent dictionary contains the leaf key (a missing key is "not defined",
+// distinct from a present null).
 func lowerIsDefined(s string) string {
+	s = mapTopLevelGroups(s, lowerIsDefined)
 	for {
 		idx := indexTopLevelCall(s, "isDefined")
 		if idx < 0 {
@@ -709,13 +713,70 @@ func lowerIsDefined(s string) string {
 			return s
 		}
 		arg := strings.TrimSpace(s[j+1 : end])
-		root := leadingIdentifier(arg)
-		if root == "" {
+		replacement := isDefinedReplacement(arg)
+		if replacement == "" {
 			return s
 		}
-		replacement := `__isDefined($env, "` + root + `")`
 		s = s[:idx] + replacement + s[end+1:]
 	}
+}
+
+// isDefinedReplacement chooses the lowering for an isDefined argument: a dotted
+// identifier path becomes a dictionary key probe; a bare name (or any other
+// expression) becomes a bound check that resolves to true while still forcing
+// the checker to validate the referenced name.
+func isDefinedReplacement(arg string) string {
+	if arg == "" {
+		return ""
+	}
+	if parent, leaf, ok := splitTrailingKey(arg); ok {
+		return `__hasKey(` + parent + `, "` + leaf + `")`
+	}
+	return "__isBound(" + arg + ")"
+}
+
+// splitTrailingKey splits a pure dotted identifier path `a.b.c` into its parent
+// path `a.b` and trailing key `c`. It returns ok only for dotted identifier
+// paths, not bracket indexes or calls.
+func splitTrailingKey(arg string) (parent, leaf string, ok bool) {
+	dot := strings.LastIndexByte(arg, '.')
+	if dot <= 0 || dot == len(arg)-1 {
+		return "", "", false
+	}
+	parent = strings.TrimSpace(arg[:dot])
+	leaf = strings.TrimSpace(arg[dot+1:])
+	if !isDottedIdentifierPath(parent) || !isIdentifier(leaf) {
+		return "", "", false
+	}
+	return parent, leaf, true
+}
+
+// isDottedIdentifierPath reports whether s is one or more identifiers joined by
+// dots (`a`, `a.b`, `applicant.address`).
+func isDottedIdentifierPath(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, part := range strings.Split(s, ".") {
+		if !isIdentifier(strings.TrimSpace(part)) {
+			return false
+		}
+	}
+	return true
+}
+
+// isIdentifier reports whether s is a single identifier (leading letter or
+// underscore, then letters/digits/underscores).
+func isIdentifier(s string) bool {
+	if s == "" || (s[0] >= '0' && s[0] <= '9') {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !isIdentByte(s[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // indexTopLevelCall finds a standalone function-name keyword at depth 0
@@ -736,16 +797,6 @@ func indexTopLevelCall(s, name string) int {
 		}
 		from = idx + len(name)
 	}
-}
-
-// leadingIdentifier returns the leading identifier of an expression string.
-func leadingIdentifier(s string) string {
-	s = strings.TrimSpace(s)
-	i := 0
-	for i < len(s) && isIdentByte(s[i]) {
-		i++
-	}
-	return s[:i]
 }
 
 // callRenames maps the FEEL function names that collide with expr's hard-coded

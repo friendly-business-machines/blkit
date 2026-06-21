@@ -1,110 +1,131 @@
 package core
 
 import (
-	"fmt"
+	"reflect"
 
 	"github.com/expr-lang/expr/ast"
 	"github.com/expr-lang/expr/parser"
 )
 
-// checkUndefinedVars enforces the spec rule that, when a schema is supplied, a
-// reference to a name that is neither declared nor a function/keyword is a
-// parse error. expr's map-typed env permits arbitrary keys, so this is done
-// here by walking the parsed (normalised) AST and validating value-position
-// identifiers against the schema's top-level field names.
-//
-// It is conservative: a function callee, a member-access property, and any
-// let-bound name are skipped, and only clearly-undeclared value identifiers are
-// flagged — uncertain cases are allowed so valid expressions never falsely
-// fail.
-func checkUndefinedVars(normalisedSource string, schema BlSchema) error {
-	tree, err := parser.Parse(normalisedSource)
-	if err != nil {
-		return nil // the real compile pass will surface the parse error
+// exprTagName returns the variable name expr exposes for a struct field: the
+// `expr:"name"` tag value, the field name when untagged, or ("", false) for
+// `expr:"-"`.
+func exprTagName(f reflect.StructField) (string, bool) {
+	switch tag := f.Tag.Get("expr"); tag {
+	case "-":
+		return "", false
+	case "":
+		return f.Name, true
+	default:
+		return tag, true
 	}
-	declared := map[string]bool{}
-	for _, f := range schema {
-		declared[f.Name] = true
-	}
-	bound := map[string]bool{inputPlaceholder: true, "$env": true}
-	var bad string
-	collectVarIdents(tree.Node, declared, bound, &bad)
-	if bad != "" {
-		return fmt.Errorf("unknown name %s", bad)
-	}
-	return nil
 }
 
-// collectVarIdents walks the AST recording the first value-position identifier
-// not present in declared or bound. Function callees and member properties are
-// not treated as variable references.
-func collectVarIdents(node ast.Node, declared, bound map[string]bool, bad *string) {
-	if node == nil || *bad != "" {
+// envFieldNames returns the set of variable names a struct env exposes: the
+// expr-tag name of each exported field.
+func envFieldNames(t reflect.Type) map[string]bool {
+	out := map[string]bool{}
+	if t.Kind() != reflect.Struct {
+		return out
+	}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		if name, ok := exprTagName(f); ok {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// firstUndefined reports the first value-position identifier in a parsed,
+// normalised expression that is not a declared variable. blkit's operator and
+// function overloads make expr's own strict checker lenient about undefined
+// names in operand/argument position, so blkit validates them itself: every free
+// identifier must be a declared env field. Function callees, member-access
+// property names, and names bound by let/filter/loop/dictionary-key forms are not
+// variables and are exempt.
+func firstUndefined(normalisedSource string, declared map[string]bool) (string, bool) {
+	tree, err := parser.Parse(normalisedSource)
+	if err != nil {
+		return "", false // the compile pass surfaces the real parse error
+	}
+	free := map[string]bool{}
+	freeIdents(tree.Node, map[string]bool{}, free)
+	for name := range free {
+		if !declared[name] {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// freeIdents collects every free value-position identifier in node into out. It
+// skips function callees and member-access property names, and treats names
+// bound by let, filter `item`, loop, and dictionary-key forms as bound. It is
+// conservative: uncertain forms are left uncollected so a valid expression is
+// never falsely rejected.
+func freeIdents(node ast.Node, bound, out map[string]bool) {
+	if node == nil {
 		return
 	}
 	switch n := node.(type) {
 	case *ast.IdentifierNode:
-		if !declared[n.Value] && !bound[n.Value] {
-			*bad = n.Value
+		if !bound[n.Value] {
+			out[n.Value] = true
 		}
 	case *ast.UnaryNode:
-		collectVarIdents(n.Node, declared, bound, bad)
+		freeIdents(n.Node, bound, out)
 	case *ast.BinaryNode:
-		collectVarIdents(n.Left, declared, bound, bad)
-		collectVarIdents(n.Right, declared, bound, bad)
+		freeIdents(n.Left, bound, out)
+		freeIdents(n.Right, bound, out)
 	case *ast.MemberNode:
-		// Receiver is a value reference; the property name is not.
-		collectVarIdents(n.Node, declared, bound, bad)
-		// A non-string bracket property is an index or a filter predicate; in
-		// the filter form the magic `item` variable is bound.
-		if _, isStr := stringProperty(n.Property); !isStr {
-			inner := map[string]bool{"item": true}
-			for k := range bound {
-				inner[k] = true
-			}
-			collectVarIdents(n.Property, declared, inner, bad)
-		}
+		// The receiver is a value reference; a string property is a field name.
+		// A non-string bracket property is an index or a row/element-scoped
+		// predicate (table columns, filter `item`) that the patcher resolves
+		// rather than the env — skip it so a column name is never read as an
+		// undefined variable.
+		freeIdents(n.Node, bound, out)
 	case *ast.ChainNode:
-		collectVarIdents(n.Node, declared, bound, bad)
+		freeIdents(n.Node, bound, out)
 	case *ast.SliceNode:
-		collectVarIdents(n.Node, declared, bound, bad)
-		collectVarIdents(n.From, declared, bound, bad)
-		collectVarIdents(n.To, declared, bound, bad)
+		freeIdents(n.Node, bound, out)
+		freeIdents(n.From, bound, out)
+		freeIdents(n.To, bound, out)
 	case *ast.CallNode:
-		// The callee is a function name, not a variable — skip it unless it is
-		// a complex (non-identifier) expression.
-		if _, ok := n.Callee.(*ast.IdentifierNode); !ok {
-			collectVarIdents(n.Callee, declared, bound, bad)
-		}
-		for _, a := range n.Arguments {
-			collectVarIdents(a, declared, bound, bad)
+		if _, ok := n.Callee.(*ast.IdentifierNode); ok {
+			// Plain function call: the callee is a function name; the arguments
+			// are ordinary value expressions.
+			for _, a := range n.Arguments {
+				freeIdents(a, bound, out)
+			}
+		} else {
+			// Method call (receiver.method(args)) or a computed callee: the
+			// arguments may be row/element-scoped (table column expressions)
+			// resolved by the patcher, so check only the receiver, not the args.
+			freeIdents(n.Callee, bound, out)
 		}
 	case *ast.BuiltinNode:
 		for _, a := range n.Arguments {
-			collectVarIdents(a, declared, bound, bad)
+			freeIdents(a, bound, out)
 		}
 	case *ast.ConditionalNode:
-		collectVarIdents(n.Cond, declared, bound, bad)
-		collectVarIdents(n.Exp1, declared, bound, bad)
-		collectVarIdents(n.Exp2, declared, bound, bad)
+		freeIdents(n.Cond, bound, out)
+		freeIdents(n.Exp1, bound, out)
+		freeIdents(n.Exp2, bound, out)
 	case *ast.VariableDeclaratorNode:
-		collectVarIdents(n.Value, declared, bound, bad)
-		inner := map[string]bool{n.Name: true}
-		for k := range bound {
-			inner[k] = true
-		}
-		collectVarIdents(n.Expr, declared, inner, bad)
+		freeIdents(n.Value, bound, out)
+		freeIdents(n.Expr, withBound(bound, n.Name), out)
 	case *ast.ArrayNode:
 		for _, e := range n.Nodes {
-			collectVarIdents(e, declared, bound, bad)
+			freeIdents(e, bound, out)
 		}
 	case *ast.MapNode:
 		// A dictionary literal's keys are in scope for its value expressions
 		// (forward-references), so bind them before walking the values.
-		inner := map[string]bool{}
-		for k := range bound {
-			inner[k] = true
-		}
+		inner := withBound(bound)
 		for _, p := range n.Pairs {
 			if pair, ok := p.(*ast.PairNode); ok {
 				if name, ok := stringProperty(pair.Key); ok {
@@ -114,8 +135,20 @@ func collectVarIdents(node ast.Node, declared, bound map[string]bool, bad *strin
 		}
 		for _, p := range n.Pairs {
 			if pair, ok := p.(*ast.PairNode); ok {
-				collectVarIdents(pair.Value, declared, inner, bad)
+				freeIdents(pair.Value, inner, out)
 			}
 		}
 	}
+}
+
+// withBound returns a copy of bound with the given extra names added.
+func withBound(bound map[string]bool, names ...string) map[string]bool {
+	out := make(map[string]bool, len(bound)+len(names))
+	for k := range bound {
+		out[k] = true
+	}
+	for _, n := range names {
+		out[n] = true
+	}
+	return out
 }

@@ -60,18 +60,17 @@ var ukHolidays, _ = bl.Calendar(
     },
     WithValidity(blRange(blDate("2025-01-01"), blDate("2025-12-31"))))
 
-// Hand it to the engine as an input variable.
-var schema, _ = bl.Schema(
-    bl.Field{Name: "applicantDate", Type: bl.TypeString},
-    bl.Field{Name: "ukHolidays",    Type: bl.TypeCalendar},
-)
-var checkHoliday, _ = bl.Expr(`isPublicHoliday(applicantDate, ukHolidays)`, schema)
+// Hand it to the engine as an env field.
+type HolidayEnv struct {
+    ApplicantDate bl.BlString   `expr:"applicantDate"`
+    UkHolidays    bl.BlCalendar `expr:"ukHolidays"`
+}
+var checkHoliday, _ = bl.Expr[HolidayEnv](`isPublicHoliday(applicantDate, ukHolidays)`)
 var applicantDate, _ = bl.String("2025-12-25")
-var inputs, _ = bl.Dictionary(map[string]bl.BlValue{
-    "applicantDate": applicantDate,
-    "ukHolidays":    ukHolidays,
+var result, _ = checkHoliday.Evaluate(HolidayEnv{
+    ApplicantDate: applicantDate,
+    UkHolidays:    ukHolidays,
 })
-var result, _ = checkHoliday.Evaluate(inputs)
 ```
 
 `CalendarEntry` is infallible — it just wraps a value and optional name. Type validation (the

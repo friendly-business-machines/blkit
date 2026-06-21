@@ -151,10 +151,9 @@ var fromValues, _ = bl.Table(
 a zero-row table that still carries its columns.
 
 **Passing a host-built table into an expression.** A `bl.BlTable` is an ordinary
-`bl.BlValue`, so it binds to a variable in the evaluation input like any other value (see
+`bl.BlValue`, so it binds to an env field like any other value (see
 [bl-expr.spec.md § Using the engine](bl-expr.spec.md#using-the-engine)). Declare the
-variable as a `bl.TypeTable` field whose nested `Fields` describe the columns (see
-[schema.spec.md](schema.spec.md#construction-host-side)), then reference it — and call the
+variable as a `bl.BlTable`-typed env field, then reference it — and call the
 [transformation methods](#transformation-methods) on it — from the source text:
 
 ```go
@@ -168,25 +167,18 @@ var shippingRates, _ = bl.Table(
     bl.Row{"intl",      24.50,  false},
 )
 
-// 2. Declare it as a typed variable the expression may reference.
-var rateColumns, _ = bl.Schema(
-    bl.Field{Name: "region",      Type: bl.TypeString},
-    bl.Field{Name: "rate",        Type: bl.TypeNumber},
-    bl.Field{Name: "ships_today", Type: bl.TypeBoolean},
-)
-var schema, _ = bl.Schema(
-    bl.Field{Name: "shipments", Type: bl.TypeTable, Fields: rateColumns},
-)
+// 2. Declare it as a typed env field the expression may reference.
+type ShipmentsEnv struct {
+    Shipments bl.BlTable `expr:"shipments"`
+}
 
 // 3. Compile an expression that chains table methods on the input table.
-var pricey, _ = bl.Expr(
+var pricey, _ = bl.Expr[ShipmentsEnv](
     `shipments.filter(rate > 6).sort(desc("rate")).select("region", "rate")`,
-    schema,
 )
 
 // 4. Bind the host-built table to `shipments` and evaluate.
-var inputs, _ = bl.Dictionary(map[string]bl.BlValue{"shipments": shippingRates})
-var result, _ = pricey.Evaluate(inputs)
+var result, _ = pricey.Evaluate(ShipmentsEnv{Shipments: shippingRates})
 // result is a bl.BlTable:
 //   region   rate
 //   intl     24.50

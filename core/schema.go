@@ -175,49 +175,8 @@ func validateField(f Field, v BlValue, path string, closed bool) error {
 	}
 }
 
-// env translates the schema to an expr environment: a map of zero-value Bl*
-// exemplars per top-level field, so references type-check at parse time.
-func (s BlSchema) env() map[string]any {
-	out := make(map[string]any, len(s))
-	for _, f := range s {
-		out[f.Name] = exemplar(f)
-	}
-	return out
-}
-
-// exemplar returns a zero-value Bl* of the field's declared type, used as the
-// parse-time type witness in the expr env.
-func exemplar(f Field) any {
-	switch f.Type {
-	case TypeNumber:
-		return BlNumber{}
-	case TypeString:
-		return BlString{}
-	case TypeBoolean:
-		return BlBoolean{}
-	case TypeList:
-		return BlList{}
-	case TypeDictionary:
-		return BlDictionary{}
-	case TypeTable:
-		return BlTable{}
-	case TypeDate:
-		return BlDate{}
-	case TypeTime:
-		return BlTime{}
-	case TypeDateTime:
-		return BlDateTime{}
-	case TypeDaysTimeDuration:
-		return BlDaysTimeDuration{}
-	case TypeYearsMonthsDuration:
-		return BlYearsMonthsDuration{}
-	case TypeRegex:
-		return BlRegex{}
-	case TypeCalendar:
-		return BlCalendar{}
-	default:
-		// TypeAny and other shapes: a concrete BlValue witness keeps expr's
-		// reflective env happy; operators/members are patched to accept BlValue.
-		return Null()
-	}
-}
+// BlSchema is no longer part of the expression compile path — concrete Go env
+// structs (see BlExpr) now declare an expression's variables and their types at
+// Go-compile time. BlSchema remains a standalone runtime value-validation
+// utility (ValidateInput / ValidateOutput) for data contracts at process
+// boundaries.

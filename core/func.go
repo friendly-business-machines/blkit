@@ -35,21 +35,22 @@ func (BlFunc) isBlValue()   {}
 // Params returns the function's parameter names.
 func (f BlFunc) Params() []string { return append([]string{}, f.params...) }
 
-// Apply binds args to the parameters and evaluates the body.
+// Apply binds args to the parameters and evaluates the body. A function body's
+// parameter names come from the parsed source rather than a Go struct, so it
+// compiles on the internal dynamic path (never the public struct-typed surface).
 func (f BlFunc) Apply(args []BlValue) (BlValue, error) {
 	if len(args) != len(f.params) {
 		return nil, &TypeError{Op: "apply", Detail: "argument count mismatch"}
 	}
-	prog, err := Expr(f.body, nil)
+	program, err := compileDynamic(f.body)
 	if err != nil {
 		return nil, err
 	}
-	entries := map[string]BlValue{}
+	vars := make(map[string]BlValue, len(f.params))
 	for i, p := range f.params {
-		entries[p] = args[i]
+		vars[p] = args[i]
 	}
-	input, _ := Dictionary(entries)
-	return prog.Evaluate(input)
+	return runDynamic(program, vars)
 }
 
 // mkFuncFn is the constructor the source rewrite emits: __mkfunc("p1,p2",
