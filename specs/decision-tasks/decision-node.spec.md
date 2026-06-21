@@ -1,6 +1,6 @@
 ---
 name: DecisionNode
-description: The minimal common interface every decision node satisfies — identity (Id, Name, Description), a declared input contract and output contract (both []Field), and a uniform Evaluate that takes named BlValues and returns named BlValues. This interface is what lets a DecisionTask hold and run a mixed set of DecisionTables and DecisionExpressions.
+description: The minimal common interface every decision node satisfies — identity (Id, Name, Description), a declared input contract and output contract (both []Field), and a uniform Evaluate that takes named BlValues and returns named BlValues. This interface is what lets a DecisionTask hold and run a mixed set of DecisionTables, DecisionExpressions, DecisionNativeFunctions, and SubDecisionTasks.
 targets:
   - ../../core/decision_node.go
 ---
@@ -9,10 +9,12 @@ targets:
 
 `DecisionNode` is the single interface every node in a [`DecisionTask`](decision-task.spec.md) satisfies. It is small and deliberately plain — it exists so that a task can hold a mixed set of node types in one `[]DecisionNode`, inspect each one's typed contract, and run it, without knowing which concrete kind it is.
 
-The two concrete node types are:
+The concrete node types are:
 
 - [`DecisionTable`](decision-table.spec.md) — tabular input/output rules with hit policies.
 - [`DecisionExpression`](decision-expression.spec.md) — named text-expression entries.
+- [`DecisionNativeFunction`](decision-native-fn.spec.md) — an arbitrary native Go function (the escape hatch for logic that is neither a table nor an expression).
+- [`SubDecisionTask`](sub-decision-task.spec.md) — wraps a whole child `DecisionTask` as a single composable node.
 
 ```go
 type DecisionNode interface {
@@ -80,7 +82,7 @@ There is no special case for single-output nodes — a node with one output retu
 
 Decision type-safety is concentrated at **construction**, in two steps, and the mental model is one sentence: *if construction does not complain, the decision is well-formed.*
 
-1. **Node construction** (`NewDecisionTable` / `NewDecisionExpression`) checks the one node it is given: the input and output contracts are well-formed; every expression compiles; and every name an expression references is a declared input or a sibling output. (Compilation is via `bl.Expr`, which — given a schema built from the node's declared inputs — also reports undefined-variable references for free; see [bl-expr.spec.md](../expressions/bl-expr.spec.md).)
+1. **Node construction** (each node's constructor — `NewDecisionTable`, `NewDecisionExpression`, `NewDecisionNativeFunction`, `NewSubDecisionTask`) checks the one node it is given: its input and output contracts are well-formed, plus any kind-specific structure. For the expression-bearing kinds this includes compiling every expression and checking that every name it references is a declared input or a sibling output. (Compilation is via `bl.Expr`, which — given a schema built from the node's declared inputs — also reports undefined-variable references for free; see [bl-expr.spec.md](../expressions/bl-expr.spec.md).)
 2. **Task construction** (`NewDecisionTask`) checks the whole graph: it matches each node's `Inputs()` to a producer (an upstream node `Output`, a task input, or reference data) **by name and declared type**, draws the dependency edges, and rejects cycles, duplicate ids, and unresolved names.
 
 What is **not** checked at construction is whether an expression's *computed* value actually matches its declared type (e.g. an output declared `TypeString` whose expression evaluates to a number). The blkit expression engine is runtime-typed — operators dispatch on operand types at evaluation, not compile time (see [operators in the engine](../expressions/bl-expr.spec.md)) — so a value-versus-declaration mismatch surfaces as a `bl.TypeError` at **evaluation**. Construction guarantees the declarations are mutually consistent; evaluation guarantees the values honour them.

@@ -24,3 +24,10 @@ MD048: false  # code-fence-style — ``` vs ~~~
 # MD013 (line-length): disabled. Code examples and reference tables routinely
 # exceed any fixed width, and the rule is not auto-fixable.
 MD013: false
+
+# MD024 (no-duplicate-heading): only flag duplicates that share the same
+# parent. Specs deliberately repeat sub-section names (Behaviour, Graph
+# Discovery, Standalone constructors, Loop and Multi-Instance) under distinct
+# parent sections, which is well-formed structure rather than a collision.
+MD024:
+  siblings_only: true

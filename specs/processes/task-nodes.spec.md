@@ -109,6 +109,7 @@ type VariableMappingEntry struct {
 ```
 
 When a task executes, the runtime:
+
 1. Fires `start` execution listeners.
 2. Applies `input_mappings` to compute the task's input variables.
 3. Invokes the task's handler with the (possibly mapped) context.
@@ -157,7 +158,7 @@ underwriting := bl.NewProcess("underwriting", "1.0", ProcessOpts{
 
 ## NativeFunctionTask
 
-`NativeFunctionTask` is a `ProcessNode` that invokes a Go function directly. It is **generic over caller-supplied `Inputs` and `Outputs` structs** that declare the task's typed inputs and outputs — the same pattern [`DecisionNode`](../decision-tasks/decision-node.spec.md#outputs-structs) and [`BusinessKnowledgeModel`](../decision-tasks/business-knowledge-model.spec.md) already use. The function body, the `Inputs` wiring (`InputBindings`), and the task-level framing are declared together in one package-scope `var`; reuse across multiple processes is via `Clone(opts)`.
+`NativeFunctionTask` is a `ProcessNode` that invokes a Go function directly. It is **generic over caller-supplied `Inputs` and `Outputs` structs** that declare the task's typed inputs and outputs — the same outputs-struct pattern [`DecisionNode`](../decision-tasks/decision-node.spec.md#outputs-structs) uses. The function body, the `Inputs` wiring (`InputBindings`), and the task-level framing are declared together in one package-scope `var`; reuse across multiple processes is via `Clone(opts)`.
 
 Exit ports on a `NativeFunctionTask` are configured via `NativeFunctionTaskOpts.ExitPorts` using the standalone constructors documented in this spec (`NewInterruptingTimerExitPort`, `NewErrorExitPort`, `NewInterruptingConditionalExitPort`, etc.). The `Task.Add*` methods do not apply.
 

@@ -9,7 +9,7 @@ targets:
 
 Invokes a Go function directly. The function and its task-level framing are declared together via `NewNativeFunctionTask`; the resulting `*NativeFunctionTask[Outputs]` is itself a `ProcessNode` that can be placed in a process graph. Reuse across multiple processes is via `Clone(opts)` — function-logic fields are shared by reference with clones; task-level fields are reset (not inherited) on `Clone`.
 
-`NativeFunctionTask` is **generic over a caller-supplied outputs struct** that declares the task's typed outputs. This is the same pattern [`DecisionNode`](../decision-tasks/decision-node.spec.md#outputs-structs) and [`BusinessKnowledgeModel`](../decision-tasks/business-knowledge-model.spec.md) already use. The framework reflects on the `Outputs` struct at construction to derive the output field names and validate field types. At execution time, `Evaluate` reflects on the returned value to build the `map[string]any` passed to `ctx.Record`.
+`NativeFunctionTask` is **generic over a caller-supplied outputs struct** that declares the task's typed outputs. This is the same pattern [`DecisionNode`](../decision-tasks/decision-node.spec.md#outputs-structs) already uses. The framework reflects on the `Outputs` struct at construction to derive the output field names and validate field types. At execution time, `Evaluate` reflects on the returned value to build the `map[string]any` passed to `ctx.Record`.
 
 The shape mirrors [`DecisionTask`](../decision-tasks/decision-task.spec.md): a single type holding both the logic and the task-level metadata, reused via `Clone`, not via wrapping or a separate factory.
 
@@ -131,7 +131,21 @@ InputBindings func(in Inputs) []ParameterBinding
 
 `opts.InputBindings` is a closure that wires this task's typed inputs to upstream values. `NewNativeFunctionTask` calls it after allocating handles on the task's `Inputs` field, passing a copy of the populated `Inputs` value (each field holds its typed handle). The closure body pairs each LHS handle from `in.X` with an RHS expression of the matching `Bl*` type — typically an upstream task's `Outputs.X` handle, but any `bl.BlExpr` of the matching type works.
 
-Bindings use the existing [`Bind[T bl.BlValue](parameter T, argument T) ParameterBinding`](../decision-tasks/invocation.spec.md) helper unchanged. The type parameter is inferred from the parameter handle's `Bl*` type and enforces that the argument has the same type — mismatches are compile errors at the call site.
+Bindings are expressed with the `Bind` helper, which pairs a parameter handle with an argument expression of the same `Bl*` type:
+
+```go
+type ParameterBinding struct {
+    Parameter BlExpr // the LHS handle being bound (an Inputs field handle)
+    Argument  BlExpr // the RHS expression supplying its value
+}
+
+// Bind pairs a parameter handle with an argument expression. The type parameter
+// is inferred from the parameter's Bl* type and enforces that the argument has
+// the same type — a mismatch is a compile error at the call site.
+func Bind[T BlValue](parameter T, argument T) ParameterBinding
+```
+
+The type parameter is inferred from the parameter handle's `Bl*` type and enforces that the argument has the same type — mismatches are compile errors at the call site.
 
 ### Validation
 
@@ -185,7 +199,7 @@ Tests and ad-hoc callers that want the typed `Outputs` value should call `task.F
 
 ### Fn is a pure function over Inputs
 
-`Fn` has signature `func(in *Inputs) (Outputs, error)`. It does **not** receive `*ExecutionContext`. This matches the native-function pattern already used by [`BusinessKnowledgeModel`](../decision-tasks/business-knowledge-model.spec.md) (`Fn func(p *Parameters) (Output, error)`).
+`Fn` has signature `func(in *Inputs) (Outputs, error)`. It does **not** receive `*ExecutionContext` — it is a pure function over the typed `Inputs` struct.
 
 Consequences of the pure-function shape:
 

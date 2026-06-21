@@ -297,7 +297,7 @@ var processB = bl.NewProcess("loan-app-b", "2.0", ProcessOpts{
 
 ## Building the Decision Logic
 
-Each node is built via its constructor ([`NewDecisionTable`](decision-table.spec.md), [`NewDecisionExpression`](decision-expression.spec.md)) as a package-scope `var`. Every node declares its input contract (what it consumes) and output contract (what it produces) as plain `[]bl.Field` data; `NewDecisionTask` reads those contracts to wire the graph.
+Each node is built via its constructor ([`NewDecisionTable`](decision-table.spec.md), [`NewDecisionExpression`](decision-expression.spec.md), [`NewDecisionNativeFunction`](decision-native-fn.spec.md), [`NewSubDecisionTask`](sub-decision-task.spec.md)) as a package-scope `var`. Every node declares its input contract (what it consumes) and output contract (what it produces) as plain `[]bl.Field` data; `NewDecisionTask` reads those contracts to wire the graph.
 
 ```go
 // The task's external input contract — what callers must supply.

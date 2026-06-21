@@ -1,6 +1,6 @@
 ---
 name: bl.BlSchema
-description: Unified shape declaration for Bl* values — named fields, optionality, and arbitrary nesting. Drives parse-time typing for bl.Expr and is intended to replace the InputContract / OutputContract / DictionaryContract / ListContract / TableContract family and the reflected Parameters / Outputs structs used by BusinessKnowledgeModel and DecisionNode.
+description: Unified shape declaration for Bl* values — named fields, optionality, and arbitrary nesting. Drives parse-time typing for bl.Expr and is intended to replace the InputContract / OutputContract / DictionaryContract / ListContract / TableContract family and the reflected Outputs structs used by DecisionNode.
 targets:
   - ../../core/schema.go
 ---
@@ -10,7 +10,7 @@ targets:
 `bl.BlSchema` is a declarative shape for any `Bl*` value: a scalar type, a typed list, a
 dictionary with named fields, or a table with typed columns. One type drives every consumer
 that today carries its own representation — parse-time typing for `bl.Expr`, runtime
-contract validation at process boundaries, BKM parameter declarations, decision-node output
+contract validation at process boundaries, decision-node input and output
 declarations, and JSON-schema export.
 
 Validation **policy** (closed vs permissive) lives on the call site, not the schema. The
@@ -50,8 +50,8 @@ type Field struct {
 A `bl.BlSchema` is ordered so that markdown / JSON-schema rendering is stable, but name
 lookups use the slice as a name-keyed set.
 
-Top-level usage is always record-shaped — a process boundary, a BKM parameter list, a
-parse-time environment, etc. Non-record top-level inputs (a process that takes a single
+Top-level usage is always record-shaped — a process boundary, a decision node's
+input contract, a parse-time environment, etc. Non-record top-level inputs (a process that takes a single
 list or a single table at its boundary) are expressed by wrapping in a one-field schema
 with the appropriate `Type`.
 
@@ -188,8 +188,7 @@ will land incrementally.
 | `DictionaryContract` ([data-contract.spec.md:57](../data/data-contract.spec.md#L57)) | A field with `Type: bl.TypeDictionary` and nested `Fields` | Direct mapping. |
 | `ListContract` ([data-contract.spec.md:85](../data/data-contract.spec.md#L85)) | A field with `Type: bl.TypeList` and an `Element` `[]bl.Type` | Existing `ListContract` allowed structured element types (e.g. a nested `DictionaryContract`); `bl.BlSchema` element constraints are `bl.Type`-only. Structured-row use cases migrate to `bl.TypeTable`. |
 | `TableContract` ([data-contract.spec.md:105](../data/data-contract.spec.md#L105)) | A field with `Type: bl.TypeTable` and nested `Fields` | Direct mapping. |
-| Generic `Parameters` ([business-knowledge-model.spec.md:21](../decision-tasks/business-knowledge-model.spec.md#L21)) | `bl.BlSchema` | The reflected-struct path is replaced by an explicit `bl.BlSchema` carried on the BKM. |
-| Generic `Outputs` ([decision-node.spec.md](../decision-tasks/decision-node.spec.md)) | `bl.BlSchema` | Same — node carries a `bl.BlSchema` describing its outputs. |
+| Generic `Outputs` ([decision-node.spec.md](../decision-tasks/decision-node.spec.md)) | `bl.BlSchema` | The reflected-struct path is replaced by a node carrying a `bl.BlSchema` (or `[]bl.Field`) describing its outputs. |
 
 The `InputContract` / `OutputContract` Go-type split (which today makes wrong-direction use
 a Go type error) collapses into one `bl.BlSchema` type — direction discrimination moves to the
