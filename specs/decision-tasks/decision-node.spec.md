@@ -1,148 +1,115 @@
 ---
 name: DecisionNode
-description: Common interface for every decision node — the shared identity surface (Id, Name, Description) and evaluation contract satisfied by the generic DecisionTable, DecisionExpression, and Invocation types.
+description: The minimal common interface every decision node satisfies — identity (Id, Name, Description), a declared input contract and output contract (both []Field), and a uniform Evaluate that takes named BlValues and returns named BlValues. This interface is what lets a DecisionTask hold and run a mixed set of DecisionTables and DecisionExpressions.
 targets:
-  - ../decisions/decision_node.go
+  - ../../core/decision_node.go
 ---
 
 # DecisionNode
 
-`DecisionNode` is the interface every node in a `DecisionTask` satisfies. The three concrete node types are each generic over a caller-supplied outputs struct that declares the node's typed outputs:
+`DecisionNode` is the single interface every node in a [`DecisionTask`](decision-task.spec.md) satisfies. It is small and deliberately plain — it exists so that a task can hold a mixed set of node types in one `[]DecisionNode`, inspect each one's typed contract, and run it, without knowing which concrete kind it is.
 
-- `DecisionTable[Outputs]` — tabular input/output rules with hit policies
-- `DecisionExpression[Outputs]` — named text-expression entries (single field → scalar, multi-field → dictionary); a single `BlTable` output built with `table(...)` is how a node computes a whole table
-- `Invocation[Outputs]` — a call to a `BusinessKnowledgeModel` with parameter bindings
+The two concrete node types are:
+
+- [`DecisionTable`](decision-table.spec.md) — tabular input/output rules with hit policies.
+- [`DecisionExpression`](decision-expression.spec.md) — named text-expression entries.
 
 ```go
 type DecisionNode interface {
     GetId() string
-    GetName() *string
+    GetName() string
     GetDescription() string
-    Evaluate(input map[string]any) (BlValue, error)
+
+    // Inputs is the node's input contract: the named, typed variables it
+    // consumes from outside itself (task inputs, upstream node outputs, or
+    // reference data). Used by NewDecisionTask to wire and type-check edges.
+    Inputs() []Field
+
+    // Outputs is the node's output contract: the named, typed values it
+    // produces. Output names are unique across the whole DecisionTask.
+    Outputs() []Field
+
+    // Evaluate runs the node against a bag of named values and returns a bag of
+    // named values keyed by the node's output names. The signature is identical
+    // for every node type, which is what lets a DecisionTask drive them
+    // uniformly.
+    Evaluate(input map[string]BlValue) (map[string]BlValue, error)
 }
 ```
 
-Every concrete generic node type implements this interface regardless of its `Outputs` type parameter, so `[]DecisionNode{eligibility, approval, ...}` accepts nodes with different output shapes uniformly.
+Both concrete types satisfy this interface, so `[]DecisionNode{eligibility, approval, …}` holds nodes with different input and output shapes uniformly.
 
-Decision nodes *compute* a value and are evaluated. A plain static value with identity is not a node: it is a [`ReferenceData`](reference-data.spec.md) value source, which carries its `Value` rather than implementing `Evaluate`. It is referenced by nodes through its `.Value` handle and never appears in `[]DecisionNode`.
+A static value with identity is **not** a node: it is a [`ReferenceData`](reference-data.spec.md) value source, which carries its `Value` rather than computing one. It has no `Evaluate` method and never appears in `[]DecisionNode`.
 
 ---
 
-## Outputs structs
+## Contracts are plain data, not Go generics
 
-Each concrete node's typed outputs are declared by a caller-defined struct. **Naming convention:** the struct name ends in `Outputs` (e.g., `EligibilityOutputs`, `ApprovalOutputs`, `RiskScoreOutputs`).
+A node declares what it consumes and produces as ordinary data — a list of `Field` values (name + type), the same `Field` used by [`Schema`](../expressions/schema.spec.md):
 
 ```go
-type EligibilityOutputs struct {
-    Risk  BlString   // output column "risk"
-    Score BlNumber   // output column "score"
+type Field struct {
+    Name string
+    Type Type
+    // (Fields is used for nested dictionary shapes; see schema.spec.md)
 }
 ```
 
-Rules for the outputs struct:
+There is **no** type-parameter on the node types and **no** reflected "outputs struct" — a node is configured with a plain `[]Field` for its inputs and a plain `[]Field` for its outputs. This is the whole reason the model is easy to reason about: a node's contract is a value you can read, print, and check, and the single moment type-safety "kicks in" is when those contracts are matched against each other (see [§ Where type-safety happens](#where-type-safety-happens)).
 
-- **Every exported field is an output.** No filter — the caller put it there, so it is an output.
-- A field's static type must implement `bl.BlValue` (`bl.BlString`, `bl.BlNumber`, `bl.BlBoolean`, `bl.BlDate`, `bl.BlTime`, `bl.BlDateTime`, `bl.BlDaysTimeDuration`, `bl.BlYearsMonthsDuration`, `bl.BlList`, `bl.BlDictionary`, `bl.BlRange`, `bl.BlCalendar`). A non-`bl.BlValue` field type is a `DecisionDefinitionError` at construction time.
-- The column name defaults to the lowercase field name; override with a `bl:"name"` struct tag.
-- Single-output nodes use an outputs struct with exactly one field. Multi-output nodes use one field per output column.
+Rules for a contract `[]Field`:
 
-When the constructor runs, every outputs-struct field is populated with a typed handle that downstream nodes reference to consume this node's output.
-
----
-
-## Constructing a node
-
-Each concrete type has a generic constructor: `NewDecisionTable[Outputs]`, `NewDecisionExpression[Outputs]`, `NewInvocation[Outputs]`. The caller passes opts containing the node's logic (rules, entries, bindings) and the type parameter pins the outputs struct.
-
-```go
-var eligibility = NewDecisionTable[EligibilityOutputs](DecisionTableOpts{
-    Id:        "eligibility",
-    Name:      "Eligibility Check",
-    HitPolicy: HitPolicyUnique,
-    Inputs:    []TableInput{ /* ... */ },
-    Rules:     []Rule{ /* ... */ },
-})
-```
-
-The constructor performs the following steps:
-
-1. Allocate and populate the underlying node value from `opts`.
-2. Reflect on the `Outputs` type parameter. For every exported field:
-   - Verify the field's static type implements `bl.BlValue`. Reject otherwise.
-   - Derive the output's name (lowercased field name, or the `bl:"name"` tag if present).
-   - Register the output on the underlying node.
-   - Allocate a typed handle and assign it into the corresponding field of the returned value's `Outputs`.
-3. Validate node-internal consistency (e.g., every rule output references a declared output; no duplicate output names on this node).
-4. Return the constructed `*DecisionTable[Outputs]` (or analogous for other node types). Validation failures raise a `DecisionDefinitionError`.
-
-The exact return type for the example above is `*DecisionTable[EligibilityOutputs]`. Access patterns:
-
-```go
-eligibility.Outputs.Risk      // bl.BlString  — typed handle
-eligibility.Outputs.Score     // bl.BlNumber  — typed handle
-eligibility.GetId()           // "eligibility"
-eligibility.Evaluate(input)   // standalone evaluation
-```
+- Every field has a non-empty `Name` and a known `Type` (a `bl.Type` other than `TypeNull`).
+- No duplicate names within the same contract list.
+- A node's output names must be unique across the whole `DecisionTask` (enforced at task construction), because the task binds every output into one shared, name-keyed evaluation context.
 
 ---
 
-## Cross-node references
+## Values flowing through Evaluate are BlValue
 
-A downstream node references an upstream node's output **by name** in an entry or cell source. An upstream node's result is bound in the evaluation context under its `Id` — a single-output node as its value, a multi-output node as a `bl.BlDictionary` keyed by output name (so `eligibility.risk` reads the `risk` field of the multi-output `eligibility` node). See [decision-table.spec.md § Referencing upstream nodes](decision-table.spec.md#example--referencing-upstream-nodes) and [reference-data.spec.md](reference-data.spec.md).
+`Evaluate` takes and returns `map[string]BlValue`. Every value in those bags is a `BlValue` — a `BlNumber`, `BlString`, `BlBoolean`, `BlList`, `BlDictionary`, and so on. This is not an arbitrary `any`: each `BlValue` carries a `.Type()` tag, and that tag is what makes a value's type checkable against the declared contract types. A bag is keyed by name:
 
-```go
-type ApprovalOutputs struct {
-    Status BlString
-}
+- the **input** bag is keyed by the names in `Inputs()`;
+- the **output** bag is keyed by the names in `Outputs()`.
 
-var approval = NewDecisionExpression[ApprovalOutputs](DecisionExpressionConfig{
-    Id:   "approval",
-    Name: "Loan Approval",
-    Entries: Entries{
-        "status": `if eligibility.risk = "high" then "review" else "approved"`,
-    },
-})
-```
+There is no special case for single-output nodes — a node with one output returns a one-entry map. Uniformity over convenience keeps the task's evaluation loop simple.
 
-`NewDecisionTask` derives the dependency graph by parsing each node's expression sources (`Rules`, `Entries`, `Rows`, `Bindings`) for the names they reference and matching each to a producing node's output, a task input, or registered reference data (see [decision-task.spec.md § Validation](decision-task.spec.md)). The output types each reference resolves to are reflected from the producing node's `Outputs` struct, so the environment is fully typed even though references are by name.
+---
+
+## Where type-safety happens
+
+Decision type-safety is concentrated at **construction**, in two steps, and the mental model is one sentence: *if construction does not complain, the decision is well-formed.*
+
+1. **Node construction** (`NewDecisionTable` / `NewDecisionExpression`) checks the one node it is given: the input and output contracts are well-formed; every expression compiles; and every name an expression references is a declared input or a sibling output. (Compilation is via `bl.Expr`, which — given a schema built from the node's declared inputs — also reports undefined-variable references for free; see [bl-expr.spec.md](../expressions/bl-expr.spec.md).)
+2. **Task construction** (`NewDecisionTask`) checks the whole graph: it matches each node's `Inputs()` to a producer (an upstream node `Output`, a task input, or reference data) **by name and declared type**, draws the dependency edges, and rejects cycles, duplicate ids, and unresolved names.
+
+What is **not** checked at construction is whether an expression's *computed* value actually matches its declared type (e.g. an output declared `TypeString` whose expression evaluates to a number). The blkit expression engine is runtime-typed — operators dispatch on operand types at evaluation, not compile time (see [operators in the engine](../expressions/bl-expr.spec.md)) — so a value-versus-declaration mismatch surfaces as a `bl.TypeError` at **evaluation**. Construction guarantees the declarations are mutually consistent; evaluation guarantees the values honour them.
 
 ---
 
 ## Identity
 
-- `Id` — unique identifier within the containing `DecisionTask`. Duplicate ids are rejected.
+- `Id` — unique identifier within the containing `DecisionTask`. Duplicate ids are rejected at task construction.
 - `Name` — optional human-readable label.
 - `Description` — optional documentation text.
 
-These fields live on each concrete node's struct and are exposed through the interface getter methods (`GetId`, `GetName`, `GetDescription`).
+These live on each concrete node and are exposed through `GetId` / `GetName` / `GetDescription`.
 
 ---
 
-## Evaluation
+## Evaluation within a task
 
-A `DecisionNode` is evaluated by calling `Evaluate(input)`:
+`NewDecisionTask` stores nodes in topologically-sorted order. At evaluation time the task threads one shared, name-keyed context: it seeds the context with the caller's inputs and the bound reference data, then for each node in order calls `Evaluate` with the context and merges the returned outputs back into it under their output names. Because output names are unique across the task, a downstream node consumes an upstream output simply by declaring an input of that name. See [decision-task.spec.md § Evaluation](decision-task.spec.md#evaluation).
 
-- **Single-output case** (outputs struct has exactly one field): returns that field's `bl.BlValue` directly.
-- **Multi-output case**: returns a `bl.BlDictionary` keyed by the declared output names.
-
-Within a `DecisionTask`, the runtime evaluates nodes in topologically sorted dependency order and stores each node's result in the evaluation context under the node's `Id`.
-
----
-
-## Standalone Evaluation
-
-Any decision node can be evaluated independently by calling `.Evaluate(input)` without a containing `DecisionTask`. The caller is responsible for providing all input variables referenced by the node's expressions. Dependency resolution against other nodes does not occur in standalone mode — references to other nodes' outputs must already be resolvable from the supplied `input`.
+A node can also be evaluated standalone, outside any task, by calling `Evaluate` directly; the caller must supply every value the node's `Inputs()` declare.
 
 ---
 
 ## Edge Cases
 
-- A `DecisionNode` whose `Id` is an empty string is invalid; `NewDecisionTask` rejects it with `DecisionDefinitionError`.
-- An outputs-struct field whose type does not implement `bl.BlValue` is a `DecisionDefinitionError` at construction time.
-- An outputs-struct with no exported fields is a `DecisionDefinitionError` (a node must declare at least one output).
-- An outputs-struct field whose `bl:"name"` tag duplicates another field's effective name (within the same node) is a `DecisionDefinitionError`.
-- Output names must be unique across the whole `DecisionTask`. Collisions are rejected at task construction.
-- Decision nodes forming a circular dependency among themselves are detected by `NewDecisionTask` and rejected with `DecisionDefinitionError`.
-- Calling `.Evaluate()` in standalone mode with an input variable not referenced by any expression on the node is silently ignored.
-- A required input variable that is missing at evaluation time resolves to `bl.BlNull`.
-- A node body that produces a value whose runtime type disagrees with the declared outputs-struct field type produces a `bl.TypeError` at evaluation time.
+- A node whose `Id` is empty is invalid; `NewDecisionTask` rejects it with `DecisionDefinitionError`.
+- A node whose output contract has no fields is invalid (a node must declare at least one output).
+- A duplicate name within a node's input or output contract is a `DecisionDefinitionError` at node construction.
+- Two nodes producing the same output name in one task collide; `NewDecisionTask` rejects it.
+- A node input whose declared type does not match its producer's declared output type is a `DecisionDefinitionError` at task construction.
+- A value passed to `Evaluate` whose runtime type disagrees with the declared contract type surfaces as a `bl.TypeError` at evaluation time.

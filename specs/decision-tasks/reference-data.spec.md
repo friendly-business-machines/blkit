@@ -1,6 +1,6 @@
 ---
 name: ReferenceData
-description: A static value source generic over T BlValue — carries identity (Id, Name, Description) and a single constant Value. Registered with a DecisionTask via WithReferenceData and referenced from node expressions by its Id; it computes nothing and is never evaluated.
+description: A static value source generic over T BlValue — carries identity (Id, Name, Description) and a single constant Value. Registered with a DecisionTask via WithReferenceData and consumed by nodes that declare an input whose name is the reference data's Id; it computes nothing and is never evaluated.
 targets:
   - ../../core/reference_data.go
 ---
@@ -14,11 +14,11 @@ generic over the value's type `T`.
 `ReferenceData` is **not** a [`DecisionNode`](decision-node.spec.md) and has **no
 `Evaluate` method** — a constant computes nothing, so it carries its value rather
 than deriving one. It is registered with a `DecisionTask` at construction via
-`bl.WithReferenceData(...)`; the task binds its `Value` into the evaluation
-context under its `Id`, so decision nodes reference it **by name** in their
-expression sources, exactly as they reference any other in-scope variable. It is
-not a node and never appears in a `DecisionTask`'s `[]DecisionNode` or its
-evaluation order.
+`bl.WithReferenceData(...)`. A node consumes it by declaring an input whose
+**name is the reference data's `Id`**; the task matches that input to the
+reference value during wiring and binds the value into the evaluation context
+under the same `Id` before nodes run. A `ReferenceData` never appears in a
+`DecisionTask`'s `[]DecisionNode` or its evaluation order.
 
 Reference data is part of a task's **decision logic**, so a `DecisionTask` clone
 inherits it **by reference** — it is never reset or re-added (see
@@ -118,36 +118,39 @@ surfaces at its own declaration before reaching `bl.NewReferenceData`.
 
 ---
 
-## Registering and referencing
+## Registering and consuming
 
 A `ReferenceData` is registered with the `DecisionTask` that uses it, via
-`bl.WithReferenceData`. The task binds its `Value` into the evaluation context
-under its **`Id`**, and adds that `Id` and type to the environment node
-expressions are compiled against (a **reference scope** distinct from the task's
-`InputSchema`). The expression-language variable a node sees is therefore the
-reference data's `Id` string — **not** the Go variable it was assigned to. Here
-the constant was declared `var taxRate = bl.NewReferenceData(bl.Number(0.2),
-bl.WithId("tax_rate"), …)`, so its `Id` is `"tax_rate"` and node expressions reference
-it as `tax_rate` (the Go name `taxRate` is irrelevant inside the expression):
+`bl.WithReferenceData`. A node that needs the constant declares an **input whose
+name is the reference data's `Id`** and whose type is the value's type. During
+wiring `NewDecisionTask` matches that declared input to the registered reference
+value (by name and type), and at evaluation it binds the `Value` into the
+context under the same `Id`. The name a node uses is therefore the reference
+data's `Id` string — **not** the Go variable it was assigned to. Here the
+constant was declared `var taxRate = bl.NewReferenceData(bl.Number(0.2),
+bl.WithId("tax_rate"), …)`, so its `Id` is `"tax_rate"`, the consuming node
+declares an input `tax_rate` of `TypeNumber`, and its expression references
+`tax_rate`:
 
 ```go
-type GrossPriceOutputs struct {
-    Amount bl.BlNumber
-}
-
-var grossPrice = bl.NewDecisionExpression[GrossPriceOutputs](bl.DecisionExpressionConfig{
+var grossPrice = bl.NewDecisionExpression(bl.DecisionExpressionConfig{
     Id:   "gross_price",
     Name: "Gross Price",
-    // `tax_rate` here is taxRate's Id (bl.WithId("tax_rate")), bound into scope
-    // by WithReferenceData below.
+    Inputs: []bl.Field{
+        {Name: "net_price", Type: bl.TypeNumber}, // an upstream node's output
+        {Name: "tax_rate", Type: bl.TypeNumber},  // reference data, by its Id
+    },
+    Outputs: []bl.Field{
+        {Name: "gross_price", Type: bl.TypeNumber},
+    },
     Entries: bl.Entries{
-        "amount": `net_price.amount * (1 + tax_rate)`,
+        "gross_price": `net_price * (1 + tax_rate)`,
     },
 })
 
-// The task's external input contract — what netPrice consumes. (net_price is an
-// internal node output; tax_rate is reference data, resolved in the reference
-// scope — neither is part of InputSchema.)
+// The task's external input contract — what the graph consumes from callers.
+// (net_price is an internal node output; tax_rate is reference data — neither is
+// part of InputSchema.)
 var pricingInputs, _ = bl.Schema(
     bl.Field{Name: "list_price", Type: bl.TypeNumber},
 )
@@ -157,27 +160,25 @@ var pricing = bl.NewDecisionTask(
     bl.WithName("Pricing"),
     bl.WithNodes(netPrice, grossPrice),
     bl.WithInputSchema(pricingInputs),
-    bl.WithReferenceData(taxRate), // registers the Go value `taxRate`, whose Id is "tax_rate"
+    bl.WithReferenceData(taxRate), // registers the Go value taxRate, whose Id is "tax_rate"
 )
 ```
 
-So `tax_rate` resolves because `bl.WithReferenceData(taxRate)` (a) adds the name
-`tax_rate` (type `BlNumber`, taxRate's `Id`) to the compile-time environment so
-the body type-checks, and (b) binds its value into the evaluation context under
-that same `Id` at evaluation time. A `ReferenceData` need not — and cannot — be
-listed in `[]bl.DecisionNode`.
+So the `tax_rate` input on `grossPrice` resolves because `bl.WithReferenceData(taxRate)`
+makes a value source named `tax_rate` (type `BlNumber`) available to the wiring
+matcher, and binds its value into the evaluation context under that `Id`. A
+`ReferenceData` need not — and cannot — be listed in `[]bl.DecisionNode`.
 
 ---
 
 ## Resolution
 
 A `ReferenceData` is never evaluated. The `DecisionTask` it is registered with
-binds its `Value` into the evaluation context under its `Id` before nodes run,
-and includes its `Id` and type in the compile-time environment so referencing
-expressions type-check. Because the source is a constant rather than a node in
-the evaluation order, the reference forms no node-to-node dependency edge — a
-`ReferenceData` is always a leaf with no upstream dependencies. Being
-decision-logic, it is shared by reference with a task's clones and is never reset.
+binds its `Value` into the evaluation context under its `Id` before nodes run.
+Because the source is a constant rather than a node in the evaluation order,
+consuming it forms no node-to-node dependency edge — a `ReferenceData` is always
+a leaf with no upstream dependencies. Being decision-logic, it is shared by
+reference with a task's clones and is never reset.
 
 ---
 
@@ -214,12 +215,15 @@ Integration into `DecisionTask.ToMarkdown()` is out of scope for this spec.
   `DecisionTask`'s `[]bl.DecisionNode`.
 - A `ReferenceData` is always a leaf — it references no other node and has no
   upstream dependencies.
-- A `ReferenceData` `Id` that collides with a node `Id`, another `ReferenceData`
-  `Id`, or an `InputSchema` variable name in the owning task is a
-  `DecisionDefinitionError`, raised by `bl.NewDecisionTask`.
-- A name referenced by a node but never registered via `bl.WithReferenceData`
-  (and not otherwise in scope) is unresolved — `bl.NewDecisionTask` reports it as
-  a definition error at construction.
+- A `ReferenceData` `Id` that collides with a node output name, another
+  `ReferenceData` `Id`, or an `InputSchema` variable name in the owning task is a
+  `DecisionDefinitionError`, raised by `bl.NewDecisionTask` (the three together
+  form one shared, name-keyed value namespace).
+- A node input whose name matches no registered reference data, task input, or
+  upstream output is unresolved — `bl.NewDecisionTask` reports it as a definition
+  error at construction.
+- A node input that matches a reference data by name but whose declared type
+  differs from the value's type is a `DecisionDefinitionError`.
 - A `DecisionTask` clone inherits its source's reference data by reference; it is
   not reset, and `bl.WithReferenceData` is not a valid `Clone` option (decision
   logic is shared from the source).
