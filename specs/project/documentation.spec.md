@@ -29,7 +29,7 @@ The documentation site is organised into the following top-level sections (at mi
 | **Examples** | Focused, self-contained code samples demonstrating specific features or combinations |
 | **Reference** | Complete API reference, organised by package and type |
 
-Additional top-level sections may be added as the project grows, but the six sections above are required before the documentation site is considered minimally complete.
+Additional top-level sections may be added as the project grows, but the six sections above are required before the documentation site is considered minimally complete. The optional **Architecture** section described below is the first such addition.
 
 ## Getting Started Section
 
@@ -124,6 +124,18 @@ The Zensical build renders this directly as the example page. A page is publishe
 The Reference section contains the Go API reference, generated from `//` godoc comments in source via `go doc` / `godoc` → Markdown.
 
 Generated Markdown is committed to `docs/reference/` and consumed by Zensical as ordinary source files. The generation step runs in CI on every release.
+
+## Architecture Section
+
+The Architecture section explains how blkit is built internally — the design of the engine behind the public API. It complements the Reference section (*what* the API is) and the Examples section (*how* to use it) by documenting *why the machinery is shaped the way it is*: the pipelines, intermediate representations, and design decisions. Its audience is contributors and anyone debugging behaviour that only makes sense with knowledge of the internal layers.
+
+The section is a landing page (`docs/architecture/index.md`) followed by one chapter per subsystem. The landing page orients the reader and presents the subsystems as a layered stack; each chapter is a self-contained deep-dive. Chapters are added as the subsystems they describe are implemented:
+
+| Page | Subsystem |
+|---|---|
+| `docs/architecture/expressions.md` | The expression engine — compilation pipeline (normalise → parse → patch → compile → run), the value system, and the boundary with the `expr-lang/expr` substrate blkit builds on |
+
+Decisions, processes, and workers will each gain a chapter as those packages land. Unlike the Reference section, Architecture pages are hand-authored prose and are not generated from source.
 
 ## LLM Discovery Files
 

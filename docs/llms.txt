@@ -24,5 +24,9 @@
 - [Example: Product Return and Refund](https://friendly-business-machines.github.io/blkit/examples/product-return/): A customer requests a return; the process validates eligibility within the return window, grades the item's condition on receipt, and issues a refund, replacement, or store credit accordingly.
 - [Example: Australian Personal Income Tax Calculator](https://friendly-business-machines.github.io/blkit/examples/aus-personal-income-tax/): An accounting service calculates an individual's annual income tax liability for FY 2024–25 — building taxable income from many sources, applying progressive brackets, levies, offsets, and HELP/HECS, then reconciling against amounts already paid.
 
+## Architecture
+- [Architecture](https://friendly-business-machines.github.io/blkit/architecture/): How blkit is built, subsystem by subsystem — the internal design of the engine behind the public API.
+- [Expressions](https://friendly-business-machines.github.io/blkit/architecture/expressions/): How blkit's expression engine turns a source string into type-checked, compiled bytecode that evaluates to a typed value — the pipeline, the value system, and the line between blkit and the host VM.
+
 ## Reference
 - [core](https://friendly-business-machines.github.io/blkit/reference/blkit/)

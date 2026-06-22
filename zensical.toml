@@ -34,6 +34,10 @@ nav = [
     "examples/product-return.md",
     "examples/aus-personal-income-tax.md",
   ] },
+  { "Architecture" = [
+    "architecture/index.md",
+    "architecture/expressions.md",
+  ] },
   { "Reference" = [
     "reference/blkit.md",
   ] },
