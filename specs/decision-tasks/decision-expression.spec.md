@@ -47,7 +47,7 @@ type DecisionDefinitionError struct {
 }
 ```
 
-`NewDecisionExpression` reflects `I` and `O` to learn the declared variable names (their `expr` tags), joins them into one combined env type (via `reflect.StructOf`, since Go forbids embedding type parameters), compiles each entry's raw-string source against that combined env, builds the intra-node dependency graph from sibling-output references, and topologically sorts. A malformed contract, an entry that does not compile, an entry referencing an undeclared name, or a cycle among entries is accumulated and raised as a `DecisionDefinitionError`.
+`NewDecisionExpression` reflects `I` and `O` to learn the declared variable names (their `expr` tags), joins them into one combined env type (via `reflect.StructOf`, since Go forbids embedding type parameters), compiles each entry's raw-string source (one `expr.Compile` per entry) against that combined env, builds the intra-node dependency graph from sibling-output references, and topologically sorts. A malformed contract, an entry that does not compile, an entry referencing an undeclared name, or a cycle among entries is accumulated and raised as a `DecisionDefinitionError`.
 
 ---
 
@@ -136,7 +136,7 @@ The `total` entry references `principal` and `interest` by name. Those are this 
 
 ## Compiling entries into the evalPlan
 
-`NewDecisionExpression` validates the contracts, compiles every entry's raw-string source into a `*vm.Program` (via the same compiler the rest of blkit uses, see [bl-expr.spec.md](../expressions/bl-expr.spec.md)), and assembles the sorted evaluation plan. It proceeds in four steps:
+`NewDecisionExpression` validates the contracts, compiles every entry's raw-string source into a `*vm.Program` — **one `expr.Compile` call per entry**, via the same engine path the rest of blkit uses (see [bl-expr.spec.md](../expressions/bl-expr.spec.md)) — and assembles the sorted evaluation plan. It proceeds in four steps:
 
 1. **Validate the contracts.** Each failure is a `DecisionDefinitionError`:
    - `I` and `O` are structs whose exported fields have usable `expr` names;
@@ -144,7 +144,7 @@ The `total` entry references `principal` and `interest` by name. Those are this 
    - `O` declares at least one output;
    - the `Entries` key set is exactly the `O` output names — no entry without a matching output, and no output without an entry.
 2. **Build the combined env type.** `I`'s and `O`'s fields are joined into one struct type (via `reflect.StructOf`, since a type parameter cannot be embedded) whose field tags are the declared FEEL names, so every entry may reference any declared input and any sibling output by name.
-3. **Compile each entry.** Each entry's source is compiled against the combined env. Because that env is a strict struct env (plus blkit's own undefined-name pre-pass), a reference to a name that is neither a declared input nor a sibling output is rejected — a `bl.ParseError`, wrapped in a `DecisionDefinitionError`.
+3. **Compile each entry.** Each entry's source is compiled with `expr.Compile` (once, at construction) against the combined env. Because that env is a strict struct env (plus blkit's own undefined-name pre-pass), a reference to a name that is neither a declared input nor a sibling output is rejected — a `bl.ParseError`, wrapped in a `DecisionDefinitionError`.
 4. **Sort by dependency.** Each entry's intra-node dependencies are the sibling output names its source references (discovered by walking the parsed AST); the entries are topologically sorted by these edges. A self-reference or a reference cycle is a `DecisionDefinitionError`.
 
 Compilation is therefore the point at which name discipline is enforced: `Evaluate` never sees an entry that references an unknown name.
@@ -177,7 +177,7 @@ What each moment catches:
 Each call:
 
 1. Builds a fresh combined-env value and copies the `inputs I` fields into it; the output fields start at their zero values.
-2. Walks the topologically-sorted plan in order. Each entry's compiled program is evaluated against the current combined env (the inputs plus the outputs of earlier steps), and the result is written into that output's field of the combined env — so later steps that reference it resolve against the value just produced. Writing a result whose runtime type disagrees with the declared output field is a `bl.TypeError`.
+2. Walks the topologically-sorted plan in order. Each entry's compiled program is run with `expr.Run` against the current combined env (the inputs plus the outputs of earlier steps), and the result is written into that output's field of the combined env — so later steps that reference it resolve against the value just produced. Writing a result whose runtime type disagrees with the declared output field is a `bl.TypeError`.
 3. Copies the output fields out of the combined env into a fresh `O` and returns it.
 
 Because the plan is topologically sorted, every name a step references is already populated by the time that step runs; a not-yet-produced output is never read. Cycles are rejected at construction and never observed during evaluation.

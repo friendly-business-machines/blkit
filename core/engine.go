@@ -138,11 +138,18 @@ func typeRegistrations() []func() []expr.Option {
 // exported fields (renamed by `expr:"name"` tags) declare the variables the
 // source may reference; an undeclared name is a compile-time error. The returned
 // BlExpr can be evaluated repeatedly.
-func Expr[E any](source string) (*BlExpr[E], error) {
+// Expr calls expr.Compile once, registering each supplied UDF (a named, host-
+// defined function — see Func) so the source may call it by name with compile-
+// time-checked arguments.
+func Expr[E any](source string, udfs ...UDF) (*BlExpr[E], error) {
 	if source == "" {
 		return nil, &ParseError{Source: source, Err: errEmptySource}
 	}
-	program, err := compileWithEnv(source, *new(E), envFieldNames(reflect.TypeOf((*E)(nil)).Elem()))
+	opts, err := udfOptions(udfs)
+	if err != nil {
+		return nil, &ParseError{Source: source, Err: err}
+	}
+	program, err := compileWithEnv(source, *new(E), envFieldNames(reflect.TypeOf((*E)(nil)).Elem()), opts...)
 	if err != nil {
 		return nil, &ParseError{Source: source, Err: err}
 	}
@@ -151,8 +158,27 @@ func Expr[E any](source string) (*BlExpr[E], error) {
 
 // ExprNoEnv compiles a variable-free expression. It is shorthand for Expr[NoEnv];
 // evaluate the result with Evaluate(NoEnv{}).
-func ExprNoEnv(source string) (*BlExpr[NoEnv], error) {
-	return Expr[NoEnv](source)
+func ExprNoEnv(source string, udfs ...UDF) (*BlExpr[NoEnv], error) {
+	return Expr[NoEnv](source, udfs...)
+}
+
+// udfOptions collects each UDF's expr.Function registration, rejecting a
+// duplicate function name within one call.
+func udfOptions(udfs []UDF) ([]expr.Option, error) {
+	if len(udfs) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]bool, len(udfs))
+	opts := make([]expr.Option, 0, len(udfs))
+	for _, u := range udfs {
+		name := u.udfName()
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate function %q", name)
+		}
+		seen[name] = true
+		opts = append(opts, u.udfOption())
+	}
+	return opts, nil
 }
 
 // buildOptions assembles the strict typed environment for E plus the
@@ -169,11 +195,12 @@ func buildOptionsEnv(env any) []expr.Option {
 
 // compileWithEnv normalises a source string, rejects any reference to a name not
 // in declared (blkit's own undefined-name discipline — see firstUndefined), and
-// compiles against the explicit struct env value. It backs Expr[E] and
-// DecisionExpression, whose combined env type is built at runtime
-// (reflect.StructOf) and so has no Go type parameter. The raw error is returned;
-// callers wrap it in a ParseError with their original source.
-func compileWithEnv(source string, env any, declared map[string]bool) (*vm.Program, error) {
+// calls expr.Compile against the explicit struct env value plus any extra options
+// (e.g. UDF registrations). It backs Expr[E], UnaryTest, DecisionExpression, and
+// Func, whose env types are built at runtime (reflect.StructOf / reflected param
+// structs) and so have no Go type parameter. The raw error is returned; callers
+// wrap it in a ParseError with their original source.
+func compileWithEnv(source string, env any, declared map[string]bool, extra ...expr.Option) (*vm.Program, error) {
 	src, err := normalise(source)
 	if err != nil {
 		return nil, err
@@ -181,7 +208,9 @@ func compileWithEnv(source string, env any, declared map[string]bool) (*vm.Progr
 	if name, bad := firstUndefined(src, declared); bad {
 		return nil, fmt.Errorf("unknown name %s", name)
 	}
-	return expr.Compile(src, buildOptionsEnv(env)...)
+	opts := buildOptionsEnv(env)
+	opts = append(opts, extra...)
+	return expr.Compile(src, opts...)
 }
 
 // baseOptions assembles the env-independent options: every spoke's

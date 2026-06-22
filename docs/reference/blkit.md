@@ -73,8 +73,8 @@ import "github.com/friendly-business-machines/blkit/core"
   - [func (d BlDictionary) String() string](<#BlDictionary.String>)
   - [func (BlDictionary) Type() Type](<#BlDictionary.Type>)
 - [type BlExpr](<#BlExpr>)
-  - [func Expr\[E any\](source string) (\*BlExpr\[E\], error)](<#Expr>)
-  - [func ExprNoEnv(source string) (\*BlExpr\[NoEnv\], error)](<#ExprNoEnv>)
+  - [func Expr\[E any\](source string, udfs ...UDF) (\*BlExpr\[E\], error)](<#Expr>)
+  - [func ExprNoEnv(source string, udfs ...UDF) (\*BlExpr\[NoEnv\], error)](<#ExprNoEnv>)
   - [func (e \*BlExpr\[E\]) Evaluate(env E) (BlValue, error)](<#BlExpr[E].Evaluate>)
   - [func (e \*BlExpr\[E\]) Source() string](<#BlExpr[E].Source>)
 - [type BlFunc](<#BlFunc>)
@@ -156,6 +156,11 @@ import "github.com/friendly-business-machines/blkit/core"
   - [func (t BlTime) Native() time.Time](<#BlTime.Native>)
   - [func (t BlTime) String() string](<#BlTime.String>)
   - [func (BlTime) Type() Type](<#BlTime.Type>)
+- [type BlUDF](<#BlUDF>)
+  - [func Func\[P any, R BlValue\](name, body string, deps ...UDF) (\*BlUDF\[P, R\], error)](<#Func>)
+  - [func (u \*BlUDF\[P, R\]) Call(params P) (R, error)](<#BlUDF[P, R].Call>)
+  - [func (u \*BlUDF\[P, R\]) Name() string](<#BlUDF[P, R].Name>)
+  - [func (u \*BlUDF\[P, R\]) Source() string](<#BlUDF[P, R].Source>)
 - [type BlUnaryTest](<#BlUnaryTest>)
   - [func UnaryTest\[T BlValue\](source string) (\*BlUnaryTest\[T\], error)](<#UnaryTest>)
   - [func (u \*BlUnaryTest\[T\]) Evaluate(input T) (BlValue, error)](<#BlUnaryTest[T].Evaluate>)
@@ -221,6 +226,7 @@ import "github.com/friendly-business-machines/blkit/core"
 - [type Type](<#Type>)
 - [type TypeError](<#TypeError>)
   - [func (e \*TypeError) Error() string](<#TypeError.Error>)
+- [type UDF](<#UDF>)
 - [type YMDurationInput](<#YMDurationInput>)
 - [type YMNumberInput](<#YMNumberInput>)
 
@@ -809,19 +815,19 @@ type BlExpr[E any] struct {
 ```
 
 <a name="Expr"></a>
-### func [Expr](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L141>)
+### func [Expr](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L144>)
 
 ```go
-func Expr[E any](source string) (*BlExpr[E], error)
+func Expr[E any](source string, udfs ...UDF) (*BlExpr[E], error)
 ```
 
-Expr compiles a source string once against the concrete env struct E. E's exported fields (renamed by \`expr:"name"\` tags) declare the variables the source may reference; an undeclared name is a compile\-time error. The returned BlExpr can be evaluated repeatedly.
+Expr compiles a source string once against the concrete env struct E. E's exported fields (renamed by \`expr:"name"\` tags) declare the variables the source may reference; an undeclared name is a compile\-time error. The returned BlExpr can be evaluated repeatedly. Expr calls expr.Compile once, registering each supplied UDF (a named, host\- defined function — see Func) so the source may call it by name with compile\- time\-checked arguments.
 
 <a name="ExprNoEnv"></a>
-### func [ExprNoEnv](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L154>)
+### func [ExprNoEnv](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L161>)
 
 ```go
-func ExprNoEnv(source string) (*BlExpr[NoEnv], error)
+func ExprNoEnv(source string, udfs ...UDF) (*BlExpr[NoEnv], error)
 ```
 
 ExprNoEnv compiles a variable\-free expression. It is shorthand for Expr\[NoEnv\]; evaluate the result with Evaluate(NoEnv\{\}).
@@ -1573,6 +1579,55 @@ func (BlTime) Type() Type
 
 
 
+<a name="BlUDF"></a>
+## type [BlUDF](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L24-L31>)
+
+BlUDF is a named user\-defined function: an expression body compiled once against a parameter struct P, callable from other expressions by name with compile\-time\- checked arguments, and returning a value of type R.
+
+```go
+type BlUDF[P any, R BlValue] struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="Func"></a>
+### func [Func](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L43>)
+
+```go
+func Func[P any, R BlValue](name, body string, deps ...UDF) (*BlUDF[P, R], error)
+```
+
+Func compiles a UDF from an expression body. P is the parameter struct: its exported fields, in declaration order, are the positional parameters, and each field's \`expr:"name"\` tag is the name the body uses for that parameter (each field's type must implement BlValue). R is the return type. deps are other UDFs the body may call by name.
+
+Func calls expr.Compile once to compile the body to a stored \*vm.Program, and builds an expr.Function registration (with a reflect\-built prototype derived from P's fields and R) that makes the UDF callable from other expressions. The body is never recompiled — every call runs the stored program via expr.Run.
+
+<a name="BlUDF[P, R].Call"></a>
+### func (\*BlUDF\[P, R\]) [Call](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L115>)
+
+```go
+func (u *BlUDF[P, R]) Call(params P) (R, error)
+```
+
+Call invokes the UDF host\-side with a typed parameter struct, returning the typed result. Like a call from inside an expression, it runs the stored program via expr.Run.
+
+<a name="BlUDF[P, R].Name"></a>
+### func (\*BlUDF\[P, R\]) [Name](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L134>)
+
+```go
+func (u *BlUDF[P, R]) Name() string
+```
+
+Name returns the UDF's name.
+
+<a name="BlUDF[P, R].Source"></a>
+### func (\*BlUDF\[P, R\]) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L137>)
+
+```go
+func (u *BlUDF[P, R]) Source() string
+```
+
+Source returns the UDF's original body source.
+
 <a name="BlUnaryTest"></a>
 ## type [BlUnaryTest](<https://github.com/friendly-business-machines/blkit/blob/main/core/unarytest.go#L13-L16>)
 
@@ -2260,6 +2315,17 @@ func (e *TypeError) Error() string
 ```
 
 
+
+<a name="UDF"></a>
+## type [UDF](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L16-L19>)
+
+UDF is a named, host\-defined function compiled from an expression string. It is a sealed interface — only \*BlUDF\[P, R\] implements it — so a heterogeneous set of UDFs (different parameter and return types) can be passed together to Expr or as dependencies to another Func.
+
+```go
+type UDF interface {
+    // contains filtered or unexported methods
+}
+```
 
 <a name="YMDurationInput"></a>
 ## type [YMDurationInput](<https://github.com/friendly-business-machines/blkit/blob/main/core/years_months_duration.go#L69-L76>)

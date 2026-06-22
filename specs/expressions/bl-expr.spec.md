@@ -32,21 +32,22 @@ same source syntax (e.g. a `bl.BlNumber` renders as `42`, a `bl.BlString` as `"f
 
 ```go
 // host-side (Go)
-// Expr compiles a source string once against the concrete env struct E. E's
-// exported fields — renamed by `expr:"name"` tags — declare the variables the
-// source may reference; an undeclared name is a compile-time error. The returned
-// bl.BlExpr[E] can be evaluated repeatedly.
-func Expr[E any](source string) (*BlExpr[E], error)
+// Expr calls expr.Compile once against the concrete env struct E. E's exported
+// fields — renamed by `expr:"name"` tags — declare the variables the source may
+// reference; an undeclared name is a compile-time error. Each udf (a named, host-
+// defined function — see udf.spec.md) is registered so the source may call it by
+// name. The returned bl.BlExpr[E] can be evaluated repeatedly.
+func Expr[E any](source string, udfs ...UDF) (*BlExpr[E], error)
 
 // BlExpr is a compiled, type-checked expression over a concrete env struct E.
 type BlExpr[E any] struct { /* unexported: original source + compiled program */ }
-func (e *BlExpr[E]) Evaluate(env E) (BlValue, error)
+func (e *BlExpr[E]) Evaluate(env E) (BlValue, error) // runs the program via expr.Run
 func (e *BlExpr[E]) Source() string
 
 // NoEnv is the env type for a variable-free expression; ExprNoEnv is shorthand
 // for Expr[NoEnv].
 type NoEnv = struct{}
-func ExprNoEnv(source string) (*BlExpr[NoEnv], error)
+func ExprNoEnv(source string, udfs ...UDF) (*BlExpr[NoEnv], error)
 ```
 
 A `bl.BlExpr[E]` is a compiled expression: parse a source string once with `bl.Expr[E]`, then
@@ -551,14 +552,14 @@ will hold).
 ```go
 // host-side (Go)
 
-// bl.UnaryTest compiles a unary-test source string over a single typed input T
-// (the implicit ?). The result is verified to be a bl.BlBoolean (or bl.BlNull);
-// forms that require an ordered domain (<, <=, >, >=, interval [a..b]) are
-// rejected at construction when T is an unordered type. Use T = bl.BlValue for
+// bl.UnaryTest compiles a unary-test source string (via expr.Compile) over a single
+// typed input T (the implicit ?). The result is verified to be a bl.BlBoolean (or
+// bl.BlNull); forms that require an ordered domain (<, <=, >, >=, interval [a..b])
+// are rejected at construction when T is an unordered type. Use T = bl.BlValue for
 // inputs whose type isn't known statically.
 type BlUnaryTest[T BlValue] struct { /* unexported: source + program */ }
 func UnaryTest[T BlValue](source string) (*BlUnaryTest[T], error)
-func (u *BlUnaryTest[T]) Evaluate(input T) (BlValue, error)
+func (u *BlUnaryTest[T]) Evaluate(input T) (BlValue, error) // runs the program via expr.Run
 func (u *BlUnaryTest[T]) Source() string
 ```
 
@@ -837,11 +838,12 @@ restricts the form to a minimal subset of what FEEL allows:
   named-function-definition form (no `let f = function(...) ...`, no top-level `fun`
   declarations) — FEEL itself doesn't have one. Functions exist purely as anonymous values
   inside expressions.
-- **First-class as values, but not addressable by name.** A function value can be passed as
-  an argument to a higher-order built-in, stored as a dictionary value, or returned from an
-  `if`/`for`/`some` expression. It cannot be looked up by name from outside the expression
-  (host code that wants a callable should register an `expr.Function` instead — see [§
-  Registering built-in functions](#registering-built-in-functions)).
+- **First-class as values, but not addressable by name *from the language*.** A function value
+  can be passed as an argument to a higher-order built-in, stored as a dictionary value, or
+  returned from an `if`/`for`/`some` expression. To define a *named*, typed function host-side and
+  make it callable by name from other expressions, use `bl.Func` ([udf.spec.md](udf.spec.md)) — the
+  typed wrapper over an `expr.Function` registration (see [§ Registering built-in
+  functions](#registering-built-in-functions)).
 - **No recursion.** The body cannot reference the function itself — there's no name to refer
   to, since the function is anonymous, and the engine does not insert an implicit
   self-reference. For recursive-style computation, use the bounded `for i in 1..n return …`
@@ -1007,12 +1009,14 @@ call sites read `bl.Expr(...)`, `bl.Number(...)`, etc.
 // All identifiers below live in package core (imported as `bl`). Callers conventionally
 // import as `bl` (so call sites read bl.Expr, bl.Number, etc.).
 
-func Expr[E any](source string) (*BlExpr[E], error)
-func ExprNoEnv(source string) (*BlExpr[NoEnv], error) // E = NoEnv = struct{}
+// Expr calls expr.Compile; ExprNoEnv is the E = NoEnv shorthand. Each udf is a named
+// function registered via expr.Function so the source may call it (see udf.spec.md).
+func Expr[E any](source string, udfs ...UDF) (*BlExpr[E], error)
+func ExprNoEnv(source string, udfs ...UDF) (*BlExpr[NoEnv], error)
 
 // bl.BlExpr is a compiled expression over the concrete env struct E (wraps a *vm.Program).
 type BlExpr[E any] struct { /* unexported: original source + compiled program */ }
-func (e *BlExpr[E]) Evaluate(env E) (BlValue, error)
+func (e *BlExpr[E]) Evaluate(env E) (BlValue, error) // runs the program via expr.Run
 func (e *BlExpr[E]) Source() string
 
 // An expression's variables are E's exported fields, each renamed by an `expr:"name"`
@@ -1035,10 +1039,11 @@ const (
 ```
 
 **Pipeline.** `bl.Expr[E]` runs: **normalise** (source-level fixups `expr`'s lexer needs — see
-Operators) → **check** (reject any name that is not a declared field of `E`) → **parse** (`expr`'s
-parser) → **patch** (`expr.Patch`, rewrite FEEL-only syntax) → **type-check** (against the `E` struct
-env) → **compile** to a `*vm.Program`. `Evaluate(env E)` binds the struct's fields as the variables,
-runs the program on the sandboxed VM, and returns the result as a `bl.BlValue`.
+Operators) → **check** (reject any name that is not a declared field of `E`) → **`expr.Compile`**,
+which parses, applies the **patch** (`expr.Patch`, rewrite FEEL-only syntax), **type-checks** (against
+the `E` struct env plus any registered UDF signatures), and compiles to a `*vm.Program`.
+`Evaluate(env E)` binds the struct's fields as the variables and runs the program on the sandboxed VM
+via **`expr.Run`**, returning the result as a `bl.BlValue`.
 
 **Source normalisation (`normalise`).** `expr`'s lexer/parser is fixed, so anything it can't
 lex or parse — and anything that must be captured *before* lexing — is rewritten in the source
@@ -1068,11 +1073,15 @@ original text or must precede the parse.
 
 ```go
 // host-side (Go)
-func Expr[E any](source string) (*BlExpr[E], error) {
+func Expr[E any](source string, udfs ...UDF) (*BlExpr[E], error) {
     if source == "" {
         return nil, &ParseError{Source: source, Err: errEmptySource}
     }
-    program, err := compileWithEnv(source, *new(E), envFieldNames(reflect.TypeOf((*E)(nil)).Elem()))
+    opts, err := udfOptions(udfs) // each UDF's expr.Function registration
+    if err != nil {
+        return nil, &ParseError{Source: source, Err: err}
+    }
+    program, err := compileWithEnv(source, *new(E), envFieldNames(reflect.TypeOf((*E)(nil)).Elem()), opts...)
     if err != nil {
         return nil, &ParseError{Source: source, Err: err}
     }
@@ -1082,8 +1091,9 @@ func Expr[E any](source string) (*BlExpr[E], error) {
 // compileWithEnv normalises, rejects any reference to a name not in declared
 // (blkit's own undefined-name discipline — expr's overloaded operators/functions
 // leave its built-in strict checker lenient in operand/argument position), then
-// compiles against the strict struct env. *new(E) is the zero env exemplar.
-func compileWithEnv(source string, env any, declared map[string]bool) (*vm.Program, error) {
+// calls expr.Compile against the strict struct env plus any extra options (UDF
+// registrations). *new(E) is the zero env exemplar.
+func compileWithEnv(source string, env any, declared map[string]bool, extra ...expr.Option) (*vm.Program, error) {
     src, err := normalise(source)
     if err != nil {
         return nil, err
@@ -1091,7 +1101,7 @@ func compileWithEnv(source string, env any, declared map[string]bool) (*vm.Progr
     if name, bad := firstUndefined(src, declared); bad {
         return nil, fmt.Errorf("unknown name %s", name)
     }
-    return expr.Compile(src, buildOptionsEnv(env)...)
+    return expr.Compile(src, append(buildOptionsEnv(env), extra...)...)
 }
 
 // buildOptionsEnv assembles the strict env plus every spoke's registrations, the
@@ -1308,7 +1318,8 @@ type SchemaError struct { Path string; Err error }   // from bl.BlSchema validat
 These are forward-looking notes; the referenced specs are **not** modified by this document.
 
 - **`DecisionExpression`** ([decision-expression.spec.md](../decision-tasks/decision-expression.spec.md))
-  compiles each entry's source string with `Expr`.
+  compiles each entry's source string through the engine's `expr.Compile` path and runs each via
+  `expr.Run` at evaluation.
 - **`DecisionTable`** ([decision-table.spec.md](../decision-tasks/decision-table.spec.md)) rule
   predicates and input entries could be authored as unary tests (see [§ Unary tests](#unary-tests)),
   parsed against each column's type.
