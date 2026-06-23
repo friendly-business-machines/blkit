@@ -28,8 +28,12 @@ The documentation site is organised into the following top-level sections (at mi
 | **Templates** | Ready-to-copy project scaffolds and boilerplate patterns for common use cases |
 | **Examples** | Focused, self-contained code samples demonstrating specific features or combinations |
 | **Reference** | Complete API reference, organised by package and type |
+| **Expressions** | User guide to the expression language — one page per language area (data types, numbers, strings, dates and times, lists, …) |
+| **Decisions** | User guide to the decision components (decision expressions, tables, native functions, sub-decisions, reference data, decision tasks) |
+| **Processes** | User guide to the process components (tasks, gateways, processes) |
+| **Architecture** | Internal design of blkit's subsystems — one deep-dive chapter per subsystem |
 
-Additional top-level sections may be added as the project grows, but the six sections above are required before the documentation site is considered minimally complete. The optional **Architecture** section described below is the first such addition.
+The first six sections in the table are required before the documentation site is considered minimally complete. **Expressions**, **Decisions**, **Processes**, and **Architecture** are additional sections that grow as the corresponding capabilities are documented: the three user-guide sections (Expressions, Decisions, Processes) describe how to *use* each component, while the Architecture section describes how each is *built*.
 
 ## Getting Started Section
 
@@ -125,17 +129,36 @@ The Reference section contains the Go API reference, generated from `//` godoc c
 
 Generated Markdown is committed to `docs/reference/` and consumed by Zensical as ordinary source files. The generation step runs in CI on every release.
 
+## Expressions Section
+
+The Expressions section is the user guide to blkit's expression language — the same engine documented internally in the Architecture section, but presented from the author's point of view. It is organised as one page per area of the language, each combining prose, syntax, and worked snippets. Each page's behaviour is defined authoritatively by the matching spec under `specs/expressions/`. Pages may be published as stubs and filled in incrementally; the expression engine itself is available today.
+
+Pages: `data-types.md`, `numbers.md`, `strings.md`, `booleans-and-logic.md`, `dates-and-times.md`, `lists.md`, `dictionaries.md`, `ranges.md`, `tables.md`.
+
+## Decisions Section
+
+The Decisions section is the user guide to blkit's decision components. Its pages are published as placeholders until the decisions package lands; each page's behaviour is defined authoritatively by the matching spec under `specs/decision-tasks/`.
+
+Pages: `decision-expressions.md`, `decision-tables.md`, `decision-native-fn.md`, `sub-decisions.md`, `reference-data.md`, `decision-tasks.md`.
+
+## Processes Section
+
+The Processes section is the user guide to blkit's process components — tasks, gateways, and whole processes. Its pages are published as placeholders until the process and worker packages land.
+
+Pages: `tasks.md`, `gateways.md`, `processes.md`.
+
 ## Architecture Section
 
 The Architecture section explains how blkit is built internally — the design of the engine behind the public API. It complements the Reference section (*what* the API is) and the Examples section (*how* to use it) by documenting *why the machinery is shaped the way it is*: the pipelines, intermediate representations, and design decisions. Its audience is contributors and anyone debugging behaviour that only makes sense with knowledge of the internal layers.
 
-The section is a landing page (`docs/architecture/index.md`) followed by one chapter per subsystem. The landing page orients the reader and presents the subsystems as a layered stack; each chapter is a self-contained deep-dive. Chapters are added as the subsystems they describe are implemented:
+The section is a set of chapter pages, one per subsystem; it has no landing page of its own, so the nav group header is a non-clickable grouping. Each chapter is a self-contained deep-dive of hand-authored prose (unlike the generated Reference section). A chapter may be published as a clearly-marked placeholder before the subsystem it documents is implemented.
 
 | Page | Subsystem |
 |---|---|
-| `docs/architecture/expressions.md` | The expression engine — compilation pipeline (normalise → parse → patch → compile → run), the value system, and the boundary with the `expr-lang/expr` substrate blkit builds on |
+| `docs/architecture/expressions.md` | The expression engine — how blkit extends the Expr (`expr-lang/expr`) project into a FEEL-like language: the compilation pipeline (normalise → parse → patch → compile → run), the value system, and the typed API |
+| `docs/architecture/worker-pools.md` | The worker-pool execution model (placeholder until the process and worker packages land) |
 
-Decisions, processes, and workers will each gain a chapter as those packages land. Unlike the Reference section, Architecture pages are hand-authored prose and are not generated from source.
+Decisions, processes, and further subsystems will each gain a chapter as those packages land.
 
 ## LLM Discovery Files
 

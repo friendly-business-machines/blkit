@@ -6,6 +6,8 @@ blkit gives you a typed value system, an expression language, and (on the roadma
 full decision-and-process execution stack — so that rules, calculations, and workflows
 can be authored as data and run directly inside your Go programs.
 
+📖 **[Read the documentation →](https://friendly-business-machines.github.io/blkit/)**
+
 ---
 
 ## What is blkit?

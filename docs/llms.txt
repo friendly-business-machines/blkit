@@ -24,9 +24,33 @@
 - [Example: Product Return and Refund](https://friendly-business-machines.github.io/blkit/examples/product-return/): A customer requests a return; the process validates eligibility within the return window, grades the item's condition on receipt, and issues a refund, replacement, or store credit accordingly.
 - [Example: Australian Personal Income Tax Calculator](https://friendly-business-machines.github.io/blkit/examples/aus-personal-income-tax/): An accounting service calculates an individual's annual income tax liability for FY 2024–25 — building taxable income from many sources, applying progressive brackets, levies, offsets, and HELP/HECS, then reconciling against amounts already paid.
 
+## Expressions
+- [Data Types](https://friendly-business-machines.github.io/blkit/expressions/data-types/): The blkit value system — numbers, strings, booleans, null, dates and times, durations, lists, dictionaries, ranges, and tables — and their null-aware semantics.
+- [Numbers](https://friendly-business-machines.github.io/blkit/expressions/numbers/): Exact decimal arithmetic and the numeric functions — rounding, absolute value, min and max, sum, and more.
+- [Strings](https://friendly-business-machines.github.io/blkit/expressions/strings/): Working with text — concatenation, substring, search and replace, case conversion, and formatting functions.
+- [Booleans & Logic](https://friendly-business-machines.github.io/blkit/expressions/booleans-and-logic/): Boolean values and blkit's three-valued (true / false / null) logic, including and, or, not, and comparison results.
+- [Dates & Times](https://friendly-business-machines.github.io/blkit/expressions/dates-and-times/): Dates, times, date-times, durations, and calendars — construction, arithmetic, component access, and comparisons.
+- [Lists](https://friendly-business-machines.github.io/blkit/expressions/lists/): Ordered collections and the comprehensions (for, some, every) and functions that operate over them.
+- [Dictionaries](https://friendly-business-machines.github.io/blkit/expressions/dictionaries/): Key-value structures — construction, member access, and the dictionary functions.
+- [Ranges](https://friendly-business-machines.github.io/blkit/expressions/ranges/): Intervals like `[1..10]` — membership tests, open and closed bounds, and how ranges drive unary tests.
+- [Tables](https://friendly-business-machines.github.io/blkit/expressions/tables/): Tabular data and the operations that filter, project, group, and aggregate it.
+
+## Decisions
+- [Decision Expressions](https://friendly-business-machines.github.io/blkit/decisions/decision-expressions/): Compute several named outputs from typed inputs, wiring outputs that depend on one another into a single evaluated unit.
+- [Decision Tables](https://friendly-business-machines.github.io/blkit/decisions/decision-tables/): Express decision logic as a table of rules — rows of input conditions mapped to output values — the spreadsheet-style core of DMN.
+- [Decision Native Functions](https://friendly-business-machines.github.io/blkit/decisions/decision-native-fn/): Back a decision with a hand-written Go function when its logic is beyond — or better expressed outside — the expression language.
+- [Sub-Decisions](https://friendly-business-machines.github.io/blkit/decisions/sub-decisions/): Compose decisions by invoking one decision as a step inside another, so shared logic is defined once and reused.
+- [Reference Data](https://friendly-business-machines.github.io/blkit/decisions/reference-data/): Feed decisions the lookup tables and constants they read from — rates, tiers, thresholds — without hard-coding them into rules.
+- [Decision Tasks](https://friendly-business-machines.github.io/blkit/decisions/decision-tasks/): The unit that runs a decision inside a process — how a decision is invoked, given inputs, and its result captured as the task completes.
+
+## Processes
+- [Tasks](https://friendly-business-machines.github.io/blkit/processes/tasks/): The work items a process is built from — service, decision, and user tasks — and how each one executes and hands control on.
+- [Gateways](https://friendly-business-machines.github.io/blkit/processes/gateways/): Branch and merge the flow of a process — exclusive, parallel, and inclusive routing — using blkit expressions on the outgoing flows.
+- [Processes](https://friendly-business-machines.github.io/blkit/processes/processes/): Assemble tasks and gateways into an executable process graph that runs from a start event through to an end event.
+
 ## Architecture
-- [Architecture](https://friendly-business-machines.github.io/blkit/architecture/): How blkit is built, subsystem by subsystem — the internal design of the engine behind the public API.
-- [Expressions](https://friendly-business-machines.github.io/blkit/architecture/expressions/): How blkit's expression engine turns a source string into type-checked, compiled bytecode that evaluates to a typed value — the pipeline, the value system, and the line between blkit and the host VM.
+- [Expressions](https://friendly-business-machines.github.io/blkit/architecture/expressions/): blkit's expression language: a FEEL-flavoured language for business logic, built by extending the Expr engine. Where it comes from, and how it compiles and runs.
+- [Worker Pools](https://friendly-business-machines.github.io/blkit/architecture/worker-pools/): How blkit runs processes to completion — pools of workers that pull ready tasks, persist state, and handle retries.
 
 ## Reference
 - [core](https://friendly-business-machines.github.io/blkit/reference/blkit/)
