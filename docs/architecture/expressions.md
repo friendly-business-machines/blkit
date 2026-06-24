@@ -11,20 +11,31 @@ it.
 
 ## What is an expression language?
 
-An **expression language** is a small language whose programs are *expressions*:
-each one takes some inputs and produces a single value. There are no functions to
-define, no loops to manage, no files to open — you write a fragment like
+An **expression language** is a domain-specific language (DSL) designed to
+evaluate expressions — typically within a host environment like an application,
+framework, or runtime — rather than to write full programs. The key distinction
+from a general-purpose programming language is scope: expression languages are
+deliberately limited to computing a value from some context (variables,
+functions, data), without side effects like I/O, loops, or system calls. This
+makes them safe to embed in configuration, rules engines, templates, and query
+systems where you want to let users or operators define logic without exposing
+the full power of a programming language.
+
+Expression languages typically support arithmetic and logical operators,
+property/field access, function calls, and conditional logic. What they usually
+omit is variable assignment, I/O, class/function definitions, and other stateful
+constructs. A single fragment like
 
 ```text
 age >= 18 and income > 25000
 ```
 
-compile it once, and then evaluate it against many different inputs. The result
-is just a value: a boolean here, but it could equally be a number, a string, or
-a list.
+is compiled once and then evaluated against many different contexts, each time
+producing a value — here a boolean, but it could equally be a number, a string,
+or a list.
 
-This is a deliberately narrow kind of language, and the narrowness is the point.
-Software is full of small, self-contained calculations and conditions —
+The narrowness is the point. Software is full of small, self-contained
+calculations and conditions —
 
 - *"is this applicant over 18 and earning more than £25,000?"*
 - *"what is 20% off this price?"*
@@ -41,23 +52,33 @@ without recompiling, and hand to an analyst rather than a programmer.
 Expression languages are everywhere, even where they aren't advertised as
 languages:
 
-- **Spreadsheet formulas** — Excel and Google Sheets are the most widely used
-  expression language on earth. `=IF(A1>18, "adult", "minor")` is an expression,
-  evaluated against the cells it references.
-- **Database query fragments** — the `WHERE` clause of an SQL statement is an
-  expression language for filtering rows.
-- **Search and filter syntaxes** — Lucene/Elasticsearch query strings, the
-  filter bars in issue trackers like Jira (JQL), and log-search tools.
+- **Spreadsheet formulas** — Excel and Google Sheets put an expression language
+  in front of hundreds of millions of non-programmers. `=IF(A1>18, "adult",
+  "minor")` is an expression, evaluated against the cells it references.
+- **SQL (`WHERE` / `SELECT` expressions)** — the most widely used expression
+  language in the world, though embedded inside a query language. SQL's
+  expression sublanguage — covering predicates, aggregates, `CASE`, and scalar
+  functions — has deeply influenced everything that followed.
+- **Path and query languages** — XPath selects nodes from an XML document;
+  JSONPath and JMESPath do the same for JSON; search strings like
+  Lucene/Elasticsearch and Jira's JQL filter records.
 - **Configuration and policy** — CEL (Common Expression Language, used across
   Kubernetes and Google Cloud), Open Policy Agent's Rego, and the rule engines
   embedded in CI systems all evaluate expressions to make allow/deny decisions.
-- **Templating and automation** — JSONPath and JMESPath pick values out of
-  documents; the conditions in tools like Zapier, Home Assistant, or spreadsheet
-  automation are expressions.
-- **Embedded scripting** — engines such as
-  [Expr](https://github.com/expr-lang/expr) (which blkit builds on), CEL, and
-  MVEL exist specifically to let an application accept user-authored logic
-  safely, without handing over a full programming language.
+- **Jinja2 / Twig / Nunjucks** — template languages that embed expression
+  evaluation. Jinja2 (Python/Ansible) is probably the most widely deployed in
+  infrastructure tooling. The expression sublanguage — filters, tests,
+  conditionals — is the influential core.
+- **Embedded scripting** — engines built specifically to let an application
+  accept user-authored logic safely, without handing over a full programming
+  language. From the Java ecosystem come MVEL (MVFLEX Expression Language, used
+  by rule engines such as Drools) and SpEL (Spring Expression Language, built
+  into the Spring framework); CEL (above) is Google's, embeddable across Go, C++,
+  and Java.
+- **Lua** — while a full scripting language, Lua is most famous for its use as an
+  embedded expression/scripting language in games (World of Warcraft, Roblox),
+  databases (Redis), and web servers (Nginx/OpenResty). Its design prioritised
+  being embedded cleanly.
 
 What unites them is the same trade: give up general-purpose programming power
 (no side effects, no unbounded loops, no I/O) in exchange for expressions that
