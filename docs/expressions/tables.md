@@ -1,6 +1,7 @@
 # Tables
 
-> Tabular data and the operations that filter, project, group, and aggregate it.
+> Tabular data and the expression-language syntax that filters, projects,
+> groups, and aggregates it.
 
 A **table** is blkit's relation type: an ordered, immutable list of `dictionary`
 rows that all share the same column keys. Think of it as a spreadsheet or a SQL
@@ -10,17 +11,24 @@ the list machinery (indexing, projection, `for`/`some`/`every`, the list
 aggregates) works on it directly, and a set of relational operations —
 filtering, projection, sorting, joins, grouping, and aggregation — layers on top.
 
-This page covers how to build a table, how to read rows and columns out of it,
-the transformation methods that reshape it, grouping and aggregation, and how to
-hand a host-built table into an expression. Tables are immutable: every operation
-that "changes" a table returns a fresh one, so the verbs chain.
+**The table type and every operation on this page are a blkit-specific value
+type for working with tabular data.** Everything here — the constructors, the
+bracket selectors, and all the relational verbs (`filter`, `select`,
+`withColumn`, `groupBy`, `agg`, `join`, …) — is part of the table type. Where a
+table reuses an ordinary list operation, such as `isEmpty` or the list
+aggregates, that's noted inline.
+
+This page covers how to build a table in an expression, how to read rows and
+columns out of it, the transformation methods that reshape it, and grouping and
+aggregation. Tables are immutable: every operation that "changes" a table returns
+a fresh one, so the verbs chain.
 
 ## Building a table
 
 A table has **no literal form** of its own (there's no `[[...]]` syntax). You
 build one with one of two constructors. Both validate their input, enforce the
-[uniform-keys and per-column-type invariants](#invariants-and-edge-cases), and
-yield a value the table methods accept.
+uniform-keys and per-column-type rules, and yield a value the table methods
+accept.
 
 ### `table(names, rows…)` — the columnar form
 
@@ -39,10 +47,9 @@ table(
 )
 ```
 
-A cell may be any expression (`5.99 * 2`, a variable); a `null` cell means "null
-in this row". `table(names)` with no value rows is a zero-row table that still
-carries its column names, and `table([])` is the truly empty table with no columns
-at all.
+A cell may be any expression (`5.99 * 2`, a variable). `table(names)` with no
+value rows is a zero-row table that still carries its column names, and
+`table([])` is the truly empty table with no columns at all.
 
 ### `tableFromDicts(listOfDictionaries)` — adopt dictionary data
 
@@ -65,7 +72,7 @@ keys; a list of dictionaries does **not** become a table automatically, so this
 
 | Operator | Meaning | Example |
 |---|---|---|
-| `t[i]` | row by 1-based index — returns a 1-row sub-table (negative from end; out-of-range → empty sub-table) | `t[1]`, `t[-1]` |
+| `t[i]` | row by 1-based index — returns a 1-row sub-table (negative counts from the end) | `t[1]`, `t[-1]` |
 | `t.col` | column projection — returns a `list` of cell values | `t.region` |
 | `t[predicate]` | row filter — columns are in scope by name (`item` is the whole row) | `t[rate > 10]` |
 | `=` `!=` | equality (row-wise, order-sensitive; the column set is part of identity) | `t1 = t2` |
@@ -114,22 +121,14 @@ picks rows in the order given; duplicate indices are silently deduped (first
 occurrence wins). A list selector is flattened first, so embedded ranges splice
 in: `t[[3, 7:15, 20]]` selects rows 3, 7 through 15, and 20.
 
-Out-of-range behaviour differs by shape. A single out-of-range index returns an
-**empty table** (consistent with a predicate matching no rows). Out-of-range
-indices *inside a list or range* are silently skipped.
-
 | Expression | Result (for a 3-row `t`) |
 |---|---|
 | `t[1]` | a 1-row sub-table containing the first row |
 | `t[-1]` | a 1-row sub-table containing the last row |
-| `t[0]` | empty sub-table (indexing is 1-based; no zero index) |
-| `t[4]` | empty sub-table (out of range) |
 | `t[1:2]` | a 2-row sub-table containing rows 1 and 2 |
-| `t[1:10]` | a 3-row sub-table (rows past the end are skipped) |
 | `t[[1, 3]]` | a 2-row sub-table containing rows 1 and 3 |
 | `t[[3, 1]]` | a 2-row sub-table in the listed order: row 3 then row 1 |
 | `t[[1, 1]]` | a 1-row sub-table; the duplicate index is deduped |
-| `t[[1, 100]]` | a 1-row sub-table; the out-of-range `100` is skipped |
 | `t[[1, 2:3]]` | a 3-row sub-table (rows 1, 2, 3) — the embedded range is flattened in |
 
 ### Column projection
@@ -148,8 +147,6 @@ it: `t[, "unit price"].toList()`.
 | `t.region` | `["domestic", "europe", "intl"]` (a list of 3 cells) |
 | `t[, "region"]` | a single-column table, **not** a list |
 | `t[, "unit price"].toList()` | `[5.99, 15.99, 25.99]` — non-identifier column selected by string, then unwrapped |
-| `t.missing` | `[null, null, null]` — projecting an undeclared key yields one `null` per row, never a missing value |
-| `t.col` on an empty table | `[]` — projection on a zero-row table is the empty list |
 | `t["region"]` | error — a single-argument string bracket is **not** a column accessor |
 
 The bracket grammar reserves the single-argument shape for row indices (numeric)
@@ -166,7 +163,7 @@ table** — the selectors only change its *shape*:
   A string is **not** a valid row selector — `t["foo"]` is an error.
 - **Column selector** (second slot): *absent* (i.e. `t[i]`) → all columns; a
   single name `"rate"` → one column; a name list `["region", "rate"]` → those
-  columns, in the listed order. An unknown column name yields `null` cells.
+  columns, in the listed order.
 
 | Row × Column | Example | Result shape |
 |---|---|---|
@@ -182,10 +179,9 @@ second column") — columns are stored in canonical sorted order, so a numeric
 column position would be brittle. If you genuinely need column-by-position, go
 through the name: `t[i, t.colNames[k]]`.
 
-Edge cases for the bracket form: `t[]` (zero args) and `t[a, b, c]` (three or more)
-are parse errors. An out-of-range single row index returns an empty table even
-with a column selector (`t[100, "col"]` is empty, never `null`). A column selector
-that names a column twice keeps it once; a row-index list with duplicates dedupes.
+The bracket form takes one or two selectors: `t[]` (zero args) and `t[a, b, c]`
+(three or more) are parse errors. A column selector that names a column twice
+keeps it once; a row-index list with duplicates dedupes.
 
 ### Paths to a single cell value
 
@@ -230,9 +226,9 @@ return type, so the result never depends on the table's runtime shape:
 
 | Method | Returns | Behaviour |
 |---|---|---|
-| `t.toList()` | `list` | a single-column table → its cell values; any wider table → its rows (as dictionaries). Empty table → `[]`. Never errors on shape. |
-| `t.toDict()` | `dictionary` | the sole row as a dictionary. **Requires exactly one row** — zero or many rows → error. |
-| `t.toValue()` | the cell | the sole cell. **Requires exactly one row and one column** — any other shape → error. |
+| `t.toList()` | `list` | a single-column table → its cell values; any wider table → its rows (as dictionaries) |
+| `t.toDict()` | `dictionary` | the sole row as a dictionary. **Requires exactly one row.** |
+| `t.toValue()` | the cell | the sole cell. **Requires exactly one row and one column.** |
 
 ```
 // expression-language  — t is a 3-row, 2-column table (region, rate)
@@ -240,10 +236,6 @@ t.toList()                 // → [{region:"domestic", rate:5.99}, …]  the row
 t[, "rate"].toList()       // → [5.99, 15.99, 25.99]                 one column → its cells
 t[1].toDict()              // → {region:"domestic", rate:5.99}       the one row
 t[1, "rate"].toValue()     // → 5.99                                 the one cell
-
-t.toDict()                 // → error — 3 rows, not 1
-t[, "rate"].toValue()      // → error — 3 rows, not a single cell
-t[1].toValue()             // → error — 1 row but 2 columns
 ```
 
 The parentheses distinguish a method call from column projection, so a column
@@ -252,16 +244,15 @@ literally named `toList` is still reachable by the bare path `t.toList` or by
 
 ## Built-in functions
 
-These are blkit extensions — DMN treats relations as plain lists, so there's no
-DMN equivalent. The relational transformation **verbs** (`filter`, `select`,
-`sort`, …) are *methods*, not functions, and are covered in the next section;
-`union` and `join` carry both surfaces.
+The relational transformation **verbs** (`filter`, `select`, `sort`, …) are
+*methods*, not functions, and are covered in the next section; `union` and `join`
+carry both surfaces.
 
 | Function | Example | Result |
 |---|---|---|
 | `table(names, rows…)` | `table(["a"], [1], [2])` | a validated table from a column-name header + value rows (types inferred) |
 | `tableFromDicts(listOfDictionaries)` | `tableFromDicts([{a:1},{a:2}])` | a validated table from a list of uniformly-keyed dictionaries |
-| `isEmpty(t)` | `isEmpty(tableFromDicts([]))` | `true` (inherited from the list library) |
+| `isEmpty(t)` | `isEmpty(tableFromDicts([]))` | `true` (applied to the table's rows) |
 | `hasColumn(t, name)` | `hasColumn(t, "rate")` | `true` |
 | `union(t, others…[, how])` | `union(q1, q2)` | a new table stacking all rows (UNION ALL); also the method `t.union(...)` — see [Stacking tables](#stacking-tables-union) |
 | `join(t, other, on[, how])` | `join(t, orders, "id", "left")` | a relational join; also the method `t.join(...)` — see [Joining tables](#joining-tables-join) |
@@ -294,7 +285,7 @@ shippingRates
 
 | Method | Example | Result |
 |---|---|---|
-| `t.filter(predicate)` | `t.filter(rate > 10)` | rows where `predicate` holds; columns are in scope by name (`item` is the whole row). Identical to `t[rate > 10]`; no match → empty table (columns preserved). |
+| `t.filter(predicate)` | `t.filter(rate > 10)` | rows where `predicate` holds; columns are in scope by name (`item` is the whole row). Identical to `t[rate > 10]`. |
 | `t.filterOut(predicate)` | `t.filterOut(rate > 10)` | the **complement** — rows where `predicate` does *not* hold. `t.filterOut(p)` ≡ `t.filter(not (p))` ≡ `t[not (p)]`. |
 | `t.select(names…)` | `t.select("region", "rate")` | a new table with only the named columns, **in the listed order**. Unknown column → error. |
 | `t.rename(from, to)` | `t.rename("rate", "price")` | a new table with column `from` renamed to `to`. Unknown `from`, or `to` colliding with an existing column → error. |
@@ -325,20 +316,14 @@ then by `rate` descending within each region. At least one key is required
 
 `asc` / `desc` / `inOrder` are registered functions that build a key, so a column
 named `"asc"` is never ambiguous (`desc("asc")` sorts the column `asc`
-descending). An unknown column in any key is an error.
-
-For `asc` / `desc` keys, cells comparing as null (e.g. a naive-vs-zoned datetime
-comparison) sort to the **end** under `asc` and **lead** under `desc`. A column
-whose cells aren't mutually comparable is an error.
+descending).
 
 An `inOrder(column, order)` key ranks rows by the position of their `column` cell
 in `order` (matched by value equality). Values listed earlier come first;
 **duplicate entries in `order` are ignored after the first occurrence**. Rows
 whose cell value is **not** in `order` are ranked after every listed value, in
-ascending fallback order. Because listed values are matched by equality, the
-listed portion needs no ordering relation; only the unlisted fallback requires
-comparability, so an unlisted, non-comparable cell is an error. The whole sort is
-**stable**: rows tied across all keys keep their input order.
+ascending fallback order. The whole sort is **stable**: rows tied across all keys
+keep their input order.
 
 ### Deriving columns with `withColumn`
 
@@ -378,7 +363,7 @@ a table operand, so it's unambiguously the mode), defaulting to `"error"`:
 | `how` | When operands' column sets differ |
 |---|---|
 | `"error"` | any mismatch — an extra, missing, or differently-spelled key in any operand — is an error. The strict default. |
-| `"all"` | keep the **union** of all columns; a row missing a column gets a `null` cell. Order: the first operand's columns, then each later operand's new columns in first-seen order. |
+| `"all"` | keep the **union** of all columns. Order: the first operand's columns, then each later operand's new columns in first-seen order. |
 | `"common"` | keep only the columns present in **every** operand (the intersection); other columns are dropped. Order follows the first operand, restricted to the common set. |
 
 When every operand already shares the same column set, all three modes produce the
@@ -389,12 +374,9 @@ same result. Either way the result's column order follows the **first** operand.
 | `union(q1, q2)` | rows of `q1` then rows of `q2`, duplicates kept |
 | `union(q1)` | `q1` unchanged — a single operand is the identity |
 | `union(q1, q2.select("region"))` | error — column sets differ (default `"error"`) |
-| `union(q1, q2.select("region"), "all")` | stacked; `q1`'s extra columns `null`-filled for `q2`'s rows |
+| `union(q1, q2.select("region"), "all")` | stacked over the union of both column sets |
 | `union(q1, q2.select("region"), "common")` | stacked over the shared columns only |
 | `union(q1, q2).distinct()` | UNION ALL then dedupe → relational set union |
-
-Because a zero-row table still carries its columns, `union(t, empty)` (where
-`empty` has `t`'s columns but no rows) returns `t`'s rows unchanged.
 
 ## Joining tables (join)
 
@@ -470,8 +452,7 @@ shippingRates
 
 **Keys.** `groupBy(names…)` takes one or more column names; at least one is
 required (`t.groupBy()` → error) and an unknown column is an error. Rows group by
-**key-tuple equality** across all key columns. `null` key cells group together
-(all rows whose key is null form one group).
+**key-tuple equality** across all key columns.
 
 **Aggregation expressions.** `agg(name, expr, …)` takes alternating string names
 and aggregate expressions; an odd argument count, or a non-string in a name
@@ -497,158 +478,12 @@ appearance order** of each group's key (stable, matching `distinct`).
 | `t.groupBy("region").agg("region", count(item))` | error — aggregate name collides with the key column |
 | `t.groupBy("region").agg("a", sum(rate), "b")` | error — dangling name with no expression |
 
-Grouping over a zero-row table has no groups, so `.agg(…)` yields a zero-row table
-that still carries the key and aggregate columns.
-
-## Constructing a table host-side
-
-Host Go code builds a `bl.BlTable` with `bl.Table(columns bl.Cols, rows ...bl.Row)`:
-a compact **typed header** (`bl.Cols`) declaring each column's name and data type,
-followed by **positional value rows** (`bl.Row`). The header's order is the binding
-order — value *i* in every row is the cell for column *i* — and cells wrap to the
-matching `bl.BlValue` automatically, so no per-cell wrapping is needed. By
-convention a comment listing the column names, aligned over their values, sits
-above the first `bl.Row`.
-
-```go
-// host-side (Go)
-var shippingRates, _ = bl.Table(
-    bl.Cols{{"region", bl.TypeString}, {"rate", bl.TypeNumber}, {"ships_today", bl.TypeBoolean}},
-    //      region      rate    ships_today
-    bl.Row{"domestic",  5.99,   true},
-    bl.Row{"europe",    15.99,  false},
-)
-
-// A null cell is just nil in that position:
-var withGap, _ = bl.Table(
-    bl.Cols{{"region", bl.TypeString}, {"rate", bl.TypeNumber}},
-    //      region   rate
-    bl.Row{"intl",   nil},   // rate is null
-)
-
-// Zero-row table that still carries its columns.
-var noRates, _ = bl.Table(bl.Cols{{"region", bl.TypeString}, {"rate", bl.TypeNumber}})
-
-// Truly empty table — no columns, no rows.
-var empty, _ = bl.Table(bl.Cols{})
-```
-
-The Go-literal cells above auto-wrap as a convenience. A `bl.Row` cell may also be
-an **already-constructed `bl.BlValue`**, which is what you want when assembling rows
-from values you already hold; the two forms mix freely, and an explicit `bl.Null()`
-is the wrapped form of a `nil` cell:
-
-```go
-// host-side (Go)
-var region        = bl.String("domestic")   // bl.String returns a bl.BlString
-var rate, _       = bl.Number(5.99)          // bl.Number / bl.Boolean return (value, error)
-var shipsToday, _ = bl.Boolean(true)
-
-var fromValues, _ = bl.Table(
-    bl.Cols{{"region", bl.TypeString}, {"rate", bl.TypeNumber}, {"ships_today", bl.TypeBoolean}},
-    //     region     rate    ships_today
-    bl.Row{region,    rate,   shipsToday},   // explicit bl.BlValue cells
-    bl.Row{"europe",  15.99,  bl.Null()},    // literals auto-wrap; bl.Null() is null
-)
-```
-
-`bl.Table(...)` returns `(bl.BlTable, error)`. The error path fires when a row's
-length differs from the column count, when a non-`nil` cell wraps to a type other
-than its column's declared `bl.Type` (the per-column invariant), or when the header
-is malformed (a duplicate or empty column name, or a `bl.Type` of `bl.TypeNull`).
-A `nil` cell is always allowed — it becomes `bl.Null()`.
-
-### Passing a host-built table into an expression
-
-A `bl.BlTable` is an ordinary `bl.BlValue`, so it binds to an env field like any
-other value. Declare a `bl.BlTable`-typed field, then reference it — and call the
-transformation methods on it — from the source text:
-
-```go
-// host-side (Go)
-// 1. Build the table in Go.
-var shippingRates, _ = bl.Table(
-    bl.Cols{{"region", bl.TypeString}, {"rate", bl.TypeNumber}, {"ships_today", bl.TypeBoolean}},
-    //      region      rate    ships_today
-    bl.Row{"domestic",  5.99,   true},
-    bl.Row{"europe",    15.99,  false},
-    bl.Row{"intl",      24.50,  false},
-)
-
-// 2. Declare it as a typed env field the expression may reference.
-type ShipmentsEnv struct {
-    Shipments bl.BlTable `expr:"shipments"`
-}
-
-// 3. Compile once: an expression that chains table methods on the input table.
-var pricey, _ = bl.Expr[ShipmentsEnv](
-    `shipments.filter(rate > 6).sort(desc("rate")).select("region", "rate")`,
-)
-
-// 4. Bind the host-built table to `shipments` and evaluate (repeatedly, concurrently).
-var result, _ = pricey.Evaluate(ShipmentsEnv{Shipments: shippingRates})
-// result is a bl.BlTable:
-//   region   rate
-//   intl     24.50
-//   europe   15.99
-```
-
-The expensive work — normalising, parsing, and compiling — happens once in
-`bl.Expr`; `Evaluate` just runs the compiled program against the bound env, so one
-compiled expression can be evaluated many times against different tables. A native
-Go `[]map[string]any` input also wraps to a `bl.BlTable` automatically when the
-maps share keys; non-uniform inputs wrap to a list of dictionaries, and you call
-`tableFromDicts(...)` to validate and adopt them as a table.
-
-## Invariants and edge cases
-
-A few rules hold for every table, however it was produced:
-
-- **Uniform keys.** Every row has the same set of column keys. The constructors
-  and every operation that produces a table (`union`, `withColumn`, `join`, …)
-  enforce and re-validate this.
-- **Per-column value type.** Every cell in a column shares one value type — if
-  `region` is a string in one row it's a string in every row. `null` is the sole
-  exception: a null cell is permitted in any column, standing for an absent value.
-  A single value type doesn't imply *comparability*, so `t.sort(...)` over a
-  uniformly-typed but non-orderable column (e.g. dictionary cells) is still an
-  error.
-- **Immutability.** Every "modifying" operation returns a fresh table; the
-  underlying row dictionaries are shared by reference, never mutated.
-- **Equality.** `t1 = t2` is true when their column sets are identical (same keys,
-  order-independent) **and** their row sequences match position-by-position. Two
-  tables with the same rows in a different order are **not** equal — sort one with
-  `t.sort(col)` first to normalise. Two tables with the same row data but different
-  column sets are **not** equal.
-
-Other behaviour worth keeping in mind:
-
-- `t[i]` with `i` out of range (including `i == 0` and `|i| > t.nRows`) returns an
-  **empty table**, not `null` and not an error.
-- `t.col` where `col` isn't a declared column returns a list of `null`s of length
-  `t.nRows`, not a single `null`.
-- `t.select(names…)` is **order-preserving** — the result's column order matches
-  the argument order, not the input order — and referencing an absent column is an
-  error.
-- `t.distinct()` uses full-row equality (order-insensitive over the row's keys) and
-  keeps the first occurrence of each unique row.
-- `union(t)` with a single operand returns `t` unchanged. Stacking a no-column
-  `table([])` onto a table with columns is a mismatch under `"error"`; under
-  `"all"` it contributes nothing.
-- `t.groupBy(...)` over a zero-row table yields a zero-row result that still carries
-  the key and aggregate columns.
-
-## Where the full detail lives
-
-This guide covers everything you need to read and reshape tables in expressions.
-For the exhaustive, authoritative rules — every result-shape combination, every
-error condition, the join cardinality and ordering guarantees, and the host-side
-`bl.Table` / `bl.Cols` / `bl.Row` API — see:
-
-- the authoritative spec, `specs/expressions/table.spec.md`;
-- the generated [Reference](../reference/blkit.md) for the exact Go signatures; and
-- [Architecture → Expressions](../architecture/expressions.md) for how the engine
-  compiles and runs an expression.
-
 Tables build on the list and dictionary types, so [Lists](lists.md) and
 [Dictionaries](dictionaries.md) are useful companions.
+
+## Tables from Go
+
+Host Go code builds a table with `bl.Table(columns bl.Cols, rows ...bl.Row)` — a
+typed `bl.Cols` header of column names and types, then positional `bl.Row` values
+— and binds it to a `bl.BlTable` env field for the expression to operate on. See
+[Values from Go](values-from-go.md) for the full host-side story.

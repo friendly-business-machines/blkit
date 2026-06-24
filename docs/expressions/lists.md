@@ -8,8 +8,7 @@ you get from a literal like `[1, 2, 3]`, from a filter, or from a comprehension.
 Lists keep their elements in order, may mix types, and are never mutated in
 place: every operation returns a fresh list. This page is about *writing*
 expressions over lists — how to build them, index into them, iterate with
-`for`/`some`/`every`, and reach for the built-in function library. The Go value
-type backing a list is `bl.BlList`.
+`for`/`some`/`every`, and reach for the built-in function library.
 
 One thing to fix in your mind up front: **indexing is 1-based**, and negative
 indexes count from the end. There is no element zero.
@@ -30,16 +29,13 @@ Elements may be any expression, and they may mix types freely.
 ## Indexing
 
 Index into a list with `list[n]`. Positions start at `1`; a negative index
-counts back from the end. An out-of-range index is not an error — it evaluates
-to `null`.
+counts back from the end.
 
 ```
 // expression-language
 [1, 2, 3, 4][1]                       // → 1     (first element, 1-based)
 [1, 2, 3, 4][-1]                      // → 4     (last element)
 [1, 2, 3, 4][-2]                      // → 3     (second from end)
-[1, 2, 3, 4][10]                      // → null  (out of range)
-[1, 2, 3, 4][0]                       // → null  (there is no element 0)
 ```
 
 ## Filtering
@@ -74,7 +70,6 @@ reads like column access.
 ```
 // expression-language
 [{name: "A"}, {name: "B"}].name       // → ["A", "B"]
-[{name: "A"}, {age: 30}].name         // → ["A", null]   (missing field → null)
 ```
 
 Behaviour depends on the input shape:
@@ -82,11 +77,7 @@ Behaviour depends on the input shape:
 | Input | `.field` returns |
 |---|---|
 | Single dictionary with the field | the field's value (ordinary field access) |
-| Single dictionary without the field | `null` |
 | List of dictionaries, all have the field | list of values |
-| List of dictionaries, some missing the field | list with `null` in the gaps |
-| List containing non-dictionary elements | `bl.TypeError` |
-| Empty list | `[]` |
 
 ## Comprehensions: `for`, `some`, `every`
 
@@ -144,8 +135,8 @@ and lists of different length are never equal.
 
 ## Built-in functions
 
-The list library follows DMN's FEEL functions, plus blkit extensions marked
-**ext**. All positions are 1-based.
+blkit provides a library of functions for working with lists. All positions are
+1-based.
 
 | Function | Example | Result |
 |---|---|---|
@@ -155,26 +146,26 @@ The list library follows DMN's FEEL functions, plus blkit extensions marked
 | `indexOf(l, match)` | `indexOf([1,2,3,2], 2)` | `[2, 4]` (all positions) |
 | `sublist(l, start[, length])` | `sublist([1,2,3], 2)` | `[2, 3]` (negative `start` from end) |
 | `append(l, items…)` | `append([1], 2, 3)` | `[1, 2, 3]` |
-| `prepend(l, items…)` **ext** | `prepend([2,3], 1)` | `[1, 2, 3]` |
+| `prepend(l, items…)` | `prepend([2,3], 1)` | `[1, 2, 3]` |
 | `concatenate(lists…)` | `concatenate([1,2],[3])` | `[1, 2, 3]` |
 | `union(lists…)` | `union([1,2],[2,3])` | `[1, 2, 3]` (dedup) |
 | `insertBefore(l, position, item)` | `insertBefore([1,3], 1, 2)` | `[2, 1, 3]` (single item) |
-| `insertBefore(l, position, items)` **ext** | `insertBefore([1,5], 2, [2,3,4])` | `[1, 2, 3, 4, 5]` (spread) |
-| `insertAfter(l, position, item)` **ext** | `insertAfter([1,3], 1, 2)` | `[1, 2, 3]` (single item) |
-| `insertAfter(l, position, items)` **ext** | `insertAfter([1,5], 1, [2,3,4])` | `[1, 2, 3, 4, 5]` (spread) |
+| `insertBefore(l, position, items)` | `insertBefore([1,5], 2, [2,3,4])` | `[1, 2, 3, 4, 5]` (spread) |
+| `insertAfter(l, position, item)` | `insertAfter([1,3], 1, 2)` | `[1, 2, 3]` (single item) |
+| `insertAfter(l, position, items)` | `insertAfter([1,5], 1, [2,3,4])` | `[1, 2, 3, 4, 5]` (spread) |
 | `remove(l, position)` | `remove([1,2,3], 2)` | `[1, 3]` |
-| `remove(l, match)` **ext** | `remove([1,2,3], function(i) i=2)` | `[1, 3]` |
+| `remove(l, match)` | `remove([1,2,3], function(i) i=2)` | `[1, 3]` |
 | `listReplace(l, position, item)` | `listReplace([1,2,3], 2, 9)` | `[1, 9, 3]` |
-| `listReplace(l, match, item)` **ext** | `listReplace([2,4,7], function(i) i<5, 5)` | `[5, 5, 7]` |
+| `listReplace(l, match, item)` | `listReplace([2,4,7], function(i) i<5, 5)` | `[5, 5, 7]` |
 | `reverse(l)` | `reverse([1,2,3])` | `[3, 2, 1]` |
 | `flatten(l)` | `flatten([[1,2],[[3]],4])` | `[1, 2, 3, 4]` (recursive) |
 | `distinct(l)` | `distinct([1,2,2,1])` | `[1, 2]` (first-occurrence order) |
-| `duplicateValues(l)` **ext** | `duplicateValues([1,2,2,1])` | `[1, 2]` (values seen more than once) |
-| `intersection(lists…)` **ext** | `intersection([1,2],[2,3])` | `[2]` |
+| `duplicateValues(l)` | `duplicateValues([1,2,2,1])` | `[1, 2]` (values seen more than once) |
+| `intersection(lists…)` | `intersection([1,2],[2,3])` | `[2]` |
 | `sort(l[, order])` | `sort([3,1,2], "desc")` | `[3, 2, 1]` |
 | `stringJoin(l[, sep[, prefix, suffix]])` | `stringJoin(["a","b"], ", ")` | `"a, b"` |
-| `zipStringJoin(lists[, delim[, prefix, suffix]])` **ext** | `zipStringJoin([["a","b","c"],["1","2","3"]], "-")` | `["a-1","b-2","c-3"]` |
-| `seq(start, end[, step])` **ext** | `seq(5, 10)` | `[5, 6, 7, 8, 9, 10]` |
+| `zipStringJoin(lists[, delim[, prefix, suffix]])` | `zipStringJoin([["a","b","c"],["1","2","3"]], "-")` | `["a-1","b-2","c-3"]` |
+| `seq(start, end[, step])` | `seq(5, 10)` | `[5, 6, 7, 8, 9, 10]` |
 
 ### Inserting a single list as one element
 
@@ -189,7 +180,7 @@ a list as one element, wrap it so the engine spreads the *outer* list:
 insertBefore([1, 4], 2, [[2, 3]])    // → [1, [2, 3], 4]
 ```
 
-### `zipStringJoin` (**ext**)
+### `zipStringJoin`
 
 `zipStringJoin` takes `N` lists of equal length and produces one list of
 strings, each the concatenation of the corresponding-position elements from
@@ -230,10 +221,7 @@ zipStringJoin([["a","b"], ["1","2"], ["x","y"]], "-", ["<", "(", "{"], [">", ")"
 // → ["<a>-(1)-{x}", "<b>-(2)-{y}"]
 ```
 
-Edge cases: `zipStringJoin([])` → `[]`; `zipStringJoin([[]])` → `[]`;
-`zipStringJoin([list])` (a single inner list, nothing to concat) → `list`.
-
-### `seq` and the `:` operator (**ext**)
+### `seq` and the `:` operator
 
 `seq(start, end[, step])` materialises a numeric sequence as a list. Both
 `start` and `end` are inclusive and `step` defaults to `1`. The `start:end`
@@ -262,8 +250,6 @@ A few behaviours worth knowing:
   blkit's arbitrary-precision numbers. When `(end - start)` is not an exact
   multiple of `step`, the last element is the largest value not exceeding `end`
   (ascending) — so `seq(0, 0.95, 0.1)` stops at `0.9`.
-- A `step` of `0` is a `bl.TypeError` (the sequence would never terminate), as
-  are non-numeric `start`, `end`, or `step`.
 
 ### Aggregation
 
@@ -277,17 +263,11 @@ A few behaviours worth knowing:
 | `median(l)` | `number` \| `duration` | `median([6,1,2,3])` | `2.5` (average of middle two) |
 | `stddev(l)` | `number` | `stddev([2,4,7,5])` | `≈2.08` (sample stddev) |
 | `mode(l)` | any | `mode([6,1,6,1])` | `[1, 6]` (multimodal — a list) |
-| `all(l)` | `boolean` | `all([true,true,false])` | `false` (three-valued) |
-| `any(l)` | `boolean` | `any([false,false,true])` | `true` (three-valued) |
-
-Aggregates **ignore `null` elements**, and return `null` only when the list is
-empty or contains no elements of the expected type. `all`/`any` follow
-three-valued logic: `all([])` is `true` (vacuously), `any([])` is `false`, and
-`all([true, null])` is `null`.
+| `all(l)` | `boolean` | `all([true,true,false])` | `false` |
+| `any(l)` | `boolean` | `any([false,false,true])` | `true` |
 
 `sum`, `mean`, and `median` accept either a list of numbers or a list of a
-**single duration kind** (all days-time, or all years-months) — mixing the two
-duration kinds, or numbers with durations, is a `bl.TypeError`. `product` and
+**single duration kind** (all days-time, or all years-months). `product` and
 `stddev` are number-only, since they multiply or square (undefined for
 durations).
 
@@ -295,8 +275,7 @@ durations).
 one orderable type: `number`, `string`, `date`, `time`, `datetime`, days-time
 `duration`, or years-months `duration`. `boolean`, `null`, `list`,
 `dictionary`, `table`, `range`, and `calendar` are *not* comparable — they
-support only `=`/`!=`. Mixing incompatible comparable types, e.g.
-`min([1, "a"])`, is a `bl.TypeError`.
+support only `=`/`!=`.
 
 ### Ordering used by `min` / `max` / `sort`
 
@@ -335,11 +314,7 @@ is one of:
 | `"desc"` | descending |
 | a list | **explicit value order** — elements ranked by their position in that list; anything not listed trails in ascending order |
 
-The sort is **stable**: equal-ranked elements keep their input order. Elements
-that compare as `null` (e.g. a naive-vs-zoned datetime) sort to the **end** under
-`"asc"`/explicit order and **lead** under `"desc"`. A list of mutually
-non-comparable elements, or an `order` string other than `"asc"`/`"desc"`, is a
-`bl.TypeError`.
+The sort is **stable**: equal-ranked elements keep their input order.
 
 ```
 // expression-language
@@ -349,10 +324,10 @@ sort(["m", "s", "l"], ["s", "m", "l"])       // → ["s", "m", "l"]   (explicit 
 sort(["m", "s", "xl"], ["s", "m", "l"])      // → ["s", "m", "xl"]  ("xl" unlisted → trails)
 ```
 
-Note this **diverges from DMN FEEL**, whose `sort(list, precedes)` takes a
-comparator function. blkit's `sort` does not accept a comparator.
+blkit's `sort` ranks by the element value itself (via the `order` argument
+above); it does not accept a comparator function.
 
-## Worked example: compile once, evaluate many
+## Worked example
 
 Projection, filtering, and the aggregates compose into readable
 column-style queries. Suppose the env carries a list of order dictionaries:
@@ -376,60 +351,8 @@ count(orders[item.region = "NA"])                     // → 2     (filter, then
 sum(for o in orders return o.amount * o.quantity)     // → 575   (per-row arithmetic, then sum)
 ```
 
-On the host side, you compile an expression once against a typed env and
-evaluate it repeatedly. Build list inputs with the variadic `bl.List`
-constructor — it's infallible, preserves order, and accepts both individual
-values and a spread slice:
+## Lists from Go
 
-```go
-// host-side (Go)
-import bl "github.com/friendly-business-machines/blkit/core"
-
-type cart struct {
-    Items bl.BlList `expr:"items"`
-}
-
-// Compile once.
-var total, _ = bl.Expr[cart](`sum(items)`)
-
-// Build a list value to pass in.
-var prices = bl.List(bl.Number(100), bl.Number(150), bl.Number(75))
-
-// Evaluate against any input.
-var revenue, _ = total.Evaluate(cart{Items: prices})   // → 325
-```
-
-`bl.List()` with no arguments yields the empty list, and `bl.List(slice...)`
-spreads an existing `[]bl.BlValue`:
-
-```go
-// host-side (Go)
-var names  = []bl.BlValue{bl.String("Alice"), bl.String("Bob"), bl.String("Carol")}
-var roster = bl.List(names...)
-var empty  = bl.List()
-```
-
-When a list arrives as an input variable, the engine's bridge can also wrap a
-native Go slice into a `bl.BlList` automatically; when the host already holds
-`bl.BlValue`s, `bl.List(...)` is preferred since it skips that round-trip.
-
-## Null and edge-case behaviour
-
-- **Out-of-range index → `null`**, never an error — including index `0` and any
-  negative index past the start.
-- `sublist` with `length = 0` → `[]`; a negative `start` counts from the end.
-- `remove` at an out-of-range position → the list unchanged.
-- Numeric aggregates over an empty or non-numeric list → `null`; aggregates
-  otherwise ignore `null` elements.
-- `sort` with an unknown `order` string, or over non-comparable element types →
-  `bl.TypeError`.
-- `seq` with `step = 0`, or non-numeric arguments → `bl.TypeError`; a
-  wrong-signed `step` is treated as auto-direction.
-
-## Further reading
-
-The authoritative definition of every list operator, function, and edge case is
-the spec at `specs/expressions/list.spec.md`; the generated
-[Reference](../reference/blkit.md) lists the full `bl.BlList` API, and
-[Architecture → Expressions](../architecture/expressions.md) explains how the
-engine compiles and runs the language underneath.
+Host Go code builds `list` values with the variadic `bl.List` constructor, which
+preserves order and accepts both individual values and a spread slice. See
+[Values from Go](values-from-go.md) for the full host-side story.

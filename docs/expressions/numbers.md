@@ -1,7 +1,7 @@
 # Numbers
 
-> Exact decimal arithmetic and the numeric functions — rounding, absolute
-> value, min and max, sum, and more.
+> Exact decimal arithmetic and the numeric functions — literals, operators,
+> rounding, absolute value, powers, predicates, and more.
 
 In blkit, `number` is a single, exact type: an **arbitrary-precision decimal**.
 There is no integer-versus-float split, no rounding error from binary floating
@@ -17,8 +17,7 @@ The headline consequence:
 ```
 
 This page covers how to write numeric literals, the arithmetic and comparison
-operators, the built-in numeric functions, how `null` propagates through them,
-and how to construct numbers from your Go host code.
+operators, and the built-in numeric functions.
 
 ## Literals
 
@@ -43,14 +42,11 @@ A few rules worth knowing:
   Integer literals are exact too.
 - **Scientific notation is accepted** (`1.5e3` is `1500`).
 - **Hexadecimal is not supported.**
-- **`NaN` and `Infinity` are not representable.** A source or host value of
-  either is rejected as a type error rather than producing a number.
 
 ## Operators
 
 The arithmetic and comparison operators all work on numbers and return either a
-number or a boolean. Comparison and equality follow the language-wide
-[three-valued `null` rules](booleans-and-logic.md).
+number or a boolean.
 
 | Operator | Meaning | Example | Result |
 |---|---|---|---|
@@ -65,28 +61,21 @@ number or a boolean. Comparison and equality follow the language-wide
 
 Some behaviours that distinguish blkit from ordinary Go arithmetic:
 
-- **Division by zero is `null`, not an error.** `5 / 0` evaluates to `null`, so
-  a rule that hits a zero divisor degrades gracefully instead of failing.
-- **`null` propagates.** `null + 1` is `null`; any arithmetic with a `null`
-  operand yields `null`.
+- **`/` always yields a decimal.** `10 / 4` is `2.5`, not a truncated `2` —
+  there is no integer division.
 - **Equality ignores trailing zeros.** `3.0 = 3.00` is `true` — comparison is by
   numeric value.
-- **A complex exponent result is `null`.** `(-2) ** 0.5` (a negative base with a
-  fractional exponent) evaluates to `null` rather than an error.
 
 ```
 // expression-language
-5 / 0            // → null
-null + 1         // → null
+10 / 4           // → 2.5
 3.0 = 3.00       // → true
-(-2) ** 0.5      // → null
 ```
 
 ## Built-in functions
 
-blkit provides the DMN-standard numeric functions plus a set of practical
-extensions. Extensions are flagged **ext** below (they have no DMN equivalent).
-The `scale` argument, where it appears, is a count of decimal places.
+blkit provides a library of numeric functions. The `scale` argument, where it
+appears, is a count of decimal places.
 
 ### Rounding
 
@@ -96,7 +85,7 @@ things in different business contexts. `round` is a strict alias of
 
 | Function | Example | Result |
 |---|---|---|
-| `round(n, scale)` **ext** | `round(2.345, 2)` | `2.35` (alias of `roundHalfUp`; Excel `ROUND`) |
+| `round(n, scale)` | `round(2.345, 2)` | `2.35` (alias of `roundHalfUp`; Excel `ROUND`) |
 | `roundUp(n, scale)` | `roundUp(5.1, 0)` | `6` (always away from zero; Excel `ROUNDUP`) |
 | `roundDown(n, scale)` | `roundDown(5.9, 0)` | `5` (always toward zero — truncation; Excel `ROUNDDOWN`) |
 | `roundHalfUp(n, scale)` | `roundHalfUp(5.5, 0)` | `6` (halfway away from zero; `roundHalfUp(5.1, 0)` → `5`) |
@@ -114,10 +103,10 @@ round to a whole number.
 |---|---|---|
 | `abs(n)` | `abs(-10)` | `10` |
 | `modulo(dividend, divisor)` | `modulo(-10, 3)` | `2` (floor division; sign follows the divisor) |
-| `sqrt(n)` | `sqrt(16)` | `4` (negative → `null`) |
+| `sqrt(n)` | `sqrt(16)` | `4` |
 | `exp(n)` | `exp(1)` | `≈2.718281828` (Euler's number) |
-| `ln(n)` **ext** | `ln(2.718281828)` | `≈1` (natural log; 0 or negative → `null`) |
-| `log(n[, base])` **ext** | `log(100)`, `log(8, 2)` | `2`, `3` (default base 10) |
+| `ln(n)` | `ln(2.718281828)` | `≈1` (natural log) |
+| `log(n[, base])` | `log(100)`, `log(8, 2)` | `2`, `3` (default base 10) |
 
 ### Predicates
 
@@ -127,15 +116,15 @@ These return a boolean — handy in conditions and as building blocks for guards
 |---|---|---|
 | `odd(n)` | `odd(5)` | `true` |
 | `even(n)` | `even(2)` | `true` |
-| `isPositive(n)` **ext** | `isPositive(5)` | `true` |
-| `isNegative(n)` **ext** | `isNegative(-3)` | `true` |
-| `isZero(n)` **ext** | `isZero(0)` | `true` |
+| `isPositive(n)` | `isPositive(5)` | `true` |
+| `isNegative(n)` | `isNegative(-3)` | `true` |
+| `isZero(n)` | `isZero(0)` | `true` |
 
 ### Bounding
 
 | Function | Example | Result |
 |---|---|---|
-| `clamp(n, min, max)` **ext** | `clamp(150, 0, 100)` | `100` (`min > max` → `null`) |
+| `clamp(n, min, max)` | `clamp(150, 0, 100)` | `100` |
 
 `clamp` constrains `n` to the inclusive range `[min, max]`: values below `min`
 become `min`, values above `max` become `max`.
@@ -148,88 +137,7 @@ they are documented on the [Lists](lists.md) page. The point-versus-interval
 relations (`before`, `after`, `during`, `starts`, `finishes`, …) accept numbers
 as points and live on the [Ranges](ranges.md) page.
 
-## Null and edge-case behaviour
-
-blkit prefers `null` over errors for the numeric operations that have no sensible
-real-valued answer, so a single bad input doesn't blow up a whole rule:
-
-- **Division and `modulo` by zero** → `null`, never an error.
-- **`sqrt` of a negative number** → `null`. `sqrt(0)` is `0`.
-- **`ln` or `log` of zero or a negative number** → `null`; `log` with
-  `base <= 0` or `base = 1` → `null`.
-- **A complex `**` result** (e.g. `(-2) ** 0.5`) → `null`.
-- **`clamp` with `min > max`** → `null`.
-- **Any arithmetic with a `null` operand** → `null`.
-- **`NaN` / `Infinity`** as a source literal or host input → a type error (these
-  values cannot exist inside the engine).
-
-Beyond `null` handling, two precision facts are worth remembering:
-
-- Arithmetic is exact decimal; a non-terminating division (such as `1 / 3`) is
-  truncated at 34 significant digits.
-- Equality is by numeric value, so trailing zeros never matter: `3.0 = 3.00`.
-
-```
-// expression-language
-sqrt(-1)         // → null
-ln(0)            // → null
-modulo(-10, 3)   // → 2
-clamp(150, 0, 100)   // → 100
-```
-
-## Constructing numbers from Go
-
-To feed numbers into an expression you build a `bl.BlNumber` with the generic
-constructor `bl.Number`. It accepts any Go numeric type, `bool`, a
-`decimal.Decimal`, or a string:
-
-```go
-// host-side (Go)
-import bl "github.com/friendly-business-machines/blkit/core"
-
-// Integer and float inputs are infallible from the constraint's perspective;
-// the error only fires for a NaN / Inf float.
-var age,    _ = bl.Number(30)
-var pi,     _ = bl.Number(3.14159)
-var amount, _ = bl.Number(decimal.RequireFromString("1500.50"))
-
-// Bool coerces to 0 / 1 — useful when wiring a flag into arithmetic.
-var flag, _ = bl.Number(true)        // → bl.BlNumber(1)
-```
-
-The string form is the forgiving one: it parses a decimal and tolerates
-thousands separators, currency symbols, and surrounding whitespace.
-
-```go
-// host-side (Go)
-var price, _ = bl.Number("$1,234.56")   // → bl.BlNumber(1234.56)
-var big,   _ = bl.Number("1,000.50")    // → bl.BlNumber(1000.5)
-```
-
-`bl.Number` returns `(bl.BlNumber, error)`. Integer types, `decimal.Decimal`,
-and `bool` are infallible — the `_` slot just keeps the call site uniform. The
-error only fires in two cases: a `float32`/`float64` holding `NaN` or `Inf`, and
-a string that can't be parsed as a number after the format characters are
-stripped.
-
-Once you have a result back from `Evaluate`, recover the underlying decimal with
-`Decimal()`, then use the `shopspring/decimal` API (`IntPart`, `Float64`,
-`StringFixed`, …) for any further conversion:
-
-```go
-// host-side (Go)
-type order struct {
-    Price bl.BlNumber `expr:"price"`
-    Qty   bl.BlNumber `expr:"qty"`
-}
-
-var total, _ = bl.Expr[order](`round(price * qty, 2)`)
-
-var result, _ = total.Evaluate(order{Price: price, Qty: age})
-var d = result.(bl.BlNumber).Decimal()   // shopspring/decimal value
-```
-
-### Parsing formatted text inside an expression
+## Parsing formatted text inside an expression
 
 The string-parsing convenience is also available *inside* the language as the
 `number` function. The one-argument form parses a plain decimal string; the
@@ -243,13 +151,11 @@ number("1.500,50", ".", ",")   // → 1500.5
 ```
 
 The inverse, `string(n)`, renders a number as text and is documented on the
-[Strings](strings.md) page. Note that a raw host-side string passed as an env
-value must be a clean decimal — to accept a thousands-separated string from
-within an expression, route it through `number(...)`.
+[Strings](strings.md) page.
 
-## Where to go next
+## Numbers from Go
 
-For the exhaustive, authoritative definition of every operator, function,
-signature, and edge case, see the spec at `specs/expressions/number.spec.md` and
-the generated [Reference](../reference/blkit.md). For how expressions compile
-once and run many times, see [Architecture → Expressions](../architecture/expressions.md).
+Host Go code builds `number` values with the `bl.Number` constructor (any Go
+numeric type, `bool`, a `decimal.Decimal`, or a string) and reads a result back
+with `Decimal()`. See [Values from Go](values-from-go.md) for the full host-side
+story.

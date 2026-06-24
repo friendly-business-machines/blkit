@@ -9,35 +9,110 @@ the condition that routes a process — all of them are blkit expressions. This
 page explains where the language comes from and how the engine compiles and runs
 it.
 
-## Expression languages and FEEL
+## What is an expression language?
 
-Business logic is full of small, self-contained calculations and conditions:
-"is this applicant over 18 and earning more than £25,000?", "what is 20% off
-this price?", "does this date fall inside the policy period?". An **expression
-language** lets you write these as plain strings —
+An **expression language** is a small language whose programs are *expressions*:
+each one takes some inputs and produces a single value. There are no functions to
+define, no loops to manage, no files to open — you write a fragment like
 
 ```text
 age >= 18 and income > 25000
 ```
 
-— compile them once, and evaluate them against many different inputs, instead of
-hard-coding each rule as Go control flow.
+compile it once, and then evaluate it against many different inputs. The result
+is just a value: a boolean here, but it could equally be a number, a string, or
+a list.
 
-blkit's language is modelled on **FEEL** (Friendly Enough Expression Language),
-the expression language defined by the **DMN** (Decision Model and Notation)
-standard. FEEL was designed specifically for business rules, so it has
-properties general-purpose programming languages usually lack:
+This is a deliberately narrow kind of language, and the narrowness is the point.
+Software is full of small, self-contained calculations and conditions —
 
-- **Exact decimal arithmetic** — money and percentages don't drift the way
-  binary floating point does.
-- **Three-valued logic** — a missing value is `null`, and `null` propagates
-  through comparisons and boolean operators in a defined way, rather than
-  throwing or silently defaulting.
-- **Readable, business-friendly syntax** — `between`, ranges like `[1..10]`,
-  `if/then/else`, and list comprehensions (`for`, `some`, `every`).
+- *"is this applicant over 18 and earning more than £25,000?"*
+- *"what is 20% off this price?"*
+- *"does this date fall inside the policy period?"*
 
-blkit doesn't aim to be a conformant FEEL implementation; it takes FEEL's good
-ideas — and its feel — and adapts them to a practical Go library.
+— and these rules tend to change far more often, and need to be understood by far
+more people, than the program that runs them. An expression language lets you
+lift that logic out of the host program's control flow and treat it as **data**:
+something you can store in a database, edit in a spreadsheet-like table, ship
+without recompiling, and hand to an analyst rather than a programmer.
+
+### Where you've already met them
+
+Expression languages are everywhere, even where they aren't advertised as
+languages:
+
+- **Spreadsheet formulas** — Excel and Google Sheets are the most widely used
+  expression language on earth. `=IF(A1>18, "adult", "minor")` is an expression,
+  evaluated against the cells it references.
+- **Database query fragments** — the `WHERE` clause of an SQL statement is an
+  expression language for filtering rows.
+- **Search and filter syntaxes** — Lucene/Elasticsearch query strings, the
+  filter bars in issue trackers like Jira (JQL), and log-search tools.
+- **Configuration and policy** — CEL (Common Expression Language, used across
+  Kubernetes and Google Cloud), Open Policy Agent's Rego, and the rule engines
+  embedded in CI systems all evaluate expressions to make allow/deny decisions.
+- **Templating and automation** — JSONPath and JMESPath pick values out of
+  documents; the conditions in tools like Zapier, Home Assistant, or spreadsheet
+  automation are expressions.
+- **Embedded scripting** — engines such as
+  [Expr](https://github.com/expr-lang/expr) (which blkit builds on), CEL, and
+  MVEL exist specifically to let an application accept user-authored logic
+  safely, without handing over a full programming language.
+
+What unites them is the same trade: give up general-purpose programming power
+(no side effects, no unbounded loops, no I/O) in exchange for expressions that
+are short, safe to evaluate on untrusted input, easy to reason about, and cheap
+to run many times over.
+
+## FEEL and DMN
+
+blkit's language is modelled on **FEEL** — the **F**riendly **E**nough
+**E**xpression **L**anguage — the expression language defined by the **DMN**
+(Decision Model and Notation) standard published by the Object Management Group.
+DMN is an industry standard for describing business decisions: the decision
+tables, rules, and logic that sit behind questions like loan eligibility,
+insurance pricing, or discount calculations. FEEL is the language those rules
+are written in.
+
+The name is a statement of intent. FEEL is meant to be *friendly enough* that a
+business analyst — not just a software engineer — can read a rule and agree that
+it says what the business means, while still being precise enough to execute
+unambiguously. That goal pushes it away from the conventions of general-purpose
+programming languages and towards the needs of business logic:
+
+- **Exact decimal arithmetic.** Money and percentages are computed as exact
+  decimals, so `0.1 + 0.2` is exactly `0.3` — they don't drift the way binary
+  floating point does in most languages.
+- **Readable, business-friendly syntax.** `between`, ranges like `[1..10]`,
+  `if/then/else` as an expression, date and duration literals, and list
+  comprehensions (`for`, `some`, `every`) read close to how the rule would be
+  stated in English.
+
+### How FEEL differs from other expression languages
+
+Most embeddable expression languages — Expr, CEL, MVEL, JEXL — inherit the
+semantics of the host platform they grew up on. Numbers are machine `int`s and
+IEEE-754 floats, boolean logic is two-valued, and the syntax is broadly
+C- or Java-flavoured. They are excellent general-purpose tools.
+
+FEEL is different because it was designed *backwards from business rules* rather
+than forwards from a programming language. The defining contrasts:
+
+- **Decimals, not floats**, so financial arithmetic is correct by default rather
+  than by careful rounding.
+- **`null`-aware three-valued logic**, so partial data is a first-class case
+  instead of an exception waiting to happen.
+- **A grammar built for ranges and tests** — `[18..65]`, `> 1000`, `not(x)` as a
+  *unary test* against an implicit input — which is exactly the shape of a cell
+  in a decision table, the artifact FEEL exists to power.
+- **Standardised, not vendor-specific.** Because FEEL is part of DMN, the same
+  decision model is portable across conforming engines, in the way SQL is
+  portable across databases.
+
+blkit doesn't aim to be a conformant FEEL implementation, and it isn't a DMN
+engine. It takes FEEL's good ideas — the exact arithmetic, the null handling,
+the range-and-test syntax, and its overall *feel* — and adapts them to a
+practical, type-safe Go library.
 
 ## The Expr project
 

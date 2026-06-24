@@ -25,15 +25,18 @@
 - [Example: Australian Personal Income Tax Calculator](https://friendly-business-machines.github.io/blkit/examples/aus-personal-income-tax/): An accounting service calculates an individual's annual income tax liability for FY 2024–25 — building taxable income from many sources, applying progressive brackets, levies, offsets, and HELP/HECS, then reconciling against amounts already paid.
 
 ## Expressions
-- [Data Types](https://friendly-business-machines.github.io/blkit/expressions/data-types/): The blkit value system — numbers, strings, booleans, null, dates and times, durations, lists, dictionaries, ranges, and tables — and their null-aware semantics.
-- [Numbers](https://friendly-business-machines.github.io/blkit/expressions/numbers/): Exact decimal arithmetic and the numeric functions — rounding, absolute value, min and max, sum, and more.
+- [Data Types](https://friendly-business-machines.github.io/blkit/expressions/data-types/): The blkit value system — numbers, strings, booleans, null, dates and times, durations, lists, dictionaries, ranges, and tables — its literal syntax, and how typed environments feed values into expressions.
+- [Numbers](https://friendly-business-machines.github.io/blkit/expressions/numbers/): Exact decimal arithmetic and the numeric functions — literals, operators, rounding, absolute value, powers, predicates, and more.
 - [Strings](https://friendly-business-machines.github.io/blkit/expressions/strings/): Working with text — concatenation, substring, search and replace, case conversion, and formatting functions.
 - [Booleans & Logic](https://friendly-business-machines.github.io/blkit/expressions/booleans-and-logic/): Boolean values and blkit's three-valued (true / false / null) logic, including and, or, not, and comparison results.
-- [Dates & Times](https://friendly-business-machines.github.io/blkit/expressions/dates-and-times/): Dates, times, date-times, durations, and calendars — construction, arithmetic, component access, and comparisons.
+- [Dates & Times](https://friendly-business-machines.github.io/blkit/expressions/dates-and-times/): Dates, times, date-times, durations, and calendars — construction, arithmetic, component access, and comparisons in the expression language.
 - [Lists](https://friendly-business-machines.github.io/blkit/expressions/lists/): Ordered collections and the comprehensions (for, some, every) and functions that operate over them.
 - [Dictionaries](https://friendly-business-machines.github.io/blkit/expressions/dictionaries/): Key-value structures — construction, member access, and the dictionary functions.
-- [Ranges](https://friendly-business-machines.github.io/blkit/expressions/ranges/): Intervals like `[1..10]` — membership tests, open and closed bounds, and how ranges drive unary tests.
-- [Tables](https://friendly-business-machines.github.io/blkit/expressions/tables/): Tabular data and the operations that filter, project, group, and aggregate it.
+- [Ranges](https://friendly-business-machines.github.io/blkit/expressions/ranges/): Intervals like `[1..10]` — membership tests, open and closed bounds, the point/interval relations, and how ranges drive unary tests.
+- [Tables](https://friendly-business-machines.github.io/blkit/expressions/tables/): Tabular data and the expression-language syntax that filters, projects, groups, and aggregates it.
+- [Unary Tests](https://friendly-business-machines.github.io/blkit/expressions/unary-tests/): A compact syntax for writing a condition about a single value — `> 5`, `[18..65]`, `"gold"` — where the value being tested is supplied implicitly.
+- [User-Defined Functions](https://friendly-business-machines.github.io/blkit/expressions/user-defined-functions/): Named, reusable functions you define once and call by name from inside any expression — with typed parameters and a typed result.
+- [Values from Go](https://friendly-business-machines.github.io/blkit/expressions/values-from-go/): Constructing blkit values in host Go code, declaring typed environments, and reading results back — the bridge between the expression language and the Go program that runs it.
 
 ## Decisions
 - [Decision Expressions](https://friendly-business-machines.github.io/blkit/decisions/decision-expressions/): Compute several named outputs from typed inputs, wiring outputs that depend on one another into a single evaluated unit.

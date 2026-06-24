@@ -1,20 +1,24 @@
 # Dates & Times
 
 > Dates, times, date-times, durations, and calendars — construction,
-> arithmetic, component access, and comparisons.
+> arithmetic, component access, and comparisons in the expression language.
 
 blkit ships a full family of temporal types. There are three *points* in time —
 `date`, `time`, and `datetime` — two *spans* — a days-time `duration` and a
-years-months `duration` — and a host-built `calendar` for holiday sets, blackout
-periods, and other business schedules. This page shows how to construct each one,
-read its components, do arithmetic and comparisons, and reach the calendar-aware
-business-day functions that make blkit useful for real scheduling logic.
+years-months `duration` — and a `calendar` for holiday sets, blackout periods,
+and other business schedules. This page shows how to construct each one in the
+expression language, read its components, do arithmetic and comparisons, and
+reach the calendar-aware business-day functions that make blkit useful for real
+scheduling logic.
+
+The temporal types cover `date`, `time`, `datetime`, a days-and-time
+duration, and a years-and-months duration, plus the `calendar` type. Each comes
+with constructors, component accessors, arithmetic, comparisons, and a rich set
+of calendar-aware and business-day functions.
 
 A theme runs through all of it: temporal values are either **timezone-naive**
 (wall-clock numbers, no UTC relationship) or **zoned** (carrying a UTC offset or
-an IANA timezone). Comparing or differencing a naive value against a zoned one is
-never silently coerced — it yields `null`. Keep that distinction in mind and the
-rest follows.
+an IANA timezone).
 
 Textual forms follow [ISO 8601](https://www.iso.org/iso-8601-date-and-time-format.html)
 for the date/time portion and [RFC 9557 (IXDTF)](https://datatracker.ietf.org/doc/html/rfc9557)
@@ -39,9 +43,6 @@ date(datetime("2025-03-28T14:30:00"))  // extract the date from a datetime
 today()                                // current date (naive, local zone)
 ```
 
-Supplying both an offset and a timezone, or an out-of-range month/day, is an
-error (`bl.TypeError` / `bl.ParseError`) — there is no silent rollover.
-
 ### Component access
 
 ```
@@ -49,8 +50,8 @@ error (`bl.TypeError` / `bl.ParseError`) — there is no silent rollover.
 date("2025-03-28+05:30").year      // → 2025
 date("2025-03-28").month           // → 3
 date("2025-03-28").day             // → 28
-date("2025-03-28+05:30").offset    // → dtDuration("PT5H30M")   (null if none)
-date("2025-03-28[Europe/London]").timezone  // → "Europe/London"  (null if none)
+date("2025-03-28+05:30").offset    // → dtDuration("PT5H30M")
+date("2025-03-28[Europe/London]").timezone  // → "Europe/London"
 ```
 
 ### Calendar properties
@@ -86,8 +87,7 @@ names (`"Monday"`…`"Sunday"`, `"January"`…`"December"`).
 
 A years-months duration adjusts the year/month and clamps the day
 (`2025-01-31 + P1M → 2025-02-28`); a days-time duration adds whole days (sub-day
-components are ignored for a bare `date`). Comparing a zoned date with a naive one
-yields `null`.
+components are ignored for a bare `date`).
 
 Date subtraction depends on the zone-kind. When both operands are naive, `b - a`
 is plain calendar arithmetic — whole days. When both are zoned, each is projected
@@ -100,39 +100,6 @@ date("2025-03-28+05:30") - date("2025-03-28-05:00")  // → dtDuration("-PT10H30
 date("2025-03-29+05:30") - date("2025-03-28-05:00")  // → dtDuration("PT13H30M")
 date("2025-03-28")       - date("2025-01-01")        // → dtDuration("P86D")   (naive — whole days)
 ```
-
-A mismatch (one naive, one zoned) yields `null`, exactly as for comparison.
-
-### Constructing dates host-side
-
-Host Go code builds a `bl.BlDate` via the generic `bl.Date[T](v T) (bl.BlDate, error)`
-constructor, which accepts an ISO 8601 / RFC 9557 string, a Go `time.Time`, or a
-`bl.DateComponents` struct.
-
-```go
-// host-side (Go)
-var d1, _ = bl.Date("2025-03-28")                          // naive
-var d2, _ = bl.Date("2025-03-28+05:30")                    // zoned, offset
-var d3, _ = bl.Date("2025-03-28[Europe/London]")           // zoned, IANA zone
-
-// From a time.Time — the date portion is extracted; the result is zoned.
-var now      = time.Now()
-var today, _ = bl.Date(now)
-
-// From a time.Time but dropping the zone (wall-clock date, no zone).
-var todayNaive, _ = bl.Date(bl.ToDateComponentsAsNaive(now))
-
-// From explicit components.
-var christmas, _ = bl.Date(bl.DateComponents{Year: 2025, Month: 12, Day: 25})
-
-// Convenience: today in the local zone, as a naive date.
-var t = bl.Today()
-```
-
-A `time.Time` always carries a `Location`, so the `time.Time` path always produces
-a zoned date; route through `bl.ToDateComponentsAsNaive` first when you want a
-naive result. A `bl.DateComponents` with both `Offset` and `Zone` set, or invalid
-components, returns an error.
 
 ## Times
 
@@ -175,36 +142,12 @@ time("11:45:30[Europe/Paris]").timezone  // → "Europe/Paris"
 | `between a and b` | inclusive range | `time("12:00:00") between time("09:00:00") and time("17:00:00")` | `true` |
 | `in` | membership (list / range) | `time(now()) in [time("09:00:00")..time("17:00:00")]` | `true`/`false` |
 
-Only a **days-time** duration may be applied — time has no year/month concept, so
-a years-months duration is a `bl.TypeError`. A `time` does not track days: adding
-`PT25H` to `23:00:00` gives `00:00:00`, with the day advance discarded. Use
-`datetime` when you need day-tracking arithmetic.
+Only a **days-time** duration may be applied — time has no year/month concept. A
+`time` does not track days: adding `PT25H` to `23:00:00` gives `00:00:00`, with
+the day advance discarded. Use `datetime` when you need day-tracking arithmetic.
 
-Comparison follows the usual rule: two zoned/offset times compare as UTC instants,
-two local times compare wall-clock, and a local-versus-zoned comparison yields
-`null`.
-
-### Constructing times host-side
-
-```go
-// host-side (Go)
-var morning, _ = bl.Time("09:00:00")                       // naive
-var london,  _ = bl.Time("11:45:30+01:00")                 // zoned, offset
-var paris,   _ = bl.Time("11:45:30[Europe/Paris]")         // zoned, IANA zone
-
-// From a time.Time — time-of-day portion extracted; result is zoned.
-var now       = time.Now()
-var nowTime, _ = bl.Time(now)
-
-// Wall-clock time, dropping the zone.
-var wallClock, _ = bl.Time(bl.ToTimeComponentsAsNaive(now))
-
-// From explicit components.
-var noon, _ = bl.Time(bl.TimeComponents{Hour: 12, Minute: 0, Second: 0})
-```
-
-`bl.TimeComponents` also carries an optional `Nanosecond` field for fractional
-seconds, and the same mutually-exclusive `Offset` / `Zone` pair as dates.
+Two zoned/offset times compare as UTC instants, and two local times compare
+wall-clock.
 
 ## Date-times
 
@@ -266,35 +209,8 @@ alone; a days-time duration adds precisely, carrying across date boundaries. Bot
 preserve the original zone/offset. You can chain the two kinds:
 `dt + ymDuration("P1Y") + dtDuration("P10D")`.
 
-Comparison: zoned datetimes compare as UTC instants, local ones wall-clock, and a
-local-versus-zoned comparison yields `null`. `dt2 - dt1` is negative when `dt2`
-precedes `dt1`.
-
-### Constructing date-times host-side
-
-```go
-// host-side (Go)
-var local,  _ = bl.DateTime("2025-03-28T11:45:30")               // naive
-var utc,    _ = bl.DateTime("2025-03-28T11:45:30Z")              // zoned, UTC
-var london, _ = bl.DateTime("2025-03-28T11:45:30+01:00")         // zoned, offset
-var paris,  _ = bl.DateTime("2025-03-28T11:45:30[Europe/Paris]") // zoned, IANA zone
-
-// From a time.Time — result is zoned.
-var now      = time.Now()
-var nowDT, _ = bl.DateTime(now)
-
-// Wall-clock semantics, dropping the zone.
-var wallClock, _ = bl.DateTime(bl.ToDateTimeComponentsAsNaive(now))
-
-// From explicit components.
-var deploy, _ = bl.DateTime(bl.DateTimeComponents{
-    Year: 2025, Month: 3, Day: 1, Hour: 3, Minute: 0, Second: 0,
-    Zone: "Europe/London",
-})
-
-// Convenience for the current moment (zoned).
-var n = bl.Now()
-```
+Zoned datetimes compare as UTC instants, local ones wall-clock. `dt2 - dt1` is
+negative when `dt2` precedes `dt1`.
 
 ## Durations
 
@@ -306,10 +222,10 @@ different arithmetic:
 - A **years-months duration** (`ymDuration`) covers only years and months — ISO
   8601 `PnYnM`.
 
-The two **cannot be added to each other** (that is a `bl.TypeError`), because a
-month is not a fixed number of days. A days-time duration can be applied to a
-`date`, `time`, or `datetime`; a years-months duration can be applied to a `date`
-or `datetime` but **not** a `time`.
+The two **cannot be added to each other**, because a month is not a fixed number
+of days. A days-time duration can be applied to a `date`, `time`, or `datetime`; a
+years-months duration can be applied to a `date` or `datetime` but **not** a
+`time`.
 
 ### Days-time durations
 
@@ -326,7 +242,6 @@ dtDuration("-PT1H")            // negative
 dtDuration("PT0S")             // zero
 dtDuration("P1.5D")            // → dtDuration("P1DT12H")
 dtDuration("p1dt2h30m")        // → dtDuration("P1DT2H30M")  (designators are case-insensitive on input)
-dtDuration("P1Y")              // → bl.ParseError (year/month designators not allowed here)
 ```
 
 Two deliberate relaxations of ISO 8601: a decimal fraction is accepted on **any**
@@ -369,8 +284,7 @@ unit.
 
 `*` and `/` use exact decimal arithmetic — `dtDuration("PT1H") / 7` has a
 `totalSeconds` of exactly `3600/7`, with the canonical string putting the fraction
-on the smallest designator. Division by zero yields `null`. Mixing with a
-years-months duration is a `bl.TypeError`.
+on the smallest designator.
 
 #### Rounding
 
@@ -394,7 +308,7 @@ roundDown(dtDuration("P1DT23H"), dtDuration("P1D"))  // → dtDuration("P1D")   
 ```
 
 Rounding respects sign (`roundUp` of a negative input rounds away from zero,
-making it more negative). A non-positive `step` is a `bl.TypeError`.
+making it more negative).
 
 #### Other functions
 
@@ -402,39 +316,6 @@ making it more negative). A non-positive `step` is a `bl.TypeError`.
 |---|---|---|
 | `abs(d)` | `abs(dtDuration("-PT5H"))` | `dtDuration("PT5H")` |
 | `isNegative(d)` | `isNegative(dtDuration("-PT1H"))` | `true` (zero → `false`) |
-
-#### Constructing days-time durations host-side
-
-`bl.DTDuration[T](v T) (bl.BlDaysTimeDuration, error)` is generic over a wide set
-of inputs — strings parse as ISO 8601 (leading `P`) or otherwise as a decimal
-number of total seconds; integers, floats, `decimal.Decimal`, `bl.BlNumber`, and
-`time.Duration` are all total seconds; and `bl.DHMS(...)` supplies explicit
-components.
-
-```go
-// host-side (Go)
-var meeting, _ = bl.DTDuration("PT1H30M")     // ISO 8601 string
-var weekend, _ = bl.DTDuration("P2D")
-var oneMin,  _ = bl.DTDuration(60)            // integer total seconds
-var floatS,  _ = bl.DTDuration(1.5)           // 1.5 seconds
-var fromStr, _ = bl.DTDuration("1.5")         // decimal-number string → total seconds
-
-// Exact fractional total via decimal.Decimal.
-var dec,     _ = decimal.NewFromString("0.000000001")
-var nano,    _ = bl.DTDuration(dec)
-
-// From a Go time.Duration.
-var fromGo,  _ = bl.DTDuration(2*time.Hour + 30*time.Minute)
-
-// Explicit components — bl.DHMS(days, hours, minutes, seconds), each argument
-// independently type-checked; mixed types across the four arguments are fine.
-var split,   _ = bl.DTDuration(bl.DHMS(1, 2, 30, 0))           // 1d 2h 30m
-var mixed,   _ = bl.DTDuration(bl.DHMS(1, 2, "30", 0))
-```
-
-A `float` holding `NaN`/`Inf` errors; the integer / decimal / `time.Duration` /
-`bl.DHMS` paths are infallible. A Go `time.Duration` supplied as an env input
-variable also wraps to `bl.BlDaysTimeDuration` automatically.
 
 ### Years-months durations
 
@@ -450,7 +331,6 @@ ymDuration("P13M")         // → ymDuration("P1Y1M")  (months overflow into yea
 ymDuration("P1.5Y")        // → ymDuration("P1Y6M")
 ymDuration("P0.5M")        // 0.5 months — fractional months are representable
 ymDuration("p1y6m")        // → ymDuration("P1Y6M")  (designators are case-insensitive on input)
-ymDuration("P1DT2H")       // → bl.ParseError (day/time designators not allowed here)
 ```
 
 The same two relaxations apply (fraction on either designator; case-insensitive
@@ -483,9 +363,7 @@ Months normalise to `0 ≤ |months| < 12`, with overflow carrying into years.
 | `< <= > >=` | compare by total months | `ymDuration("P1Y") > ymDuration("P11M")` | `true` |
 | `= !=` | equality by total months | `ymDuration("P1Y") = ymDuration("P12M")` | `true` |
 
-`*` and `/` are exact decimal; `/0` yields `null`. Mixing with a days-time
-duration is a `bl.TypeError`, and applying a years-months duration to a `time` is
-also a `bl.TypeError`.
+`*` and `/` are exact decimal.
 
 #### Rounding & other functions
 
@@ -504,25 +382,6 @@ roundDown(ymDuration("P1Y11M"), ymDuration("P1Y"))  // → ymDuration("P1Y")  (t
 | `abs(d)` | `abs(ymDuration("-P2Y3M"))` | `ymDuration("P2Y3M")` |
 | `isNegative(d)` | `isNegative(ymDuration("-P3M"))` | `true` (zero → `false`) |
 
-#### Constructing years-months durations host-side
-
-`bl.YMDuration[T](v T) (bl.BlYearsMonthsDuration, error)` mirrors its days-time
-sibling: strings parse as ISO 8601 (leading `P`) or as a decimal number of total
-months; integers/floats/decimals are total months; `bl.YM(...)` supplies explicit
-components.
-
-```go
-// host-side (Go)
-var mortgage, _ = bl.YMDuration("P30Y")           // ISO 8601 string
-var grace,    _ = bl.YMDuration("P1Y6M")
-var halfYear, _ = bl.YMDuration(6)                // 6 total months
-var fromStr,  _ = bl.YMDuration("12.25")          // decimal-number string → 1y 0.25m
-
-// Explicit components — bl.YM(years, months), each argument independently typed.
-var split,    _ = bl.YMDuration(bl.YM(1, 6))
-var partial,  _ = bl.YMDuration(bl.YM(2, "3.5"))  // 2y 3.5m → 27.5 total months
-```
-
 ### Differences as durations
 
 Two named functions compute the span between two dates or datetimes directly as a
@@ -538,10 +397,9 @@ ymDurationBetween(date("2025-06-01"), date("2024-06-01"))     // → ymDuration(
 
 Both are **signed** (`from > to` gives a negative result) and require both
 operands to be the **same** temporal kind — either both `date` or both `datetime`.
-A mixed `(date, datetime)` call is a type error; convert one operand first with
-`datetime(d)` (lifts a date to midnight) or `date(dt)`. `dtDurationBetween` is
-exactly equivalent to the `-` operator on dates/datetimes, including the zoned
-midnight-projection and the naive-versus-zoned `→ null` rule.
+Convert one operand first with `datetime(d)` (lifts a date to midnight) or
+`date(dt)` when needed. `dtDurationBetween` is exactly equivalent to the `-`
+operator on dates/datetimes, including the zoned midnight-projection.
 
 ## Calendars
 
@@ -551,53 +409,14 @@ optional name. Calendars model holiday sets, maintenance windows, blackout
 periods, and freeze schedules.
 
 Calendars have **no expression-language literal or constructor** — they are built
-host-side in Go and supplied to an expression as an input variable, where they are
-queried. The rationale is that holiday sets and schedules are configuration data,
-better assembled with the type-safe host API than encoded inline in a rule.
+host-side in Go (see the closing section) and supplied to an expression as an
+input variable, where they are queried. The rationale is that holiday sets and
+schedules are configuration data, better assembled with the type-safe host API
+than encoded inline in a rule.
 
-### Building a calendar host-side
-
-```go
-// host-side (Go)
-var ukHolidays, _ = bl.Calendar(
-    []bl.BlCalendarEntry{
-        bl.CalendarEntry(blDate("2025-01-01"), "New Year's Day"),
-        bl.CalendarEntry(blDate("2025-04-18"), "Good Friday"),
-        bl.CalendarEntry(blDate("2025-04-21"), "Easter Monday"),
-        bl.CalendarEntry(blDate("2025-12-25"), "Christmas Day"),
-        bl.CalendarEntry(blDate("2025-12-26"), "Boxing Day"),
-        bl.CalendarEntry(
-            blRange(blDate("2025-12-24"), blDate("2026-01-02")),
-            "Holiday closure"),
-    },
-    bl.WithValidity(blRange(blDate("2025-01-01"), blDate("2025-12-31"))))
-
-// Hand it to an expression as an env field.
-type HolidayEnv struct {
-    ApplicantDate bl.BlDate     `expr:"applicantDate"`
-    UkHolidays    bl.BlCalendar `expr:"ukHolidays"`
-}
-var checkHoliday, _ = bl.Expr[HolidayEnv](`isPublicHoliday(applicantDate, ukHolidays)`)
-```
-
-`bl.CalendarEntry(value, name...)` is infallible; all validation — entries must be
-temporal points or bounded temporal ranges, must share a single zone-kind, and the
-validity range must match that zone-kind — happens at the `bl.Calendar(...)`
-assembly step. `bl.WithValidity` marks the period the calendar is authoritative
-over (used by the strictness flag below; it does **not** filter queries).
-
-Calendars can also be imported from RFC 5545 iCalendar (`.ics`) data via
-`bl.ImportICal(r io.Reader, opts ...bl.ICalOption)` — the recommended path for
-holiday feeds, with options for the recurrence-expansion window, validity range,
-default entry name, and strict mode.
-
-**Zone-kind homogeneity.** Every entry in a non-empty calendar must share the same
-zone-kind — all zoned, or all naive. Mixing them is an error at construction. (A
-query against the calendar must likewise share its zone-kind, or it is a
-`bl.TypeError`.) Within a zone-kind, temporal kinds may mix freely — date points,
-datetime points, and ranges of either side by side; queries that cross temporal
-kinds simply produce no match for the mismatched entries rather than poisoning the
-result.
+Every entry in a non-empty calendar shares a single zone-kind — all zoned, or all
+naive — but within that zone-kind, temporal kinds may mix freely: date points,
+datetime points, and ranges of either side by side.
 
 ### Query & inspection
 
@@ -612,10 +431,10 @@ result.
 | `entriesFor(c, point)` | `entriesFor(c, date("2025-05-05"))` | entries covering the point |
 | `overlaps(c, range)` | `overlaps(windows, [t1..t2])` | `true` if any entry overlaps the range |
 | `entriesIn(c, range)` | `entriesIn(ukHolidays, [date("2025-01-01")..date("2025-03-31")])` | entries overlapping the range |
-| `validFrom(c)` / `validTo(c)` | `validFrom(ukHolidays)` | the bound, or `null` |
-| `validRange(c)` | `validRange(ukHolidays)` | `[validFrom..validTo]`, or `null` if either unset |
-| `entryValue(e)` / `entryName(e)` | `entryName(find(c, "X")[1])` | an entry's value / name (`null` if unnamed) |
-| `next(c, point[, n])` | `next(ukHolidays, date("2025-12-01"))` | the *n*th entry strictly **after** `point` (`n` defaults to 1; `null` if too few) |
+| `validFrom(c)` / `validTo(c)` | `validFrom(ukHolidays)` | the bound |
+| `validRange(c)` | `validRange(ukHolidays)` | `[validFrom..validTo]` |
+| `entryValue(e)` / `entryName(e)` | `entryName(find(c, "X")[1])` | an entry's value / name |
+| `next(c, point[, n])` | `next(ukHolidays, date("2025-12-01"))` | the *n*th entry strictly **after** `point` (`n` defaults to 1) |
 | `prev(c, point[, n])` | `prev(ukHolidays, date("2025-12-01"), 2)` | the *n*th entry strictly **before** `point` |
 
 ```
@@ -623,7 +442,6 @@ result.
 next(ukHolidays, date("2025-04-01"))       // → the Good Friday entry (2025-04-18)
 next(ukHolidays, date("2025-04-01"), 2)    // → Easter Monday (2025-04-21)
 prev(ukHolidays, date("2025-04-21"))       // → Good Friday
-prev(ukHolidays, date("2025-01-01"))       // → null (nothing before New Year's Day)
 ```
 
 For `next`/`prev`, an entry is *strictly after* `point` when its position (the
@@ -641,10 +459,9 @@ a positive integer.
 date("2025-12-25") in ukHolidays   // → true
 ```
 
-The left operand must be a `date` or `datetime` (a range operand is a
-`bl.TypeError` — use `overlaps` / `entriesIn` for range queries). Calendars also
-support `=`/`!=` (set-equality on entries plus matching validity bounds) but have
-no ordering or arithmetic operators.
+The left operand must be a `date` or `datetime` (use `overlaps` / `entriesIn` for
+range queries). Calendars also support `=`/`!=` (set-equality on entries plus
+matching validity bounds) but have no ordering or arithmetic operators.
 
 ### Mutation
 
@@ -676,13 +493,7 @@ calendarDrop(c, blRange(date("2025-12-22"), date("2025-12-28")), {rangeMatch: "o
 `calendarMerge` unions the entries of several calendars and re-sorts them.
 Supplying `{dedupeBy: "value"}` (or `"valueAndName"`) deduplicates during the
 merge, with an optional `{tiebreak: "first" | "name"}` choosing the survivor on a
-value clash. Validity bounds are **not** unioned; re-supply them via a follow-up
-`bl.Calendar(..., bl.WithValidity(...))` host construction if you need them.
-
-The host-side equivalents are `(c bl.BlCalendar).Drop(target, opts...)`,
-`.Keep(target, opts...)`, and the package-level `bl.CalendarMerge(calendars,
-opts...)`, with functional options `bl.WithRangeMatch`, `bl.WithDedupe`, and
-`bl.WithTiebreak`.
+value clash.
 
 ## Calendar-aware date functions
 
@@ -715,7 +526,7 @@ time component is ignored.
 |---|---|---|
 | `firstDayOfWeekInMonth(v, dow)` | `firstDayOfWeekInMonth(date("2025-03-15"), "Monday")` | `date("2025-03-03")` |
 | `lastDayOfWeekInMonth(v, dow)` | `lastDayOfWeekInMonth(date("2025-03-15"), "Friday")` | `date("2025-03-28")` |
-| `nthDayOfWeekInMonth(v, n, dow)` | `nthDayOfWeekInMonth(date("2025-03-15"), 2, "Monday")` | `date("2025-03-10")` (`n<0` counts from the end; out of range → `null`) |
+| `nthDayOfWeekInMonth(v, n, dow)` | `nthDayOfWeekInMonth(date("2025-03-15"), 2, "Monday")` | `date("2025-03-10")` (`n<0` counts from the end) |
 
 ### Day navigation
 
@@ -741,8 +552,8 @@ to additionally skip the calendar's dates.
 `nextBusinessDay` / `prevBusinessDay` always return a strictly different date.
 
 **Calendar-range strictness.** When an iterating business-day function steps past
-the calendar's `[validFrom, validTo]` window, the default is to continue silently
-(the calendar simply contributes no holiday data beyond its bounds). Pass
+the calendar's `[validFrom, validTo]` window, the default is to continue (the
+calendar simply contributes no holiday data beyond its bounds). Pass
 `strictCalendarRange: true` as the trailing argument to instead raise a
 `bl.CalendarRangeError` the moment iteration would cross the boundary — useful when
 you need every returned value guaranteed inside the authoritative window. The flag
@@ -771,8 +582,7 @@ forms.
 
 The `basis` values: `"calendar"` (default — the intuitive "human" answer for age
 or tenure), `"actual/365"`, `"actual/360"`, `"actual/actual"` (ISDA, leap-aware),
-`"30/360"` (US/NASD), and `"30E/360"` (European). An invalid `basis` is a
-`bl.TypeError`.
+`"30/360"` (US/NASD), and `"30E/360"` (European).
 
 ### Financial year
 
@@ -794,8 +604,6 @@ financialYearQuarter(date("2025-01-15"), "AU")   // → "FY2025Q3" (AU FY 2025 Q
 financialYearQuarter(date("2024-08-01"), 7)      // → "FY2025Q1" (numeric basis equivalent)
 ```
 
-A `basis` outside 1–12, or an unrecognised jurisdiction, is a `bl.TypeError`.
-
 ### Re-zoning and zone stripping
 
 **Re-zoning** changes the zone while preserving the instant (the wall-clock
@@ -808,9 +616,7 @@ numbers shift):
 
 `withOffset` takes a days-time duration and accepts a `time` or a `datetime`;
 `withTimezone` takes an IANA name and is `datetime`-only. To re-zone to UTC, pass
-`dtDuration("PT0H")` to `withOffset`. Neither is defined for naive values (there is
-no source zone to convert *from*) — calling on a naive input returns `null`. A
-`date` is not supported by either (it has no time-of-day to shift).
+`dtDuration("PT0H")` to `withOffset`.
 
 **Zone stripping** drops the zone *label* while preserving the wall-clock numbers,
 returning a naive value:
@@ -824,71 +630,11 @@ returning a naive value:
 Each accepts a `date` or a `datetime`, returns the same type, and is a no-op on a
 value that already has no zone.
 
-## A worked example: compile once, evaluate many
+## Temporal values from Go
 
-The temporal types slot into the same compile-once / evaluate-many model as the
-rest of the language. Declare a typed env, compile the expression once, then run
-it against many inputs.
-
-```go
-// host-side (Go)
-import bl "github.com/friendly-business-machines/blkit/core"
-
-type claim struct {
-    SubmittedAt bl.BlDateTime `expr:"submittedAt"`
-    Deadline    bl.BlDateTime `expr:"deadline"`
-}
-
-// On time, and submitted within business hours? Compiled once.
-var onTime, _ = bl.Expr[claim](`submittedAt <= deadline
-    and time(submittedAt) between time("09:00:00") and time("17:00:00")`)
-
-var submitted, _ = bl.DateTime("2025-03-28T14:30:00Z")
-var deadline, _  = bl.DateTime("2025-03-31T17:00:00Z")
-var result, _    = onTime.Evaluate(claim{SubmittedAt: submitted, Deadline: deadline})
-// result → true
-```
-
-A second example combines a calendar with business-day arithmetic to compute a
-settlement date:
-
-```
-// expression-language
-addBusinessDays(today(), 3, ukHolidays)   // three business days from now, skipping UK holidays
-```
-
-## Null and edge-case behaviour
-
-A handful of rules recur across all the temporal types — worth keeping in one
-place:
-
-- **Naive versus zoned.** Comparing, differencing, or otherwise combining a
-  timezone-naive value with a zoned one yields `null`, never a silent coercion.
-  This applies to `<`/`<=`/`>`/`>=`, `=`/`!=`, the `-` difference operator,
-  `dtDurationBetween` / `ymDurationBetween`, and the `includeTime` date-difference
-  forms.
-- **Day clamping.** Adding a years-months duration that would overflow a short
-  month clamps the day: `date("2025-01-31") + ymDuration("P1M") → date("2025-02-28")`.
-- **Construction validates.** An out-of-range month/day (`date(2025, 13, 1)`),
-  hour/minute/second (`time` component form), an unknown IANA zone, or a value
-  carrying both an offset and a timezone is an error — there is no silent rollover.
-- **Duration kinds don't mix.** Adding a `dtDuration` to a `ymDuration` is a
-  `bl.TypeError`; applying a `ymDuration` to a `time` is a `bl.TypeError`.
-- **Division by zero.** Scaling a duration by `/ 0` yields `null`.
-- **Wrong duration string.** A Y/M designator passed to `dtDuration` (or a D/T
-  designator to `ymDuration`) is a `bl.ParseError`.
-- **Calendar queries are zone-kind-strict.** A query value must share the
-  calendar's zone-kind, or it is a `bl.TypeError`; within a zone-kind, temporal-kind
-  mismatches between the query and individual entries produce no match (not a
-  poisoned result).
-
-## Where the detail lives
-
-This guide covers the user-facing surface. For the exhaustive, authoritative
-definition of every operator, function, basis convention, and edge case, see the
-specs under `specs/expressions/` — `date.spec.md`, `time.spec.md`,
-`datetime.spec.md`, `days_time_duration.spec.md`,
-`years_months_duration.spec.md`, and `calendar.spec.md` — and the generated
-[Reference](../reference/blkit.md) for the full Go API. For how the
-engine compiles and runs these expressions, see
-[Architecture → Expressions](../architecture/expressions.md).
+Host Go code builds the temporal values with the matching constructors —
+`bl.Date`, `bl.Time`, `bl.DateTime`, `bl.DTDuration`, `bl.YMDuration`, and
+`bl.Calendar` — each accepting an ISO 8601 / RFC 9557 string, a Go `time.Time`,
+or a components struct. Calendars can also be imported from RFC 5545 iCalendar
+(`.ics`) data with `bl.ImportICal(...)`. See [Values from Go](values-from-go.md)
+for the full host-side story.

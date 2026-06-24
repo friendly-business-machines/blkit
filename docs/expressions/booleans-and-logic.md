@@ -10,6 +10,11 @@ defined, SQL-style way rather than throwing or quietly defaulting to `false`.
 That is **three-valued logic**, and it is what this page is really about — the
 booleans themselves are the easy part.
 
+The `boolean` type has just those two values. The wrinkle is that an absent or
+unknown value is `null`, and `null` flows through the logical operators rather
+than being treated as `false`. The operators below — `and`, `or`, `not`, and
+equality — implement this three-valued logic.
+
 ## Literals
 
 A boolean literal is how you write a constant `true` or `false` inside an
@@ -122,94 +127,9 @@ always `false`, so the branch never fires. Use `isNull(x)` (or `x instance of
 null`) instead. See [Data Types → Null](data-types.md) for the full story on
 null and the null-handling helpers.
 
-## Building booleans host-side
+## Booleans from Go
 
-Host Go code constructs a `bl.BlBoolean` with the generic `bl.Boolean`
-constructor. It accepts a Go `bool` directly, any Go integer (C convention:
-`0` → `false`, non-zero → `true`), or a case-insensitive `"true"` / `"false"`
-string:
-
-```go
-// host-side (Go)
-// Direct from a Go bool — infallible.
-var approved, _ = bl.Boolean(true)
-var rejected, _ = bl.Boolean(false)
-
-// From an integer — 0 → false, any non-zero → true.
-var flag,   _ = bl.Boolean(1)          // → bl.BlBoolean(true)
-var noFlag, _ = bl.Boolean(0)          // → bl.BlBoolean(false)
-
-// From a string — case-insensitive; an unrecognised string errors.
-var fromConf,  _ = bl.Boolean("true")  // → bl.BlBoolean(true)
-var fromMixed, _ = bl.Boolean("True")  // → bl.BlBoolean(true)
-var bad, err     = bl.Boolean("yes")   // err != nil — not a recognised literal
-```
-
-`bl.Boolean(...)` returns `(bl.BlBoolean, error)`. The only failure mode is a
-string that isn't a case-variant of `"true"` or `"false"` — `"yes"`, `"1"`, and
-`""` all error. Integer-shaped strings like `"1"` and `"0"` are intentionally
-rejected so the string path mirrors the language's literal rules; convert to an
-integer first if you want `0`/non-zero coercion. Go `bool` and integer inputs
-are infallible.
-
-To model an **unknown** boolean from host code, don't reach for a `*bool` — pass
-`bl.Null()`, which then propagates through the three-valued logic above:
-
-```go
-// host-side (Go)
-var hasConsent bl.BlValue
-if maybeConsent != nil {
-    hasConsent, _ = bl.Boolean(*maybeConsent)
-} else {
-    hasConsent = bl.Null()              // unknown, not false
-}
-```
-
-## A worked example
-
-Compile once, evaluate many times — the same pattern as every blkit expression
-(see [Architecture → Expressions](../architecture/expressions.md)):
-
-```go
-// host-side (Go)
-type applicant struct {
-    Age     bl.BlNumber  `expr:"age"`
-    Consent bl.BlValue   `expr:"consent"`   // may be a BlBoolean or BlNull
-}
-
-var eligible, _ = bl.Expr[applicant](`age >= 18 and consent`)
-
-// Known consent:
-var yes, _ = bl.Boolean(true)
-var age, _ = bl.Number(20)
-var r1, _  = eligible.Evaluate(applicant{Age: age, Consent: yes})   // → true
-
-// Unknown consent: the result is null (unknown), not a silent false.
-var r2, _ = eligible.Evaluate(applicant{Age: age, Consent: bl.Null()}) // → null
-```
-
-That `null` result is the point of three-valued logic: "this applicant is old
-enough, but we don't yet know whether they consented" is a genuinely different
-answer from "this applicant is not eligible", and blkit keeps the two distinct
-instead of collapsing them to `false`.
-
-## Edge cases
-
-- **No truthy/falsy coercion** — a non-boolean operand to `and` / `or` / `not`
-  is `null`, never a coerced boolean.
-- **Literals are case-insensitive on input** (`true`, `True`, `TRUE`); lowercase
-  is canonical on output. An env field colliding with a boolean literal in any
-  casing is rejected at compile time.
-- **Equality against `null` is `false`**, never `null`; cross-type equality
-  (`true = 1`) is `false` too.
-- **Short-circuit operators skip their right operand** — `false and X` and
-  `true or X` never evaluate `X`, so a failing or expensive right-hand side is
-  not run.
-
----
-
-The behaviour on this page is defined authoritatively by
-`specs/expressions/boolean.spec.md` (and `specs/expressions/null.spec.md` for
-null propagation). For the host-side API, see the generated
-[Reference](../reference/blkit.md); for how three-valued lowering works inside
-the engine, see [Architecture → Expressions](../architecture/expressions.md).
+Host Go code builds `boolean` values with the `bl.Boolean` constructor (a Go
+`bool`, an integer, or a `"true"`/`"false"` string), and models an **unknown**
+boolean with `bl.Null()` — which then flows through the three-valued logic above.
+See [Values from Go](values-from-go.md) for the full host-side story.

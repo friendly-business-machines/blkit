@@ -1610,21 +1610,20 @@ $200,000 taxable income:
 # Data Types
 
 > The blkit value system — numbers, strings, booleans, null, dates and times,
-> durations, lists, dictionaries, ranges, and tables — and their null-aware
-> semantics.
+> durations, lists, dictionaries, ranges, and tables — its literal syntax, and
+> how typed environments feed values into expressions.
 
 Every blkit expression produces and consumes values drawn from one closed set of
 types. A literal like `42` is a number; `"hello"` is a string; `[1, 2, 3]` is a
 list; the result of `age >= 18` is a boolean. This page is the orientation map
 for that value system: it lists every type, shows the literal syntax for each at
-a glance, explains how `null` threads through everything, and covers how to test
-a value's type with `instance of`. Each type then has its own guide page that
-goes deep on its literals, operators, and built-in functions.
+a glance, and covers how to test a value's type with `instance of`. Each type
+then has its own guide page that goes deep on its literals, operators, and
+built-in functions.
 
-If you want to understand *why* the value system is shaped this way — exact
-decimals, a sealed type set, three-valued logic — read
-[Architecture → Expressions](../architecture/expressions.md) first. This page is
-the user-facing tour.
+blkit defines its own closed set of value types. Most have a literal you write
+directly in source; a few are built only by a constructor function or by host Go
+code.
 
 ## The complete set of value types
 
@@ -1639,7 +1638,7 @@ a few are built only by a constructor function or by host Go code.
 | null | keyword | `null` | this page |
 | date | `date(...)` | `date("2025-03-28")` | [Dates & times](dates-and-times.md) |
 | time | `time(...)` | `time("11:45:30+02:00")` | [Dates & times](dates-and-times.md) |
-| datetime | `datetime(...)` | `datetime("2025-03-28T11:45:30")` | [Dates & times](dates-and-times.md) |
+| datetime (date and time) | `datetime(...)` | `datetime("2025-03-28T11:45:30")` | [Dates & times](dates-and-times.md) |
 | days-time duration | `dtDuration(...)` | `dtDuration("P4DT12H")` | [Dates & times](dates-and-times.md) |
 | years-months duration | `ymDuration(...)` | `ymDuration("P1Y6M")` | [Dates & times](dates-and-times.md) |
 | list | `[ ... ]` | `[1, 2, 3]` | [Lists](lists.md) |
@@ -1648,6 +1647,8 @@ a few are built only by a constructor function or by host Go code.
 | table | `table(...)` / `tableFromDicts(...)` | `table(["a"], [1], [2])` | [Tables](tables.md) |
 | regex | `pattern(...)` | `pattern("[0-9]+")` | [Strings](strings.md) |
 | calendar | host-built (no constructor) | — | — |
+
+The **table** type is blkit-specific: a tabular value with named columns and rows.
 
 A few notes that hold across the whole set:
 
@@ -1660,8 +1661,8 @@ A few notes that hold across the whole set:
   variable. They still participate fully in the language — you can compare them,
   pass them to functions, and test them with `instance of`.
 - **The set is closed.** Every expression result is one of these types; there is
-  no "other". That is what makes null propagation and `instance of` total — every
-  value has a well-defined type tag.
+  no "other". That is what makes `instance of` total — every value has a
+  well-defined type tag.
 
 ## Literal syntax at a glance
 
@@ -1703,10 +1704,8 @@ false                 // → false
 null                  // → null
 ```
 
-`true`, `false`, and `null` are keywords. The casing of `null` is forgiving on
-input — `null`, `Null`, and `NULL` all parse to the same value — but lowercase is
-canonical on output. See [Booleans & logic](booleans-and-logic.md) and
-[Null and propagation](#null-and-propagation) below.
+`true`, `false`, and `null` are keywords. See
+[Booleans & logic](booleans-and-logic.md).
 
 ### Temporal values and durations
 
@@ -1739,8 +1738,8 @@ duration is a calendar span (a "month" has no fixed number of days). See
 {"name": "Alice"}                   // → quoted keys are allowed too
 ```
 
-Lists are ordered and heterogeneous; dictionaries are ordered maps of named
-entries. See [Lists](lists.md) and [Dictionaries](dictionaries.md).
+Lists are ordered and heterogeneous; dictionaries are ordered
+maps of named entries. See [Lists](lists.md) and [Dictionaries](dictionaries.md).
 
 ### Ranges
 
@@ -1770,199 +1769,24 @@ pattern("[0-9]+")                   // → a precompiled regex
 ukHolidays                          // → a calendar passed in by the host
 ```
 
-See [Tables](tables.md) for `table(...)` / `tableFromDicts(...)`,
-[Strings](strings.md) for `pattern(...)`, and the calendar specification under
-`specs/expressions/calendar.spec.md` for the host-built calendar type.
+See [Tables](tables.md) for `table(...)` / `tableFromDicts(...)` and
+[Strings](strings.md) for `pattern(...)`.
 
-## Passing values in from host Go code
+## Referencing typed environment fields
 
-Inside an expression you write literals; on the host side you construct the same
-values with the `bl.` constructors that mirror each type — `bl.Number`,
-`bl.String`, `bl.Boolean`, `bl.Null`, `bl.List`, `bl.Dictionary`, `bl.Date`, and
-so on. The variables an expression may reference are the exported fields of a Go
-env struct, each renamed to its source-level name by an `expr:"..."` tag.
-
-```go
-// host-side (Go)
-import bl "github.com/friendly-business-machines/blkit/core"
-
-type ApplicantEnv struct {
-    Age    bl.BlNumber `expr:"age"`
-    Income bl.BlNumber `expr:"income"`
-}
-
-var eligible, _ = bl.Expr[ApplicantEnv](`age >= 18 and income > 50000`)
-
-var age, _    = bl.Number(21)
-var income, _ = bl.Number(60000)
-var result, _ = eligible.Evaluate(ApplicantEnv{Age: age, Income: income})
-// result is the bl.BlBoolean true
-```
-
-The constructors return a typed `Bl*` value (`bl.BlNumber`, `bl.BlString`, …),
-each implementing the sealed `bl.BlValue` interface. `Evaluate` always returns a
-`bl.BlValue`; type-assert or inspect it to get the concrete value back.
-
-The input bridge is also forgiving about native Go values: when the host passes a
-plain `map[string]any`, the bridge wraps each value into the matching `Bl*` type
-automatically.
-
-| Native Go input | Wrapped as |
-|---|---|
-| `int`, `int64`, `float64`, `decimal.Decimal`, decimal `string` | `bl.BlNumber` |
-| `string` | `bl.BlString` |
-| `bool` | `bl.BlBoolean` |
-| `[]any` | `bl.BlList` |
-| `map[string]any` | `bl.BlDictionary` |
-| `time.Time` | `bl.BlDate` / `bl.BlDateTime` (per precision) |
-| `time.Duration` | `bl.BlDaysTimeDuration` |
-| `nil` / absent input key | `bl.BlNull` |
-| an already-`bl.BlValue` | itself |
-
-Numbers stay arbitrary-precision decimals end to end — they are **never**
-collapsed to `float64` inside the engine.
-
-For a variable-free expression there is no env to build; compile with
-`bl.ExprNoEnv` and evaluate against `bl.NoEnv{}`.
-
-```go
-// host-side (Go)
-var sum, _ = bl.ExprNoEnv(`1 + 1`)
-var two, _ = sum.Evaluate(bl.NoEnv{}) // the bl.BlNumber 2
-```
-
-## Null and propagation
-
-`null` is the value that means "absent" or "unknown". It is what you get from a
-missing dictionary key, an out-of-range list index, division by zero, or any
-operation whose normal result is undefined. blkit follows SQL-style **three-valued
-logic**: `null` flows through almost every operation, so a calculation built on a
-missing input yields `null` rather than throwing or silently defaulting.
-
-### Propagation
-
-For most operations, if any operand is `null`, the result is `null`.
+The variables an expression may reference are supplied by a typed environment.
+A name written bare in an expression — `age`, `currency`, `ukHolidays` — resolves
+to a field of that environment, each carrying its own value type.
 
 ```
 // expression-language
-null + 1                  // → null
-null * 2                  // → null
-null + "x"                // → null   (string concatenation)
-someDictionary.missingKey // → null   (missing key)
-[1, 2][9]                 // → null   (out-of-range index)
-null.foo                  // → null   (path on a null receiver)
+age >= 18 and income > 50000        // age, income are number fields
+currency = "GBP"                    // currency is a string field
+total in [100..500]                 // total is a number field
 ```
 
-Ordering comparisons against `null` are also `null`, because there is no defined
-order:
-
-```
-// expression-language
-null < 5                  // → null
-null <= 5                 // → null
-```
-
-### Equality with null is always false
-
-Equality is the one comparison that does **not** yield `null`. Following SQL,
-`null` is never equal to anything — not even another `null`.
-
-```
-// expression-language
-null = null               // → false
-null != null              // → false
-null = 5                  // → false
-null != 5                 // → false
-```
-
-The practical consequence: **never write `x = null` to test for null** — it is
-always `false`, so `if x = null then ...` never matches. Use `isNull(x)` or
-`x instance of null` instead (see [Testing for null](#testing-for-null)).
-
-### The boolean short-circuit exceptions
-
-The only operators that do not propagate `null` are `and` and `or`, which
-short-circuit to a definite answer whenever the non-null operand already settles
-the result.
-
-```
-// expression-language
-false and null            // → false   (short-circuit)
-true  or  null            // → true    (short-circuit)
-
-true  and null            // → null
-null  and true            // → null
-false or  null            // → null
-null  or  false           // → null
-
-not(null)                 // → null
-```
-
-The full three-valued truth tables live in
-[Booleans & logic](booleans-and-logic.md).
-
-### Testing for null
-
-There are three idiomatic ways to test for null; all return the same answer.
-
-| Form | Where it's used |
-|---|---|
-| `isNull(x)` | inside expressions — the briefer form, preferred in most code |
-| `x instance of null` | inside expressions — reads naturally alongside other `instance of` calls |
-| `v.IsNull()` (Go) | host code consuming an evaluated `bl.BlValue` |
-
-```
-// expression-language
-isNull(someDictionary.missingKey)    // → true
-isNull(0)                            // → false   (zero is a defined value)
-isNull("")                           // → false   (empty string is a defined value)
-```
-
-```go
-// host-side (Go)
-var v, _ = eligible.Evaluate(env)
-if v.IsNull() {
-    // handle absent / unknown
-}
-```
-
-Note the distinction between *absence* and *null*: `isNull` tests whether a
-*present* value is the null value. To test whether a dictionary key is present at
-all — which is different from a key present with a null value — use
-`isDefined(d.key)`, covered in [Dictionaries](dictionaries.md).
-
-### Supplying a fallback
-
-To replace a `null` with a default, use `getOrElse` rather than an `if`.
-
-```
-// expression-language
-getOrElse(null, 1)                   // → 1
-getOrElse(42, 1)                     // → 42
-getOrElse(applicant.middleName, "")  // → "" if the key is missing or null
-```
-
-`getOrElse` fires **only** on `null`. A defined-but-empty value — the empty
-string `""`, the empty list `[]`, the number `0`, `false` — is returned as-is, not
-treated as missing.
-
-### Where null comes from
-
-The engine produces `null` in these situations:
-
-- A missing dictionary key (`d.absent`, `getValue(d, "absent")`).
-- An out-of-range list index (`[1, 2][9]`, including negative indices that fall
-  off the start).
-- An arithmetic operation with a `null` operand.
-- Division by zero (`1 / 0`, `5 / 0.0`).
-- Numeric operations whose result is undefined — `sqrt` of a negative number,
-  `ln`/`log` of zero-or-negative, a `**` whose result would be complex.
-- A date/datetime comparison or subtraction that mixes naive and zoned operands.
-- Any path expression whose receiver is `null` (`null.foo`, `null[0]`).
-
-On the host side, the input bridge maps Go `nil`, an absent input-map key, an
-untyped JSON `null`, and a nil pointer all to `bl.BlNull`, so an operator
-implementation never sees a Go-level `nil`.
+How the environment is declared on the host side — and how each field is named —
+is covered in the short Go section at the end of this page.
 
 ## Testing a value's type: `instance of`
 
@@ -1982,8 +1806,7 @@ null instance of null                  // → true
 null instance of number                // → false
 ```
 
-The type names are lowercase. `x instance of null` is equivalent to `isNull(x)`;
-use whichever reads better in context.
+The type names are lowercase.
 
 On the host side, the same type tags are available as the `bl.Type` enum and via
 the `Type()` method every `bl.BlValue` carries, so host code can switch on a
@@ -2002,60 +1825,29 @@ case bl.TypeNull:
 }
 ```
 
-## A worked example: compile once, evaluate many
-
-The value system is most useful in the typical blkit pattern — compile an
-expression once, then evaluate it repeatedly against different inputs. A single
-compiled `bl.BlExpr` is safe to reuse, and the expensive parsing and compilation
-work happens exactly once.
-
-```go
-// host-side (Go)
-type Order struct {
-    Total    bl.BlNumber `expr:"total"`
-    Currency bl.BlString `expr:"currency"`
-}
-
-// Compile once.
-var discountable, _ = bl.Expr[Order](
-    `total > 100 and currency = "GBP"`,
-)
-
-// Evaluate many times, against different values.
-var t1, _ = bl.Number(150)
-var c1, _ = bl.String("GBP")
-var r1, _ = discountable.Evaluate(Order{Total: t1, Currency: c1}) // → true
-
-var t2, _ = bl.Number(80)
-var r2, _ = discountable.Evaluate(Order{Total: t2, Currency: c1}) // → false
-```
-
-If `total` arrives as a missing value, the boolean logic stays well-defined:
-`null > 100` is `null`, and `null and currency = "GBP"` short-circuits to `null`
-rather than erroring — so a downstream `if` treats the rule as not matched
-instead of crashing.
-
-## Where to go next
+## A type index
 
 Each type's dedicated guide goes deep on its literals, operators, and built-in
 functions:
 
 - [Numbers](numbers.md) — exact decimals, arithmetic, the numeric library.
 - [Strings](strings.md) — text, concatenation, inspection, and `pattern(...)`.
-- [Booleans & logic](booleans-and-logic.md) — the three-valued truth tables.
+- [Booleans & logic](booleans-and-logic.md) — the truth tables.
 - [Dates & times](dates-and-times.md) — dates, times, datetimes, and both
   duration kinds.
 - [Lists](lists.md) — indexing, filtering, projection, comprehensions.
 - [Dictionaries](dictionaries.md) — entries, path access, key presence.
 - [Ranges](ranges.md) — intervals, membership, interval algebra.
 - [Tables](tables.md) — rows, columns, transformation methods.
+- [Values from Go](values-from-go.md) — building these values in host Go code.
 
-For the engine that compiles and runs all of this, see
-[Architecture → Expressions](../architecture/expressions.md). The exhaustive,
-authoritative detail lives in the type specifications under
-`specs/expressions/` (notably `bl-expr.spec.md` for the engine and value system,
-and `null.spec.md` for null semantics), and the generated API listing is in the
-[Reference](../reference/blkit.md).
+## Values from Go
+
+On the host side you construct values with the `bl.*` constructors that mirror
+each type (`bl.Number`, `bl.String`, `bl.Date`, …), declare the variables an
+expression may reference as the `expr:"..."`-tagged fields of a Go env struct,
+and pass an instance of that struct to `Evaluate`. See
+[Values from Go](values-from-go.md) for the full host-side story.
 
 ---
 
@@ -2063,8 +1855,8 @@ and `null.spec.md` for null semantics), and the generated API listing is in the
 
 # Numbers
 
-> Exact decimal arithmetic and the numeric functions — rounding, absolute
-> value, min and max, sum, and more.
+> Exact decimal arithmetic and the numeric functions — literals, operators,
+> rounding, absolute value, powers, predicates, and more.
 
 In blkit, `number` is a single, exact type: an **arbitrary-precision decimal**.
 There is no integer-versus-float split, no rounding error from binary floating
@@ -2080,8 +1872,7 @@ The headline consequence:
 ```
 
 This page covers how to write numeric literals, the arithmetic and comparison
-operators, the built-in numeric functions, how `null` propagates through them,
-and how to construct numbers from your Go host code.
+operators, and the built-in numeric functions.
 
 ## Literals
 
@@ -2106,14 +1897,11 @@ A few rules worth knowing:
   Integer literals are exact too.
 - **Scientific notation is accepted** (`1.5e3` is `1500`).
 - **Hexadecimal is not supported.**
-- **`NaN` and `Infinity` are not representable.** A source or host value of
-  either is rejected as a type error rather than producing a number.
 
 ## Operators
 
 The arithmetic and comparison operators all work on numbers and return either a
-number or a boolean. Comparison and equality follow the language-wide
-[three-valued `null` rules](booleans-and-logic.md).
+number or a boolean.
 
 | Operator | Meaning | Example | Result |
 |---|---|---|---|
@@ -2128,28 +1916,21 @@ number or a boolean. Comparison and equality follow the language-wide
 
 Some behaviours that distinguish blkit from ordinary Go arithmetic:
 
-- **Division by zero is `null`, not an error.** `5 / 0` evaluates to `null`, so
-  a rule that hits a zero divisor degrades gracefully instead of failing.
-- **`null` propagates.** `null + 1` is `null`; any arithmetic with a `null`
-  operand yields `null`.
+- **`/` always yields a decimal.** `10 / 4` is `2.5`, not a truncated `2` —
+  there is no integer division.
 - **Equality ignores trailing zeros.** `3.0 = 3.00` is `true` — comparison is by
   numeric value.
-- **A complex exponent result is `null`.** `(-2) ** 0.5` (a negative base with a
-  fractional exponent) evaluates to `null` rather than an error.
 
 ```
 // expression-language
-5 / 0            // → null
-null + 1         // → null
+10 / 4           // → 2.5
 3.0 = 3.00       // → true
-(-2) ** 0.5      // → null
 ```
 
 ## Built-in functions
 
-blkit provides the DMN-standard numeric functions plus a set of practical
-extensions. Extensions are flagged **ext** below (they have no DMN equivalent).
-The `scale` argument, where it appears, is a count of decimal places.
+blkit provides a library of numeric functions. The `scale` argument, where it
+appears, is a count of decimal places.
 
 ### Rounding
 
@@ -2159,7 +1940,7 @@ things in different business contexts. `round` is a strict alias of
 
 | Function | Example | Result |
 |---|---|---|
-| `round(n, scale)` **ext** | `round(2.345, 2)` | `2.35` (alias of `roundHalfUp`; Excel `ROUND`) |
+| `round(n, scale)` | `round(2.345, 2)` | `2.35` (alias of `roundHalfUp`; Excel `ROUND`) |
 | `roundUp(n, scale)` | `roundUp(5.1, 0)` | `6` (always away from zero; Excel `ROUNDUP`) |
 | `roundDown(n, scale)` | `roundDown(5.9, 0)` | `5` (always toward zero — truncation; Excel `ROUNDDOWN`) |
 | `roundHalfUp(n, scale)` | `roundHalfUp(5.5, 0)` | `6` (halfway away from zero; `roundHalfUp(5.1, 0)` → `5`) |
@@ -2177,10 +1958,10 @@ round to a whole number.
 |---|---|---|
 | `abs(n)` | `abs(-10)` | `10` |
 | `modulo(dividend, divisor)` | `modulo(-10, 3)` | `2` (floor division; sign follows the divisor) |
-| `sqrt(n)` | `sqrt(16)` | `4` (negative → `null`) |
+| `sqrt(n)` | `sqrt(16)` | `4` |
 | `exp(n)` | `exp(1)` | `≈2.718281828` (Euler's number) |
-| `ln(n)` **ext** | `ln(2.718281828)` | `≈1` (natural log; 0 or negative → `null`) |
-| `log(n[, base])` **ext** | `log(100)`, `log(8, 2)` | `2`, `3` (default base 10) |
+| `ln(n)` | `ln(2.718281828)` | `≈1` (natural log) |
+| `log(n[, base])` | `log(100)`, `log(8, 2)` | `2`, `3` (default base 10) |
 
 ### Predicates
 
@@ -2190,15 +1971,15 @@ These return a boolean — handy in conditions and as building blocks for guards
 |---|---|---|
 | `odd(n)` | `odd(5)` | `true` |
 | `even(n)` | `even(2)` | `true` |
-| `isPositive(n)` **ext** | `isPositive(5)` | `true` |
-| `isNegative(n)` **ext** | `isNegative(-3)` | `true` |
-| `isZero(n)` **ext** | `isZero(0)` | `true` |
+| `isPositive(n)` | `isPositive(5)` | `true` |
+| `isNegative(n)` | `isNegative(-3)` | `true` |
+| `isZero(n)` | `isZero(0)` | `true` |
 
 ### Bounding
 
 | Function | Example | Result |
 |---|---|---|
-| `clamp(n, min, max)` **ext** | `clamp(150, 0, 100)` | `100` (`min > max` → `null`) |
+| `clamp(n, min, max)` | `clamp(150, 0, 100)` | `100` |
 
 `clamp` constrains `n` to the inclusive range `[min, max]`: values below `min`
 become `min`, values above `max` become `max`.
@@ -2211,88 +1992,7 @@ they are documented on the [Lists](lists.md) page. The point-versus-interval
 relations (`before`, `after`, `during`, `starts`, `finishes`, …) accept numbers
 as points and live on the [Ranges](ranges.md) page.
 
-## Null and edge-case behaviour
-
-blkit prefers `null` over errors for the numeric operations that have no sensible
-real-valued answer, so a single bad input doesn't blow up a whole rule:
-
-- **Division and `modulo` by zero** → `null`, never an error.
-- **`sqrt` of a negative number** → `null`. `sqrt(0)` is `0`.
-- **`ln` or `log` of zero or a negative number** → `null`; `log` with
-  `base <= 0` or `base = 1` → `null`.
-- **A complex `**` result** (e.g. `(-2) ** 0.5`) → `null`.
-- **`clamp` with `min > max`** → `null`.
-- **Any arithmetic with a `null` operand** → `null`.
-- **`NaN` / `Infinity`** as a source literal or host input → a type error (these
-  values cannot exist inside the engine).
-
-Beyond `null` handling, two precision facts are worth remembering:
-
-- Arithmetic is exact decimal; a non-terminating division (such as `1 / 3`) is
-  truncated at 34 significant digits.
-- Equality is by numeric value, so trailing zeros never matter: `3.0 = 3.00`.
-
-```
-// expression-language
-sqrt(-1)         // → null
-ln(0)            // → null
-modulo(-10, 3)   // → 2
-clamp(150, 0, 100)   // → 100
-```
-
-## Constructing numbers from Go
-
-To feed numbers into an expression you build a `bl.BlNumber` with the generic
-constructor `bl.Number`. It accepts any Go numeric type, `bool`, a
-`decimal.Decimal`, or a string:
-
-```go
-// host-side (Go)
-import bl "github.com/friendly-business-machines/blkit/core"
-
-// Integer and float inputs are infallible from the constraint's perspective;
-// the error only fires for a NaN / Inf float.
-var age,    _ = bl.Number(30)
-var pi,     _ = bl.Number(3.14159)
-var amount, _ = bl.Number(decimal.RequireFromString("1500.50"))
-
-// Bool coerces to 0 / 1 — useful when wiring a flag into arithmetic.
-var flag, _ = bl.Number(true)        // → bl.BlNumber(1)
-```
-
-The string form is the forgiving one: it parses a decimal and tolerates
-thousands separators, currency symbols, and surrounding whitespace.
-
-```go
-// host-side (Go)
-var price, _ = bl.Number("$1,234.56")   // → bl.BlNumber(1234.56)
-var big,   _ = bl.Number("1,000.50")    // → bl.BlNumber(1000.5)
-```
-
-`bl.Number` returns `(bl.BlNumber, error)`. Integer types, `decimal.Decimal`,
-and `bool` are infallible — the `_` slot just keeps the call site uniform. The
-error only fires in two cases: a `float32`/`float64` holding `NaN` or `Inf`, and
-a string that can't be parsed as a number after the format characters are
-stripped.
-
-Once you have a result back from `Evaluate`, recover the underlying decimal with
-`Decimal()`, then use the `shopspring/decimal` API (`IntPart`, `Float64`,
-`StringFixed`, …) for any further conversion:
-
-```go
-// host-side (Go)
-type order struct {
-    Price bl.BlNumber `expr:"price"`
-    Qty   bl.BlNumber `expr:"qty"`
-}
-
-var total, _ = bl.Expr[order](`round(price * qty, 2)`)
-
-var result, _ = total.Evaluate(order{Price: price, Qty: age})
-var d = result.(bl.BlNumber).Decimal()   // shopspring/decimal value
-```
-
-### Parsing formatted text inside an expression
+## Parsing formatted text inside an expression
 
 The string-parsing convenience is also available *inside* the language as the
 `number` function. The one-argument form parses a plain decimal string; the
@@ -2306,16 +2006,14 @@ number("1.500,50", ".", ",")   // → 1500.5
 ```
 
 The inverse, `string(n)`, renders a number as text and is documented on the
-[Strings](strings.md) page. Note that a raw host-side string passed as an env
-value must be a clean decimal — to accept a thousands-separated string from
-within an expression, route it through `number(...)`.
+[Strings](strings.md) page.
 
-## Where to go next
+## Numbers from Go
 
-For the exhaustive, authoritative definition of every operator, function,
-signature, and edge case, see the spec at `specs/expressions/number.spec.md` and
-the generated [Reference](../reference/blkit.md). For how expressions compile
-once and run many times, see [Architecture → Expressions](../architecture/expressions.md).
+Host Go code builds `number` values with the `bl.Number` constructor (any Go
+numeric type, `bool`, a `decimal.Decimal`, or a string) and reads a result back
+with `Decimal()`. See [Values from Go](values-from-go.md) for the full host-side
+story.
 
 ---
 
@@ -2333,10 +2031,8 @@ bytes in UTF-8. Positions are **1-indexed**: the first character is at position
 `1`, not `0`.
 
 This page covers how to write string literals, the operators that work on
-strings, the full built-in function library, the regex dialect those functions
-share, and the null and edge-case behaviour you can rely on. For how an
-expression is compiled and evaluated, see
-[Architecture → Expressions](../architecture/expressions.md).
+strings, the full built-in function library, and the regex dialect those
+functions share.
 
 ## Literals
 
@@ -2393,40 +2089,6 @@ stringLength("\U{1F389}")      // → 1    (one supplementary code point)
 stringLength("🎉a")            // → 2
 ```
 
-## Constructing strings from Go
-
-Host Go code builds a `bl.BlString` with the generic `String` constructor. Its
-input constraint accepts a Go `string` or a `[]byte`:
-
-```go
-// host-side (Go)
-// From a Go string — infallible, because a Go string carries no encoding
-// contract that could be violated.
-var greeting, _ = bl.String("hello")
-
-// From a valid-UTF-8 []byte.
-var bytes     = []byte{0x68, 0x65, 0x6C, 0x6C, 0x6F}   // "hello"
-var greet2, _ = bl.String(bytes)
-
-// From invalid bytes — error. A []byte is interpreted as UTF-8 and validated.
-var bad    = []byte{0x68, 0xFF, 0xFE}                  // 0xFF / 0xFE are not valid UTF-8 leading bytes
-var _, err = bl.String(bad)                            // err != nil — invalid UTF-8
-```
-
-Only `string` and `[]byte` are accepted; other Go types — numbers, booleans,
-dates — are rejected at Go compile time. Their textual representation is a
-formatting decision the host should make explicitly first (`strconv.Itoa`,
-`fmt.Sprintf`, `time.Time.Format`, …), or inside the expression itself via the
-`string(from)` built-in:
-
-```go
-// host-side (Go)
-var label, _ = bl.String(fmt.Sprintf("score: %d", 42))   // → "score: 42"
-```
-
-To get a Go `string` back out of an evaluated result, call `Native()` on the
-`bl.BlString`.
-
 ## Operators
 
 | Operator | Meaning | Example | Result |
@@ -2438,47 +2100,46 @@ To get a Go `string` back out of an evaluated result, call `Native()` on the
 Equality is case-sensitive and compares by code point.
 
 Concatenation with `+` is **string-only**. To join a non-string value, convert
-it first with `string(...)`; concatenating a non-string directly yields `null`:
+it first with `string(...)`:
 
 ```
 // expression-language
 "order-" + string(123)        // → "order-123"
-"order-" + 123                // → null   (non-string operand)
 ```
 
 ## Built-in functions
 
-The library is DMN-inspired, with a number of blkit extensions marked **ext**
-(these have no DMN equivalent). All positions are 1-indexed, and all functions
-return a new string — strings are immutable.
+blkit's string functions. All
+positions are 1-indexed, and all functions return a new string — strings are
+immutable.
 
 | Function | Example | Result |
 |---|---|---|
 | `stringLength(s)` | `stringLength("foo")` | `3` |
 | `substring(s, start[, length])` | `substring("foobar", 3, 2)` | `"ob"` (negative `start` counts from the end) |
-| `substringBefore(s, match)` | `substringBefore("a-b", "-")` | `"a"` (not found → `""`) |
-| `substringAfter(s, match)` | `substringAfter("a-b", "-")` | `"b"` (not found → `""`) |
+| `substringBefore(s, match)` | `substringBefore("a-b", "-")` | `"a"` |
+| `substringAfter(s, match)` | `substringAfter("a-b", "-")` | `"b"` |
 | `upperCase(s)` | `upperCase("aBc")` | `"ABC"` |
 | `lowerCase(s)` | `lowerCase("aBc")` | `"abc"` |
 | `trim(s)` | `trim("  hi  ")` | `"hi"` |
-| `trimLeading(s)` **ext** | `trimLeading("  hi  ")` | `"hi  "` |
-| `trimTrailing(s)` **ext** | `trimTrailing("  hi  ")` | `"  hi"` |
+| `trimLeading(s)` | `trimLeading("  hi  ")` | `"hi  "` |
+| `trimTrailing(s)` | `trimTrailing("  hi  ")` | `"  hi"` |
 | `contains(s, match)` | `contains("foobar", "oo")` | `true` (case-sensitive substring test) |
 | `startsWith(s, match)` | `startsWith("foo", "fo")` | `true` |
 | `endsWith(s, match)` | `endsWith("foo", "oo")` | `true` |
 | `matches(s, pattern[, flags])` | `matches("ABC", "[a-z]+", "i")` | `true` (whole-string match) |
 | `replace(s, pattern, repl[, flags])` | `replace("a-b", "-", "/")` | `"a/b"` (`$1` group references) |
 | `split(s, delimiter)` | `split("a,b,c", ",")` | `["a", "b", "c"]` |
-| `split(s, delimiters)` **ext** | `split("a,b;c", [",", ";"])` | `["a", "b", "c"]` (list-of-delimiters overload) |
+| `split(s, delimiters)` | `split("a,b;c", [",", ";"])` | `["a", "b", "c"]` (list-of-delimiters overload) |
 | `extract(s, pattern[, flags])` | `extract("id 12, 34", "[0-9]+")` | `["12", "34"]` |
 | `isBlank(s)` | `isBlank("  ")` | `true` (empty or all-whitespace) |
-| `isEmpty(s)` **ext** | `isEmpty("")` | `true` (strictly zero length) |
-| `indexOf(s, match)` **ext** | `indexOf("hello", "l")` | `3` (first position, or `null`) |
-| `charAt(s, position)` **ext** | `charAt("hello", 1)` | `"h"` (out of range → `""`) |
-| `reverse(s)` **ext** | `reverse("abc")` | `"cba"` |
-| `padLeading(s, length[, padChar])` **ext** | `padLeading("7", 4, "0")` | `"0007"` |
-| `padTrailing(s, length[, padChar])` **ext** | `padTrailing("hi", 5, ".")` | `"hi..."` |
-| `repeat(s, times)` **ext** | `repeat("ab", 3)` | `"ababab"` |
+| `isEmpty(s)` | `isEmpty("")` | `true` (strictly zero length) |
+| `indexOf(s, match)` | `indexOf("hello", "l")` | `3` (first position) |
+| `charAt(s, position)` | `charAt("hello", 1)` | `"h"` |
+| `reverse(s)` | `reverse("abc")` | `"cba"` |
+| `padLeading(s, length[, padChar])` | `padLeading("7", 4, "0")` | `"0007"` |
+| `padTrailing(s, length[, padChar])` | `padTrailing("hi", 5, ".")` | `"hi..."` |
+| `repeat(s, times)` | `repeat("ab", 3)` | `"ababab"` |
 | `string(from)` | `string(123)` | `"123"` (any value → string conversion) |
 
 To join the elements of a list into one string there is
@@ -2502,7 +2163,6 @@ substringBefore("file.txt", ".")   // → "file"
 substringAfter("file.txt", ".")    // → "txt"
 charAt("hello", 1)             // → "h"
 indexOf("hello", "l")          // → 3        (first occurrence)
-indexOf("hello", "z")          // → null     (not found)
 reverse("abc")                 // → "cba"
 ```
 
@@ -2521,8 +2181,7 @@ repeat("ab", 3)                // → "ababab"
 ```
 
 `padLeading` / `padTrailing` default to a space when `padChar` is omitted. The
-pad character must be a single code point (see
-[Null and edge-case behaviour](#null-and-edge-case-behaviour)).
+pad character must be a single code point.
 
 ### Splitting and joining
 
@@ -2534,8 +2193,7 @@ split("a,b,c", ",")            // → ["a", "b", "c"]
 split("a,b;c", [",", ";"])     // → ["a", "b", "c"]   (list-of-delimiters overload)
 ```
 
-Leading, trailing, and consecutive delimiters yield empty-string elements. For
-the list-of-delimiters form the engine scans left-to-right and the **first
+For the list-of-delimiters form the engine scans left-to-right and the **first
 match wins**; where several delimiters match at one position the longest is
 chosen:
 
@@ -2544,9 +2202,6 @@ chosen:
 split("a--b", ["--", "-"])     // → ["a", "b"]        (longest match at a position wins)
 split("abcde", ["bc", "cd"])   // → ["a", "de"]       ("bc" matches first, shadowing "cd")
 ```
-
-An empty delimiter inside the delimiter list is a `bl.TypeError`; an empty
-delimiter list leaves the string unsplit, returning `[s]`.
 
 ## Regex dialect
 
@@ -2597,12 +2252,12 @@ extract("a1 b22 c333", "[a-z]\\d+")                             // → ["a1", "b
 ```
 
 Remember that `contains` is a literal substring test, not a regex. For
-partial-string regex matching use `extract` (which returns `[]` when nothing
-matches) or widen the pattern: `matches(s, ".*pat.*")`.
+partial-string regex matching use `extract` or widen the pattern:
+`matches(s, ".*pat.*")`.
 
 ## Precompiled patterns
 
-`pattern(s)` **ext** compiles a regex source string into a first-class
+`pattern(s)` compiles a regex source string into a first-class
 `bl.BlRegex` value. The dialect is identical to the inline-string form; a
 malformed source raises `bl.RegexError` at the `pattern(...)` call site rather
 than at the use site. All three regex built-ins accept either a string source or
@@ -2619,91 +2274,13 @@ matches("Hi there", pattern("(?i)^hi.*"))                         // → true   
 
 `pattern(s)` takes only the source string — no separate flags argument. Any
 flags must be written inline as `(?i)` / `(?m)` / `(?s)` groups inside the
-source. Passing a `bl.BlRegex` to the three-argument flags form of
-`matches` / `replace` / `extract` (where the precompiled pattern already encodes
-its flags) is a `bl.TypeError`.
+source.
 
-For genuine cross-call reuse — compile once, evaluate many times against
-different inputs — build the `bl.BlRegex` host-side and supply it as an env
-field:
+## Strings from Go
 
-```go
-// host-side (Go) — compile once.
-var emailRe, _ = bl.Pattern(`[\w.+-]+@[\w-]+\.[\w.-]+`)
-
-// Then hand emailRe to the engine as an env field; expressions reference it by name.
-type MatchEnv struct {
-    Addr    bl.BlString `expr:"addr"`
-    EmailRe bl.BlRegex  `expr:"emailRe"`
-}
-
-var matchEmail, _ = bl.Expr[MatchEnv](`matches(addr, emailRe)`)
-var addr, _       = bl.String("alice@example.com")
-var result, _     = matchEmail.Evaluate(MatchEnv{Addr: addr, EmailRe: emailRe})
-```
-
-Note that the host constructor is `bl.Pattern`, and that its source is a Go raw
-string literal — backticks — so the regex's own backslashes need no doubling. Two
-`bl.BlRegex` values are equal exactly when their source strings are equal.
-
-## Worked example: compile once, evaluate many
-
-A blkit expression is compiled once and then evaluated repeatedly — and
-concurrently — against different inputs. Declare the env as a Go struct, compile
-the expression with `bl.Expr`, and call `Evaluate` per input:
-
-```go
-// host-side (Go)
-import bl "github.com/friendly-business-machines/blkit/core"
-
-type order struct {
-    Ref     bl.BlString `expr:"ref"`
-    Channel bl.BlString `expr:"channel"`
-}
-
-// A normalised order label: "WEB/ABC123" → "abc123".
-var label, _ = bl.Expr[order](
-    `lowerCase(substringAfter(ref, "/"))`,
-)
-
-var ref, _    = bl.String("WEB/ABC123")
-var ch, _     = bl.String("web")
-var out, _    = label.Evaluate(order{Ref: ref, Channel: ch})  // → "abc123"
-```
-
-The expensive work (normalise, parse, type-check, compile) happens once when
-`bl.Expr` returns; each `Evaluate` only runs the compiled program.
-
-## Null and edge-case behaviour
-
-- Strings are immutable; every function returns a fresh string.
-- Length, indexing, and slicing are by **Unicode code point**
-  (`stringLength("🎉")` → `1`).
-- Equality is case-sensitive, comparing by code point.
-- `isBlank` treats any Unicode whitespace as blank; `isEmpty` is strictly
-  zero-length, so `isBlank("  ")` is `true` but `isEmpty("  ")` is `false`.
-- `substring` with a start beyond the end → `""`; an over-long `length` is
-  clamped to the available characters.
-- `substringBefore` / `substringAfter` with the delimiter absent → `""`.
-- `charAt` out of range → `""`.
-- `indexOf` not found → `null` (not `0`).
-- `extract` with no matches → `[]` (not `null`).
-- `split` with leading, trailing, or consecutive delimiters yields empty-string
-  elements; the multi-delimiter rules are described under
-  [Splitting and joining](#splitting-and-joining).
-- `padLeading` / `padTrailing` with a multi-code-point `padChar` → `bl.TypeError`.
-- `repeat` with a negative count → `bl.TypeError`.
-- Concatenating a non-string with `+` → `null`; convert with `string(...)` first.
-
-## Where to look next
-
-This guide reflects `specs/expressions/string.spec.md`, the authoritative
-definition of the string type, its operators, the function library, and the
-regex dialect — consult it for the exact, exhaustive behaviour. The generated
-[Reference](../reference/blkit.md) lists the Go API surface
-(`bl.String`, `bl.BlString`, `bl.Pattern`, `bl.BlRegex`, and the rest), and
-[Architecture → Expressions](../architecture/expressions.md) explains how an
-expression is compiled and run.
+Host Go code builds `string` values with the `bl.String` constructor (a Go
+`string` or valid-UTF-8 `[]byte`) and reads a result back with `Native()`. See
+[Values from Go](values-from-go.md) for the full host-side story.
 
 ---
 
@@ -2720,6 +2297,11 @@ or *unknown* value is `null`, and `null` flows through logical operators in a
 defined, SQL-style way rather than throwing or quietly defaulting to `false`.
 That is **three-valued logic**, and it is what this page is really about — the
 booleans themselves are the easy part.
+
+The `boolean` type has just those two values. The wrinkle is that an absent or
+unknown value is `null`, and `null` flows through the logical operators rather
+than being treated as `false`. The operators below — `and`, `or`, `not`, and
+equality — implement this three-valued logic.
 
 ## Literals
 
@@ -2833,97 +2415,12 @@ always `false`, so the branch never fires. Use `isNull(x)` (or `x instance of
 null`) instead. See [Data Types → Null](data-types.md) for the full story on
 null and the null-handling helpers.
 
-## Building booleans host-side
+## Booleans from Go
 
-Host Go code constructs a `bl.BlBoolean` with the generic `bl.Boolean`
-constructor. It accepts a Go `bool` directly, any Go integer (C convention:
-`0` → `false`, non-zero → `true`), or a case-insensitive `"true"` / `"false"`
-string:
-
-```go
-// host-side (Go)
-// Direct from a Go bool — infallible.
-var approved, _ = bl.Boolean(true)
-var rejected, _ = bl.Boolean(false)
-
-// From an integer — 0 → false, any non-zero → true.
-var flag,   _ = bl.Boolean(1)          // → bl.BlBoolean(true)
-var noFlag, _ = bl.Boolean(0)          // → bl.BlBoolean(false)
-
-// From a string — case-insensitive; an unrecognised string errors.
-var fromConf,  _ = bl.Boolean("true")  // → bl.BlBoolean(true)
-var fromMixed, _ = bl.Boolean("True")  // → bl.BlBoolean(true)
-var bad, err     = bl.Boolean("yes")   // err != nil — not a recognised literal
-```
-
-`bl.Boolean(...)` returns `(bl.BlBoolean, error)`. The only failure mode is a
-string that isn't a case-variant of `"true"` or `"false"` — `"yes"`, `"1"`, and
-`""` all error. Integer-shaped strings like `"1"` and `"0"` are intentionally
-rejected so the string path mirrors the language's literal rules; convert to an
-integer first if you want `0`/non-zero coercion. Go `bool` and integer inputs
-are infallible.
-
-To model an **unknown** boolean from host code, don't reach for a `*bool` — pass
-`bl.Null()`, which then propagates through the three-valued logic above:
-
-```go
-// host-side (Go)
-var hasConsent bl.BlValue
-if maybeConsent != nil {
-    hasConsent, _ = bl.Boolean(*maybeConsent)
-} else {
-    hasConsent = bl.Null()              // unknown, not false
-}
-```
-
-## A worked example
-
-Compile once, evaluate many times — the same pattern as every blkit expression
-(see [Architecture → Expressions](../architecture/expressions.md)):
-
-```go
-// host-side (Go)
-type applicant struct {
-    Age     bl.BlNumber  `expr:"age"`
-    Consent bl.BlValue   `expr:"consent"`   // may be a BlBoolean or BlNull
-}
-
-var eligible, _ = bl.Expr[applicant](`age >= 18 and consent`)
-
-// Known consent:
-var yes, _ = bl.Boolean(true)
-var age, _ = bl.Number(20)
-var r1, _  = eligible.Evaluate(applicant{Age: age, Consent: yes})   // → true
-
-// Unknown consent: the result is null (unknown), not a silent false.
-var r2, _ = eligible.Evaluate(applicant{Age: age, Consent: bl.Null()}) // → null
-```
-
-That `null` result is the point of three-valued logic: "this applicant is old
-enough, but we don't yet know whether they consented" is a genuinely different
-answer from "this applicant is not eligible", and blkit keeps the two distinct
-instead of collapsing them to `false`.
-
-## Edge cases
-
-- **No truthy/falsy coercion** — a non-boolean operand to `and` / `or` / `not`
-  is `null`, never a coerced boolean.
-- **Literals are case-insensitive on input** (`true`, `True`, `TRUE`); lowercase
-  is canonical on output. An env field colliding with a boolean literal in any
-  casing is rejected at compile time.
-- **Equality against `null` is `false`**, never `null`; cross-type equality
-  (`true = 1`) is `false` too.
-- **Short-circuit operators skip their right operand** — `false and X` and
-  `true or X` never evaluate `X`, so a failing or expensive right-hand side is
-  not run.
-
----
-
-The behaviour on this page is defined authoritatively by
-`specs/expressions/boolean.spec.md` (and `specs/expressions/null.spec.md` for
-null propagation). For the host-side API, see the generated
-[Reference](../reference/blkit.md); for how three-valued lowering works inside
-the engine, see [Architecture → Expressions](../architecture/expressions.md).
+Host Go code builds `boolean` values with the `bl.Boolean` constructor (a Go
+`bool`, an integer, or a `"true"`/`"false"` string), and models an **unknown**
+boolean with `bl.Null()` — which then flows through the three-valued logic above.
+See [Values from Go](values-from-go.md) for the full host-side story.
 
 ---
 
@@ -2932,20 +2429,24 @@ the engine, see [Architecture → Expressions](../architecture/expressions.md).
 # Dates & Times
 
 > Dates, times, date-times, durations, and calendars — construction,
-> arithmetic, component access, and comparisons.
+> arithmetic, component access, and comparisons in the expression language.
 
 blkit ships a full family of temporal types. There are three *points* in time —
 `date`, `time`, and `datetime` — two *spans* — a days-time `duration` and a
-years-months `duration` — and a host-built `calendar` for holiday sets, blackout
-periods, and other business schedules. This page shows how to construct each one,
-read its components, do arithmetic and comparisons, and reach the calendar-aware
-business-day functions that make blkit useful for real scheduling logic.
+years-months `duration` — and a `calendar` for holiday sets, blackout periods,
+and other business schedules. This page shows how to construct each one in the
+expression language, read its components, do arithmetic and comparisons, and
+reach the calendar-aware business-day functions that make blkit useful for real
+scheduling logic.
+
+The temporal types cover `date`, `time`, `datetime`, a days-and-time
+duration, and a years-and-months duration, plus the `calendar` type. Each comes
+with constructors, component accessors, arithmetic, comparisons, and a rich set
+of calendar-aware and business-day functions.
 
 A theme runs through all of it: temporal values are either **timezone-naive**
 (wall-clock numbers, no UTC relationship) or **zoned** (carrying a UTC offset or
-an IANA timezone). Comparing or differencing a naive value against a zoned one is
-never silently coerced — it yields `null`. Keep that distinction in mind and the
-rest follows.
+an IANA timezone).
 
 Textual forms follow [ISO 8601](https://www.iso.org/iso-8601-date-and-time-format.html)
 for the date/time portion and [RFC 9557 (IXDTF)](https://datatracker.ietf.org/doc/html/rfc9557)
@@ -2970,9 +2471,6 @@ date(datetime("2025-03-28T14:30:00"))  // extract the date from a datetime
 today()                                // current date (naive, local zone)
 ```
 
-Supplying both an offset and a timezone, or an out-of-range month/day, is an
-error (`bl.TypeError` / `bl.ParseError`) — there is no silent rollover.
-
 ### Component access
 
 ```
@@ -2980,8 +2478,8 @@ error (`bl.TypeError` / `bl.ParseError`) — there is no silent rollover.
 date("2025-03-28+05:30").year      // → 2025
 date("2025-03-28").month           // → 3
 date("2025-03-28").day             // → 28
-date("2025-03-28+05:30").offset    // → dtDuration("PT5H30M")   (null if none)
-date("2025-03-28[Europe/London]").timezone  // → "Europe/London"  (null if none)
+date("2025-03-28+05:30").offset    // → dtDuration("PT5H30M")
+date("2025-03-28[Europe/London]").timezone  // → "Europe/London"
 ```
 
 ### Calendar properties
@@ -3017,8 +2515,7 @@ names (`"Monday"`…`"Sunday"`, `"January"`…`"December"`).
 
 A years-months duration adjusts the year/month and clamps the day
 (`2025-01-31 + P1M → 2025-02-28`); a days-time duration adds whole days (sub-day
-components are ignored for a bare `date`). Comparing a zoned date with a naive one
-yields `null`.
+components are ignored for a bare `date`).
 
 Date subtraction depends on the zone-kind. When both operands are naive, `b - a`
 is plain calendar arithmetic — whole days. When both are zoned, each is projected
@@ -3031,39 +2528,6 @@ date("2025-03-28+05:30") - date("2025-03-28-05:00")  // → dtDuration("-PT10H30
 date("2025-03-29+05:30") - date("2025-03-28-05:00")  // → dtDuration("PT13H30M")
 date("2025-03-28")       - date("2025-01-01")        // → dtDuration("P86D")   (naive — whole days)
 ```
-
-A mismatch (one naive, one zoned) yields `null`, exactly as for comparison.
-
-### Constructing dates host-side
-
-Host Go code builds a `bl.BlDate` via the generic `bl.Date[T](v T) (bl.BlDate, error)`
-constructor, which accepts an ISO 8601 / RFC 9557 string, a Go `time.Time`, or a
-`bl.DateComponents` struct.
-
-```go
-// host-side (Go)
-var d1, _ = bl.Date("2025-03-28")                          // naive
-var d2, _ = bl.Date("2025-03-28+05:30")                    // zoned, offset
-var d3, _ = bl.Date("2025-03-28[Europe/London]")           // zoned, IANA zone
-
-// From a time.Time — the date portion is extracted; the result is zoned.
-var now      = time.Now()
-var today, _ = bl.Date(now)
-
-// From a time.Time but dropping the zone (wall-clock date, no zone).
-var todayNaive, _ = bl.Date(bl.ToDateComponentsAsNaive(now))
-
-// From explicit components.
-var christmas, _ = bl.Date(bl.DateComponents{Year: 2025, Month: 12, Day: 25})
-
-// Convenience: today in the local zone, as a naive date.
-var t = bl.Today()
-```
-
-A `time.Time` always carries a `Location`, so the `time.Time` path always produces
-a zoned date; route through `bl.ToDateComponentsAsNaive` first when you want a
-naive result. A `bl.DateComponents` with both `Offset` and `Zone` set, or invalid
-components, returns an error.
 
 ## Times
 
@@ -3106,36 +2570,12 @@ time("11:45:30[Europe/Paris]").timezone  // → "Europe/Paris"
 | `between a and b` | inclusive range | `time("12:00:00") between time("09:00:00") and time("17:00:00")` | `true` |
 | `in` | membership (list / range) | `time(now()) in [time("09:00:00")..time("17:00:00")]` | `true`/`false` |
 
-Only a **days-time** duration may be applied — time has no year/month concept, so
-a years-months duration is a `bl.TypeError`. A `time` does not track days: adding
-`PT25H` to `23:00:00` gives `00:00:00`, with the day advance discarded. Use
-`datetime` when you need day-tracking arithmetic.
+Only a **days-time** duration may be applied — time has no year/month concept. A
+`time` does not track days: adding `PT25H` to `23:00:00` gives `00:00:00`, with
+the day advance discarded. Use `datetime` when you need day-tracking arithmetic.
 
-Comparison follows the usual rule: two zoned/offset times compare as UTC instants,
-two local times compare wall-clock, and a local-versus-zoned comparison yields
-`null`.
-
-### Constructing times host-side
-
-```go
-// host-side (Go)
-var morning, _ = bl.Time("09:00:00")                       // naive
-var london,  _ = bl.Time("11:45:30+01:00")                 // zoned, offset
-var paris,   _ = bl.Time("11:45:30[Europe/Paris]")         // zoned, IANA zone
-
-// From a time.Time — time-of-day portion extracted; result is zoned.
-var now       = time.Now()
-var nowTime, _ = bl.Time(now)
-
-// Wall-clock time, dropping the zone.
-var wallClock, _ = bl.Time(bl.ToTimeComponentsAsNaive(now))
-
-// From explicit components.
-var noon, _ = bl.Time(bl.TimeComponents{Hour: 12, Minute: 0, Second: 0})
-```
-
-`bl.TimeComponents` also carries an optional `Nanosecond` field for fractional
-seconds, and the same mutually-exclusive `Offset` / `Zone` pair as dates.
+Two zoned/offset times compare as UTC instants, and two local times compare
+wall-clock.
 
 ## Date-times
 
@@ -3197,35 +2637,8 @@ alone; a days-time duration adds precisely, carrying across date boundaries. Bot
 preserve the original zone/offset. You can chain the two kinds:
 `dt + ymDuration("P1Y") + dtDuration("P10D")`.
 
-Comparison: zoned datetimes compare as UTC instants, local ones wall-clock, and a
-local-versus-zoned comparison yields `null`. `dt2 - dt1` is negative when `dt2`
-precedes `dt1`.
-
-### Constructing date-times host-side
-
-```go
-// host-side (Go)
-var local,  _ = bl.DateTime("2025-03-28T11:45:30")               // naive
-var utc,    _ = bl.DateTime("2025-03-28T11:45:30Z")              // zoned, UTC
-var london, _ = bl.DateTime("2025-03-28T11:45:30+01:00")         // zoned, offset
-var paris,  _ = bl.DateTime("2025-03-28T11:45:30[Europe/Paris]") // zoned, IANA zone
-
-// From a time.Time — result is zoned.
-var now      = time.Now()
-var nowDT, _ = bl.DateTime(now)
-
-// Wall-clock semantics, dropping the zone.
-var wallClock, _ = bl.DateTime(bl.ToDateTimeComponentsAsNaive(now))
-
-// From explicit components.
-var deploy, _ = bl.DateTime(bl.DateTimeComponents{
-    Year: 2025, Month: 3, Day: 1, Hour: 3, Minute: 0, Second: 0,
-    Zone: "Europe/London",
-})
-
-// Convenience for the current moment (zoned).
-var n = bl.Now()
-```
+Zoned datetimes compare as UTC instants, local ones wall-clock. `dt2 - dt1` is
+negative when `dt2` precedes `dt1`.
 
 ## Durations
 
@@ -3237,10 +2650,10 @@ different arithmetic:
 - A **years-months duration** (`ymDuration`) covers only years and months — ISO
   8601 `PnYnM`.
 
-The two **cannot be added to each other** (that is a `bl.TypeError`), because a
-month is not a fixed number of days. A days-time duration can be applied to a
-`date`, `time`, or `datetime`; a years-months duration can be applied to a `date`
-or `datetime` but **not** a `time`.
+The two **cannot be added to each other**, because a month is not a fixed number
+of days. A days-time duration can be applied to a `date`, `time`, or `datetime`; a
+years-months duration can be applied to a `date` or `datetime` but **not** a
+`time`.
 
 ### Days-time durations
 
@@ -3257,7 +2670,6 @@ dtDuration("-PT1H")            // negative
 dtDuration("PT0S")             // zero
 dtDuration("P1.5D")            // → dtDuration("P1DT12H")
 dtDuration("p1dt2h30m")        // → dtDuration("P1DT2H30M")  (designators are case-insensitive on input)
-dtDuration("P1Y")              // → bl.ParseError (year/month designators not allowed here)
 ```
 
 Two deliberate relaxations of ISO 8601: a decimal fraction is accepted on **any**
@@ -3300,8 +2712,7 @@ unit.
 
 `*` and `/` use exact decimal arithmetic — `dtDuration("PT1H") / 7` has a
 `totalSeconds` of exactly `3600/7`, with the canonical string putting the fraction
-on the smallest designator. Division by zero yields `null`. Mixing with a
-years-months duration is a `bl.TypeError`.
+on the smallest designator.
 
 #### Rounding
 
@@ -3325,7 +2736,7 @@ roundDown(dtDuration("P1DT23H"), dtDuration("P1D"))  // → dtDuration("P1D")   
 ```
 
 Rounding respects sign (`roundUp` of a negative input rounds away from zero,
-making it more negative). A non-positive `step` is a `bl.TypeError`.
+making it more negative).
 
 #### Other functions
 
@@ -3333,39 +2744,6 @@ making it more negative). A non-positive `step` is a `bl.TypeError`.
 |---|---|---|
 | `abs(d)` | `abs(dtDuration("-PT5H"))` | `dtDuration("PT5H")` |
 | `isNegative(d)` | `isNegative(dtDuration("-PT1H"))` | `true` (zero → `false`) |
-
-#### Constructing days-time durations host-side
-
-`bl.DTDuration[T](v T) (bl.BlDaysTimeDuration, error)` is generic over a wide set
-of inputs — strings parse as ISO 8601 (leading `P`) or otherwise as a decimal
-number of total seconds; integers, floats, `decimal.Decimal`, `bl.BlNumber`, and
-`time.Duration` are all total seconds; and `bl.DHMS(...)` supplies explicit
-components.
-
-```go
-// host-side (Go)
-var meeting, _ = bl.DTDuration("PT1H30M")     // ISO 8601 string
-var weekend, _ = bl.DTDuration("P2D")
-var oneMin,  _ = bl.DTDuration(60)            // integer total seconds
-var floatS,  _ = bl.DTDuration(1.5)           // 1.5 seconds
-var fromStr, _ = bl.DTDuration("1.5")         // decimal-number string → total seconds
-
-// Exact fractional total via decimal.Decimal.
-var dec,     _ = decimal.NewFromString("0.000000001")
-var nano,    _ = bl.DTDuration(dec)
-
-// From a Go time.Duration.
-var fromGo,  _ = bl.DTDuration(2*time.Hour + 30*time.Minute)
-
-// Explicit components — bl.DHMS(days, hours, minutes, seconds), each argument
-// independently type-checked; mixed types across the four arguments are fine.
-var split,   _ = bl.DTDuration(bl.DHMS(1, 2, 30, 0))           // 1d 2h 30m
-var mixed,   _ = bl.DTDuration(bl.DHMS(1, 2, "30", 0))
-```
-
-A `float` holding `NaN`/`Inf` errors; the integer / decimal / `time.Duration` /
-`bl.DHMS` paths are infallible. A Go `time.Duration` supplied as an env input
-variable also wraps to `bl.BlDaysTimeDuration` automatically.
 
 ### Years-months durations
 
@@ -3381,7 +2759,6 @@ ymDuration("P13M")         // → ymDuration("P1Y1M")  (months overflow into yea
 ymDuration("P1.5Y")        // → ymDuration("P1Y6M")
 ymDuration("P0.5M")        // 0.5 months — fractional months are representable
 ymDuration("p1y6m")        // → ymDuration("P1Y6M")  (designators are case-insensitive on input)
-ymDuration("P1DT2H")       // → bl.ParseError (day/time designators not allowed here)
 ```
 
 The same two relaxations apply (fraction on either designator; case-insensitive
@@ -3414,9 +2791,7 @@ Months normalise to `0 ≤ |months| < 12`, with overflow carrying into years.
 | `< <= > >=` | compare by total months | `ymDuration("P1Y") > ymDuration("P11M")` | `true` |
 | `= !=` | equality by total months | `ymDuration("P1Y") = ymDuration("P12M")` | `true` |
 
-`*` and `/` are exact decimal; `/0` yields `null`. Mixing with a days-time
-duration is a `bl.TypeError`, and applying a years-months duration to a `time` is
-also a `bl.TypeError`.
+`*` and `/` are exact decimal.
 
 #### Rounding & other functions
 
@@ -3435,25 +2810,6 @@ roundDown(ymDuration("P1Y11M"), ymDuration("P1Y"))  // → ymDuration("P1Y")  (t
 | `abs(d)` | `abs(ymDuration("-P2Y3M"))` | `ymDuration("P2Y3M")` |
 | `isNegative(d)` | `isNegative(ymDuration("-P3M"))` | `true` (zero → `false`) |
 
-#### Constructing years-months durations host-side
-
-`bl.YMDuration[T](v T) (bl.BlYearsMonthsDuration, error)` mirrors its days-time
-sibling: strings parse as ISO 8601 (leading `P`) or as a decimal number of total
-months; integers/floats/decimals are total months; `bl.YM(...)` supplies explicit
-components.
-
-```go
-// host-side (Go)
-var mortgage, _ = bl.YMDuration("P30Y")           // ISO 8601 string
-var grace,    _ = bl.YMDuration("P1Y6M")
-var halfYear, _ = bl.YMDuration(6)                // 6 total months
-var fromStr,  _ = bl.YMDuration("12.25")          // decimal-number string → 1y 0.25m
-
-// Explicit components — bl.YM(years, months), each argument independently typed.
-var split,    _ = bl.YMDuration(bl.YM(1, 6))
-var partial,  _ = bl.YMDuration(bl.YM(2, "3.5"))  // 2y 3.5m → 27.5 total months
-```
-
 ### Differences as durations
 
 Two named functions compute the span between two dates or datetimes directly as a
@@ -3469,10 +2825,9 @@ ymDurationBetween(date("2025-06-01"), date("2024-06-01"))     // → ymDuration(
 
 Both are **signed** (`from > to` gives a negative result) and require both
 operands to be the **same** temporal kind — either both `date` or both `datetime`.
-A mixed `(date, datetime)` call is a type error; convert one operand first with
-`datetime(d)` (lifts a date to midnight) or `date(dt)`. `dtDurationBetween` is
-exactly equivalent to the `-` operator on dates/datetimes, including the zoned
-midnight-projection and the naive-versus-zoned `→ null` rule.
+Convert one operand first with `datetime(d)` (lifts a date to midnight) or
+`date(dt)` when needed. `dtDurationBetween` is exactly equivalent to the `-`
+operator on dates/datetimes, including the zoned midnight-projection.
 
 ## Calendars
 
@@ -3482,53 +2837,14 @@ optional name. Calendars model holiday sets, maintenance windows, blackout
 periods, and freeze schedules.
 
 Calendars have **no expression-language literal or constructor** — they are built
-host-side in Go and supplied to an expression as an input variable, where they are
-queried. The rationale is that holiday sets and schedules are configuration data,
-better assembled with the type-safe host API than encoded inline in a rule.
+host-side in Go (see the closing section) and supplied to an expression as an
+input variable, where they are queried. The rationale is that holiday sets and
+schedules are configuration data, better assembled with the type-safe host API
+than encoded inline in a rule.
 
-### Building a calendar host-side
-
-```go
-// host-side (Go)
-var ukHolidays, _ = bl.Calendar(
-    []bl.BlCalendarEntry{
-        bl.CalendarEntry(blDate("2025-01-01"), "New Year's Day"),
-        bl.CalendarEntry(blDate("2025-04-18"), "Good Friday"),
-        bl.CalendarEntry(blDate("2025-04-21"), "Easter Monday"),
-        bl.CalendarEntry(blDate("2025-12-25"), "Christmas Day"),
-        bl.CalendarEntry(blDate("2025-12-26"), "Boxing Day"),
-        bl.CalendarEntry(
-            blRange(blDate("2025-12-24"), blDate("2026-01-02")),
-            "Holiday closure"),
-    },
-    bl.WithValidity(blRange(blDate("2025-01-01"), blDate("2025-12-31"))))
-
-// Hand it to an expression as an env field.
-type HolidayEnv struct {
-    ApplicantDate bl.BlDate     `expr:"applicantDate"`
-    UkHolidays    bl.BlCalendar `expr:"ukHolidays"`
-}
-var checkHoliday, _ = bl.Expr[HolidayEnv](`isPublicHoliday(applicantDate, ukHolidays)`)
-```
-
-`bl.CalendarEntry(value, name...)` is infallible; all validation — entries must be
-temporal points or bounded temporal ranges, must share a single zone-kind, and the
-validity range must match that zone-kind — happens at the `bl.Calendar(...)`
-assembly step. `bl.WithValidity` marks the period the calendar is authoritative
-over (used by the strictness flag below; it does **not** filter queries).
-
-Calendars can also be imported from RFC 5545 iCalendar (`.ics`) data via
-`bl.ImportICal(r io.Reader, opts ...bl.ICalOption)` — the recommended path for
-holiday feeds, with options for the recurrence-expansion window, validity range,
-default entry name, and strict mode.
-
-**Zone-kind homogeneity.** Every entry in a non-empty calendar must share the same
-zone-kind — all zoned, or all naive. Mixing them is an error at construction. (A
-query against the calendar must likewise share its zone-kind, or it is a
-`bl.TypeError`.) Within a zone-kind, temporal kinds may mix freely — date points,
-datetime points, and ranges of either side by side; queries that cross temporal
-kinds simply produce no match for the mismatched entries rather than poisoning the
-result.
+Every entry in a non-empty calendar shares a single zone-kind — all zoned, or all
+naive — but within that zone-kind, temporal kinds may mix freely: date points,
+datetime points, and ranges of either side by side.
 
 ### Query & inspection
 
@@ -3543,10 +2859,10 @@ result.
 | `entriesFor(c, point)` | `entriesFor(c, date("2025-05-05"))` | entries covering the point |
 | `overlaps(c, range)` | `overlaps(windows, [t1..t2])` | `true` if any entry overlaps the range |
 | `entriesIn(c, range)` | `entriesIn(ukHolidays, [date("2025-01-01")..date("2025-03-31")])` | entries overlapping the range |
-| `validFrom(c)` / `validTo(c)` | `validFrom(ukHolidays)` | the bound, or `null` |
-| `validRange(c)` | `validRange(ukHolidays)` | `[validFrom..validTo]`, or `null` if either unset |
-| `entryValue(e)` / `entryName(e)` | `entryName(find(c, "X")[1])` | an entry's value / name (`null` if unnamed) |
-| `next(c, point[, n])` | `next(ukHolidays, date("2025-12-01"))` | the *n*th entry strictly **after** `point` (`n` defaults to 1; `null` if too few) |
+| `validFrom(c)` / `validTo(c)` | `validFrom(ukHolidays)` | the bound |
+| `validRange(c)` | `validRange(ukHolidays)` | `[validFrom..validTo]` |
+| `entryValue(e)` / `entryName(e)` | `entryName(find(c, "X")[1])` | an entry's value / name |
+| `next(c, point[, n])` | `next(ukHolidays, date("2025-12-01"))` | the *n*th entry strictly **after** `point` (`n` defaults to 1) |
 | `prev(c, point[, n])` | `prev(ukHolidays, date("2025-12-01"), 2)` | the *n*th entry strictly **before** `point` |
 
 ```
@@ -3554,7 +2870,6 @@ result.
 next(ukHolidays, date("2025-04-01"))       // → the Good Friday entry (2025-04-18)
 next(ukHolidays, date("2025-04-01"), 2)    // → Easter Monday (2025-04-21)
 prev(ukHolidays, date("2025-04-21"))       // → Good Friday
-prev(ukHolidays, date("2025-01-01"))       // → null (nothing before New Year's Day)
 ```
 
 For `next`/`prev`, an entry is *strictly after* `point` when its position (the
@@ -3572,10 +2887,9 @@ a positive integer.
 date("2025-12-25") in ukHolidays   // → true
 ```
 
-The left operand must be a `date` or `datetime` (a range operand is a
-`bl.TypeError` — use `overlaps` / `entriesIn` for range queries). Calendars also
-support `=`/`!=` (set-equality on entries plus matching validity bounds) but have
-no ordering or arithmetic operators.
+The left operand must be a `date` or `datetime` (use `overlaps` / `entriesIn` for
+range queries). Calendars also support `=`/`!=` (set-equality on entries plus
+matching validity bounds) but have no ordering or arithmetic operators.
 
 ### Mutation
 
@@ -3607,13 +2921,7 @@ calendarDrop(c, blRange(date("2025-12-22"), date("2025-12-28")), {rangeMatch: "o
 `calendarMerge` unions the entries of several calendars and re-sorts them.
 Supplying `{dedupeBy: "value"}` (or `"valueAndName"`) deduplicates during the
 merge, with an optional `{tiebreak: "first" | "name"}` choosing the survivor on a
-value clash. Validity bounds are **not** unioned; re-supply them via a follow-up
-`bl.Calendar(..., bl.WithValidity(...))` host construction if you need them.
-
-The host-side equivalents are `(c bl.BlCalendar).Drop(target, opts...)`,
-`.Keep(target, opts...)`, and the package-level `bl.CalendarMerge(calendars,
-opts...)`, with functional options `bl.WithRangeMatch`, `bl.WithDedupe`, and
-`bl.WithTiebreak`.
+value clash.
 
 ## Calendar-aware date functions
 
@@ -3646,7 +2954,7 @@ time component is ignored.
 |---|---|---|
 | `firstDayOfWeekInMonth(v, dow)` | `firstDayOfWeekInMonth(date("2025-03-15"), "Monday")` | `date("2025-03-03")` |
 | `lastDayOfWeekInMonth(v, dow)` | `lastDayOfWeekInMonth(date("2025-03-15"), "Friday")` | `date("2025-03-28")` |
-| `nthDayOfWeekInMonth(v, n, dow)` | `nthDayOfWeekInMonth(date("2025-03-15"), 2, "Monday")` | `date("2025-03-10")` (`n<0` counts from the end; out of range → `null`) |
+| `nthDayOfWeekInMonth(v, n, dow)` | `nthDayOfWeekInMonth(date("2025-03-15"), 2, "Monday")` | `date("2025-03-10")` (`n<0` counts from the end) |
 
 ### Day navigation
 
@@ -3672,8 +2980,8 @@ to additionally skip the calendar's dates.
 `nextBusinessDay` / `prevBusinessDay` always return a strictly different date.
 
 **Calendar-range strictness.** When an iterating business-day function steps past
-the calendar's `[validFrom, validTo]` window, the default is to continue silently
-(the calendar simply contributes no holiday data beyond its bounds). Pass
+the calendar's `[validFrom, validTo]` window, the default is to continue (the
+calendar simply contributes no holiday data beyond its bounds). Pass
 `strictCalendarRange: true` as the trailing argument to instead raise a
 `bl.CalendarRangeError` the moment iteration would cross the boundary — useful when
 you need every returned value guaranteed inside the authoritative window. The flag
@@ -3702,8 +3010,7 @@ forms.
 
 The `basis` values: `"calendar"` (default — the intuitive "human" answer for age
 or tenure), `"actual/365"`, `"actual/360"`, `"actual/actual"` (ISDA, leap-aware),
-`"30/360"` (US/NASD), and `"30E/360"` (European). An invalid `basis` is a
-`bl.TypeError`.
+`"30/360"` (US/NASD), and `"30E/360"` (European).
 
 ### Financial year
 
@@ -3725,8 +3032,6 @@ financialYearQuarter(date("2025-01-15"), "AU")   // → "FY2025Q3" (AU FY 2025 Q
 financialYearQuarter(date("2024-08-01"), 7)      // → "FY2025Q1" (numeric basis equivalent)
 ```
 
-A `basis` outside 1–12, or an unrecognised jurisdiction, is a `bl.TypeError`.
-
 ### Re-zoning and zone stripping
 
 **Re-zoning** changes the zone while preserving the instant (the wall-clock
@@ -3739,9 +3044,7 @@ numbers shift):
 
 `withOffset` takes a days-time duration and accepts a `time` or a `datetime`;
 `withTimezone` takes an IANA name and is `datetime`-only. To re-zone to UTC, pass
-`dtDuration("PT0H")` to `withOffset`. Neither is defined for naive values (there is
-no source zone to convert *from*) — calling on a naive input returns `null`. A
-`date` is not supported by either (it has no time-of-day to shift).
+`dtDuration("PT0H")` to `withOffset`.
 
 **Zone stripping** drops the zone *label* while preserving the wall-clock numbers,
 returning a naive value:
@@ -3755,74 +3058,14 @@ returning a naive value:
 Each accepts a `date` or a `datetime`, returns the same type, and is a no-op on a
 value that already has no zone.
 
-## A worked example: compile once, evaluate many
+## Temporal values from Go
 
-The temporal types slot into the same compile-once / evaluate-many model as the
-rest of the language. Declare a typed env, compile the expression once, then run
-it against many inputs.
-
-```go
-// host-side (Go)
-import bl "github.com/friendly-business-machines/blkit/core"
-
-type claim struct {
-    SubmittedAt bl.BlDateTime `expr:"submittedAt"`
-    Deadline    bl.BlDateTime `expr:"deadline"`
-}
-
-// On time, and submitted within business hours? Compiled once.
-var onTime, _ = bl.Expr[claim](`submittedAt <= deadline
-    and time(submittedAt) between time("09:00:00") and time("17:00:00")`)
-
-var submitted, _ = bl.DateTime("2025-03-28T14:30:00Z")
-var deadline, _  = bl.DateTime("2025-03-31T17:00:00Z")
-var result, _    = onTime.Evaluate(claim{SubmittedAt: submitted, Deadline: deadline})
-// result → true
-```
-
-A second example combines a calendar with business-day arithmetic to compute a
-settlement date:
-
-```
-// expression-language
-addBusinessDays(today(), 3, ukHolidays)   // three business days from now, skipping UK holidays
-```
-
-## Null and edge-case behaviour
-
-A handful of rules recur across all the temporal types — worth keeping in one
-place:
-
-- **Naive versus zoned.** Comparing, differencing, or otherwise combining a
-  timezone-naive value with a zoned one yields `null`, never a silent coercion.
-  This applies to `<`/`<=`/`>`/`>=`, `=`/`!=`, the `-` difference operator,
-  `dtDurationBetween` / `ymDurationBetween`, and the `includeTime` date-difference
-  forms.
-- **Day clamping.** Adding a years-months duration that would overflow a short
-  month clamps the day: `date("2025-01-31") + ymDuration("P1M") → date("2025-02-28")`.
-- **Construction validates.** An out-of-range month/day (`date(2025, 13, 1)`),
-  hour/minute/second (`time` component form), an unknown IANA zone, or a value
-  carrying both an offset and a timezone is an error — there is no silent rollover.
-- **Duration kinds don't mix.** Adding a `dtDuration` to a `ymDuration` is a
-  `bl.TypeError`; applying a `ymDuration` to a `time` is a `bl.TypeError`.
-- **Division by zero.** Scaling a duration by `/ 0` yields `null`.
-- **Wrong duration string.** A Y/M designator passed to `dtDuration` (or a D/T
-  designator to `ymDuration`) is a `bl.ParseError`.
-- **Calendar queries are zone-kind-strict.** A query value must share the
-  calendar's zone-kind, or it is a `bl.TypeError`; within a zone-kind, temporal-kind
-  mismatches between the query and individual entries produce no match (not a
-  poisoned result).
-
-## Where the detail lives
-
-This guide covers the user-facing surface. For the exhaustive, authoritative
-definition of every operator, function, basis convention, and edge case, see the
-specs under `specs/expressions/` — `date.spec.md`, `time.spec.md`,
-`datetime.spec.md`, `days_time_duration.spec.md`,
-`years_months_duration.spec.md`, and `calendar.spec.md` — and the generated
-[Reference](../reference/blkit.md) for the full Go API. For how the
-engine compiles and runs these expressions, see
-[Architecture → Expressions](../architecture/expressions.md).
+Host Go code builds the temporal values with the matching constructors —
+`bl.Date`, `bl.Time`, `bl.DateTime`, `bl.DTDuration`, `bl.YMDuration`, and
+`bl.Calendar` — each accepting an ISO 8601 / RFC 9557 string, a Go `time.Time`,
+or a components struct. Calendars can also be imported from RFC 5545 iCalendar
+(`.ics`) data with `bl.ImportICal(...)`. See [Values from Go](values-from-go.md)
+for the full host-side story.
 
 ---
 
@@ -3838,8 +3081,7 @@ you get from a literal like `[1, 2, 3]`, from a filter, or from a comprehension.
 Lists keep their elements in order, may mix types, and are never mutated in
 place: every operation returns a fresh list. This page is about *writing*
 expressions over lists — how to build them, index into them, iterate with
-`for`/`some`/`every`, and reach for the built-in function library. The Go value
-type backing a list is `bl.BlList`.
+`for`/`some`/`every`, and reach for the built-in function library.
 
 One thing to fix in your mind up front: **indexing is 1-based**, and negative
 indexes count from the end. There is no element zero.
@@ -3860,16 +3102,13 @@ Elements may be any expression, and they may mix types freely.
 ## Indexing
 
 Index into a list with `list[n]`. Positions start at `1`; a negative index
-counts back from the end. An out-of-range index is not an error — it evaluates
-to `null`.
+counts back from the end.
 
 ```
 // expression-language
 [1, 2, 3, 4][1]                       // → 1     (first element, 1-based)
 [1, 2, 3, 4][-1]                      // → 4     (last element)
 [1, 2, 3, 4][-2]                      // → 3     (second from end)
-[1, 2, 3, 4][10]                      // → null  (out of range)
-[1, 2, 3, 4][0]                       // → null  (there is no element 0)
 ```
 
 ## Filtering
@@ -3904,7 +3143,6 @@ reads like column access.
 ```
 // expression-language
 [{name: "A"}, {name: "B"}].name       // → ["A", "B"]
-[{name: "A"}, {age: 30}].name         // → ["A", null]   (missing field → null)
 ```
 
 Behaviour depends on the input shape:
@@ -3912,11 +3150,7 @@ Behaviour depends on the input shape:
 | Input | `.field` returns |
 |---|---|
 | Single dictionary with the field | the field's value (ordinary field access) |
-| Single dictionary without the field | `null` |
 | List of dictionaries, all have the field | list of values |
-| List of dictionaries, some missing the field | list with `null` in the gaps |
-| List containing non-dictionary elements | `bl.TypeError` |
-| Empty list | `[]` |
 
 ## Comprehensions: `for`, `some`, `every`
 
@@ -3974,8 +3208,8 @@ and lists of different length are never equal.
 
 ## Built-in functions
 
-The list library follows DMN's FEEL functions, plus blkit extensions marked
-**ext**. All positions are 1-based.
+blkit provides a library of functions for working with lists. All positions are
+1-based.
 
 | Function | Example | Result |
 |---|---|---|
@@ -3985,26 +3219,26 @@ The list library follows DMN's FEEL functions, plus blkit extensions marked
 | `indexOf(l, match)` | `indexOf([1,2,3,2], 2)` | `[2, 4]` (all positions) |
 | `sublist(l, start[, length])` | `sublist([1,2,3], 2)` | `[2, 3]` (negative `start` from end) |
 | `append(l, items…)` | `append([1], 2, 3)` | `[1, 2, 3]` |
-| `prepend(l, items…)` **ext** | `prepend([2,3], 1)` | `[1, 2, 3]` |
+| `prepend(l, items…)` | `prepend([2,3], 1)` | `[1, 2, 3]` |
 | `concatenate(lists…)` | `concatenate([1,2],[3])` | `[1, 2, 3]` |
 | `union(lists…)` | `union([1,2],[2,3])` | `[1, 2, 3]` (dedup) |
 | `insertBefore(l, position, item)` | `insertBefore([1,3], 1, 2)` | `[2, 1, 3]` (single item) |
-| `insertBefore(l, position, items)` **ext** | `insertBefore([1,5], 2, [2,3,4])` | `[1, 2, 3, 4, 5]` (spread) |
-| `insertAfter(l, position, item)` **ext** | `insertAfter([1,3], 1, 2)` | `[1, 2, 3]` (single item) |
-| `insertAfter(l, position, items)` **ext** | `insertAfter([1,5], 1, [2,3,4])` | `[1, 2, 3, 4, 5]` (spread) |
+| `insertBefore(l, position, items)` | `insertBefore([1,5], 2, [2,3,4])` | `[1, 2, 3, 4, 5]` (spread) |
+| `insertAfter(l, position, item)` | `insertAfter([1,3], 1, 2)` | `[1, 2, 3]` (single item) |
+| `insertAfter(l, position, items)` | `insertAfter([1,5], 1, [2,3,4])` | `[1, 2, 3, 4, 5]` (spread) |
 | `remove(l, position)` | `remove([1,2,3], 2)` | `[1, 3]` |
-| `remove(l, match)` **ext** | `remove([1,2,3], function(i) i=2)` | `[1, 3]` |
+| `remove(l, match)` | `remove([1,2,3], function(i) i=2)` | `[1, 3]` |
 | `listReplace(l, position, item)` | `listReplace([1,2,3], 2, 9)` | `[1, 9, 3]` |
-| `listReplace(l, match, item)` **ext** | `listReplace([2,4,7], function(i) i<5, 5)` | `[5, 5, 7]` |
+| `listReplace(l, match, item)` | `listReplace([2,4,7], function(i) i<5, 5)` | `[5, 5, 7]` |
 | `reverse(l)` | `reverse([1,2,3])` | `[3, 2, 1]` |
 | `flatten(l)` | `flatten([[1,2],[[3]],4])` | `[1, 2, 3, 4]` (recursive) |
 | `distinct(l)` | `distinct([1,2,2,1])` | `[1, 2]` (first-occurrence order) |
-| `duplicateValues(l)` **ext** | `duplicateValues([1,2,2,1])` | `[1, 2]` (values seen more than once) |
-| `intersection(lists…)` **ext** | `intersection([1,2],[2,3])` | `[2]` |
+| `duplicateValues(l)` | `duplicateValues([1,2,2,1])` | `[1, 2]` (values seen more than once) |
+| `intersection(lists…)` | `intersection([1,2],[2,3])` | `[2]` |
 | `sort(l[, order])` | `sort([3,1,2], "desc")` | `[3, 2, 1]` |
 | `stringJoin(l[, sep[, prefix, suffix]])` | `stringJoin(["a","b"], ", ")` | `"a, b"` |
-| `zipStringJoin(lists[, delim[, prefix, suffix]])` **ext** | `zipStringJoin([["a","b","c"],["1","2","3"]], "-")` | `["a-1","b-2","c-3"]` |
-| `seq(start, end[, step])` **ext** | `seq(5, 10)` | `[5, 6, 7, 8, 9, 10]` |
+| `zipStringJoin(lists[, delim[, prefix, suffix]])` | `zipStringJoin([["a","b","c"],["1","2","3"]], "-")` | `["a-1","b-2","c-3"]` |
+| `seq(start, end[, step])` | `seq(5, 10)` | `[5, 6, 7, 8, 9, 10]` |
 
 ### Inserting a single list as one element
 
@@ -4019,7 +3253,7 @@ a list as one element, wrap it so the engine spreads the *outer* list:
 insertBefore([1, 4], 2, [[2, 3]])    // → [1, [2, 3], 4]
 ```
 
-### `zipStringJoin` (**ext**)
+### `zipStringJoin`
 
 `zipStringJoin` takes `N` lists of equal length and produces one list of
 strings, each the concatenation of the corresponding-position elements from
@@ -4060,10 +3294,7 @@ zipStringJoin([["a","b"], ["1","2"], ["x","y"]], "-", ["<", "(", "{"], [">", ")"
 // → ["<a>-(1)-{x}", "<b>-(2)-{y}"]
 ```
 
-Edge cases: `zipStringJoin([])` → `[]`; `zipStringJoin([[]])` → `[]`;
-`zipStringJoin([list])` (a single inner list, nothing to concat) → `list`.
-
-### `seq` and the `:` operator (**ext**)
+### `seq` and the `:` operator
 
 `seq(start, end[, step])` materialises a numeric sequence as a list. Both
 `start` and `end` are inclusive and `step` defaults to `1`. The `start:end`
@@ -4092,8 +3323,6 @@ A few behaviours worth knowing:
   blkit's arbitrary-precision numbers. When `(end - start)` is not an exact
   multiple of `step`, the last element is the largest value not exceeding `end`
   (ascending) — so `seq(0, 0.95, 0.1)` stops at `0.9`.
-- A `step` of `0` is a `bl.TypeError` (the sequence would never terminate), as
-  are non-numeric `start`, `end`, or `step`.
 
 ### Aggregation
 
@@ -4107,17 +3336,11 @@ A few behaviours worth knowing:
 | `median(l)` | `number` \| `duration` | `median([6,1,2,3])` | `2.5` (average of middle two) |
 | `stddev(l)` | `number` | `stddev([2,4,7,5])` | `≈2.08` (sample stddev) |
 | `mode(l)` | any | `mode([6,1,6,1])` | `[1, 6]` (multimodal — a list) |
-| `all(l)` | `boolean` | `all([true,true,false])` | `false` (three-valued) |
-| `any(l)` | `boolean` | `any([false,false,true])` | `true` (three-valued) |
-
-Aggregates **ignore `null` elements**, and return `null` only when the list is
-empty or contains no elements of the expected type. `all`/`any` follow
-three-valued logic: `all([])` is `true` (vacuously), `any([])` is `false`, and
-`all([true, null])` is `null`.
+| `all(l)` | `boolean` | `all([true,true,false])` | `false` |
+| `any(l)` | `boolean` | `any([false,false,true])` | `true` |
 
 `sum`, `mean`, and `median` accept either a list of numbers or a list of a
-**single duration kind** (all days-time, or all years-months) — mixing the two
-duration kinds, or numbers with durations, is a `bl.TypeError`. `product` and
+**single duration kind** (all days-time, or all years-months). `product` and
 `stddev` are number-only, since they multiply or square (undefined for
 durations).
 
@@ -4125,8 +3348,7 @@ durations).
 one orderable type: `number`, `string`, `date`, `time`, `datetime`, days-time
 `duration`, or years-months `duration`. `boolean`, `null`, `list`,
 `dictionary`, `table`, `range`, and `calendar` are *not* comparable — they
-support only `=`/`!=`. Mixing incompatible comparable types, e.g.
-`min([1, "a"])`, is a `bl.TypeError`.
+support only `=`/`!=`.
 
 ### Ordering used by `min` / `max` / `sort`
 
@@ -4165,11 +3387,7 @@ is one of:
 | `"desc"` | descending |
 | a list | **explicit value order** — elements ranked by their position in that list; anything not listed trails in ascending order |
 
-The sort is **stable**: equal-ranked elements keep their input order. Elements
-that compare as `null` (e.g. a naive-vs-zoned datetime) sort to the **end** under
-`"asc"`/explicit order and **lead** under `"desc"`. A list of mutually
-non-comparable elements, or an `order` string other than `"asc"`/`"desc"`, is a
-`bl.TypeError`.
+The sort is **stable**: equal-ranked elements keep their input order.
 
 ```
 // expression-language
@@ -4179,10 +3397,10 @@ sort(["m", "s", "l"], ["s", "m", "l"])       // → ["s", "m", "l"]   (explicit 
 sort(["m", "s", "xl"], ["s", "m", "l"])      // → ["s", "m", "xl"]  ("xl" unlisted → trails)
 ```
 
-Note this **diverges from DMN FEEL**, whose `sort(list, precedes)` takes a
-comparator function. blkit's `sort` does not accept a comparator.
+blkit's `sort` ranks by the element value itself (via the `order` argument
+above); it does not accept a comparator function.
 
-## Worked example: compile once, evaluate many
+## Worked example
 
 Projection, filtering, and the aggregates compose into readable
 column-style queries. Suppose the env carries a list of order dictionaries:
@@ -4206,63 +3424,11 @@ count(orders[item.region = "NA"])                     // → 2     (filter, then
 sum(for o in orders return o.amount * o.quantity)     // → 575   (per-row arithmetic, then sum)
 ```
 
-On the host side, you compile an expression once against a typed env and
-evaluate it repeatedly. Build list inputs with the variadic `bl.List`
-constructor — it's infallible, preserves order, and accepts both individual
-values and a spread slice:
+## Lists from Go
 
-```go
-// host-side (Go)
-import bl "github.com/friendly-business-machines/blkit/core"
-
-type cart struct {
-    Items bl.BlList `expr:"items"`
-}
-
-// Compile once.
-var total, _ = bl.Expr[cart](`sum(items)`)
-
-// Build a list value to pass in.
-var prices = bl.List(bl.Number(100), bl.Number(150), bl.Number(75))
-
-// Evaluate against any input.
-var revenue, _ = total.Evaluate(cart{Items: prices})   // → 325
-```
-
-`bl.List()` with no arguments yields the empty list, and `bl.List(slice...)`
-spreads an existing `[]bl.BlValue`:
-
-```go
-// host-side (Go)
-var names  = []bl.BlValue{bl.String("Alice"), bl.String("Bob"), bl.String("Carol")}
-var roster = bl.List(names...)
-var empty  = bl.List()
-```
-
-When a list arrives as an input variable, the engine's bridge can also wrap a
-native Go slice into a `bl.BlList` automatically; when the host already holds
-`bl.BlValue`s, `bl.List(...)` is preferred since it skips that round-trip.
-
-## Null and edge-case behaviour
-
-- **Out-of-range index → `null`**, never an error — including index `0` and any
-  negative index past the start.
-- `sublist` with `length = 0` → `[]`; a negative `start` counts from the end.
-- `remove` at an out-of-range position → the list unchanged.
-- Numeric aggregates over an empty or non-numeric list → `null`; aggregates
-  otherwise ignore `null` elements.
-- `sort` with an unknown `order` string, or over non-comparable element types →
-  `bl.TypeError`.
-- `seq` with `step = 0`, or non-numeric arguments → `bl.TypeError`; a
-  wrong-signed `step` is treated as auto-direction.
-
-## Further reading
-
-The authoritative definition of every list operator, function, and edge case is
-the spec at `specs/expressions/list.spec.md`; the generated
-[Reference](../reference/blkit.md) lists the full `bl.BlList` API, and
-[Architecture → Expressions](../architecture/expressions.md) explains how the
-engine compiles and runs the language underneath.
+Host Go code builds `list` values with the variadic `bl.List` constructor, which
+preserves order and accepts both individual values and a spread slice. See
+[Values from Go](values-from-go.md) for the full host-side story.
 
 ---
 
@@ -4277,8 +3443,8 @@ A **dictionary** is an unordered map from string keys to values — blkit's way 
 modelling structured, nested data inside an expression. An applicant record, an
 order line, a parsed JSON object: anything with named fields is naturally a
 dictionary. This page covers writing dictionary literals, reading members,
-testing for keys, transforming dictionaries with the built-in functions, and
-passing one in from host Go code.
+transforming dictionaries with the built-in functions, and passing one in from
+host Go code.
 
 A dictionary is a pure *value*: every operation produces a fresh dictionary
 rather than mutating the original, and keys are case-sensitive, non-empty
@@ -4294,7 +3460,7 @@ entries:
 
 ```
 // expression-language
-{}                                 // → empty dictionary
+{}                                 // empty dictionary
 {name: "Alice", age: 30}           // unquoted keys
 {"my key": 1}                      // quoted keys, for special characters
 {a: 1, b: {c: 2}}                  // nested dictionaries
@@ -4320,13 +3486,11 @@ preserved afterwards.
 ## Member access
 
 Two equivalent forms read a value out of a dictionary: the dot operator and
-bracket access. Both navigate into nested dictionaries, and **a missing key
-yields `null`** rather than an error.
+bracket access. Both navigate into nested dictionaries.
 
 ```
 // expression-language
 {a: {b: 3}}.a.b                    // → 3      (path access through nesting)
-{a: 1}.missing                     // → null   (key not present)
 applicant["my key"]                // bracket access for special-character keys
 applicant.address.postcode         // navigate nested input data
 ```
@@ -4335,19 +3499,15 @@ Use the dot form for ordinary identifier keys, and bracket form when the key is
 not a valid identifier (`d["my key"]`) or when it lives in a variable. The two
 are interchangeable: `d.name` and `d["name"]` mean exactly the same thing.
 
-Because a missing key quietly becomes `null`, member access never fails on an
-absent field — the `null` then flows through the rest of the expression under
-blkit's [null-aware semantics](booleans-and-logic.md).
-
 ## Operators
 
 Dictionaries support only member access and equality. They have no arithmetic
 (`+`, `-`, …), no ordering (`<`, `<=`, `>`, `>=`), and no `in` operator —
-membership is tested with `has` or `isDefined` (see below).
+membership is tested with `has` (see below).
 
 | Operator | Meaning | Example | Result |
 |---|---|---|---|
-| `.` / `[ ]` | member access (path / bracket lookup) | `d.name`, `d["my key"]` | the value, or `null` if missing |
+| `.` / `[ ]` | member access (path / bracket lookup) | `d.name`, `d["my key"]` | the value |
 | `=` | structural equality (order-insensitive) | `{a:1, b:2} = {b:2, a:1}` | `true` |
 | `!=` | structural inequality | `{a:1} != {a:2}` | `true` |
 
@@ -4355,36 +3515,11 @@ Equality is **structural and order-insensitive**: two dictionaries are equal
 when they hold the same key/value pairs, regardless of the order they were
 written in.
 
-## Key presence vs. null
-
-Member access can't, on its own, distinguish a key that is *absent* from a key
-that is *present but holds `null`* — both read back as `null`. When that
-difference matters, use `isDefined`, which probes the dictionary at the
-**resolution layer**, before a missing key has collapsed to `null`:
-
-```
-// expression-language, with `applicant` a declared dictionary field
-isDefined(applicant)             // → true   (a declared field is always defined)
-isDefined(applicant.name)        // → true   when the dictionary has key "name"
-isDefined(applicant.middleName)  // → false  when there is no "middleName" key
-isDefined(undeclaredName)        // compile error — not a declared field
-```
-
-`isDefined(d.key)` answers *"does this key exist?"*. To instead ask whether a
-*present* value is `null`, use `isNull(x)`; to supply a fallback for a `null`,
-use `getOrElse(x, default)` (both in [Booleans and logic](booleans-and-logic.md)
-and the null reference). Note that naming a top-level variable the env doesn't
-declare is a **compile-time error**, so `isDefined` on a bare name is only ever
-statically `true` — its real use is for dictionary paths.
-
-The function `has(d, key)` is the value-layer equivalent for a key you have as a
-string: `has(applicant, "name")` is the counterpart to `isDefined(applicant.name)`.
-
 ## Built-in functions
 
-These are the DMN-inspired dictionary functions plus blkit's extensions (marked
-**ext**). Functions that surface keys (`keys`, `values`, `getEntries`) return
-them in code-point-sorted order.
+The built-in dictionary functions read, transform, and inspect dictionaries.
+Functions that surface keys (`keys`, `values`, `getEntries`) return them in
+code-point-sorted order.
 
 ### Reading
 
@@ -4393,11 +3528,11 @@ them in code-point-sorted order.
 | `getValue(d, key)` | `getValue({foo: 123}, "foo")` | `123` |
 | `getValue(d, keys)` | `getValue({x:1, y:{z:0}}, ["y","z"])` | `0` (follows a nested path) |
 | `getEntries(d)` | `getEntries({foo: 123})` | `[{key: "foo", value: 123}]` |
-| `keys(d)` **ext** | `keys({a:1, b:2})` | `["a", "b"]` (code-point-sorted) |
-| `values(d)` **ext** | `values({a:1, b:2})` | `[1, 2]` (by sorted key) |
-| `has(d, key)` **ext** | `has({a:1}, "a")` | `true` |
-| `size(d)` **ext** | `size({a:1, b:2})` | `2` |
-| `isEmpty(d)` **ext** | `isEmpty({})` | `true` |
+| `keys(d)` | `keys({a:1, b:2})` | `["a", "b"]` (code-point-sorted) |
+| `values(d)` | `values({a:1, b:2})` | `[1, 2]` (by sorted key) |
+| `has(d, key)` | `has({a:1}, "a")` | `true` |
+| `size(d)` | `size({a:1, b:2})` | `2` |
+| `isEmpty(d)` | `isEmpty({})` | `true` |
 
 `getValue` is the function form of member access. Given a single string key it
 behaves like `d.key`; given a *list* of keys it walks a nested path, equivalent
@@ -4414,7 +3549,7 @@ Every transform returns a **new** dictionary; the input is never mutated.
 | `dictionaryPut(d, key, value)` | `dictionaryPut({x:1}, "y", 2)` | `{x:1, y:2}` |
 | `dictionaryPut(d, keys, value)` | `dictionaryPut({x:1, y:{z:0}}, ["y","z"], 2)` | `{x:1, y:{z:2}}` |
 | `dictionaryMerge(dicts)` | `dictionaryMerge([{x:1}, {y:2}])` | `{x:1, y:2}` (later wins) |
-| `dictionaryRemove(d, key)` **ext** | `dictionaryRemove({a:1, b:2}, "a")` | `{b: 2}` |
+| `dictionaryRemove(d, key)` | `dictionaryRemove({a:1, b:2}, "a")` | `{b: 2}` |
 
 - **`dictionaryPut`** adds or replaces an entry. With a single string key it sets
   a top-level entry; with a list of keys it sets a value at a nested path,
@@ -4449,72 +3584,12 @@ for e in getEntries(scores) return e.value > 80   // → [true, false]
 Iterating `getEntries(d)` gives you `{key, value}` dictionaries, so a
 comprehension can see both the key and the value of each entry.
 
-## Passing a dictionary in from Go
+## Dictionaries from Go
 
-Host Go code builds a dictionary by handing a `map[string]bl.BlValue` to the
-`bl.Dictionary` constructor. Because the language treats dictionaries as
-unordered, the map's Go iteration order is irrelevant — keys are sorted into
-canonical order at construction. The constructor returns
-`(bl.BlDictionary, error)`; the only validation is that an empty-string key is
-rejected (duplicate keys can't occur in a Go map).
-
-A top-level `bl.BlDictionary` field on the env struct is the idiomatic way to
-hand a whole nested record to an expression:
-
-```go
-// host-side (Go)
-import bl "github.com/friendly-business-machines/blkit/core"
-
-var applicant, _ = bl.Dictionary(map[string]bl.BlValue{
-    "name":   bl.String("Alice"),
-    "age":    bl.Number(30),
-    "income": bl.Number(75000),
-})
-
-type ApplicantEnv struct {
-    Applicant bl.BlDictionary `expr:"applicant"`
-}
-
-var eligible, _ = bl.Expr[ApplicantEnv](
-    `applicant.age >= 18 and applicant.income > 50000`,
-)
-var result, _ = eligible.Evaluate(ApplicantEnv{Applicant: applicant})
-// result is bl.BlBoolean(true)
-```
-
-Compile the expression once with `bl.Expr`, then call `Evaluate` as many times
-as you like with different `ApplicantEnv` values — the compiled program is
-reusable and holds no per-run state.
-
-To read a dictionary back out of an evaluated result, `bl.BlDictionary` has a
-`Native()` accessor that returns a defensive copy of the underlying
-`map[string]bl.BlValue`; you can mutate that copy freely without affecting the
-original. Its iteration order is Go's standard map randomisation, so sort it
-yourself, or use the sorted output of `keys(d)` from inside an expression, when
-you need a stable order.
-
-## Null and edge-case behaviour
-
-- **Missing key** — reading an absent key via `.`, `[]`, or `getValue` yields
-  `null`, never an error.
-- **Absent vs. null** — `isDefined(d.key)` distinguishes a missing key (`false`)
-  from a key present with a `null` value (`true`); plain member access cannot.
-- **`dictionaryRemove` of an absent key** — returns the dictionary unchanged.
-- **Merging or putting into an empty dictionary** — a no-op shape: the result is
-  just the other contents.
-- **Special-character keys** — must be written with quotes in a literal
-  (`{"my key": 1}`) and read with bracket access (`d["my key"]`).
-- **Empty-string keys** — rejected: `dictionaryPut` with an empty-string key
-  raises a type error, and the host `bl.Dictionary` constructor returns an error.
-
-## Further reading
-
-The dictionary type is defined authoritatively in
-`specs/expressions/dictionary.spec.md`, with literals and path access also
-covered in `specs/expressions/bl-expr.spec.md`. For the exhaustive API surface
-see the generated [Reference](../reference/blkit.md), and for how dictionaries
-fit into the engine's value system see
-[Architecture → Expressions](../architecture/expressions.md).
+Host Go code builds `dictionary` values by handing a `map[string]bl.BlValue` to
+the `bl.Dictionary` constructor; a top-level `bl.BlDictionary` env field is the
+idiomatic way to hand a whole nested record in. See
+[Values from Go](values-from-go.md) for the full host-side story.
 
 ---
 
@@ -4522,18 +3597,17 @@ fit into the engine's value system see
 
 # Ranges
 
-> Intervals like `[1..10]` — membership tests, open and closed bounds, and how
-> ranges drive unary tests.
+> Intervals like `[1..10]` — membership tests, open and closed bounds, the
+> point/interval relations, and how ranges drive unary tests.
 
 A **range** is a contiguous interval of comparable values, with each endpoint
 independently included or excluded. Ranges are how you express "between these
 two bounds" as a single value: an age band, a date window, a price tier. They
-power the `in` membership operator, the interval-algebra built-ins, and the
+power the `in` membership operator, the interval-relation built-ins, and the
 interval form of decision-table unary tests.
 
 Ranges work over any comparable type — numbers, strings (compared in code-point
-order), and the temporal values (compared chronologically). The Go value type
-backing a range is `bl.BlRange`.
+order), and the temporal values (compared chronologically).
 
 ## Range literals
 
@@ -4559,7 +3633,7 @@ or **excluded** (`(` / `)`):
 
 Use `null` as an endpoint to leave that side open: a `null` start means −∞, a
 `null` end means +∞. An unbounded side must always be excluded — a closed
-boundary against `null` is an error, since "≤ −∞" or "≥ +∞" is not meaningful.
+boundary against `null` is not meaningful.
 
 ```
 // expression-language
@@ -4579,9 +3653,6 @@ inclusion exactly:
 10 in [1..10)                      // → false   (upper bound is exclusive)
 ```
 
-The value and the endpoints must be comparable; an incompatible type produces a
-`bl.TypeError`.
-
 The related `between` operator is shorthand for a pair of inclusive
 comparisons — `x between a and b` is exactly `x >= a and x <= b`, so it is
 equivalent to membership in a closed range `[a..b]`:
@@ -4593,7 +3664,7 @@ equivalent to membership in a closed range `[a..b]`:
 ```
 
 `in` also has a function form, `includes(r, x)`, with the operands in the other
-order. It is listed under [Interval algebra](#interval-algebra) below.
+order. It is listed under [Interval relations](#interval-relations) below.
 
 ## Equality
 
@@ -4606,8 +3677,6 @@ have the same start, the same end, and the same inclusion on both sides:
 [1..5] = [1..5)                    // → false  (different end inclusion)
 ```
 
-Structural equality is unaffected by emptiness: two empty ranges with identical
-endpoints and inclusion compare equal (see [Empty ranges](#empty-ranges)).
 Ranges have no ordering operators (`<`, `<=`, …) and no arithmetic — "which range
 is less" has no meaningful definition.
 
@@ -4617,23 +3686,16 @@ The components of a range are read with the dot operator:
 
 | Accessor | Example | Result |
 |---|---|---|
-| `.start` | `[1..10].start` | `1` (or `null` if unbounded) |
-| `.end` | `[1..10).end` | `10` (or `null` if unbounded) |
+| `.start` | `[1..10].start` | `1` |
+| `.end` | `[1..10).end` | `10` |
 | `.startIncluded` | `[1..10].startIncluded` | `true` |
 | `.endIncluded` | `[1..10).endIncluded` | `false` |
 
-## Interval algebra
+## Interval relations
 
-The interval-algebra built-ins describe how two intervals — or an interval and a
-point — relate to one another. Their names follow DMN FEEL's interval functions
-(blkit is FEEL-inspired, not FEEL-compliant; the behaviour around `null` and
-empty ranges in particular diverges). Arguments may be a point, a range, or both,
-depending on the function.
-
-Every one of these returns a `boolean`, with one important exception: if any
-range argument is **empty**, the result is `null` instead (see
-[Empty ranges](#empty-ranges)). `isEmpty` is itself the exception to that
-exception — it returns `true` for an empty range, which is its whole purpose.
+blkit's interval-relation built-ins describe how two intervals — or an interval
+and a point — relate to one another. Arguments may be a point, a range, or both,
+depending on the function. Every one returns a `boolean`.
 
 | Function | Example | Result |
 |---|---|---|
@@ -4651,120 +3713,11 @@ exception — it returns `true` for an empty range, which is its whole purpose.
 | `finishes(point, r)` | `finishes(5, [1..5])` | `true` (point is r's end) |
 | `finishedBy(r, point)` | `finishedBy([1..5], 5)` | `true` (r's end is point; inverse-order of `finishes`) |
 | `coincides(a, b)` | `coincides([1..5], [1..5])` | `true` (identical intervals; self-inverse) |
-| `isEmpty(r)` | `isEmpty((3..3))` | `true` (no values in the range) |
 
 Several of the functions come in inverse-order pairs (`includes`/`during`,
 `starts`/`startedBy`, `finishes`/`finishedBy`, `meets`/`metBy`,
 `overlapsBefore`/`overlapsAfter`) so you can write a relationship whichever way
 round reads more naturally.
-
-## Empty ranges
-
-A range is **empty** when it contains no values. There are two ways to write one:
-
-- **Reversed** — `start > end`, e.g. `[5..3]`. This is accepted silently; it is
-  not an error.
-- **Degenerate exclusive** — the same value at both ends with at least one end
-  excluded: `(3..3)`, `[3..3)`, and `(3..3]` all contain nothing. (`[3..3]` is
-  *not* empty — it contains exactly the one value `3`.)
-
-Operations against an empty range follow blkit's broader null-propagation rule.
-Asking "how does this value relate to a set that has no elements?" has no
-meaningful yes/no answer, so the result is `null`:
-
-| Operation | Against an empty range | Why |
-|---|---|---|
-| `x in r` | `null` | Membership against the empty set has no truth value |
-| `includes(r, x)` | `null` | Same as `in` |
-| `during(x, r)` | `null` | Same |
-| `before`, `after`, `meets`, `metBy`, `overlaps`, `overlapsBefore`, `overlapsAfter`, `starts`, `startedBy`, `finishes`, `finishedBy`, `coincides` | `null` if **either** range argument is empty | Interval-algebra predicates on the empty set are undefined |
-| `isEmpty(r)` | `true` | The meta-question; returning `null` here would defeat its purpose |
-| `r1 = r2`, `r1 != r2` | structural | Emptiness doesn't affect structural equality |
-
-```
-// expression-language
-7 in [5..3]                        // → null   (empty range — reversed bounds)
-isEmpty([5..3])                    // → true
-isEmpty((3..3))                    // → true
-isEmpty([3..3])                    // → false  (contains exactly 3)
-[5..3] = [5..3]                    // → true   (structural equality still holds)
-```
-
-The distinction is deliberate: `null` means "data was missing", while an empty
-range is a well-defined value that simply happens to contain nothing. So
-`isEmpty(null)` is `null` (the input was missing) but `isEmpty([5..3])` is `true`
-(the input was a real, empty range).
-
-## Constructing ranges from Go
-
-Host code builds a range with the `bl.Range` constructor. The endpoints may be
-any comparable `bl.BlValue` — numbers, strings, temporal values — or `bl.Null()`
-for an unbounded side:
-
-```go
-// host-side (Go)
-// func Range(start, end bl.BlValue, startIncluded, endIncluded bool) (bl.BlRange, error)
-
-// Closed-closed numeric range.
-var adultAges, _ = bl.Range(bl.Number(18), bl.Number(120), true, true)
-
-// Half-open (closed-open) — the typical "from X up to but not including Y".
-var quarter, _ = bl.Range(bl.Number(0), bl.Number(0.25), true, false)
-
-// Unbounded upper end — bl.Null() for the open side, and false for its inclusion.
-var workingAge, _ = bl.Range(bl.Number(18), bl.Null(), true, false)
-
-// Date range — both endpoints must be the same type.
-var d1, _ = bl.Date("2025-01-01")
-var d2, _ = bl.Date("2025-12-31")
-var yr2025, _ = bl.Range(d1, d2, true, true)
-```
-
-`bl.Range` returns `(bl.BlRange, error)`. The error fires for:
-
-- **cross-type endpoints** — e.g. a `Number` start with a `Date` end;
-- a **closed boundary on an unbounded endpoint** — e.g.
-  `bl.Range(bl.Number(5), bl.Null(), true, true)`, because `null` may only pair
-  with an excluded boundary; and
-- **non-comparable endpoint types**.
-
-Note that a reversed range such as `bl.Range(bl.Number(5), bl.Number(3), true, true)`
-constructs successfully — it is simply an [empty range](#empty-ranges), not an
-error.
-
-Once you have an evaluated `bl.BlRange`, the host accessors `bl.Start()`,
-`bl.End()`, `StartIncluded()`, and `EndIncluded()` read its parts. `Start()` and
-`End()` return a `bl.BlValue` (which may be `bl.Null()` for an unbounded side);
-the two inclusion accessors return a Go `bool`.
-
-## Worked example: compile once, evaluate many
-
-Ranges shine when a single compiled expression is run against many inputs. The
-expression is parsed and type-checked once; each `Evaluate` reuses the compiled
-program:
-
-```go
-// host-side (Go)
-import bl "github.com/friendly-business-machines/blkit/core"
-
-type applicant struct {
-    Age bl.BlNumber `expr:"age"`
-}
-
-var eligible, _ = bl.Expr[applicant](`age in [18..65]`)
-
-var r1, _ = eligible.Evaluate(applicant{Age: bl.Number(40)}) // → true
-var r2, _ = eligible.Evaluate(applicant{Age: bl.Number(70)}) // → false
-```
-
-A range literal can also be a value the expression produces and returns, not just
-a test:
-
-```go
-// host-side (Go)
-var window, _ = bl.ExprNoEnv(`[date("2025-01-01")..date("2025-12-31")]`)
-var result, _ = window.Evaluate(bl.NoEnv{}) // → a bl.BlRange
-```
 
 ## Ranges in unary tests
 
@@ -4794,32 +3747,16 @@ A bare interval is read as membership of the implicit input: `[18..65]` means
 
 The interval and ordering forms need an ordered domain, so they only apply to the
 comparable scalar types — `bl.TypeNumber`, `bl.TypeString`, `bl.TypeDate`,
-`bl.TypeTime`, `bl.TypeDateTime`, and the two duration types. Using an interval
-form against an unordered input type (boolean, list, dictionary, table, range,
-calendar, regex) is rejected as a `bl.ParseError` when the test is constructed.
-
-Host code compiles a unary test once and evaluates it against many inputs:
-
-```go
-// host-side (Go)
-var inBand, _ = bl.UnaryTest[bl.BlNumber](`[18..65]`)
-
-var ok, _ = inBand.Evaluate(bl.Number(30)) // → true
-var no, _ = inBand.Evaluate(bl.Number(80)) // → false
-```
+`bl.TypeTime`, `bl.TypeDateTime`, and the two duration types.
 
 See [Decisions → Decision Tables](../decisions/decision-tables.md) for how
 interval cells slot into a full table.
 
-## Where to look next
+## Ranges from Go
 
-This guide covers everything you need to write and read ranges. For the
-exhaustive, authoritative detail — every edge case, the Go value type, and the
-function registrations — see the range spec at
-`specs/expressions/range.spec.md`, and the generated
-[Reference](../reference/blkit.md). For how the engine compiles and runs any
-expression, including ranges, see
-[Architecture → Expressions](../architecture/expressions.md).
+Host Go code builds `range` values with the `bl.Range` constructor — two endpoint
+`bl.BlValue`s (or `bl.Null()` for an unbounded side) plus start/end inclusion
+flags. See [Values from Go](values-from-go.md) for the full host-side story.
 
 ---
 
@@ -4827,7 +3764,8 @@ expression, including ranges, see
 
 # Tables
 
-> Tabular data and the operations that filter, project, group, and aggregate it.
+> Tabular data and the expression-language syntax that filters, projects,
+> groups, and aggregates it.
 
 A **table** is blkit's relation type: an ordered, immutable list of `dictionary`
 rows that all share the same column keys. Think of it as a spreadsheet or a SQL
@@ -4837,17 +3775,24 @@ the list machinery (indexing, projection, `for`/`some`/`every`, the list
 aggregates) works on it directly, and a set of relational operations —
 filtering, projection, sorting, joins, grouping, and aggregation — layers on top.
 
-This page covers how to build a table, how to read rows and columns out of it,
-the transformation methods that reshape it, grouping and aggregation, and how to
-hand a host-built table into an expression. Tables are immutable: every operation
-that "changes" a table returns a fresh one, so the verbs chain.
+**The table type and every operation on this page are a blkit-specific value
+type for working with tabular data.** Everything here — the constructors, the
+bracket selectors, and all the relational verbs (`filter`, `select`,
+`withColumn`, `groupBy`, `agg`, `join`, …) — is part of the table type. Where a
+table reuses an ordinary list operation, such as `isEmpty` or the list
+aggregates, that's noted inline.
+
+This page covers how to build a table in an expression, how to read rows and
+columns out of it, the transformation methods that reshape it, and grouping and
+aggregation. Tables are immutable: every operation that "changes" a table returns
+a fresh one, so the verbs chain.
 
 ## Building a table
 
 A table has **no literal form** of its own (there's no `[[...]]` syntax). You
 build one with one of two constructors. Both validate their input, enforce the
-[uniform-keys and per-column-type invariants](#invariants-and-edge-cases), and
-yield a value the table methods accept.
+uniform-keys and per-column-type rules, and yield a value the table methods
+accept.
 
 ### `table(names, rows…)` — the columnar form
 
@@ -4866,10 +3811,9 @@ table(
 )
 ```
 
-A cell may be any expression (`5.99 * 2`, a variable); a `null` cell means "null
-in this row". `table(names)` with no value rows is a zero-row table that still
-carries its column names, and `table([])` is the truly empty table with no columns
-at all.
+A cell may be any expression (`5.99 * 2`, a variable). `table(names)` with no
+value rows is a zero-row table that still carries its column names, and
+`table([])` is the truly empty table with no columns at all.
 
 ### `tableFromDicts(listOfDictionaries)` — adopt dictionary data
 
@@ -4892,7 +3836,7 @@ keys; a list of dictionaries does **not** become a table automatically, so this
 
 | Operator | Meaning | Example |
 |---|---|---|
-| `t[i]` | row by 1-based index — returns a 1-row sub-table (negative from end; out-of-range → empty sub-table) | `t[1]`, `t[-1]` |
+| `t[i]` | row by 1-based index — returns a 1-row sub-table (negative counts from the end) | `t[1]`, `t[-1]` |
 | `t.col` | column projection — returns a `list` of cell values | `t.region` |
 | `t[predicate]` | row filter — columns are in scope by name (`item` is the whole row) | `t[rate > 10]` |
 | `=` `!=` | equality (row-wise, order-sensitive; the column set is part of identity) | `t1 = t2` |
@@ -4941,22 +3885,14 @@ picks rows in the order given; duplicate indices are silently deduped (first
 occurrence wins). A list selector is flattened first, so embedded ranges splice
 in: `t[[3, 7:15, 20]]` selects rows 3, 7 through 15, and 20.
 
-Out-of-range behaviour differs by shape. A single out-of-range index returns an
-**empty table** (consistent with a predicate matching no rows). Out-of-range
-indices *inside a list or range* are silently skipped.
-
 | Expression | Result (for a 3-row `t`) |
 |---|---|
 | `t[1]` | a 1-row sub-table containing the first row |
 | `t[-1]` | a 1-row sub-table containing the last row |
-| `t[0]` | empty sub-table (indexing is 1-based; no zero index) |
-| `t[4]` | empty sub-table (out of range) |
 | `t[1:2]` | a 2-row sub-table containing rows 1 and 2 |
-| `t[1:10]` | a 3-row sub-table (rows past the end are skipped) |
 | `t[[1, 3]]` | a 2-row sub-table containing rows 1 and 3 |
 | `t[[3, 1]]` | a 2-row sub-table in the listed order: row 3 then row 1 |
 | `t[[1, 1]]` | a 1-row sub-table; the duplicate index is deduped |
-| `t[[1, 100]]` | a 1-row sub-table; the out-of-range `100` is skipped |
 | `t[[1, 2:3]]` | a 3-row sub-table (rows 1, 2, 3) — the embedded range is flattened in |
 
 ### Column projection
@@ -4975,8 +3911,6 @@ it: `t[, "unit price"].toList()`.
 | `t.region` | `["domestic", "europe", "intl"]` (a list of 3 cells) |
 | `t[, "region"]` | a single-column table, **not** a list |
 | `t[, "unit price"].toList()` | `[5.99, 15.99, 25.99]` — non-identifier column selected by string, then unwrapped |
-| `t.missing` | `[null, null, null]` — projecting an undeclared key yields one `null` per row, never a missing value |
-| `t.col` on an empty table | `[]` — projection on a zero-row table is the empty list |
 | `t["region"]` | error — a single-argument string bracket is **not** a column accessor |
 
 The bracket grammar reserves the single-argument shape for row indices (numeric)
@@ -4993,7 +3927,7 @@ table** — the selectors only change its *shape*:
   A string is **not** a valid row selector — `t["foo"]` is an error.
 - **Column selector** (second slot): *absent* (i.e. `t[i]`) → all columns; a
   single name `"rate"` → one column; a name list `["region", "rate"]` → those
-  columns, in the listed order. An unknown column name yields `null` cells.
+  columns, in the listed order.
 
 | Row × Column | Example | Result shape |
 |---|---|---|
@@ -5009,10 +3943,9 @@ second column") — columns are stored in canonical sorted order, so a numeric
 column position would be brittle. If you genuinely need column-by-position, go
 through the name: `t[i, t.colNames[k]]`.
 
-Edge cases for the bracket form: `t[]` (zero args) and `t[a, b, c]` (three or more)
-are parse errors. An out-of-range single row index returns an empty table even
-with a column selector (`t[100, "col"]` is empty, never `null`). A column selector
-that names a column twice keeps it once; a row-index list with duplicates dedupes.
+The bracket form takes one or two selectors: `t[]` (zero args) and `t[a, b, c]`
+(three or more) are parse errors. A column selector that names a column twice
+keeps it once; a row-index list with duplicates dedupes.
 
 ### Paths to a single cell value
 
@@ -5057,9 +3990,9 @@ return type, so the result never depends on the table's runtime shape:
 
 | Method | Returns | Behaviour |
 |---|---|---|
-| `t.toList()` | `list` | a single-column table → its cell values; any wider table → its rows (as dictionaries). Empty table → `[]`. Never errors on shape. |
-| `t.toDict()` | `dictionary` | the sole row as a dictionary. **Requires exactly one row** — zero or many rows → error. |
-| `t.toValue()` | the cell | the sole cell. **Requires exactly one row and one column** — any other shape → error. |
+| `t.toList()` | `list` | a single-column table → its cell values; any wider table → its rows (as dictionaries) |
+| `t.toDict()` | `dictionary` | the sole row as a dictionary. **Requires exactly one row.** |
+| `t.toValue()` | the cell | the sole cell. **Requires exactly one row and one column.** |
 
 ```
 // expression-language  — t is a 3-row, 2-column table (region, rate)
@@ -5067,10 +4000,6 @@ t.toList()                 // → [{region:"domestic", rate:5.99}, …]  the row
 t[, "rate"].toList()       // → [5.99, 15.99, 25.99]                 one column → its cells
 t[1].toDict()              // → {region:"domestic", rate:5.99}       the one row
 t[1, "rate"].toValue()     // → 5.99                                 the one cell
-
-t.toDict()                 // → error — 3 rows, not 1
-t[, "rate"].toValue()      // → error — 3 rows, not a single cell
-t[1].toValue()             // → error — 1 row but 2 columns
 ```
 
 The parentheses distinguish a method call from column projection, so a column
@@ -5079,16 +4008,15 @@ literally named `toList` is still reachable by the bare path `t.toList` or by
 
 ## Built-in functions
 
-These are blkit extensions — DMN treats relations as plain lists, so there's no
-DMN equivalent. The relational transformation **verbs** (`filter`, `select`,
-`sort`, …) are *methods*, not functions, and are covered in the next section;
-`union` and `join` carry both surfaces.
+The relational transformation **verbs** (`filter`, `select`, `sort`, …) are
+*methods*, not functions, and are covered in the next section; `union` and `join`
+carry both surfaces.
 
 | Function | Example | Result |
 |---|---|---|
 | `table(names, rows…)` | `table(["a"], [1], [2])` | a validated table from a column-name header + value rows (types inferred) |
 | `tableFromDicts(listOfDictionaries)` | `tableFromDicts([{a:1},{a:2}])` | a validated table from a list of uniformly-keyed dictionaries |
-| `isEmpty(t)` | `isEmpty(tableFromDicts([]))` | `true` (inherited from the list library) |
+| `isEmpty(t)` | `isEmpty(tableFromDicts([]))` | `true` (applied to the table's rows) |
 | `hasColumn(t, name)` | `hasColumn(t, "rate")` | `true` |
 | `union(t, others…[, how])` | `union(q1, q2)` | a new table stacking all rows (UNION ALL); also the method `t.union(...)` — see [Stacking tables](#stacking-tables-union) |
 | `join(t, other, on[, how])` | `join(t, orders, "id", "left")` | a relational join; also the method `t.join(...)` — see [Joining tables](#joining-tables-join) |
@@ -5121,7 +4049,7 @@ shippingRates
 
 | Method | Example | Result |
 |---|---|---|
-| `t.filter(predicate)` | `t.filter(rate > 10)` | rows where `predicate` holds; columns are in scope by name (`item` is the whole row). Identical to `t[rate > 10]`; no match → empty table (columns preserved). |
+| `t.filter(predicate)` | `t.filter(rate > 10)` | rows where `predicate` holds; columns are in scope by name (`item` is the whole row). Identical to `t[rate > 10]`. |
 | `t.filterOut(predicate)` | `t.filterOut(rate > 10)` | the **complement** — rows where `predicate` does *not* hold. `t.filterOut(p)` ≡ `t.filter(not (p))` ≡ `t[not (p)]`. |
 | `t.select(names…)` | `t.select("region", "rate")` | a new table with only the named columns, **in the listed order**. Unknown column → error. |
 | `t.rename(from, to)` | `t.rename("rate", "price")` | a new table with column `from` renamed to `to`. Unknown `from`, or `to` colliding with an existing column → error. |
@@ -5152,20 +4080,14 @@ then by `rate` descending within each region. At least one key is required
 
 `asc` / `desc` / `inOrder` are registered functions that build a key, so a column
 named `"asc"` is never ambiguous (`desc("asc")` sorts the column `asc`
-descending). An unknown column in any key is an error.
-
-For `asc` / `desc` keys, cells comparing as null (e.g. a naive-vs-zoned datetime
-comparison) sort to the **end** under `asc` and **lead** under `desc`. A column
-whose cells aren't mutually comparable is an error.
+descending).
 
 An `inOrder(column, order)` key ranks rows by the position of their `column` cell
 in `order` (matched by value equality). Values listed earlier come first;
 **duplicate entries in `order` are ignored after the first occurrence**. Rows
 whose cell value is **not** in `order` are ranked after every listed value, in
-ascending fallback order. Because listed values are matched by equality, the
-listed portion needs no ordering relation; only the unlisted fallback requires
-comparability, so an unlisted, non-comparable cell is an error. The whole sort is
-**stable**: rows tied across all keys keep their input order.
+ascending fallback order. The whole sort is **stable**: rows tied across all keys
+keep their input order.
 
 ### Deriving columns with `withColumn`
 
@@ -5205,7 +4127,7 @@ a table operand, so it's unambiguously the mode), defaulting to `"error"`:
 | `how` | When operands' column sets differ |
 |---|---|
 | `"error"` | any mismatch — an extra, missing, or differently-spelled key in any operand — is an error. The strict default. |
-| `"all"` | keep the **union** of all columns; a row missing a column gets a `null` cell. Order: the first operand's columns, then each later operand's new columns in first-seen order. |
+| `"all"` | keep the **union** of all columns. Order: the first operand's columns, then each later operand's new columns in first-seen order. |
 | `"common"` | keep only the columns present in **every** operand (the intersection); other columns are dropped. Order follows the first operand, restricted to the common set. |
 
 When every operand already shares the same column set, all three modes produce the
@@ -5216,12 +4138,9 @@ same result. Either way the result's column order follows the **first** operand.
 | `union(q1, q2)` | rows of `q1` then rows of `q2`, duplicates kept |
 | `union(q1)` | `q1` unchanged — a single operand is the identity |
 | `union(q1, q2.select("region"))` | error — column sets differ (default `"error"`) |
-| `union(q1, q2.select("region"), "all")` | stacked; `q1`'s extra columns `null`-filled for `q2`'s rows |
+| `union(q1, q2.select("region"), "all")` | stacked over the union of both column sets |
 | `union(q1, q2.select("region"), "common")` | stacked over the shared columns only |
 | `union(q1, q2).distinct()` | UNION ALL then dedupe → relational set union |
-
-Because a zero-row table still carries its columns, `union(t, empty)` (where
-`empty` has `t`'s columns but no rows) returns `t`'s rows unchanged.
 
 ## Joining tables (join)
 
@@ -5297,8 +4216,7 @@ shippingRates
 
 **Keys.** `groupBy(names…)` takes one or more column names; at least one is
 required (`t.groupBy()` → error) and an unknown column is an error. Rows group by
-**key-tuple equality** across all key columns. `null` key cells group together
-(all rows whose key is null form one group).
+**key-tuple equality** across all key columns.
 
 **Aggregation expressions.** `agg(name, expr, …)` takes alternating string names
 and aggregate expressions; an odd argument count, or a non-string in a name
@@ -5324,161 +4242,498 @@ appearance order** of each group's key (stable, matching `distinct`).
 | `t.groupBy("region").agg("region", count(item))` | error — aggregate name collides with the key column |
 | `t.groupBy("region").agg("a", sum(rate), "b")` | error — dangling name with no expression |
 
-Grouping over a zero-row table has no groups, so `.agg(…)` yields a zero-row table
-that still carries the key and aggregate columns.
+Tables build on the list and dictionary types, so [Lists](lists.md) and
+[Dictionaries](dictionaries.md) are useful companions.
 
-## Constructing a table host-side
+## Tables from Go
 
-Host Go code builds a `bl.BlTable` with `bl.Table(columns bl.Cols, rows ...bl.Row)`:
-a compact **typed header** (`bl.Cols`) declaring each column's name and data type,
-followed by **positional value rows** (`bl.Row`). The header's order is the binding
-order — value *i* in every row is the cell for column *i* — and cells wrap to the
-matching `bl.BlValue` automatically, so no per-cell wrapping is needed. By
-convention a comment listing the column names, aligned over their values, sits
-above the first `bl.Row`.
+Host Go code builds a table with `bl.Table(columns bl.Cols, rows ...bl.Row)` — a
+typed `bl.Cols` header of column names and types, then positional `bl.Row` values
+— and binds it to a `bl.BlTable` env field for the expression to operate on. See
+[Values from Go](values-from-go.md) for the full host-side story.
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/expressions/unary-tests/ -->
+
+# Unary Tests
+
+> A compact syntax for writing a condition about a single value — `> 5`,
+> `[18..65]`, `"gold"` — where the value being tested is supplied implicitly.
+
+A **unary test** is a condition evaluated against one implicit input value. Where
+an ordinary expression spells out both sides of a comparison (`age >= 18`), a
+unary test leaves the input unwritten and states only the condition (`>= 18`).
+The value to test is fed in from the outside.
+
+This is the shorthand used to write the input cells of a decision table: each
+cell is a unary test, and the column's value for the row being evaluated is the
+implicit input. A cell that reads `[18..65]` means "the input is between 18 and
+65"; a cell that reads `"gold", "platinum"` means "the input is gold or
+platinum".
+
+## The forms
+
+| Form | Matches when the input… | Example |
+|---|---|---|
+| **value** | equals the value | `"valid"`, `42` |
+| **comparison** `<` `<=` `>` `>=` | compares true | `< 10`, `>= date("2020-04-06")` |
+| **interval** | falls in the range | `[2..5]`, `(2..5]` |
+| **comma list** | equals any of them (an "or") | `2, 3, 4`, `< 10, > 50` |
+| **`not(...)`** | does *not* match the inner test | `not("valid")`, `not(2, 3)` |
+| **leading-dot path** | the path on the input compares true | `.status = "active"`, `.amount > 100` |
+| **`?` expression** | the expression (with `?` = input) is true | `contains(?, "good")` |
+| **wildcard `-`** | always — matches anything | `-` |
+
+```
+// expression-language
+< 10                   // input < 10
+[18..65]               // 18 <= input <= 65
+"low", "medium"        // input = "low" or input = "medium"
+not(0)                 // input is not 0
+contains(?, "urgent")  // the input string contains "urgent"
+-                      // matches anything
+```
+
+A comma list is a disjunction — the test passes if the input matches **any**
+entry — and the entries can be different forms: `< 10, > 50` matches an input
+below 10 or above 50. `not(...)` inverts whatever test it wraps, including a
+comma list: `not(2, 3)` matches any input that is neither 2 nor 3.
+
+## Which forms apply to which types
+
+The **comparison** and **interval** forms need an ordered value type — numbers,
+strings, and the temporal types. The **value**, **comma list**, `not(...)`, `?`
+expression, and **wildcard** forms work against any type, including booleans,
+lists, dictionaries, tables, and ranges.
+
+So `[18..65]` is valid for a number input but not for a boolean one, whereas
+`"valid"`, `not(x)`, `-`, and the `?` forms apply everywhere.
+
+## The `?` placeholder
+
+For the simple forms (`< 10`, `"valid"`, `[18..65]`), the input is referenced
+implicitly — you never name it. When the condition needs to **pass the input to a
+function**, `?` is the name that stands for it:
+
+```
+// expression-language
+contains(?, "urgent")            // input.contains("urgent")
+endsWith(?, "@blkit.io")         // input ends with the domain
+?.year >= 2025                   // input is a date; check its year
+isPublicHoliday(?, ukHolidays)   // input is a date; check against a calendar
+```
+
+Writing `?` for the implicit forms is allowed but redundant — `< 10` and
+`? < 10` are the same test. A **leading dot** is shorthand for path access on the
+input: `.status = "active"` is exactly `?.status = "active"`, and
+`.applicant.income >= 50000` walks a nested path. Reach for an explicit `?` when
+the input is an argument to a function (`contains(?, "x")`); use the leading dot
+when you're projecting a field out of it.
+
+Because a `?` expression can be any expression that yields a boolean, the unary
+test can express anything the language can — the full power of the type pages
+([Lists](lists.md), [Dictionaries](dictionaries.md), [Tables](tables.md)) is
+available inside one.
+
+## Tests over structured inputs
+
+When the input is a list, dictionary, or table, the `?` form carries the query:
+
+```
+// expression-language — input is a list
+count(?) > 0                            // non-empty
+listContains(?, "urgent")               // membership
+count(?[item.amount > 100]) >= 1        // at least one matching element
+every x in ? satisfies x.qty > 0        // all elements pass
+some  x in ? satisfies x.is_priority    // some element passes
+```
+
+```
+// expression-language — input is a dictionary
+.tier = "gold"                          // field equality (leading-dot shorthand)
+.applicant.income >= 50000              // nested path
+has(?, "approver")                      // key presence
+size(?) > 0                             // non-empty
+```
+
+```
+// expression-language — input is a table
+count(?) > 0                            // non-empty
+some  r in ? satisfies r.amount > 1000  // any row matches
+every r in ? satisfies r.status = "ok"  // every row matches
+count(?[item.flagged]) = 0              // no flagged rows
+```
+
+## Unary tests from Go
+
+Host Go code compiles a unary test once with `bl.UnaryTest[T]` — where `T` is the
+type of the implicit input — and evaluates it against many inputs by passing the
+value straight to `Evaluate` (there is only the single `?`, so no wrapping):
+
+```go
+// host-side (Go)
+import bl "github.com/friendly-business-machines/blkit/core"
+
+var atLeast18, _ = bl.UnaryTest[bl.BlNumber](`>= 18`)
+var isUrgent,  _ = bl.UnaryTest[bl.BlString](`contains(?, "urgent")`)
+var inRange,   _ = bl.UnaryTest[bl.BlNumber](`[18..65]`)
+
+var n21, _ = bl.Number(21)
+var ok, _  = atLeast18.Evaluate(n21)   // the bl.BlBoolean true
+```
+
+Use `T = bl.BlValue` when the input type isn't fixed. The comparison and interval
+forms are rejected when `T` is a type with no ordering. See
+[Values from Go](values-from-go.md) for constructing the input values.
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/expressions/user-defined-functions/ -->
+
+# User-Defined Functions
+
+> Named, reusable functions you define once and call by name from inside any
+> expression — with typed parameters and a typed result.
+
+Sometimes the same piece of logic — a tax calculation, an eligibility check, a
+formatting rule — shows up in expression after expression. A **user-defined
+function** (UDF) lets you name that logic once and then call it by name from any
+other expression, the way you'd call a built-in like `round` or `upper`.
+
+A UDF is the named sibling of the language's inline anonymous functions (the
+`function(x) x + 1` form used by list operations like `remove` and `sort`). The
+difference is that a UDF has a name, fixed typed parameters, and a typed result,
+and its body is written once and reused everywhere.
+
+## Calling a UDF in an expression
+
+Once a function named `addTax` is available, an expression calls it exactly like
+a built-in — by name, with positional arguments:
+
+```
+// expression-language
+addTax(base) + 5
+addTax(100)
+```
+
+The call is checked at compile time: the arguments must match the function's
+parameter types, and the result carries the function's return type, so
+`addTax(base) + 5` only compiles when `addTax` returns a number. A UDF can be
+called anywhere a value of its return type is valid — in arithmetic, in a
+condition, as an argument to another function.
+
+## Defining a UDF
+
+A UDF is defined in host Go code with `bl.Func`. You give it a name, the
+**parameter struct** that names and types its parameters, and the body — an
+expression-language string. The parameter struct's exported fields, in order, are
+the positional parameters; each field's `expr:"..."` tag is the name the body
+uses to read that parameter.
+
+```go
+// host-side (Go)
+import bl "github.com/friendly-business-machines/blkit/core"
+
+type TaxParams struct {
+    Amount bl.BlNumber `expr:"amount"`
+}
+
+var addTax, _ = bl.Func[TaxParams, bl.BlNumber]("addTax", `amount * 1.2`)
+```
+
+`bl.Func[P, R]` is generic over the parameter struct `P` and the return type `R`.
+Here the single parameter is `amount` (a number) and the function returns a
+number. The body `amount * 1.2` is compiled once, when the function is defined,
+and reused on every call.
+
+## Making it callable from an expression
+
+A UDF isn't global — you make it available to an expression by passing it to
+`bl.Expr` alongside the source. The expression may then call it by name:
+
+```go
+// host-side (Go)
+type PriceEnv struct {
+    Base bl.BlNumber `expr:"base"`
+}
+
+var withTax, _ = bl.Expr[PriceEnv](`addTax(base) + 5`, addTax)
+
+var base, _ = bl.Number(100)
+var out, _  = withTax.Evaluate(PriceEnv{Base: base})   // the bl.BlNumber 125
+```
+
+Pass as many UDFs as the expression needs; each becomes callable by its name.
+
+## Calling a UDF directly from Go
+
+The same function is also callable straight from host Go code with `Call`, using
+a typed parameter struct and getting a typed result back:
+
+```go
+// host-side (Go)
+var also, _ = addTax.Call(TaxParams{Amount: base})   // the bl.BlNumber 120
+```
+
+`Name()` and `Source()` return the function's name and its original body text.
+
+## Composing UDFs
+
+A UDF body may call other UDFs. List the functions it depends on after the body,
+and they become callable from inside it:
+
+```go
+// host-side (Go)
+var withFee, _ = bl.Func[TaxParams, bl.BlNumber]("withFee", `addTax(amount) + 2`, addTax)
+```
+
+The dependencies are wired in when `withFee` is compiled, exactly as UDFs are
+wired into a top-level `bl.Expr`. This lets you build small, named building
+blocks and assemble them into larger logic.
+
+## Type safety
+
+The parameter types and the return type form the function's call signature, and
+it is enforced on both sides of the boundary:
+
+- **Arguments are checked at compile time.** Calling `addTax` with a string where
+  it expects a number is a compile error from `bl.Expr`, not a surprise at
+  evaluation time. A bare numeric literal still matches a number parameter, so
+  `addTax(5)` works.
+- **The call result is typed.** Because `addTax(base)` is known to be a number,
+  using its result in the wrong place is caught when the expression compiles.
+- **Passing the wrong parameter struct to `Call` is a Go build error**, the same
+  way passing the wrong environment to `Evaluate` is.
+
+## Rules and limits
+
+- **Parameters come from the struct fields.** Each must be a `bl.BlValue` type
+  (`bl.BlNumber`, `bl.BlString`, …); use `bl.BlValue` itself for a parameter
+  whose type isn't fixed. A field tagged `expr:"-"`, or an unexported field, is
+  not a parameter.
+- **A zero-parameter UDF is fine.** Define it with an empty parameter struct and
+  call it with no arguments.
+- **Names must be unique** within a single expression: passing two functions with
+  the same name to one `bl.Expr` (or one `bl.Func`) is an error.
+- **A body must reference only its parameters and the functions it depends on.**
+  A name that is neither is a compile error when the function is defined.
+- **Recursion is not supported** — a UDF body cannot call itself by name.
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/expressions/values-from-go/ -->
+
+# Values from Go
+
+> Constructing blkit values in host Go code, declaring typed environments, and
+> reading results back — the bridge between the expression language and the Go
+> program that runs it.
+
+The other pages in this section describe the expression *language*: the syntax
+and functions you write inside an expression string. This page covers the
+**host side** — how your Go program builds the values an expression reads, hands
+them in, and gets a result back out.
+
+Every value that crosses the boundary is a `bl.BlValue`. You build them with the
+`bl.*` constructors that mirror each language type, reference them from an
+expression through a typed environment struct, and recover the native Go value
+from the result.
+
+```go
+// host-side (Go)
+import bl "github.com/friendly-business-machines/blkit/core"
+```
+
+## The constructors
+
+Each language type has a constructor in the `core` package (imported as `bl`):
+
+| Type | Constructor | Accepts |
+|---|---|---|
+| `number` | `bl.Number` | any Go numeric type, `bool`, `decimal.Decimal`, or a string |
+| `string` | `bl.String` | a Go `string` or valid-UTF-8 `[]byte` |
+| `boolean` | `bl.Boolean` | a Go `bool`, any integer (`0`→false, non-zero→true), or `"true"`/`"false"` |
+| `null` | `bl.Null` | (no argument) the unknown/absent value |
+| `list` | `bl.List` | variadic `bl.BlValue`s, or a spread slice |
+| `dictionary` | `bl.Dictionary` | a `map[string]bl.BlValue` |
+| `range` | `bl.Range` | two endpoint `bl.BlValue`s plus start/end inclusion flags |
+| `date` | `bl.Date` | an ISO 8601 string, a `time.Time`, or a components struct |
+| `time` | `bl.Time` | an ISO 8601 string, a `time.Time`, or a components struct |
+| `date and time` | `bl.DateTime` | an ISO 8601 / RFC 9557 string, a `time.Time`, or components |
+| `days and time duration` | `bl.DTDuration` | an ISO 8601 duration string, seconds, or `bl.DHMS(...)` |
+| `years and months duration` | `bl.YMDuration` | an ISO 8601 duration string, months, or `bl.YM(...)` |
+| `table` | `bl.Table` | a `bl.Cols` header plus positional `bl.Row` values |
+| `calendar` | `bl.Calendar` | a slice of `bl.CalendarEntry(...)` values |
+
+Most constructors return `(value, error)`; the error reports an input that can't
+be represented (a `NaN`/`Inf` float, an unparseable string, and so on). For
+inputs that can't fail, the `_` slot just keeps the call site uniform.
+
+## Scalars
+
+```go
+// host-side (Go)
+var amount, _ = bl.Number(1500.50)
+var price,  _ = bl.Number("$1,234.56")   // → bl.BlNumber(1234.56)
+
+var greeting, _ = bl.String("hello")
+var greet2, _   = bl.String([]byte{0x68, 0x65, 0x6C, 0x6C, 0x6F})   // "hello"
+
+var approved, _ = bl.Boolean(true)       // from a Go bool
+var flag,     _ = bl.Boolean(1)          // 0 → false, non-zero → true
+var fromConf, _ = bl.Boolean("true")     // case-insensitive string
+```
+
+The `bl.Number` string form is the forgiving one: it tolerates thousands
+separators, currency symbols, and surrounding whitespace. To render a non-string
+Go value, format it host-side first (`strconv.Itoa`, `fmt.Sprintf`, …) or convert
+it inside the expression with `string(...)`.
+
+To model an **unknown** value — a missing boolean, an absent number — pass
+`bl.Null()` rather than a Go `*bool`/`nil`. It then flows through the language's
+[three-valued logic](booleans-and-logic.md):
+
+```go
+// host-side (Go)
+var unknown bl.BlValue = bl.Null()       // unknown, not false
+```
+
+## Collections
+
+`bl.List` is variadic, preserves order, and accepts both individual values and a
+spread slice. `bl.Dictionary` takes a `map[string]bl.BlValue` and sorts keys into
+canonical order at construction, so the map's Go iteration order is irrelevant.
+
+```go
+// host-side (Go)
+var prices = bl.List(bl.Number(100), bl.Number(150), bl.Number(75))
+
+var names  = []bl.BlValue{bl.String("Alice"), bl.String("Bob")}
+var roster = bl.List(names...)           // spread an existing slice
+var empty  = bl.List()                   // the empty list
+
+var applicant, _ = bl.Dictionary(map[string]bl.BlValue{
+    "name":   bl.String("Alice"),
+    "age":    bl.Number(30),
+    "income": bl.Number(75000),
+})
+```
+
+## Ranges
+
+`bl.Range` takes two endpoints and two inclusion flags. Either endpoint may be
+any comparable `bl.BlValue` — numbers, strings, temporal values — or `bl.Null()`
+for an unbounded side.
+
+```go
+// host-side (Go)
+// func Range(start, end bl.BlValue, startIncluded, endIncluded bool) (bl.BlRange, error)
+
+var adultAges,  _ = bl.Range(bl.Number(18), bl.Number(120), true, true)   // [18..120]
+var quarter,    _ = bl.Range(bl.Number(0), bl.Number(0.25), true, false)  // [0..0.25)
+var workingAge, _ = bl.Range(bl.Number(18), bl.Null(), true, false)       // 18 and up
+```
+
+## Temporal values
+
+Each temporal constructor accepts an ISO 8601 / RFC 9557 string, a Go
+`time.Time`, or an explicit components struct. `bl.Today()` and `bl.Now()` are
+shorthands for the current date and date-time.
+
+```go
+// host-side (Go)
+var d,   _ = bl.Date("2025-03-28")                  // also bl.Today()
+var t,   _ = bl.Time("11:45:30+01:00")
+var dt,  _ = bl.DateTime(time.Now())                // also bl.Now()
+var dur, _ = bl.DTDuration(bl.DHMS(1, 2, 30, 0))    // 1d 2h 30m
+var age, _ = bl.YMDuration(bl.YM(1, 6))             // 1y 6m
+```
+
+A **calendar** is built from `bl.CalendarEntry` values, optionally scoped to a
+validity range:
+
+```go
+// host-side (Go)
+var ukHolidays, _ = bl.Calendar(
+    []bl.BlCalendarEntry{
+        bl.CalendarEntry(d, "Good Friday"),
+    },
+    bl.WithValidity(adultAges))   // any bl.BlRange of dates
+```
+
+Calendars can also be imported from RFC 5545 iCalendar (`.ics`) data with
+`bl.ImportICal(...)` — the recommended path for holiday feeds. Host-side
+mutation uses the `(bl.BlCalendar).Drop` / `.Keep` methods and the package-level
+`bl.CalendarMerge`.
+
+## Tables
+
+`bl.Table(columns bl.Cols, rows ...bl.Row)` takes a typed header — column names
+and types — then positional value rows:
 
 ```go
 // host-side (Go)
 var shippingRates, _ = bl.Table(
-    bl.Cols{{"region", bl.TypeString}, {"rate", bl.TypeNumber}, {"ships_today", bl.TypeBoolean}},
-    //      region      rate    ships_today
-    bl.Row{"domestic",  5.99,   true},
-    bl.Row{"europe",    15.99,  false},
-)
-
-// A null cell is just nil in that position:
-var withGap, _ = bl.Table(
     bl.Cols{{"region", bl.TypeString}, {"rate", bl.TypeNumber}},
-    //      region   rate
-    bl.Row{"intl",   nil},   // rate is null
-)
-
-// Zero-row table that still carries its columns.
-var noRates, _ = bl.Table(bl.Cols{{"region", bl.TypeString}, {"rate", bl.TypeNumber}})
-
-// Truly empty table — no columns, no rows.
-var empty, _ = bl.Table(bl.Cols{})
-```
-
-The Go-literal cells above auto-wrap as a convenience. A `bl.Row` cell may also be
-an **already-constructed `bl.BlValue`**, which is what you want when assembling rows
-from values you already hold; the two forms mix freely, and an explicit `bl.Null()`
-is the wrapped form of a `nil` cell:
-
-```go
-// host-side (Go)
-var region        = bl.String("domestic")   // bl.String returns a bl.BlString
-var rate, _       = bl.Number(5.99)          // bl.Number / bl.Boolean return (value, error)
-var shipsToday, _ = bl.Boolean(true)
-
-var fromValues, _ = bl.Table(
-    bl.Cols{{"region", bl.TypeString}, {"rate", bl.TypeNumber}, {"ships_today", bl.TypeBoolean}},
-    //     region     rate    ships_today
-    bl.Row{region,    rate,   shipsToday},   // explicit bl.BlValue cells
-    bl.Row{"europe",  15.99,  bl.Null()},    // literals auto-wrap; bl.Null() is null
+    //      region      rate
+    bl.Row{"domestic",  5.99},
+    bl.Row{"europe",    15.99},
 )
 ```
 
-`bl.Table(...)` returns `(bl.BlTable, error)`. The error path fires when a row's
-length differs from the column count, when a non-`nil` cell wraps to a type other
-than its column's declared `bl.Type` (the per-column invariant), or when the header
-is malformed (a duplicate or empty column name, or a `bl.Type` of `bl.TypeNull`).
-A `nil` cell is always allowed — it becomes `bl.Null()`.
+## Typed environments
 
-### Passing a host-built table into an expression
-
-A `bl.BlTable` is an ordinary `bl.BlValue`, so it binds to an env field like any
-other value. Declare a `bl.BlTable`-typed field, then reference it — and call the
-transformation methods on it — from the source text:
+The variables an expression may reference are the exported fields of a Go
+**environment struct**. Each field is renamed to its source-level name by an
+`expr:"..."` tag and must hold a `bl.BlValue`. You compile against that struct
+type with `bl.Expr[Env]`, then pass an instance to `Evaluate`:
 
 ```go
 // host-side (Go)
-// 1. Build the table in Go.
-var shippingRates, _ = bl.Table(
-    bl.Cols{{"region", bl.TypeString}, {"rate", bl.TypeNumber}, {"ships_today", bl.TypeBoolean}},
-    //      region      rate    ships_today
-    bl.Row{"domestic",  5.99,   true},
-    bl.Row{"europe",    15.99,  false},
-    bl.Row{"intl",      24.50,  false},
-)
+type ApplicantEnv struct {
+    Age    bl.BlNumber `expr:"age"`
+    Income bl.BlNumber `expr:"income"`
+}
 
-// 2. Declare it as a typed env field the expression may reference.
+var eligible, _ = bl.Expr[ApplicantEnv](`age >= 18 and income > 50000`)
+
+var age,    _ = bl.Number(21)
+var income, _ = bl.Number(60000)
+var result, _ = eligible.Evaluate(ApplicantEnv{Age: age, Income: income})
+```
+
+A composite value binds to a single field — a `bl.BlDictionary` field is the
+idiomatic way to hand a whole nested record in, and a `bl.BlTable` field exposes
+a table the expression then operates on:
+
+```go
+// host-side (Go)
 type ShipmentsEnv struct {
     Shipments bl.BlTable `expr:"shipments"`
 }
 
-// 3. Compile once: an expression that chains table methods on the input table.
-var pricey, _ = bl.Expr[ShipmentsEnv](
-    `shipments.filter(rate > 6).sort(desc("rate")).select("region", "rate")`,
-)
-
-// 4. Bind the host-built table to `shipments` and evaluate (repeatedly, concurrently).
-var result, _ = pricey.Evaluate(ShipmentsEnv{Shipments: shippingRates})
-// result is a bl.BlTable:
-//   region   rate
-//   intl     24.50
-//   europe   15.99
+var pricey, _ = bl.Expr[ShipmentsEnv](`shipments.filter(rate > 6).sort(desc("rate"))`)
+var out,    _ = pricey.Evaluate(ShipmentsEnv{Shipments: shippingRates})
 ```
 
-The expensive work — normalising, parsing, and compiling — happens once in
-`bl.Expr`; `Evaluate` just runs the compiled program against the bound env, so one
-compiled expression can be evaluated many times against different tables. A native
-Go `[]map[string]any` input also wraps to a `bl.BlTable` automatically when the
-maps share keys; non-uniform inputs wrap to a list of dictionaries, and you call
-`tableFromDicts(...)` to validate and adopt them as a table.
+For a variable-free expression there is no env to build: compile with
+`bl.ExprNoEnv` and evaluate against `bl.NoEnv{}`.
 
-## Invariants and edge cases
+## Reading results back
 
-A few rules hold for every table, however it was produced:
+`Evaluate` returns a `bl.BlValue`. Type-assert it to the concrete type and call
+its native accessor to get an ordinary Go value:
 
-- **Uniform keys.** Every row has the same set of column keys. The constructors
-  and every operation that produces a table (`union`, `withColumn`, `join`, …)
-  enforce and re-validate this.
-- **Per-column value type.** Every cell in a column shares one value type — if
-  `region` is a string in one row it's a string in every row. `null` is the sole
-  exception: a null cell is permitted in any column, standing for an absent value.
-  A single value type doesn't imply *comparability*, so `t.sort(...)` over a
-  uniformly-typed but non-orderable column (e.g. dictionary cells) is still an
-  error.
-- **Immutability.** Every "modifying" operation returns a fresh table; the
-  underlying row dictionaries are shared by reference, never mutated.
-- **Equality.** `t1 = t2` is true when their column sets are identical (same keys,
-  order-independent) **and** their row sequences match position-by-position. Two
-  tables with the same rows in a different order are **not** equal — sort one with
-  `t.sort(col)` first to normalise. Two tables with the same row data but different
-  column sets are **not** equal.
+```go
+// host-side (Go)
+var d = result.(bl.BlNumber).Decimal()    // shopspring/decimal value
+var s = greeting.Native()                  // Go string from a bl.BlString
+```
 
-Other behaviour worth keeping in mind:
-
-- `t[i]` with `i` out of range (including `i == 0` and `|i| > t.nRows`) returns an
-  **empty table**, not `null` and not an error.
-- `t.col` where `col` isn't a declared column returns a list of `null`s of length
-  `t.nRows`, not a single `null`.
-- `t.select(names…)` is **order-preserving** — the result's column order matches
-  the argument order, not the input order — and referencing an absent column is an
-  error.
-- `t.distinct()` uses full-row equality (order-insensitive over the row's keys) and
-  keeps the first occurrence of each unique row.
-- `union(t)` with a single operand returns `t` unchanged. Stacking a no-column
-  `table([])` onto a table with columns is a mismatch under `"error"`; under
-  `"all"` it contributes nothing.
-- `t.groupBy(...)` over a zero-row table yields a zero-row result that still carries
-  the key and aggregate columns.
-
-## Where the full detail lives
-
-This guide covers everything you need to read and reshape tables in expressions.
-For the exhaustive, authoritative rules — every result-shape combination, every
-error condition, the join cardinality and ordering guarantees, and the host-side
-`bl.Table` / `bl.Cols` / `bl.Row` API — see:
-
-- the authoritative spec, `specs/expressions/table.spec.md`;
-- the generated [Reference](../reference/blkit.md) for the exact Go signatures; and
-- [Architecture → Expressions](../architecture/expressions.md) for how the engine
-  compiles and runs an expression.
-
-Tables build on the list and dictionary types, so [Lists](lists.md) and
-[Dictionaries](dictionaries.md) are useful companions.
+`bl.BlNumber` exposes `Decimal()` (then use the `shopspring/decimal` API —
+`IntPart`, `Float64`, `StringFixed`, …); the other scalar types expose a
+`Native()` accessor returning the corresponding Go value.
 
 ---
 
@@ -5702,35 +4957,110 @@ the condition that routes a process — all of them are blkit expressions. This
 page explains where the language comes from and how the engine compiles and runs
 it.
 
-## Expression languages and FEEL
+## What is an expression language?
 
-Business logic is full of small, self-contained calculations and conditions:
-"is this applicant over 18 and earning more than £25,000?", "what is 20% off
-this price?", "does this date fall inside the policy period?". An **expression
-language** lets you write these as plain strings —
+An **expression language** is a small language whose programs are *expressions*:
+each one takes some inputs and produces a single value. There are no functions to
+define, no loops to manage, no files to open — you write a fragment like
 
 ```text
 age >= 18 and income > 25000
 ```
 
-— compile them once, and evaluate them against many different inputs, instead of
-hard-coding each rule as Go control flow.
+compile it once, and then evaluate it against many different inputs. The result
+is just a value: a boolean here, but it could equally be a number, a string, or
+a list.
 
-blkit's language is modelled on **FEEL** (Friendly Enough Expression Language),
-the expression language defined by the **DMN** (Decision Model and Notation)
-standard. FEEL was designed specifically for business rules, so it has
-properties general-purpose programming languages usually lack:
+This is a deliberately narrow kind of language, and the narrowness is the point.
+Software is full of small, self-contained calculations and conditions —
 
-- **Exact decimal arithmetic** — money and percentages don't drift the way
-  binary floating point does.
-- **Three-valued logic** — a missing value is `null`, and `null` propagates
-  through comparisons and boolean operators in a defined way, rather than
-  throwing or silently defaulting.
-- **Readable, business-friendly syntax** — `between`, ranges like `[1..10]`,
-  `if/then/else`, and list comprehensions (`for`, `some`, `every`).
+- *"is this applicant over 18 and earning more than £25,000?"*
+- *"what is 20% off this price?"*
+- *"does this date fall inside the policy period?"*
 
-blkit doesn't aim to be a conformant FEEL implementation; it takes FEEL's good
-ideas — and its feel — and adapts them to a practical Go library.
+— and these rules tend to change far more often, and need to be understood by far
+more people, than the program that runs them. An expression language lets you
+lift that logic out of the host program's control flow and treat it as **data**:
+something you can store in a database, edit in a spreadsheet-like table, ship
+without recompiling, and hand to an analyst rather than a programmer.
+
+### Where you've already met them
+
+Expression languages are everywhere, even where they aren't advertised as
+languages:
+
+- **Spreadsheet formulas** — Excel and Google Sheets are the most widely used
+  expression language on earth. `=IF(A1>18, "adult", "minor")` is an expression,
+  evaluated against the cells it references.
+- **Database query fragments** — the `WHERE` clause of an SQL statement is an
+  expression language for filtering rows.
+- **Search and filter syntaxes** — Lucene/Elasticsearch query strings, the
+  filter bars in issue trackers like Jira (JQL), and log-search tools.
+- **Configuration and policy** — CEL (Common Expression Language, used across
+  Kubernetes and Google Cloud), Open Policy Agent's Rego, and the rule engines
+  embedded in CI systems all evaluate expressions to make allow/deny decisions.
+- **Templating and automation** — JSONPath and JMESPath pick values out of
+  documents; the conditions in tools like Zapier, Home Assistant, or spreadsheet
+  automation are expressions.
+- **Embedded scripting** — engines such as
+  [Expr](https://github.com/expr-lang/expr) (which blkit builds on), CEL, and
+  MVEL exist specifically to let an application accept user-authored logic
+  safely, without handing over a full programming language.
+
+What unites them is the same trade: give up general-purpose programming power
+(no side effects, no unbounded loops, no I/O) in exchange for expressions that
+are short, safe to evaluate on untrusted input, easy to reason about, and cheap
+to run many times over.
+
+## FEEL and DMN
+
+blkit's language is modelled on **FEEL** — the **F**riendly **E**nough
+**E**xpression **L**anguage — the expression language defined by the **DMN**
+(Decision Model and Notation) standard published by the Object Management Group.
+DMN is an industry standard for describing business decisions: the decision
+tables, rules, and logic that sit behind questions like loan eligibility,
+insurance pricing, or discount calculations. FEEL is the language those rules
+are written in.
+
+The name is a statement of intent. FEEL is meant to be *friendly enough* that a
+business analyst — not just a software engineer — can read a rule and agree that
+it says what the business means, while still being precise enough to execute
+unambiguously. That goal pushes it away from the conventions of general-purpose
+programming languages and towards the needs of business logic:
+
+- **Exact decimal arithmetic.** Money and percentages are computed as exact
+  decimals, so `0.1 + 0.2` is exactly `0.3` — they don't drift the way binary
+  floating point does in most languages.
+- **Readable, business-friendly syntax.** `between`, ranges like `[1..10]`,
+  `if/then/else` as an expression, date and duration literals, and list
+  comprehensions (`for`, `some`, `every`) read close to how the rule would be
+  stated in English.
+
+### How FEEL differs from other expression languages
+
+Most embeddable expression languages — Expr, CEL, MVEL, JEXL — inherit the
+semantics of the host platform they grew up on. Numbers are machine `int`s and
+IEEE-754 floats, boolean logic is two-valued, and the syntax is broadly
+C- or Java-flavoured. They are excellent general-purpose tools.
+
+FEEL is different because it was designed *backwards from business rules* rather
+than forwards from a programming language. The defining contrasts:
+
+- **Decimals, not floats**, so financial arithmetic is correct by default rather
+  than by careful rounding.
+- **`null`-aware three-valued logic**, so partial data is a first-class case
+  instead of an exception waiting to happen.
+- **A grammar built for ranges and tests** — `[18..65]`, `> 1000`, `not(x)` as a
+  *unary test* against an implicit input — which is exactly the shape of a cell
+  in a decision table, the artifact FEEL exists to power.
+- **Standardised, not vendor-specific.** Because FEEL is part of DMN, the same
+  decision model is portable across conforming engines, in the way SQL is
+  portable across databases.
+
+blkit doesn't aim to be a conformant FEEL implementation, and it isn't a DMN
+engine. It takes FEEL's good ideas — the exact arithmetic, the null handling,
+the range-and-test syntax, and its overall *feel* — and adapts them to a
+practical, type-safe Go library.
 
 ## The Expr project
 
