@@ -226,13 +226,13 @@ A `DecisionExpression` gets its safety from two layers:
 - **Go compile time.** The input and output contracts are concrete structs, so a caller passing the wrong input shape to `Evaluate`, or reading an output field that does not exist, fails `go build`.
 - **Construction time.** The entry sources, names, and dependency graph live outside the Go type system (raw strings and `expr` tags), so they are checked when `NewDecisionExpression` runs. Following the decision-family convention, the constructor **accumulates every problem and panics once** with a `*DecisionDefinitionError`. Because a `DecisionExpression` is typically a package-scope `var`, a malformed node aborts the program (or its test binary) at startup — deterministic load-time fail-fast.
 
-What each moment catches:
+What each moment catches, one per phase — compile, runtime init, and runtime:
 
-| Moment | Trigger | What it catches | Raised as |
-|--------|---------|-----------------|-----------|
-| **Go compilation** | `go build` | A caller passing an input value of the wrong type, or reading an undeclared output field. | Go type error |
-| **Node construction** | `NewDecisionExpression` | A non-struct `I`/`O`; an unexported field; a field that is not a `BlValue`; a variable name that is not a valid expr identifier; a duplicate or colliding name; two `Funcs` sharing a name; an empty `O`; an `Entries` key set that is not exactly the output names; an entry that fails to compile, references an undeclared name, or calls an unregistered function; a dependency cycle. | `DecisionDefinitionError` |
-| **Evaluation** | `Evaluate` | A produced value whose runtime type disagrees with its declared output field; a runtime operator type error inside an entry's expression. | `bl.TypeError` |
+| Phase | Moment | Trigger | What it catches | Raised as |
+|-------|--------|---------|-----------------|-----------|
+| **Compile** | Go compilation | `go build` | A caller passing an input value of the wrong type, or reading an undeclared output field. | Go type error |
+| **Runtime init** | Node construction | `NewDecisionExpression` | A non-struct `I`/`O`; an unexported field; a field that is not a `BlValue`; a variable name that is not a valid expr identifier; a duplicate or colliding name; two `Funcs` sharing a name; an empty `O`; an `Entries` key set that is not exactly the output names; an entry that fails to compile, references an undeclared name, or calls an unregistered function; a dependency cycle. | `DecisionDefinitionError` |
+| **Runtime** | Evaluation | `Evaluate` | A produced value whose runtime type disagrees with its declared output field; a runtime operator type error inside an entry's expression. | `bl.TypeError` |
 
 ---
 

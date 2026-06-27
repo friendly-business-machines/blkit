@@ -413,10 +413,12 @@ The task threads one shared, name-keyed context. When `Evaluate(input)` runs:
 
 1. Seed the context with the caller-provided `input` variables and each reference data value, bound under its `Id`.
 2. Iterate `DecisionGraph.DecisionNodes` in stored order (already topologically sorted by `NewDecisionTask`).
-3. Call each node's `Evaluate(context)` — it reads the inputs its contract declares and returns a `map[string]BlValue` keyed by its output names.
+3. Call each node's `Evaluate(context)` (synchronously, unless the node is concurrent — see below) — it reads the inputs its contract declares and returns a `map[string]BlValue` keyed by its output names.
 4. Merge that result into the shared context under those output names. Because output names are unique across the task, a downstream node consumes an upstream output simply by declaring an input of that name.
 5. All nodes are evaluated, regardless of whether their outputs appear in the output contract.
 6. The `DecisionResult` carries every produced output in `AllResults`, with `Outputs` projected to the names declared in `OutputSchema`.
+
+**Concurrent nodes.** A node that reports `Concurrent()` true — a [`DecisionNativeFunction`](decision-native-fn.spec.md#concurrent-execution) configured with `Concurrent: true` — is not awaited in place at step 3. The task captures its already-resolved inputs, runs its `Evaluate` in a goroutine, and proceeds to later independent nodes; it joins the goroutine (merging its outputs, or returning its error tagged with the node `Id`) before evaluating the first later node that consumes one of its outputs, and joins any still-running concurrent nodes before step 6. Every join precedes the consumer, so the shared context each node sees — and the final `DecisionResult` — is identical to fully sequential evaluation; only the overlap of independent work differs.
 
 ### Input Resolution
 
