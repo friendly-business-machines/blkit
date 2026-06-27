@@ -1580,7 +1580,7 @@ func (BlTime) Type() Type
 
 
 <a name="BlUDF"></a>
-## type [BlUDF](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L24-L31>)
+## type [BlUDF](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L26-L33>)
 
 BlUDF is a named user\-defined function: an expression body compiled once against a parameter struct P, callable from other expressions by name with compile\-time\- checked arguments, and returning a value of type R.
 
@@ -1591,7 +1591,7 @@ type BlUDF[P any, R BlValue] struct {
 ```
 
 <a name="Func"></a>
-### func [Func](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L43>)
+### func [Func](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L45>)
 
 ```go
 func Func[P any, R BlValue](name, body string, deps ...UDF) (*BlUDF[P, R], error)
@@ -1602,7 +1602,7 @@ Func compiles a UDF from an expression body. P is the parameter struct: its expo
 Func calls expr.Compile once to compile the body to a stored \*vm.Program, and builds an expr.Function registration (with a reflect\-built prototype derived from P's fields and R) that makes the UDF callable from other expressions. The body is never recompiled — every call runs the stored program via expr.Run.
 
 <a name="BlUDF[P, R].Call"></a>
-### func (\*BlUDF\[P, R\]) [Call](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L115>)
+### func (\*BlUDF\[P, R\]) [Call](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L117>)
 
 ```go
 func (u *BlUDF[P, R]) Call(params P) (R, error)
@@ -1611,7 +1611,7 @@ func (u *BlUDF[P, R]) Call(params P) (R, error)
 Call invokes the UDF host\-side with a typed parameter struct, returning the typed result. Like a call from inside an expression, it runs the stored program via expr.Run.
 
 <a name="BlUDF[P, R].Name"></a>
-### func (\*BlUDF\[P, R\]) [Name](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L134>)
+### func (\*BlUDF\[P, R\]) [Name](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L136>)
 
 ```go
 func (u *BlUDF[P, R]) Name() string
@@ -1620,7 +1620,7 @@ func (u *BlUDF[P, R]) Name() string
 Name returns the UDF's name.
 
 <a name="BlUDF[P, R].Source"></a>
-### func (\*BlUDF\[P, R\]) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L137>)
+### func (\*BlUDF\[P, R\]) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L139>)
 
 ```go
 func (u *BlUDF[P, R]) Source() string
@@ -1923,7 +1923,7 @@ type DateTimeInput interface {
 ```
 
 <a name="DecisionDefinitionError"></a>
-## type [DecisionDefinitionError](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L75-L78>)
+## type [DecisionDefinitionError](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L82-L85>)
 
 DecisionDefinitionError reports one or more problems found while constructing a decision node. Following the decision\-family convention, the constructor accumulates every problem and panics once with this error, so a malformed package\-scope node fails fast at program (or test) startup.
 
@@ -1935,7 +1935,7 @@ type DecisionDefinitionError struct {
 ```
 
 <a name="DecisionDefinitionError.Error"></a>
-### func (\*DecisionDefinitionError) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L80>)
+### func (\*DecisionDefinitionError) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L87>)
 
 ```go
 func (e *DecisionDefinitionError) Error() string
@@ -1944,7 +1944,7 @@ func (e *DecisionDefinitionError) Error() string
 
 
 <a name="DecisionExpression"></a>
-## type [DecisionExpression](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L43-L56>)
+## type [DecisionExpression](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L48-L63>)
 
 DecisionExpression defines decision logic as named text\-expression entries over a typed input struct I and output struct O. Each entry binds one output to a bl\-expression that may reference any declared input or sibling output by name. Entries are compiled and topologically sorted at construction; Evaluate(inputs I) walks them in dependency order and returns O.
 
@@ -1957,16 +1957,16 @@ type DecisionExpression[I, O any] struct {
 ```
 
 <a name="NewDecisionExpression"></a>
-### func [NewDecisionExpression](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L95>)
+### func [NewDecisionExpression](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L130>)
 
 ```go
 func NewDecisionExpression[I, O any](config DecisionExpressionConfig) *DecisionExpression[I, O]
 ```
 
-NewDecisionExpression builds a DecisionExpression from the typed input struct I, output struct O, and the configured entries. It validates the contracts (every exported field has a usable expr name, no duplicate or input/output name collisions, at least one output, the entry keys are exactly the output names), compiles every entry against the combined env, and topologically sorts by inter\-entry dependencies. It accumulates every problem and panics once with a \*DecisionDefinitionError.
+NewDecisionExpression builds a DecisionExpression from the typed input struct I, output struct O, and the configured entries. Every exported field of I and O is a variable, exposed under its Go field name or the optional \`expr:"name"\` rename. It validates the contracts (every field is a BlValue under a valid expr\-identifier name, no duplicate or input/output name collisions, at least one output, the entry keys are exactly the output names, no two Funcs share a name), compiles every entry against the combined env — with config.Funcs registered so entries may call them by name — and topologically sorts by inter\-entry dependencies. It accumulates every problem and panics once with a \*DecisionDefinitionError.
 
 <a name="DecisionExpression[I, O].Evaluate"></a>
-### func (\*DecisionExpression\[I, O\]) [Evaluate](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L240>)
+### func (\*DecisionExpression\[I, O\]) [Evaluate](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L297>)
 
 ```go
 func (d *DecisionExpression[I, O]) Evaluate(inputs I) (O, error)
@@ -1975,7 +1975,7 @@ func (d *DecisionExpression[I, O]) Evaluate(inputs I) (O, error)
 Evaluate runs the entries against the input variables in topological order and returns the produced outputs. An output value whose runtime type disagrees with its declared output field is a bl.TypeError.
 
 <a name="DecisionExpression[I, O].GetDescription"></a>
-### func (\*DecisionExpression\[I, O\]) [GetDescription](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L282>)
+### func (\*DecisionExpression\[I, O\]) [GetDescription](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L339>)
 
 ```go
 func (d *DecisionExpression[I, O]) GetDescription() string
@@ -1984,7 +1984,7 @@ func (d *DecisionExpression[I, O]) GetDescription() string
 GetDescription returns the node's description.
 
 <a name="DecisionExpression[I, O].GetId"></a>
-### func (\*DecisionExpression\[I, O\]) [GetId](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L276>)
+### func (\*DecisionExpression\[I, O\]) [GetId](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L333>)
 
 ```go
 func (d *DecisionExpression[I, O]) GetId() string
@@ -1993,7 +1993,7 @@ func (d *DecisionExpression[I, O]) GetId() string
 GetId returns the node's identifier.
 
 <a name="DecisionExpression[I, O].GetName"></a>
-### func (\*DecisionExpression\[I, O\]) [GetName](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L279>)
+### func (\*DecisionExpression\[I, O\]) [GetName](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L336>)
 
 ```go
 func (d *DecisionExpression[I, O]) GetName() string
@@ -2002,7 +2002,7 @@ func (d *DecisionExpression[I, O]) GetName() string
 GetName returns the node's display name.
 
 <a name="DecisionExpression[I, O].Source"></a>
-### func (\*DecisionExpression\[I, O\]) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L285>)
+### func (\*DecisionExpression\[I, O\]) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L342>)
 
 ```go
 func (d *DecisionExpression[I, O]) Source(output string) (string, bool)
@@ -2011,16 +2011,16 @@ func (d *DecisionExpression[I, O]) Source(output string) (string, bool)
 Source returns the original raw source for an output name.
 
 <a name="DecisionExpression[I, O].ToMarkdown"></a>
-### func (\*DecisionExpression\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L291>)
+### func (\*DecisionExpression\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L351>)
 
 ```go
 func (d *DecisionExpression[I, O]) ToMarkdown() string
 ```
 
-ToMarkdown renders the entries as a markdown table in output declaration order.
+ToMarkdown renders the node as markdown: the input variables (listed, not tabulated), then one table of name/expression rows — first any user\-defined functions, each shown by its call signature (e.g. addTax(amount)) and body, then the entries (output name and source expression) in output declaration order.
 
 <a name="DecisionExpressionConfig"></a>
-## type [DecisionExpressionConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L22-L30>)
+## type [DecisionExpressionConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L22-L35>)
 
 DecisionExpressionConfig configures a DecisionExpression. The input and output contracts are the type parameters I and O of NewDecisionExpression; the config carries identity and the entry sources.
 
@@ -2033,13 +2033,18 @@ type DecisionExpressionConfig struct {
     // Entries maps each output name to its source expression. The key set must
     // be exactly the set of output names (O's expr-tag field names).
     Entries Entries
+
+    // Funcs are user-defined functions (see Func) that every entry may call by
+    // name, with compile-time-checked arguments. Two Funcs sharing a name is a
+    // construction error.
+    Funcs []UDF
 }
 ```
 
 <a name="Entries"></a>
 ## type [Entries](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L17>)
 
-Entries maps each output name to the raw\-string source expression that produces it. The key is the output's expr\-tag name (the FEEL name entries reference), matching a field of the output struct O.
+Entries maps each output name to the raw\-string source expression that produces it. The key is the output's variable name (its Go field name, or its \`expr:"name"\` rename) — the name entries reference — matching a field of O.
 
 ```go
 type Entries map[string]string
@@ -2317,7 +2322,7 @@ func (e *TypeError) Error() string
 
 
 <a name="UDF"></a>
-## type [UDF](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L16-L19>)
+## type [UDF](<https://github.com/friendly-business-machines/blkit/blob/main/core/udf.go#L16-L21>)
 
 UDF is a named, host\-defined function compiled from an expression string. It is a sealed interface — only \*BlUDF\[P, R\] implements it — so a heterogeneous set of UDFs (different parameter and return types) can be passed together to Expr or as dependencies to another Func.
 

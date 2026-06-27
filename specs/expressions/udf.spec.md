@@ -56,6 +56,8 @@ var out, _  = withTax.Evaluate(PriceEnv{Base: base}) // the bl.BlNumber 125
 var also, _ = addTax.Call(TaxParams{Amount: base}) // the bl.BlNumber 120
 ```
 
+The same UDFs can be supplied to a [`DecisionExpression`](../decision-tasks/decision-expression.spec.md) via `Config.Funcs`, so its entries may call them by name.
+
 `[@test] ../../core/udf_test.go`
 
 ## Parameters and the call mapping

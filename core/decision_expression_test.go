@@ -90,6 +90,62 @@ func TestDecisionExpressionConditional(t *testing.T) {
 	}
 }
 
+func TestDecisionExpressionUntaggedFieldUsesGoName(t *testing.T) {
+	type scoreIn struct {
+		Score BlNumber // no tag: variable name is the Go field name, "Score"
+	}
+	type gradeOut struct {
+		Grade BlString // no tag: variable name "Grade"
+	}
+	d := NewDecisionExpression[scoreIn, gradeOut](DecisionExpressionConfig{
+		Entries: Entries{"Grade": `if Score >= 50 then "pass" else "fail"`},
+	})
+	out, err := d.Evaluate(scoreIn{Score: mustNum(t, 70)})
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if out.Grade.String() != "pass" {
+		t.Errorf("grade = %s, want pass", out.Grade.String())
+	}
+}
+
+func TestDecisionExpressionCallsUDF(t *testing.T) {
+	addTax, err := Func[taxParams, BlNumber]("addTax", `amount * 1.2`)
+	if err != nil {
+		t.Fatalf("Func: %v", err)
+	}
+	type priceIn struct {
+		Base BlNumber `expr:"base"`
+	}
+	type priceOut struct {
+		Gross        BlNumber `expr:"gross"`
+		WithShipping BlNumber `expr:"with_shipping"`
+	}
+	d := NewDecisionExpression[priceIn, priceOut](DecisionExpressionConfig{
+		Name:    "Gross Price",
+		Entries: Entries{"gross": `addTax(base)`, "with_shipping": `gross + 5`},
+		Funcs:   []UDF{addTax},
+	})
+	out, err := d.Evaluate(priceIn{Base: mustNum(t, 100)})
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if out.Gross.String() != "120" || out.WithShipping.String() != "125" {
+		t.Errorf("got gross=%s with_shipping=%s, want 120 and 125", out.Gross.String(), out.WithShipping.String())
+	}
+	// The markdown lists the inputs, renders the UDF call verbatim in the entries
+	// table, and includes the function (by call signature) in that same table.
+	md := d.ToMarkdown()
+	for _, want := range []string{"**Inputs:** base", "addTax(base)", "| addTax(amount) | amount * 1.2 |"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("markdown missing %q:\n%s", want, md)
+		}
+	}
+	if strings.Contains(md, "**Functions**") {
+		t.Errorf("functions should share the entries table, not a separate section:\n%s", md)
+	}
+}
+
 func TestDecisionExpressionToMarkdown(t *testing.T) {
 	d := NewDecisionExpression[loanInputs, breakdownOutputs](DecisionExpressionConfig{
 		Name: "Monthly Breakdown",
@@ -103,8 +159,15 @@ func TestDecisionExpressionToMarkdown(t *testing.T) {
 	if !strings.Contains(md, "### Monthly Breakdown") {
 		t.Errorf("missing header:\n%s", md)
 	}
+	if !strings.Contains(md, "**Inputs:** loan_amount, rate, term") {
+		t.Errorf("missing inputs line:\n%s", md)
+	}
 	if !strings.Contains(md, "| principal | loan_amount / term") {
 		t.Errorf("missing principal row:\n%s", md)
+	}
+	// A node with no UDFs has no Functions section.
+	if strings.Contains(md, "**Functions**") {
+		t.Errorf("unexpected Functions section:\n%s", md)
 	}
 }
 
@@ -163,5 +226,46 @@ func TestDecisionExpressionConstructionErrors(t *testing.T) {
 			LoanAmount BlNumber `expr:"loan_amount"`
 		}
 		NewDecisionExpression[paymentInputs, collideOut](DecisionExpressionConfig{Entries: Entries{"loan_amount": `1`}})
+	})
+	mustPanic("non-BlValue input field", func() {
+		type badIn struct {
+			Amount int `expr:"amount"`
+		}
+		NewDecisionExpression[badIn, amountOutput](DecisionExpressionConfig{Entries: Entries{"amount": `1`}})
+	})
+	mustPanic("non-BlValue output field", func() {
+		type badOut struct {
+			Amount string `expr:"amount"`
+		}
+		NewDecisionExpression[paymentInputs, badOut](DecisionExpressionConfig{Entries: Entries{"amount": `1`}})
+	})
+	mustPanic("invalid identifier tag", func() {
+		type badName struct {
+			Amount BlNumber `expr:"not a name"`
+		}
+		NewDecisionExpression[paymentInputs, badName](DecisionExpressionConfig{Entries: Entries{"not a name": `1`}})
+	})
+	mustPanic("excluded field via expr:-", func() {
+		type excludedOut struct {
+			Amount BlNumber `expr:"amount"`
+			Hidden BlNumber `expr:"-"`
+		}
+		NewDecisionExpression[paymentInputs, excludedOut](DecisionExpressionConfig{Entries: Entries{"amount": `1`}})
+	})
+	mustPanic("unexported field", func() {
+		type unexportedIn struct {
+			LoanAmount BlNumber `expr:"loan_amount"`
+			secret     BlNumber `expr:"secret"`
+		}
+		_ = unexportedIn{}.secret
+		NewDecisionExpression[unexportedIn, amountOutput](DecisionExpressionConfig{Entries: Entries{"amount": `loan_amount`}})
+	})
+	mustPanic("duplicate function name", func() {
+		f1, _ := Func[taxParams, BlNumber]("addTax", `amount * 1.2`)
+		f2, _ := Func[taxParams, BlNumber]("addTax", `amount * 1.3`)
+		NewDecisionExpression[paymentInputs, amountOutput](DecisionExpressionConfig{
+			Entries: Entries{"amount": `loan_amount`},
+			Funcs:   []UDF{f1, f2},
+		})
 	})
 }

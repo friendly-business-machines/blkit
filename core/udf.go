@@ -15,6 +15,8 @@ import (
 // dependencies to another Func.
 type UDF interface {
 	udfName() string
+	udfSource() string
+	udfParams() []string
 	udfOption() expr.Option
 }
 
@@ -136,5 +138,17 @@ func (u *BlUDF[P, R]) Name() string { return u.name }
 // Source returns the UDF's original body source.
 func (u *BlUDF[P, R]) Source() string { return u.body }
 
-func (u *BlUDF[P, R]) udfName() string        { return u.name }
+func (u *BlUDF[P, R]) udfName() string   { return u.name }
+func (u *BlUDF[P, R]) udfSource() string { return u.body }
+
+// udfParams returns the positional parameter names, in call order — each bound
+// field's expr name. Used to render the call signature.
+func (u *BlUDF[P, R]) udfParams() []string {
+	names := make([]string, len(u.bind))
+	for i, fieldIdx := range u.bind {
+		names[i], _ = exprTagName(u.pType.Field(fieldIdx))
+	}
+	return names
+}
+
 func (u *BlUDF[P, R]) udfOption() expr.Option { return u.option }

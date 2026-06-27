@@ -7,9 +7,9 @@ targets:
 
 # DecisionExpression
 
-A `DecisionExpression[I, O]` defines decision logic as a set of named entries over two concrete Go structs: an **input** struct `I` and an **output** struct `O`. Each entry binds one output to a value expression written in the [blkit expression language](../expressions/bl-expr.spec.md) — a raw-string source compiled via `bl.Expr`. Entries may reference the declared inputs and may reference one another by output name; the constructor topologically sorts entries by their inter-entry dependencies.
+A `DecisionExpression[I, O]` defines decision logic as a set of named entries over two concrete Go structs: an **input** struct `I` and an **output** struct `O`. Each entry binds one output to a value expression written in the [blkit expression language](../expressions/bl-expr.spec.md) — a raw-string source compiled via `bl.Expr`. Entries may reference the declared inputs, may reference one another by output name, and may call any [user-defined functions](../expressions/udf.spec.md) supplied in `Config.Funcs`; the constructor topologically sorts entries by their inter-entry dependencies.
 
-Because the input and output contracts are concrete Go structs, a caller that passes the wrong input shape or reads a non-existent output gets a **Go compile error**, and `Evaluate(inputs I) (O, error)` carries the result back as a typed struct. The exported fields of `I` and `O` are tagged `expr:"name"` so entries reference them by their FEEL names.
+Because the input and output contracts are concrete Go structs, a caller that passes the wrong input shape or reads a non-existent output gets a **Go compile error**, and `Evaluate(inputs I) (O, error)` carries the result back as a typed struct. Every exported field of `I` and `O` is a variable an entry may reference — by its Go field name, or by the name given in an optional `expr:"name"` tag — and each field must be a `BlValue`, so the contracts carry only blkit values, in and out.
 
 > **Note.** Genericising the input/output contracts takes `DecisionExpression` out of the uniform `map[string]BlValue`-based [`DecisionNode`](decision-node.spec.md) interface that a `DecisionTask` uses to hold heterogeneous nodes. Reconciling the decision-node family (uniform interface, task wiring) with the new generic, struct-typed contracts is tracked as follow-up work; this spec describes `DecisionExpression` as a standalone generic construct.
 
@@ -24,13 +24,20 @@ type DecisionExpressionConfig struct {
     Description string
 
     // Entries maps each output name to its source expression. The key set must
-    // be exactly the set of output names (O's expr-tag field names).
+    // be exactly the set of output variable names declared by O.
     Entries Entries
+
+    // Funcs are user-defined functions (see udf.spec.md) that every entry may
+    // call by name, with compile-time-checked arguments. Two Funcs sharing a
+    // name is a construction error.
+    Funcs []UDF
 }
 
-// I and O are concrete structs whose exported fields, renamed by `expr:"name"`
-// tags, declare the inputs and outputs. NewDecisionExpression accumulates every
-// construction problem and panics once with a *DecisionDefinitionError.
+// I and O are concrete structs whose exported fields declare the inputs and
+// outputs; each field must be a BlValue and is exposed under its Go field name,
+// or under the name in an optional `expr:"name"` tag. NewDecisionExpression
+// accumulates every construction problem and panics once with a
+// *DecisionDefinitionError.
 func NewDecisionExpression[I, O any](config DecisionExpressionConfig) *DecisionExpression[I, O]
 
 func (d *DecisionExpression[I, O]) Evaluate(inputs I) (O, error)
@@ -47,7 +54,50 @@ type DecisionDefinitionError struct {
 }
 ```
 
-`NewDecisionExpression` reflects `I` and `O` to learn the declared variable names (their `expr` tags), joins them into one combined env type (via `reflect.StructOf`, since Go forbids embedding type parameters), compiles each entry's raw-string source (one `expr.Compile` per entry) against that combined env, builds the intra-node dependency graph from sibling-output references, and topologically sorts. A malformed contract, an entry that does not compile, an entry referencing an undeclared name, or a cycle among entries is accumulated and raised as a `DecisionDefinitionError`.
+---
+
+## Construction
+
+`NewDecisionExpression` does all of its validation and compilation up front — when you construct the node, not when you later evaluate it. It compiles every entry's raw-string source into an executable program (a compiled `*vm.Program`) — **one `expr.Compile` call per entry**, through the same expression engine the rest of blkit uses (see [bl-expr.spec.md](../expressions/bl-expr.spec.md)) — and assembles the sorted plan that `Evaluate` later runs. It proceeds in four phases.
+
+### 1. Inspect the contracts
+
+Because `NewDecisionExpression[I, O]` is generic, it does not know `I`'s and `O`'s fields when it is written — they depend on the concrete structs each caller supplies. So it *reflects* over them: Go's `reflect` package lets code examine a value's type at runtime, walking each struct's fields to read their names, types, and `expr:"..."` tags. That is how the constructor discovers the declared input and output variables without you listing them separately.
+
+**Every field is a variable.** Each field of `I` and `O` becomes one variable in the environment — there is no opt-out. By default a field's variable name is its Go field name; the `expr:"..."` tag is *optional* and is used only to expose a field under a different name (for example a Go field `LoanAmount` mapped to the variable `loan_amount`). So a struct of plainly-named fields needs no tags at all.
+
+It then checks the contracts are well-formed. Each failure is reported as a `DecisionDefinitionError`:
+
+- `I` and `O` must be structs, and every field must be exported (an unexported field cannot be a variable);
+- **every field must be a `BlValue`.** Entries operate on `BlValue`s and produce `BlValue`s, so the input and output contracts may hold only blkit values — a field of any other Go type (`int`, `string`, a plain struct, …) is rejected;
+- **every variable name must be a valid expr identifier** — a letter or `_` followed by letters, digits, or `_`. This is checked for the resolved name, so a malformed `expr` tag (`expr:"loan amount"`, `expr:"1st"`) is rejected at construction. (A Go field name is always a valid identifier, so untagged fields pass automatically.)
+- no name may be duplicated, and no input name may collide with an output name (they share one environment — see the next phase — so a collision would silently shadow one of them);
+- `O` must declare at least one output;
+- the `Entries` key set must be exactly the `O` output names — no entry without a matching output, and no output without an entry.
+
+> **Why construction time, not compile time?** Go's generics can constrain a *type parameter*, but there is no constraint that says "a struct all of whose fields are `BlValue`" — field types cannot be expressed in the constraint system. So `[I, O any]` is the tightest signature available, and the `BlValue` rule is enforced by reflection when `NewDecisionExpression` runs. Because a `DecisionExpression` is typically a package-scope `var`, that check still fails at program (or test-binary) startup — the same load-time fail-fast as every other contract rule here.
+
+### 2. Combine the inputs and outputs into one environment
+
+An *environment* is the set of names an expression is allowed to mention, each bound to a value — the variables in scope. Every entry is compiled and evaluated against a single combined environment built from **every input field plus every output field**, keyed by their declared variable names (each field's Go name or its `expr` rename). Because inputs and sibling outputs live in the same environment, any entry may reference any input or any other output by name.
+
+Concretely, the combined environment is a struct type assembled at runtime with `reflect.StructOf`, joining `I`'s and `O`'s fields. It has to be built dynamically because Go does not allow a generic type parameter like `I` or `O` to be embedded in a struct directly. Each combined field is tagged with its declared variable name, so the expression engine resolves those names to the right fields.
+
+### 3. Compile each entry
+
+Each entry's raw-string source is compiled once, with `expr.Compile`, against the combined environment — and with `Config.Funcs` registered, so an entry may call those user-defined functions by name — producing the `*vm.Program` that `Evaluate` will run. (Two `Funcs` sharing a name is rejected here, before any entry is compiled.)
+
+The environment is *strict*, and blkit adds its own pre-pass that flags any name an expression uses but does not declare. So a name that is neither a declared input nor a sibling output — an *undeclared name*, typically a typo — is rejected at compile time rather than silently resolving to an empty value. It surfaces as a `bl.ParseError`, wrapped in a `DecisionDefinitionError`. Compilation is therefore the point at which name discipline is enforced: `Evaluate` never sees an entry that references an unknown name.
+
+### 4. Order the entries by dependency
+
+An entry may reference this node's own outputs — for example a `total` entry that reads `principal` and `interest`. Those references are the entry's *intra-node dependencies*, discovered by walking the entry's parsed expression (its AST — the tree the parser produces from the source). The entries are then *topologically sorted* by these dependencies: ordered so that every entry runs after the sibling outputs it reads. A self-reference, or a dependency cycle (A needs B while B needs A), cannot be ordered and is reported as a `DecisionDefinitionError`.
+
+### After the four phases
+
+The exported `Entries` map still holds each entry's original raw source (used by `ToMarkdown` and `Source`); the compiled programs and their topological evaluation order are kept internally (unexported).
+
+Every problem found across these phases is **accumulated and raised together** as a single `DecisionDefinitionError`, rather than failing on the first — see [Validation and type safety](#validation-and-type-safety).
 
 ---
 
@@ -132,24 +182,40 @@ var out, _  = monthlyBreakdown.Evaluate(LoanInputs{LoanAmount: la, Rate: r, Term
 
 The `total` entry references `principal` and `interest` by name. Those are this node's own outputs — referencing them declares cross-entry dependencies that `NewDecisionExpression` honours when sorting.
 
----
+### Calling user-defined functions
 
-## Compiling entries into the evalPlan
+`Config.Funcs` holds [user-defined functions](../expressions/udf.spec.md) — host-defined, named, typed functions built with `bl.Func`. Every entry may call any of them by name, with arguments checked at construction against the function's declared parameters.
 
-`NewDecisionExpression` validates the contracts, compiles every entry's raw-string source into a `*vm.Program` — **one `expr.Compile` call per entry**, via the same engine path the rest of blkit uses (see [bl-expr.spec.md](../expressions/bl-expr.spec.md)) — and assembles the sorted evaluation plan. It proceeds in four steps:
+```go
+type TaxParams struct {
+    Amount bl.BlNumber `expr:"amount"`
+}
+var addTax, _ = bl.Func[TaxParams, bl.BlNumber]("addTax", `amount * 1.2`)
 
-1. **Validate the contracts.** Each failure is a `DecisionDefinitionError`:
-   - `I` and `O` are structs whose exported fields have usable `expr` names;
-   - no name is duplicated, and no input name collides with an output name (the combined env would otherwise silently shadow one);
-   - `O` declares at least one output;
-   - the `Entries` key set is exactly the `O` output names — no entry without a matching output, and no output without an entry.
-2. **Build the combined env type.** `I`'s and `O`'s fields are joined into one struct type (via `reflect.StructOf`, since a type parameter cannot be embedded) whose field tags are the declared FEEL names, so every entry may reference any declared input and any sibling output by name.
-3. **Compile each entry.** Each entry's source is compiled with `expr.Compile` (once, at construction) against the combined env. Because that env is a strict struct env (plus blkit's own undefined-name pre-pass), a reference to a name that is neither a declared input nor a sibling output is rejected — a `bl.ParseError`, wrapped in a `DecisionDefinitionError`.
-4. **Sort by dependency.** Each entry's intra-node dependencies are the sibling output names its source references (discovered by walking the parsed AST); the entries are topologically sorted by these edges. A self-reference or a reference cycle is a `DecisionDefinitionError`.
+type PriceInputs struct {
+    Base bl.BlNumber `expr:"base"`
+}
+type PriceOutputs struct {
+    Gross        bl.BlNumber `expr:"gross"`
+    WithShipping bl.BlNumber `expr:"with_shipping"`
+}
 
-Compilation is therefore the point at which name discipline is enforced: `Evaluate` never sees an entry that references an unknown name.
+var grossPrice = bl.NewDecisionExpression[PriceInputs, PriceOutputs](bl.DecisionExpressionConfig{
+    Id:   "gross_price",
+    Name: "Gross Price",
+    Entries: bl.Entries{
+        "gross":         `addTax(base)`, // calls the UDF
+        "with_shipping": `gross + 5`,    // references the sibling output
+    },
+    Funcs: []bl.UDF{addTax},
+})
 
-The exported `Entries` map retains each entry's original raw source (used by `ToMarkdown` and `Source`). The compiled programs and their topological evaluation order are held unexported.
+var base, _ = bl.Number(100)
+var out, _  = grossPrice.Evaluate(PriceInputs{Base: base})
+// out is PriceOutputs{Gross: 120, WithShipping: 125}
+```
+
+The functions are registered once, at construction, when each entry is compiled — so a call to a function that is not in `Funcs`, or a call with the wrong argument types, fails as a `DecisionDefinitionError` rather than at evaluation. Two `Funcs` sharing a name is also a `DecisionDefinitionError`.
 
 ---
 
@@ -165,7 +231,7 @@ What each moment catches:
 | Moment | Trigger | What it catches | Raised as |
 |--------|---------|-----------------|-----------|
 | **Go compilation** | `go build` | A caller passing an input value of the wrong type, or reading an undeclared output field. | Go type error |
-| **Node construction** | `NewDecisionExpression` | A non-struct `I`/`O`; a duplicate or colliding `expr` name; an empty `O`; an `Entries` key set that is not exactly the output names; an entry that fails to compile or references an undeclared name; a dependency cycle. | `DecisionDefinitionError` |
+| **Node construction** | `NewDecisionExpression` | A non-struct `I`/`O`; an unexported field; a field that is not a `BlValue`; a variable name that is not a valid expr identifier; a duplicate or colliding name; two `Funcs` sharing a name; an empty `O`; an `Entries` key set that is not exactly the output names; an entry that fails to compile, references an undeclared name, or calls an unregistered function; a dependency cycle. | `DecisionDefinitionError` |
 | **Evaluation** | `Evaluate` | A produced value whose runtime type disagrees with its declared output field; a runtime operator type error inside an entry's expression. | `bl.TypeError` |
 
 ---
@@ -186,22 +252,27 @@ Because the plan is topologically sorted, every name a step references is alread
 
 ## Markdown Rendering
 
-`ToMarkdown()` returns a markdown string showing each entry's name and its source expression, in output declaration order.
+`ToMarkdown()` returns a markdown string with two parts:
+
+- the **input variables**, listed (not tabulated);
+- a single **Name / Expression** table: first the node's user-defined functions, each shown by its call signature (e.g. `addTax(amount)`) and body, then the entries (each output's name and source expression, in output declaration order, with the source rendered verbatim so a UDF call shows as written).
 
 ```go
-fmt.Println(monthlyBreakdown.ToMarkdown())
+fmt.Println(grossPrice.ToMarkdown())
 ```
 
 Output:
 
 ```text
-### Monthly Breakdown
+### Gross Price
 
-| Name      | Expression              |
-|-----------|-------------------------|
-| principal | loan_amount / term      |
-| interest  | loan_amount * rate / 12 |
-| total     | principal + interest    |
+**Inputs:** base
+
+| Name           | Expression   |
+|----------------|--------------|
+| addTax(amount) | amount * 1.2 |
+| gross          | addTax(base) |
+| with_shipping  | gross + 5    |
 ```
 
 `[@test] ../../core/decision_expression_test.go`
@@ -212,10 +283,15 @@ Output:
 
 - An `O` with no exported output fields is invalid; `NewDecisionExpression` raises `DecisionDefinitionError`.
 - The `Entries` key set must be exactly the output names. An `Entries` key matching no output, or an output with no entry, is a `DecisionDefinitionError`.
-- A duplicate `expr` name within `I` or `O`, or an input name that collides with an output name, is a `DecisionDefinitionError`.
+- The `expr` tag is optional — an untagged field is exposed under its Go field name; a tag only renames the variable.
+- An unexported field of `I` or `O` is a `DecisionDefinitionError` — every field must be an exported `BlValue` variable. There is no opt-out; `expr:"-"` is rejected rather than excluding the field.
+- A field whose type is not a `BlValue` is a `DecisionDefinitionError` at construction.
+- A variable name (a field name, or its `expr` tag) that is not a valid expr identifier — a letter or `_` followed by letters, digits, or `_` — is a `DecisionDefinitionError`.
+- A duplicate variable name within `I` or `O`, or an input name that collides with an output name, is a `DecisionDefinitionError`.
 - An entry source that does not compile is a `DecisionDefinitionError` (wrapping the `bl.ParseError`).
 - An entry that references a name that is neither a declared input nor a sibling output is a `DecisionDefinitionError` at construction.
 - An entry referencing another entry's output name declares a cross-entry dependency; cycles are rejected at construction.
+- An entry may call any function in `Config.Funcs` by name. Two `Funcs` sharing a name, or an entry calling a function not in `Funcs` (or with the wrong argument types), is a `DecisionDefinitionError` at construction.
 - An entry that evaluates to `bl.BlNull` is valid, provided the output field's type admits it.
 - Entries with no dependencies on other entries may execute in any order relative to each other.
 - An entry whose runtime value disagrees with its declared output field type produces a `bl.TypeError` at evaluation time.
