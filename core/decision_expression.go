@@ -3,7 +3,6 @@ package core
 import (
 	"fmt"
 	"reflect"
-	"strconv"
 	"strings"
 
 	"github.com/expr-lang/expr"
@@ -34,18 +33,15 @@ type DecisionExpressionConfig struct {
 	Funcs []UDF
 }
 
-// DecisionExpression defines decision logic as named text-expression entries
-// over a typed input struct I and output struct O. Each entry binds one output
-// to a bl-expression that may reference any declared input or sibling output by
-// name. Entries are compiled and topologically sorted at construction;
-// Evaluate(inputs I) walks them in dependency order and returns O.
-//
-// Inputs and outputs are concrete Go structs, so a caller passing the wrong
-// input shape or reading a non-existent output is a Go compile error. The two
-// structs are joined at construction into a single combined env type (built with
-// reflect.StructOf, since Go forbids embedding type parameters) against which
-// every entry is type-checked.
+// DecisionExpression defines decision logic as named text-expression entries over
+// a typed input struct I and output struct O whose fields are Handle values. Each
+// entry binds one output to a bl-expression that may reference any declared input
+// or sibling output by name. Entries are compiled and topologically sorted at
+// construction; Evaluate(inputs I) walks them in dependency order and returns O.
 type DecisionExpression[I, O any] struct {
+	In  I // input port surface (stamped handles for wiring)
+	Out O // output port surface
+
 	id          string
 	name        string
 	description string
@@ -53,26 +49,19 @@ type DecisionExpression[I, O any] struct {
 	entries Entries // original raw sources, keyed by output name
 	funcs   []UDF   // user-defined functions entries may call, for rendering
 
-	combinedType reflect.Type // env type joining I's and O's fields
-	inputCopy    []fieldCopy  // I field -> combined field
-	outputCopy   []fieldCopy  // combined field -> O field
-	inputOrder   []string     // input names in I declaration order
-	outputOrder  []string     // output names in O declaration order
-
-	evalPlan []compiledEntry // entries in topological evaluation order
+	ivars, ovars []decisionVar
+	envT         reflect.Type   // combined env joining I's and O's variables (BlValue fields)
+	envIndex     map[string]int // variable name -> combined env field index
+	evalPlan     []compiledEntry
 }
-
-// fieldCopy records that combined-env field [combined] mirrors source-struct
-// field [src].
-type fieldCopy struct{ combined, src int }
 
 // compiledEntry is one entry's compiled program plus the metadata Evaluate and
 // the topological sort need.
 type compiledEntry struct {
-	output        string      // the output name this entry binds
-	combinedField int         // index of that output in the combined env type
-	program       *vm.Program // compiled source
-	deps          []string    // sibling-output names this entry references
+	output   string      // the output name this entry binds
+	envField int         // index of that output in the combined env type
+	program  *vm.Program // compiled source
+	deps     []string    // sibling-output names this entry references
 }
 
 // DecisionDefinitionError reports one or more problems found while constructing a
@@ -87,20 +76,19 @@ type DecisionDefinitionError struct {
 func (e *DecisionDefinitionError) Error() string {
 	node := e.Node
 	if node == "" {
-		node = "DecisionExpression"
+		node = "Decision"
 	}
 	return node + ": " + strings.Join(e.Problems, "; ")
 }
 
 // decisionFieldName resolves and validates the env variable name for one field of
-// a decision contract struct. Every field participates: the tag is optional and is
-// used only to rename a field's variable, so an untagged field is exposed under its
-// Go field name and an `expr:"name"` tag renames it to name. The field must be
-// exported, must not opt out with `expr:"-"`, and the resolved name must be a valid
-// expr identifier. A non-empty problem string describes the first rule it breaks.
+// a decision contract struct. The field must be exported, must not opt out with
+// `expr:"-"`, and the resolved name (its Go field name, or its `expr:"name"`
+// rename) must be a valid expr identifier. A non-empty problem string describes
+// the first rule it breaks.
 func decisionFieldName(f reflect.StructField) (name, problem string) {
 	if !f.IsExported() {
-		return "", fmt.Sprintf("unexported field %q; every contract field must be an exported BlValue", f.Name)
+		return "", fmt.Sprintf("unexported field %q; every contract field must be an exported Handle", f.Name)
 	}
 	name = f.Name
 	switch tag := f.Tag.Get("expr"); tag {
@@ -119,12 +107,9 @@ func decisionFieldName(f reflect.StructField) (name, problem string) {
 
 // NewDecisionExpression builds a DecisionExpression from the typed input struct I,
 // output struct O, and the configured entries. Every exported field of I and O is
-// a variable, exposed under its Go field name or the optional `expr:"name"` rename.
-// It validates the contracts (every field is a BlValue under a valid expr-identifier
-// name, no duplicate or input/output name collisions, at least one output, the entry
-// keys are exactly the output names, no two Funcs share a name),
-// compiles every entry against the combined env — with config.Funcs registered so
-// entries may call them by name — and topologically sorts by inter-entry
+// a Handle variable, exposed under its Go field name or the optional `expr:"name"`
+// rename. It validates the contracts, compiles every entry against the combined
+// env (with config.Funcs registered), and topologically sorts by inter-entry
 // dependencies. It accumulates every problem and panics once with a
 // *DecisionDefinitionError.
 func NewDecisionExpression[I, O any](config DecisionExpressionConfig) *DecisionExpression[I, O] {
@@ -132,163 +117,117 @@ func NewDecisionExpression[I, O any](config DecisionExpressionConfig) *DecisionE
 	add := func(format string, args ...any) {
 		problems = append(problems, fmt.Sprintf(format, args...))
 	}
-	fail := func() { panic(&DecisionDefinitionError{Node: nodeLabel(config), Problems: problems}) }
+	fail := func() {
+		panic(&DecisionDefinitionError{Node: nodeLabel(config.Id, config.Name, "DecisionExpression"), Problems: problems})
+	}
 
 	iType := reflect.TypeOf((*I)(nil)).Elem()
 	oType := reflect.TypeOf((*O)(nil)).Elem()
-	if iType.Kind() != reflect.Struct {
-		add("input type %s is not a struct", iType)
+
+	ivars, ip := reflectContract(iType)
+	for _, p := range ip {
+		add("input %s", p)
 	}
-	if oType.Kind() != reflect.Struct {
-		add("output type %s is not a struct", oType)
+	ovars, op := reflectContract(oType)
+	for _, p := range op {
+		add("output %s", p)
+	}
+	if len(ovars) == 0 {
+		add("at least one output field is required")
+	}
+
+	// Inputs and sibling outputs share one combined env, so a name may not appear
+	// in both.
+	inNames := map[string]bool{}
+	for _, v := range ivars {
+		inNames[v.name] = true
+	}
+	for _, v := range ovars {
+		if inNames[v.name] {
+			add("output name %q collides with an input", v.name)
+		}
 	}
 	if len(problems) > 0 {
 		fail()
 	}
 
-	// Inputs and outputs may carry only BlValues, since entries operate on and
-	// produce BlValues. Go's generics cannot constrain a struct's field types, so
-	// this is enforced here, by reflection, at construction.
-	blValueType := reflect.TypeOf((*BlValue)(nil)).Elem()
-
-	// Join I's and O's exported fields into one combined env type. Inputs come
-	// first, then outputs; each combined field carries the source field's expr
-	// tag so entries reference it by its expr name.
-	var combinedFields []reflect.StructField
-	var inputCopy, outputCopy []fieldCopy
-	var inputOrder, outputOrder []string
-	outputByTag := map[string]int{} // output name -> combined field index
-	seen := map[string]bool{}
-
-	addField := func(srcType reflect.Type, srcIdx int, tag string) int {
-		ci := len(combinedFields)
-		combinedFields = append(combinedFields, reflect.StructField{
-			Name: "F" + strconv.Itoa(ci),
-			Type: srcType,
-			Tag:  reflect.StructTag(`expr:"` + tag + `"`),
-		})
-		return ci
+	combined := append(append([]decisionVar{}, ivars...), ovars...)
+	envT, declared := envType(combined)
+	envIndex := make(map[string]int, len(combined))
+	for i, v := range combined {
+		envIndex[v.name] = i
 	}
-
-	for i := 0; i < iType.NumField(); i++ {
-		f := iType.Field(i)
-		name, problem := decisionFieldName(f)
-		if problem != "" {
-			add("input %s", problem)
-			continue
-		}
-		if !f.Type.Implements(blValueType) {
-			add("input field %q (%s) is not a BlValue", name, f.Type)
-			continue
-		}
-		if seen[name] {
-			add("duplicate input variable name %q", name)
-			continue
-		}
-		seen[name] = true
-		ci := addField(f.Type, i, name)
-		inputCopy = append(inputCopy, fieldCopy{combined: ci, src: i})
-		inputOrder = append(inputOrder, name)
-	}
-	for j := 0; j < oType.NumField(); j++ {
-		f := oType.Field(j)
-		name, problem := decisionFieldName(f)
-		if problem != "" {
-			add("output %s", problem)
-			continue
-		}
-		if !f.Type.Implements(blValueType) {
-			add("output field %q (%s) is not a BlValue", name, f.Type)
-			continue
-		}
-		if seen[name] {
-			add("output name %q collides with an input or another output", name)
-			continue
-		}
-		seen[name] = true
-		ci := addField(f.Type, j, name)
-		outputCopy = append(outputCopy, fieldCopy{combined: ci, src: j})
-		outputByTag[name] = ci
-		outputOrder = append(outputOrder, name)
-	}
-	if len(outputOrder) == 0 {
-		add("at least one output field is required")
+	outputByName := map[string]bool{}
+	for _, v := range ovars {
+		outputByName[v.name] = true
 	}
 
 	// The entry keys must be exactly the output names.
 	for key := range config.Entries {
-		if _, ok := outputByTag[key]; !ok {
+		if !outputByName[key] {
 			add("entry %q has no matching output field", key)
 		}
 	}
-	for _, name := range outputOrder {
-		if _, ok := config.Entries[name]; !ok {
-			add("output %q has no entry", name)
+	for _, v := range ovars {
+		if _, ok := config.Entries[v.name]; !ok {
+			add("output %q has no entry", v.name)
 		}
 	}
 	if len(problems) > 0 {
 		fail()
 	}
 
-	combinedType := reflect.StructOf(combinedFields)
-	combinedZero := reflect.New(combinedType).Elem().Interface()
-
-	// Register the user-defined functions so entries may call them by name. A
-	// duplicate function name is a construction error; without valid registrations
-	// the per-entry compiles below would be meaningless, so fail at this barrier.
 	udfOpts, uerr := udfOptions(config.Funcs)
 	if uerr != nil {
 		add("%v", uerr)
 		fail()
 	}
 
-	// Compile each entry against the combined env (a strict struct env, so any
-	// reference to a name that is neither a declared input nor a sibling output
-	// is a compile error) plus the registered UDFs, and discover its sibling-output
-	// dependencies.
+	envZero := reflect.New(envT).Elem().Interface()
 	var entries []compiledEntry
-	for _, name := range outputOrder {
-		src := config.Entries[name]
-		program, err := compileWithEnv(src, combinedZero, seen, udfOpts...)
+	for _, v := range ovars {
+		src := config.Entries[v.name]
+		program, err := compileWithEnv(src, envZero, declared, udfOpts...)
 		if err != nil {
-			add("entry %q: %v", name, err)
+			add("entry %q: %v", v.name, err)
 			continue
 		}
-		deps, err := siblingDeps(src, outputByTag)
+		deps, err := siblingDeps(src, outputByName)
 		if err != nil {
-			add("entry %q: %v", name, err)
+			add("entry %q: %v", v.name, err)
 			continue
 		}
-		entries = append(entries, compiledEntry{
-			output:        name,
-			combinedField: outputByTag[name],
-			program:       program,
-			deps:          deps,
-		})
+		entries = append(entries, compiledEntry{output: v.name, envField: envIndex[v.name], program: program, deps: deps})
 	}
 	if len(problems) > 0 {
 		fail()
 	}
 
+	var outputOrder []string
+	for _, v := range ovars {
+		outputOrder = append(outputOrder, v.name)
+	}
 	plan, err := topoSortEntries(entries, outputOrder)
 	if err != nil {
 		add("%v", err)
 		fail()
 	}
 
-	return &DecisionExpression[I, O]{
-		id:           config.Id,
-		name:         config.Name,
-		description:  config.Description,
-		entries:      cloneEntries(config.Entries),
-		funcs:        append([]UDF(nil), config.Funcs...),
-		combinedType: combinedType,
-		inputCopy:    inputCopy,
-		outputCopy:   outputCopy,
-		inputOrder:   inputOrder,
-		outputOrder:  outputOrder,
-		evalPlan:     plan,
+	d := &DecisionExpression[I, O]{
+		id:          config.Id,
+		name:        config.Name,
+		description: config.Description,
+		entries:     cloneEntries(config.Entries),
+		funcs:       append([]UDF(nil), config.Funcs...),
+		ivars:       ivars,
+		ovars:       ovars,
+		envT:        envT,
+		envIndex:    envIndex,
+		evalPlan:    plan,
 	}
+	d.In = stampSurface(d, d.id, iType, ivars).Interface().(I)
+	d.Out = stampSurface(d, d.id, oType, ovars).Interface().(O)
+	return d
 }
 
 // Evaluate runs the entries against the input variables in topological order and
@@ -296,29 +235,35 @@ func NewDecisionExpression[I, O any](config DecisionExpressionConfig) *DecisionE
 // its declared output field is a bl.TypeError.
 func (d *DecisionExpression[I, O]) Evaluate(inputs I) (O, error) {
 	var out O
-	combined := reflect.New(d.combinedType).Elem()
-	inv := reflect.ValueOf(inputs)
-	for _, c := range d.inputCopy {
-		combined.Field(c.combined).Set(inv.Field(c.src))
+	env := reflect.New(d.envT).Elem()
+	iv := reflect.ValueOf(inputs)
+	for _, v := range d.ivars {
+		val := iv.Field(v.field).Interface().(roHandle).getValue()
+		if val != nil && reflect.TypeOf(val).AssignableTo(v.elem) {
+			env.Field(d.envIndex[v.name]).Set(reflect.ValueOf(val))
+		}
 	}
 	for _, step := range d.evalPlan {
-		raw, err := expr.Run(step.program, combined.Interface())
+		raw, err := expr.Run(step.program, env.Interface())
 		if err != nil {
 			return out, &TypeError{Op: "evaluate", Detail: err.Error()}
 		}
-		if err := setBlField(combined.Field(step.combinedField), asBl(raw)); err != nil {
+		if err := setBlField(env.Field(step.envField), asBl(raw)); err != nil {
 			return out, err
 		}
 	}
-	outv := reflect.ValueOf(&out).Elem()
-	for _, c := range d.outputCopy {
-		outv.Field(c.src).Set(combined.Field(c.combined))
+	ov := reflect.ValueOf(&out).Elem()
+	for _, v := range d.ovars {
+		val := env.Field(d.envIndex[v.name]).Interface().(BlValue)
+		if err := ov.Field(v.field).Addr().Interface().(anyHandle).setValue(val); err != nil {
+			return out, err
+		}
 	}
 	return out, nil
 }
 
-// setBlField writes a produced BlValue into a typed output field, turning a
-// reflect type-mismatch panic into a bl.TypeError.
+// setBlField writes a produced BlValue into a typed env field, turning a reflect
+// type-mismatch panic into a bl.TypeError.
 func setBlField(field reflect.Value, v BlValue) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -329,14 +274,29 @@ func setBlField(field reflect.Value, v BlValue) (err error) {
 	return nil
 }
 
-// GetId returns the node's identifier.
-func (d *DecisionExpression[I, O]) GetId() string { return d.id }
-
-// GetName returns the node's display name.
-func (d *DecisionExpression[I, O]) GetName() string { return d.name }
-
-// GetDescription returns the node's description.
+// DecisionNode[I, O] interface satisfaction.
+func (d *DecisionExpression[I, O]) GetId() string          { return d.id }
+func (d *DecisionExpression[I, O]) GetName() string        { return d.name }
 func (d *DecisionExpression[I, O]) GetDescription() string { return d.description }
+func (d *DecisionExpression[I, O]) Inputs() []Field        { return fieldsOf(d.ivars) }
+func (d *DecisionExpression[I, O]) Outputs() []Field       { return fieldsOf(d.ovars) }
+
+// erased decisionNode satisfaction.
+func (d *DecisionExpression[I, O]) inVars() []decisionVar  { return d.ivars }
+func (d *DecisionExpression[I, O]) outVars() []decisionVar { return d.ovars }
+func (d *DecisionExpression[I, O]) concurrent() bool       { return false }
+
+func (d *DecisionExpression[I, O]) runErased(in map[string]BlValue) (map[string]BlValue, error) {
+	input, err := inputFromMap(reflect.TypeOf((*I)(nil)).Elem(), d.ivars, in)
+	if err != nil {
+		return nil, err
+	}
+	out, err := d.Evaluate(input.(I))
+	if err != nil {
+		return nil, err
+	}
+	return outputToMap(out, d.ovars), nil
+}
 
 // Source returns the original raw source for an output name.
 func (d *DecisionExpression[I, O]) Source(output string) (string, bool) {
@@ -346,24 +306,26 @@ func (d *DecisionExpression[I, O]) Source(output string) (string, bool) {
 
 // ToMarkdown renders the node as markdown: the input variables (listed, not
 // tabulated), then one table of name/expression rows — first any user-defined
-// functions, each shown by its call signature (e.g. addTax(amount)) and body, then
-// the entries (output name and source expression) in output declaration order.
+// functions, then the entries in output declaration order.
 func (d *DecisionExpression[I, O]) ToMarkdown() string {
 	var b strings.Builder
 	if d.name != "" {
 		b.WriteString("### " + d.name + "\n\n")
 	}
-	if len(d.inputOrder) > 0 {
-		b.WriteString("**Inputs:** " + strings.Join(d.inputOrder, ", ") + "\n\n")
+	if len(d.ivars) > 0 {
+		names := make([]string, len(d.ivars))
+		for i, v := range d.ivars {
+			names[i] = v.name
+		}
+		b.WriteString("**Inputs:** " + strings.Join(names, ", ") + "\n\n")
 	}
-
-	rows := make([][2]string, 0, len(d.funcs)+len(d.outputOrder))
+	rows := make([][2]string, 0, len(d.funcs)+len(d.ovars))
 	for _, u := range d.funcs {
 		signature := u.udfName() + "(" + strings.Join(u.udfParams(), ", ") + ")"
 		rows = append(rows, [2]string{signature, u.udfSource()})
 	}
-	for _, name := range d.outputOrder {
-		rows = append(rows, [2]string{name, d.entries[name]})
+	for _, v := range d.ovars {
+		rows = append(rows, [2]string{v.name, d.entries[v.name]})
 	}
 	mdTable(&b, "Name", "Expression", rows)
 	return b.String()
@@ -400,7 +362,7 @@ func pad(s string, w int) string {
 
 // siblingDeps returns the sibling-output names an entry source references, used
 // to order the evaluation plan.
-func siblingDeps(source string, outputByTag map[string]int) ([]string, error) {
+func siblingDeps(source string, outputByName map[string]bool) ([]string, error) {
 	src, err := normalise(source)
 	if err != nil {
 		return nil, err
@@ -413,7 +375,7 @@ func siblingDeps(source string, outputByTag map[string]int) ([]string, error) {
 	freeIdents(tree.Node, map[string]bool{}, free)
 	var deps []string
 	for name := range free {
-		if _, ok := outputByTag[name]; ok {
+		if outputByName[name] {
 			deps = append(deps, name)
 		}
 	}
@@ -421,8 +383,7 @@ func siblingDeps(source string, outputByTag map[string]int) ([]string, error) {
 }
 
 // topoSortEntries orders entries so each comes after the sibling outputs it
-// depends on. A self-reference or a dependency cycle is an error. Zero-dependency
-// entries keep output-declaration order.
+// depends on. A self-reference or a dependency cycle is an error.
 func topoSortEntries(entries []compiledEntry, order []string) ([]compiledEntry, error) {
 	byName := make(map[string]compiledEntry, len(entries))
 	indeg := make(map[string]int, len(entries))
@@ -477,12 +438,13 @@ func cloneEntries(e Entries) Entries {
 	return out
 }
 
-func nodeLabel(c DecisionExpressionConfig) string {
-	if c.Id != "" {
-		return c.Id
+// nodeLabel picks a human label for a decision node's errors.
+func nodeLabel(id, name, fallback string) string {
+	if id != "" {
+		return id
 	}
-	if c.Name != "" {
-		return c.Name
+	if name != "" {
+		return name
 	}
-	return "DecisionExpression"
+	return fallback
 }

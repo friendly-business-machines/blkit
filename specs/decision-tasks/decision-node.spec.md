@@ -31,7 +31,7 @@ type DecisionNode[I, O any] interface {
 
 Each node value also exposes two **port surfaces** — `node.In` (an `I`-shaped surface) and `node.Out` (an `O`-shaped surface) — whose fields are the typed [handles](#handlet--the-typed-io-field) used to wire the node (see [§ Port surfaces](#port-surfaces)).
 
-A static value with identity is **not** a node: it is a [`ReferenceData`](reference-data.spec.md) value source, which carries its `Value` rather than computing one. It exposes a single `.Out` handle so it can be wired, but it has no `Evaluate` and never runs.
+A static value with identity is **not** a node: it is a [`ReferenceData`](reference-data.spec.md) value source, which carries its constant rather than computing one. It exposes a single `.Value` handle so it can be wired, but it has no `Evaluate` and never runs.
 
 ---
 
@@ -113,7 +113,7 @@ These surfaces hold no values — they are the handle templates the netlist conn
 
 `Evaluate(in I) (O, error)` is the **typed** entry point: pass a fully-typed input struct, get a fully-typed output struct. It is what you call to unit-test a node standalone, and the level at which the Go compiler checks a caller.
 
-Inside a `DecisionTask`, nodes have different `I`/`O` types, so they cannot share one Go slice as `DecisionNode[I, O]`. The task therefore stores them through a small **non-generic** view (built by `bl.Nodes(…)`), and drives each through an **internal run-thunk** that reads the node's input handles from the task's shared value environment, calls the typed `Evaluate`, and writes the output handles back. The erasure is entirely internal: every contract a user touches — the structs, the handles, the edges — stays typed. This mirrors how a generic [`ReferenceData[T]`](reference-data.spec.md) is held through the non-generic `ReferenceValue` view.
+Inside a `DecisionTask`, nodes have different `I`/`O` types, so they cannot share one Go slice as `DecisionNode[I, O]`. The task therefore stores them through a small **non-generic** view — the node set it derives from the graph edges — and drives each through an **internal run-thunk** that reads the node's input handles from the task's shared value environment, calls the typed `Evaluate`, and writes the output handles back. The erasure is entirely internal: every contract a user touches — the structs, the handles, the edges — stays typed. This mirrors how a generic [`ReferenceData[T]`](reference-data.spec.md) is held through the non-generic `ReferenceValue` view.
 
 ---
 
@@ -130,7 +130,7 @@ Decision type-safety now lands in three places, and the mental model is one sent
 1. **Go compile time.** Two things move all the way to `go build`:
    - a caller passing the wrong input struct to `Evaluate`, or reading an output field that does not exist, fails to compile;
    - the **netlist** — every `bl.Edge(src, dst)` connects two `Handle[T]`, so a connection whose endpoint types differ, or that names a non-existent field, is a compile error (see [decision-task.spec.md § Wiring](decision-task.spec.md#wiring)).
-2. **Construction.** Each node constructor (`NewDecisionTable`, `NewDecisionExpression`, `NewDecisionNativeFunction`) checks what lives outside the Go type system: the reflection contract above, plus any kind-specific structure — for the expression-bearing kinds, **compiling every expression string** and checking that each name it references is a declared variable. `NewDecisionTask` then checks the whole graph: every node input is wired exactly once, types line up (already guaranteed by `bl.Edge`, re-asserted), node ids are unique, and the edge graph is **acyclic**. Every problem is accumulated and the constructor **panics once** with a `*DecisionDefinitionError` — load-time fail-fast at package init / `go test`.
+2. **Construction.** Each node constructor (`NewDecisionTable`, `NewDecisionExpression`, `NewDecisionNativeFunction`) checks what lives outside the Go type system: the reflection contract above, plus any kind-specific structure — for the expression-bearing kinds, **compiling every expression string** and checking that each name it references is a declared variable. `task.Graph(...)` then checks the whole graph: every node input is wired exactly once, types line up (already guaranteed by `bl.Edge`, re-asserted), node ids are unique, and the edge graph is **acyclic**. Every problem is accumulated and the constructor **panics once** with a `*DecisionDefinitionError` — load-time fail-fast at package init / `go test`.
 3. **Evaluation.** What is **not** checked earlier is whether an expression's *computed* value matches its declared output type (e.g. an output declared `Handle[BlString]` whose expression evaluates to a number). The blkit expression engine is runtime-typed — operators dispatch on operand types at evaluation (see [bl-expr.spec.md](../expressions/bl-expr.spec.md)) — so a value-versus-declaration mismatch surfaces as a `bl.TypeError` at evaluation.
 
 > **The honest caveat.** Wiring *between* nodes is compile-checked, but the **expression strings inside** a table or expression node (`if eligibility = "eligible" …`) still resolve their variable names against the node's contract **at construction**, not at `go build` — a string is not a Go identifier. Construction is where that name discipline is enforced; it is deterministic and fires before any run.
@@ -149,12 +149,12 @@ These live on each concrete node and are exposed through `GetId` / `GetName` / `
 
 ## Edge Cases
 
-- A node whose `Id` is empty is invalid; `NewDecisionTask` rejects it with `DecisionDefinitionError`.
+- A node whose `Id` is empty is invalid; `task.Graph(...)` rejects it with `DecisionDefinitionError`.
 - A node whose output struct `O` has no fields is invalid (a node must declare at least one output).
 - An `I` or `O` field that is not a `bl.Handle[T]` (a bare value, or a non-`BlValue` `T`) is a `DecisionDefinitionError` at node construction.
 - An unexported `I`/`O` field is a `DecisionDefinitionError` — every field must be an exported handle variable.
 - A duplicate variable name within one struct is a `DecisionDefinitionError`. Names are **not** required to be unique across nodes — wiring is by handle, not by name.
 - A variable name (field name, or `expr` tag) that is not a valid expr identifier is a `DecisionDefinitionError`.
-- Two nodes sharing an `Id` collide; `NewDecisionTask` rejects it.
+- Two nodes sharing an `Id` collide; `task.Graph(...)` rejects it.
 - A `bl.Edge` connecting two handles of different `T`, or naming a field that does not exist, is a **Go compile error** — not a construction error.
 - A value produced by a node whose runtime type disagrees with its declared output handle surfaces as a `bl.TypeError` at evaluation time.

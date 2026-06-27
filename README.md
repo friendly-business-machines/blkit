@@ -21,10 +21,11 @@ blkit pulls that logic out into a first-class, executable model:
 - **An expression language (`bl-expr`)** — write rules and calculations as plain strings
   (`creditScore >= 700 and dti <= 0.40`), compile them once, and evaluate them against
   many inputs.
-- **Decision and process layers (in progress)** — model decision tables, business
-  knowledge models, and BPMN-style process graphs, then execute them with pluggable
-  state, message gateways, and a REST/MCP server frontend. Decision expressions are
-  available today; the tabular and process forms are being built.
+- **A decision layer (available today)** — model decisions as typed, compile-checked
+  nodes (decision tables, expressions, and native Go functions) and wire them into a
+  single decision task whose connections the Go compiler verifies.
+- **A process layer (in progress)** — execute BPMN-style process graphs with pluggable
+  state, message gateways, and a REST/MCP server frontend; being built next.
 
 It's built for **developers**, **AI agents**, **low-code / no-code tools**, and
 **transpilers** — anything that needs to *generate* and *run* business logic rather than
@@ -57,16 +58,17 @@ user- or AI-authored logic into a product.
 
 ## Project status
 
-blkit's **business-friendly expression language**, and the compiler and evaluator
-that run it, are available today. blkit currently ships as a single Go package,
-`core` (imported as `bl`); the higher-level decision and process layers are being
-built and will live in the same module.
+blkit's **business-friendly expression language** and the **decision layer** built
+on it are available today. blkit currently ships as a single Go package, `core`
+(imported as `bl`); the higher-level process layer is being built and will live in
+the same module.
 
 | Component | Status |
 |---|---|
 | Business-friendly expression language — compiler & evaluator | ✅ Available |
-| Decision expressions | ✅ Available |
-| Decision tables, business knowledge models, boxed contexts | 🚧 Planned |
+| Decision expressions, tables & native functions | ✅ Available |
+| Decision tasks (typed, compile-checked node graphs) | ✅ Available |
+| Reference data (static value sources) | ✅ Available |
 | Process execution (BPMN-style graphs) | 🚧 Planned |
 | Data contracts, execution context & state store | 🚧 Planned |
 | Message gateways (Redis, NATS, in-memory, …) | 🚧 Planned |
@@ -159,9 +161,10 @@ total, _ := bl.Expr[Order](`subtotal * (1 - (` + discount.Source() + `))`)
 ```
 
 Each `BlExpr` is evaluated against the same order env and returns a typed result.
-As blkit's **decision** support grows, the same rules will be expressible as a
-**decision table** — the tabular form business analysts expect — instead of an inline
-list of conditionals.
+The same rules can also be expressed as a **[decision table](docs/decisions/decision-tables.md)** —
+the tabular form business analysts expect — instead of an inline list of
+conditionals, and wired into a **[decision task](docs/decisions/decision-tasks.md)**
+alongside other nodes.
 
 ## Components
 
@@ -208,15 +211,21 @@ dictionaries and ranges, and every operator is null-aware — missing inputs pro
 `null` rather than crashing or guessing. Pass a schema to `Expr` and unknown references and
 type mismatches are caught at compile time, before any data flows through.
 
-### Decisions 🚧 *(in progress)*
+### Decisions ✅ *(available today)*
 
-A declarative decisioning layer: **decision expressions**, **decision tables**,
-**business knowledge models**, and **boxed contexts**. Decision expressions — a typed
-input mapped through an expression to a typed output — are available in `core` today.
-The tabular forms come next: instead of an inline list of conditionals, related rules
-are expressed as a priority-ordered table that business analysts can read and maintain.
-Each cell is an expression, so decisions inherit the expression layer's types and
-exact-decimal semantics.
+A declarative decisioning layer, available in `core` now. Each decision is a node
+generic over a typed input and output struct: a **decision table** (priority-ordered
+rules a business analyst can read), a **decision expression** (named outputs that may
+build on one another), or a **decision native function** (the escape hatch — arbitrary
+Go). Static constants are supplied as **reference data**. Because every cell, entry,
+and field is an expression-language value, decisions inherit the expression layer's
+types and exact-decimal semantics.
+
+Nodes compose into a **decision task** — a graph wired by connecting their handles
+with `bl.Edge`. The connections are checked by the Go compiler (a mis-typed wire won't
+build), and the task derives its node set from the wiring, orders it, and rejects
+cycles at program start. A decision task is itself a node, so whole decisions nest
+inside larger ones. See the [decision guides](docs/decisions/overview.md).
 
 ### Processes 🚧 *(planned)*
 

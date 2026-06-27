@@ -38,12 +38,12 @@
 - [Values from Go](https://friendly-business-machines.github.io/blkit/expressions/values-from-go/): Constructing blkit values in host Go code, declaring typed environments, and reading results back — the bridge between the expression language and the Go program that runs it.
 
 ## Decisions
-- [Decision Expressions](https://friendly-business-machines.github.io/blkit/decisions/decision-expressions/): Compute several named outputs from typed inputs, wiring outputs that depend on one another into a single evaluated unit.
+- [Overview](https://friendly-business-machines.github.io/blkit/decisions/overview/): What the decision layer is, the four kinds of decision node, and how typed inputs and outputs are wired together into a single, compile-checked decision.
 - [Decision Tables](https://friendly-business-machines.github.io/blkit/decisions/decision-tables/): Express decision logic as a table of rules — rows of input conditions mapped to output values — the spreadsheet-style core of DMN.
-- [Decision Native Functions](https://friendly-business-machines.github.io/blkit/decisions/decision-native-fn/): Back a decision with a hand-written Go function when its logic is beyond — or better expressed outside — the expression language.
-- [Sub-Decisions](https://friendly-business-machines.github.io/blkit/decisions/sub-decisions/): Compose decisions by invoking one decision as a step inside another, so shared logic is defined once and reused.
-- [Reference Data](https://friendly-business-machines.github.io/blkit/decisions/reference-data/): Feed decisions the lookup tables and constants they read from — rates, tiers, thresholds — without hard-coding them into rules.
-- [Decision Tasks](https://friendly-business-machines.github.io/blkit/decisions/decision-tasks/): The unit that runs a decision inside a process — how a decision is invoked, given inputs, and its result captured as the task completes.
+- [Decision Expressions](https://friendly-business-machines.github.io/blkit/decisions/decision-expressions/): Compute several named outputs from typed inputs, wiring outputs that depend on one another into a single evaluated unit.
+- [Decision Native Functions](https://friendly-business-machines.github.io/blkit/decisions/decision-native-fn/): Back a decision with a hand-written Go function when its logic is beyond — or better expressed outside — tables and expressions.
+- [Reference Data](https://friendly-business-machines.github.io/blkit/decisions/reference-data/): Feed decisions the lookup tables and constants they read from — rates, tiers, thresholds — as static values wired straight into the graph.
+- [Decision Tasks](https://friendly-business-machines.github.io/blkit/decisions/decision-tasks/): The unit that wires decision nodes into one runnable decision — typed inputs and outputs, connections checked by the compiler, evaluated as a graph.
 
 ## Processes
 - [Tasks](https://friendly-business-machines.github.io/blkit/processes/tasks/): The work items a process is built from — service, decision, and user tasks — and how each one executes and hands control on.

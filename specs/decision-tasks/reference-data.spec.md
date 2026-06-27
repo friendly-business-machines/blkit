@@ -1,6 +1,6 @@
 ---
 name: ReferenceData
-description: A static value source generic over T BlValue — carries identity (Id, Name, Description) and a single constant Value, exposed as a wireable .Out handle. Registered in DecisionTaskConfig.ReferenceData and connected into the graph with bl.Edge like any node output; it computes nothing and is never evaluated.
+description: A static value source generic over T BlValue — carries identity (Id, Name, Description) and a single constant value, exposed as a wireable .Value handle. Connected into a DecisionTask graph with bl.Edge like any node output; the task derives it from the edges. It computes nothing and is never evaluated.
 targets:
   - ../../core/reference_data.go
 ---
@@ -13,16 +13,15 @@ generic over the value's type `T`.
 
 `ReferenceData` is **not** a [`DecisionNode`](decision-node.spec.md) and has **no
 `Evaluate` method** — a constant computes nothing, so it carries its value rather
-than deriving one. But it exposes a single typed **output handle**, `.Out`, so it
+than deriving one. But it exposes a single typed **value handle**, `.Value`, so it
 can be wired into a [`DecisionTask`](decision-task.spec.md) graph exactly like a
-node output: `bl.Edge(taxRate.Out, grossPrice.In.TaxRate)`. It is registered in the
-task's `Config.ReferenceData` list and wired by its `.Out`; the task binds its
-`Value` into the evaluation environment before the consuming node runs. A
-`ReferenceData` never appears in a task's `bl.Nodes(...)` list and is never part of
-its evaluation order.
+node output: `bl.Edge(taxRate.Value, grossPrice.In.TaxRate)`. The task **discovers
+it from the edge** (the handle carries its owning source) and binds its value into
+the evaluation environment before the consuming node runs. A `ReferenceData` is
+never part of a task's evaluation order.
 
-Reference data is part of a task's **decision logic**, so a `DecisionTask` clone
-shares it **by reference** — the edges that wire it carry over unchanged (see
+Reference data is part of a task's **wiring**, so a `DecisionTask` clone shares it
+**by reference** — the edges that wire it carry over unchanged (see
 [decision-task.spec.md § Reuse via Clone](decision-task.spec.md#reuse-via-clone)).
 
 `T` may be any `BlValue` — a scalar (`BlNumber`, `BlString`, `BlDate`,
@@ -40,9 +39,10 @@ type ReferenceData[T BlValue] struct {
     Name        string
     Description string
 
-    // Out is the constant exposed as a wireable output handle, stamped with this
-    // source's Id. Connect it to a node input with bl.Edge.
-    Out Handle[T]
+    // Value is the constant exposed as a wireable handle, stamped with this
+    // source's Id. Connect it to a node input with bl.Edge; read the underlying
+    // BlValue with GetValue (or Value.Get()).
+    Value Handle[T]
 }
 
 // ReferenceDataConfig configures a ReferenceData, matching the family's
@@ -55,9 +55,9 @@ type ReferenceDataConfig[T BlValue] struct {
     Value       T
 }
 
-// NewReferenceData builds a ReferenceData from its config. The Value is wrapped
-// into the .Out handle, stamped with the Id. Definition failures (empty Id, nil
-// Value) panic with a *DecisionDefinitionError, per the family's
+// NewReferenceData builds a ReferenceData from its config. The config's Value is
+// wrapped into the .Value handle, stamped with the Id. Definition failures (empty
+// Id, nil Value) panic with a *DecisionDefinitionError, per the family's
 // panicking-constructor convention.
 func NewReferenceData[T BlValue](config ReferenceDataConfig[T]) *ReferenceData[T]
 
@@ -70,8 +70,8 @@ func (r *ReferenceData[T]) GetValue() BlValue
 func (r *ReferenceData[T]) ToMarkdown() string
 
 // ReferenceValue is the non-generic view of a ReferenceData, so a DecisionTask can
-// hold a heterogeneous set of value sources in its DecisionTaskConfig.ReferenceData
-// list. Every *ReferenceData[T] satisfies it.
+// hold the heterogeneous set of value sources it discovers from its graph edges.
+// Every *ReferenceData[T] satisfies it.
 type ReferenceValue interface {
     GetId() string
     GetName() string
@@ -82,8 +82,8 @@ type ReferenceValue interface {
 
 A `ReferenceData` has no `Evaluate` method and does not satisfy the `DecisionNode`
 interface. `Id` is mandatory; `Name` and `Description` are optional. To be used by a
-task it is **registered** in `DecisionTaskConfig.ReferenceData` (as a `ReferenceValue`)
-and **wired** via its `.Out` handle (see [§ Wiring and consuming](#wiring-and-consuming)).
+task it is simply **wired** via its `.Value` handle in `task.Graph(...)`; the task
+discovers it from the edge (see [§ Wiring and consuming](#wiring-and-consuming)).
 
 ---
 
@@ -133,10 +133,9 @@ surfaces at its own declaration before reaching `bl.NewReferenceData`.
 
 ## Wiring and consuming
 
-A `ReferenceData` is used by a `DecisionTask` in two steps: it is **registered** in
-`Config.ReferenceData` (so the task knows the constant and binds its value), and its
-`.Out` handle is **wired** to a node input in the `Graph`, exactly like any other
-source. An edge from a `.Out` that is not registered is a `DecisionDefinitionError`.
+A `ReferenceData` is used by a `DecisionTask` simply by **wiring** its `.Value`
+handle to a node input in `task.Graph(...)`, exactly like any other source. The task
+derives the constant from the edge — there is no separate registration step.
 
 ```go
 type GrossInputs struct {
@@ -155,7 +154,7 @@ var grossPrice = bl.NewDecisionExpression[GrossInputs, GrossOutputs](bl.Decision
     },
 })
 
-// The reference-data constant, exposed for wiring as taxRate.Out.
+// The reference-data constant, exposed for wiring as taxRate.Value.
 var taxRate = bl.NewReferenceData(bl.ReferenceDataConfig[bl.BlNumber]{
     Id:    "tax_rate",
     Name:  "Tax Rate",
@@ -163,7 +162,7 @@ var taxRate = bl.NewReferenceData(bl.ReferenceDataConfig[bl.BlNumber]{
 })
 
 // The task's external contracts. tax_rate is reference data, so it is NOT part of
-// TaskIn — it is wired in from taxRate.Out below.
+// TaskIn — it is wired in from taxRate.Value below.
 type PricingInputs struct {
     ListPrice bl.Handle[bl.BlNumber] `expr:"list_price"`
 }
@@ -171,35 +170,32 @@ type PricingOutputs struct {
     GrossPrice bl.Handle[bl.BlNumber] `expr:"gross_price"`
 }
 
-var in  = bl.Inputs[PricingInputs]()
-var out = bl.Outputs[PricingOutputs]()
-
 var pricing = bl.NewDecisionTask[PricingInputs, PricingOutputs](bl.DecisionTaskConfig{
-    Id:            "pricing",
-    Name:          "Pricing",
-    Nodes:         bl.Nodes(grossPrice),
-    ReferenceData: []bl.ReferenceValue{taxRate}, // register the constant…
-    Graph: bl.Edges{
-        bl.Edge(in.ListPrice,              grossPrice.In.ListPrice), // task input → node input
-        bl.Edge(taxRate.Out,               grossPrice.In.TaxRate),   // reference-data constant
-        bl.Edge(grossPrice.Out.GrossPrice, out.GrossPrice),          // node output → task output
-    },
+    Id:   "pricing",
+    Name: "Pricing",
 })
+
+var _ = pricing.Graph(
+    bl.Edge(pricing.In.ListPrice,      grossPrice.In.ListPrice), // task input → node input
+    bl.Edge(taxRate.Value,             grossPrice.In.TaxRate),   // reference-data constant
+    bl.Edge(grossPrice.Out.GrossPrice, pricing.Out.GrossPrice),  // node output → task output
+)
 ```
 
-Because the connection is a typed `bl.Edge`, wiring `taxRate.Out` (a
-`Handle[BlNumber]`) to a `Handle[BlString]` input would be a **Go compile error**.
-A `ReferenceData` need not — and cannot — be listed in `bl.Nodes(...)`.
+`grossPrice` (a node) and `taxRate` (reference data) are both discovered from the
+edges — neither is listed separately. Because the connection is a typed `bl.Edge`,
+wiring `taxRate.Value` (a `Handle[BlNumber]`) to a `Handle[BlString]` input would be
+a **Go compile error**.
 
 ---
 
 ## Resolution
 
-A `ReferenceData` is never evaluated. The `DecisionTask` it is registered with (in
-`Config.ReferenceData`) binds its `Value` into the evaluation environment, routed
-along the edges from `.Out`, before the consuming nodes run. Because the source is a constant rather than a node in
-the evaluation order, it draws no dependency edge of its own — a `ReferenceData`
-is always a leaf with no upstream dependencies. Being decision-logic, it is shared
+A `ReferenceData` is never evaluated. The `DecisionTask` that wires it binds its
+value into the evaluation environment, routed along the edges from `.Value`, before
+the consuming nodes run. Because the source is a constant rather than a node in the
+evaluation order, it draws no dependency edge of its own — a `ReferenceData` is
+always a leaf with no upstream dependencies. Being part of the wiring, it is shared
 by reference with a task's clones.
 
 ---
@@ -233,13 +229,11 @@ Integration into `DecisionTask.ToMarkdown()` is out of scope for this spec.
 - A `ReferenceData` whose `Value` is nil is invalid; `bl.NewReferenceData` raises
   `DecisionDefinitionError`.
 - A `Value` of `bl.BlNull` is a valid constant.
-- A `ReferenceData` has no `Evaluate` method and cannot be placed in a
-  `DecisionTask`'s `bl.Nodes(...)` list — it is registered in `Config.ReferenceData`.
-- An edge wiring a `ReferenceData`'s `.Out` whose source is not registered in the
-  task's `Config.ReferenceData` is a `DecisionDefinitionError`.
+- A `ReferenceData` has no `Evaluate` method and is never a node; it is wired into a
+  task by its `.Value` handle and discovered from the edge.
 - A `ReferenceData` is always a leaf — it references no other node and has no
   upstream dependencies.
-- Wiring a `ReferenceData`'s `.Out` handle to an input of a different `BlValue`
+- Wiring a `ReferenceData`'s `.Value` handle to an input of a different `BlValue`
   type is a **Go compile error**, caught before construction.
 - A `DecisionTask` clone shares its source's reference data and wiring by
-  reference; decision logic is never re-supplied to `Clone`.
+  reference; the wiring is never re-supplied to `Clone`.

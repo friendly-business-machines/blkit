@@ -10,6 +10,7 @@ import "github.com/friendly-business-machines/blkit/core"
 
 ## Index
 
+- [type Aggregation](<#Aggregation>)
 - [type BlBoolean](<#BlBoolean>)
   - [func Boolean\[T BooleanInput\](v T) (BlBoolean, error)](<#Boolean>)
   - [func (b BlBoolean) Equal(other BlValue) BlValue](<#BlBoolean.Equal>)
@@ -182,6 +183,7 @@ import "github.com/friendly-business-machines/blkit/core"
   - [func (e \*CalendarRangeError) Error() string](<#CalendarRangeError.Error>)
 - [type Col](<#Col>)
 - [type Cols](<#Cols>)
+- [type Column](<#Column>)
 - [type DHMSNumberInput](<#DHMSNumberInput>)
 - [type DTDurationInput](<#DTDurationInput>)
 - [type DateComponents](<#DateComponents>)
@@ -198,11 +200,51 @@ import "github.com/friendly-business-machines/blkit/core"
   - [func (d \*DecisionExpression\[I, O\]) GetDescription() string](<#DecisionExpression[I, O].GetDescription>)
   - [func (d \*DecisionExpression\[I, O\]) GetId() string](<#DecisionExpression[I, O].GetId>)
   - [func (d \*DecisionExpression\[I, O\]) GetName() string](<#DecisionExpression[I, O].GetName>)
+  - [func (d \*DecisionExpression\[I, O\]) Inputs() \[\]Field](<#DecisionExpression[I, O].Inputs>)
+  - [func (d \*DecisionExpression\[I, O\]) Outputs() \[\]Field](<#DecisionExpression[I, O].Outputs>)
   - [func (d \*DecisionExpression\[I, O\]) Source(output string) (string, bool)](<#DecisionExpression[I, O].Source>)
   - [func (d \*DecisionExpression\[I, O\]) ToMarkdown() string](<#DecisionExpression[I, O].ToMarkdown>)
 - [type DecisionExpressionConfig](<#DecisionExpressionConfig>)
+- [type DecisionNativeFunction](<#DecisionNativeFunction>)
+  - [func NewDecisionNativeFunction\[I, O any\](config DecisionNativeFunctionConfig, fn func(I) (O, error)) \*DecisionNativeFunction\[I, O\]](<#NewDecisionNativeFunction>)
+  - [func (d \*DecisionNativeFunction\[I, O\]) Concurrent() bool](<#DecisionNativeFunction[I, O].Concurrent>)
+  - [func (d \*DecisionNativeFunction\[I, O\]) Evaluate(in I) (O, error)](<#DecisionNativeFunction[I, O].Evaluate>)
+  - [func (d \*DecisionNativeFunction\[I, O\]) GetDescription() string](<#DecisionNativeFunction[I, O].GetDescription>)
+  - [func (d \*DecisionNativeFunction\[I, O\]) GetId() string](<#DecisionNativeFunction[I, O].GetId>)
+  - [func (d \*DecisionNativeFunction\[I, O\]) GetName() string](<#DecisionNativeFunction[I, O].GetName>)
+  - [func (d \*DecisionNativeFunction\[I, O\]) Inputs() \[\]Field](<#DecisionNativeFunction[I, O].Inputs>)
+  - [func (d \*DecisionNativeFunction\[I, O\]) Outputs() \[\]Field](<#DecisionNativeFunction[I, O].Outputs>)
+  - [func (d \*DecisionNativeFunction\[I, O\]) ToMarkdown() string](<#DecisionNativeFunction[I, O].ToMarkdown>)
+- [type DecisionNativeFunctionConfig](<#DecisionNativeFunctionConfig>)
+- [type DecisionNode](<#DecisionNode>)
+- [type DecisionTable](<#DecisionTable>)
+  - [func NewDecisionTable\[I, O any\](config DecisionTableConfig) \*DecisionTable\[I, O\]](<#NewDecisionTable>)
+  - [func (d \*DecisionTable\[I, O\]) Evaluate(in I) (O, error)](<#DecisionTable[I, O].Evaluate>)
+  - [func (d \*DecisionTable\[I, O\]) GetDescription() string](<#DecisionTable[I, O].GetDescription>)
+  - [func (d \*DecisionTable\[I, O\]) GetId() string](<#DecisionTable[I, O].GetId>)
+  - [func (d \*DecisionTable\[I, O\]) GetName() string](<#DecisionTable[I, O].GetName>)
+  - [func (d \*DecisionTable\[I, O\]) Inputs() \[\]Field](<#DecisionTable[I, O].Inputs>)
+  - [func (d \*DecisionTable\[I, O\]) Outputs() \[\]Field](<#DecisionTable[I, O].Outputs>)
+  - [func (d \*DecisionTable\[I, O\]) ToMarkdown(showRuleIDs, showRuleDescriptions, showInputMappings bool) string](<#DecisionTable[I, O].ToMarkdown>)
+- [type DecisionTableConfig](<#DecisionTableConfig>)
+- [type DecisionTask](<#DecisionTask>)
+  - [func NewDecisionTask\[TaskIn, TaskOut any\](config DecisionTaskConfig) \*DecisionTask\[TaskIn, TaskOut\]](<#NewDecisionTask>)
+  - [func (d \*DecisionTask\[TaskIn, TaskOut\]) Clone(config DecisionTaskConfig) \*DecisionTask\[TaskIn, TaskOut\]](<#DecisionTask[TaskIn, TaskOut].Clone>)
+  - [func (d \*DecisionTask\[TaskIn, TaskOut\]) Evaluate(in TaskIn) (TaskOut, error)](<#DecisionTask[TaskIn, TaskOut].Evaluate>)
+  - [func (d \*DecisionTask\[TaskIn, TaskOut\]) GetDescription() string](<#DecisionTask[TaskIn, TaskOut].GetDescription>)
+  - [func (d \*DecisionTask\[TaskIn, TaskOut\]) GetId() string](<#DecisionTask[TaskIn, TaskOut].GetId>)
+  - [func (d \*DecisionTask\[TaskIn, TaskOut\]) GetName() string](<#DecisionTask[TaskIn, TaskOut].GetName>)
+  - [func (d \*DecisionTask\[TaskIn, TaskOut\]) Graph(edges ...edge) \*DecisionTask\[TaskIn, TaskOut\]](<#DecisionTask[TaskIn, TaskOut].Graph>)
+  - [func (d \*DecisionTask\[TaskIn, TaskOut\]) Inputs() \[\]Field](<#DecisionTask[TaskIn, TaskOut].Inputs>)
+  - [func (d \*DecisionTask\[TaskIn, TaskOut\]) Outputs() \[\]Field](<#DecisionTask[TaskIn, TaskOut].Outputs>)
+  - [func (d \*DecisionTask\[TaskIn, TaskOut\]) ToMarkdown() string](<#DecisionTask[TaskIn, TaskOut].ToMarkdown>)
+- [type DecisionTaskConfig](<#DecisionTaskConfig>)
 - [type Entries](<#Entries>)
 - [type Field](<#Field>)
+- [type Handle](<#Handle>)
+  - [func NewHandle\[T BlValue\](value T) Handle\[T\]](<#NewHandle>)
+  - [func (h Handle\[T\]) Get() T](<#Handle[T].Get>)
+- [type HitPolicy](<#HitPolicy>)
 - [type ICalOption](<#ICalOption>)
   - [func WithICalExpansionWindow(r BlRange) ICalOption](<#WithICalExpansionWindow>)
   - [func WithICalStrict(strict bool) ICalOption](<#WithICalStrict>)
@@ -212,10 +254,24 @@ import "github.com/friendly-business-machines/blkit/core"
 - [type ParseError](<#ParseError>)
   - [func (e \*ParseError) Error() string](<#ParseError.Error>)
   - [func (e \*ParseError) Unwrap() error](<#ParseError.Unwrap>)
+- [type ReferenceData](<#ReferenceData>)
+  - [func NewReferenceData\[T BlValue\](config ReferenceDataConfig\[T\]) \*ReferenceData\[T\]](<#NewReferenceData>)
+  - [func (r \*ReferenceData\[T\]) GetDescription() string](<#ReferenceData[T].GetDescription>)
+  - [func (r \*ReferenceData\[T\]) GetId() string](<#ReferenceData[T].GetId>)
+  - [func (r \*ReferenceData\[T\]) GetName() string](<#ReferenceData[T].GetName>)
+  - [func (r \*ReferenceData\[T\]) GetValue() BlValue](<#ReferenceData[T].GetValue>)
+  - [func (r \*ReferenceData\[T\]) ToMarkdown() string](<#ReferenceData[T].ToMarkdown>)
+- [type ReferenceDataConfig](<#ReferenceDataConfig>)
+- [type ReferenceValue](<#ReferenceValue>)
 - [type RegexError](<#RegexError>)
   - [func (e \*RegexError) Error() string](<#RegexError.Error>)
   - [func (e \*RegexError) Unwrap() error](<#RegexError.Unwrap>)
+- [type RetryConfig](<#RetryConfig>)
+  - [func NewRetryConfig(opts RetryOpts) \*RetryConfig](<#NewRetryConfig>)
+- [type RetryOpts](<#RetryOpts>)
 - [type Row](<#Row>)
+- [type Rule](<#Rule>)
+- [type Rules](<#Rules>)
 - [type SchemaError](<#SchemaError>)
   - [func (e \*SchemaError) Error() string](<#SchemaError.Error>)
   - [func (e \*SchemaError) Unwrap() error](<#SchemaError.Unwrap>)
@@ -230,6 +286,26 @@ import "github.com/friendly-business-machines/blkit/core"
 - [type YMDurationInput](<#YMDurationInput>)
 - [type YMNumberInput](<#YMNumberInput>)
 
+
+<a name="Aggregation"></a>
+## type [Aggregation](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L27>)
+
+Aggregation combines the matched values of a Collect table.
+
+```go
+type Aggregation int
+```
+
+<a name="AggregationSum"></a>
+
+```go
+const (
+    AggregationSum   Aggregation = iota // numeric sum of all matching output values
+    AggregationMin                      // minimum numeric value
+    AggregationMax                      // maximum numeric value
+    AggregationCount                    // number of matching rules
+)
+```
 
 <a name="BlBoolean"></a>
 ## type [BlBoolean](<https://github.com/friendly-business-machines/blkit/blob/main/core/boolean.go#L12>)
@@ -1834,6 +1910,19 @@ type Col struct {
 type Cols []Col
 ```
 
+<a name="Column"></a>
+## type [Column](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L39-L43>)
+
+Column is a labelled, typed input column. Expr is a source expression over the variables of I, inlined as the \`?\` subject of each input cell. Type bounds the valid unary\-test forms for the column.
+
+```go
+type Column struct {
+    Label string
+    Expr  string
+    Type  Type
+}
+```
+
 <a name="DHMSNumberInput"></a>
 ## type [DHMSNumberInput](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L79-L84>)
 
@@ -1923,7 +2012,7 @@ type DateTimeInput interface {
 ```
 
 <a name="DecisionDefinitionError"></a>
-## type [DecisionDefinitionError](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L82-L85>)
+## type [DecisionDefinitionError](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L71-L74>)
 
 DecisionDefinitionError reports one or more problems found while constructing a decision node. Following the decision\-family convention, the constructor accumulates every problem and panics once with this error, so a malformed package\-scope node fails fast at program (or test) startup.
 
@@ -1935,7 +2024,7 @@ type DecisionDefinitionError struct {
 ```
 
 <a name="DecisionDefinitionError.Error"></a>
-### func (\*DecisionDefinitionError) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L87>)
+### func (\*DecisionDefinitionError) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L76>)
 
 ```go
 func (e *DecisionDefinitionError) Error() string
@@ -1944,29 +2033,29 @@ func (e *DecisionDefinitionError) Error() string
 
 
 <a name="DecisionExpression"></a>
-## type [DecisionExpression](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L48-L63>)
+## type [DecisionExpression](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L41-L56>)
 
-DecisionExpression defines decision logic as named text\-expression entries over a typed input struct I and output struct O. Each entry binds one output to a bl\-expression that may reference any declared input or sibling output by name. Entries are compiled and topologically sorted at construction; Evaluate(inputs I) walks them in dependency order and returns O.
-
-Inputs and outputs are concrete Go structs, so a caller passing the wrong input shape or reading a non\-existent output is a Go compile error. The two structs are joined at construction into a single combined env type (built with reflect.StructOf, since Go forbids embedding type parameters) against which every entry is type\-checked.
+DecisionExpression defines decision logic as named text\-expression entries over a typed input struct I and output struct O whose fields are Handle values. Each entry binds one output to a bl\-expression that may reference any declared input or sibling output by name. Entries are compiled and topologically sorted at construction; Evaluate(inputs I) walks them in dependency order and returns O.
 
 ```go
 type DecisionExpression[I, O any] struct {
+    In  I   // input port surface (stamped handles for wiring)
+    Out O   // output port surface
     // contains filtered or unexported fields
 }
 ```
 
 <a name="NewDecisionExpression"></a>
-### func [NewDecisionExpression](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L130>)
+### func [NewDecisionExpression](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L115>)
 
 ```go
 func NewDecisionExpression[I, O any](config DecisionExpressionConfig) *DecisionExpression[I, O]
 ```
 
-NewDecisionExpression builds a DecisionExpression from the typed input struct I, output struct O, and the configured entries. Every exported field of I and O is a variable, exposed under its Go field name or the optional \`expr:"name"\` rename. It validates the contracts (every field is a BlValue under a valid expr\-identifier name, no duplicate or input/output name collisions, at least one output, the entry keys are exactly the output names, no two Funcs share a name), compiles every entry against the combined env — with config.Funcs registered so entries may call them by name — and topologically sorts by inter\-entry dependencies. It accumulates every problem and panics once with a \*DecisionDefinitionError.
+NewDecisionExpression builds a DecisionExpression from the typed input struct I, output struct O, and the configured entries. Every exported field of I and O is a Handle variable, exposed under its Go field name or the optional \`expr:"name"\` rename. It validates the contracts, compiles every entry against the combined env (with config.Funcs registered), and topologically sorts by inter\-entry dependencies. It accumulates every problem and panics once with a \*DecisionDefinitionError.
 
 <a name="DecisionExpression[I, O].Evaluate"></a>
-### func (\*DecisionExpression\[I, O\]) [Evaluate](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L297>)
+### func (\*DecisionExpression\[I, O\]) [Evaluate](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L236>)
 
 ```go
 func (d *DecisionExpression[I, O]) Evaluate(inputs I) (O, error)
@@ -1975,34 +2064,52 @@ func (d *DecisionExpression[I, O]) Evaluate(inputs I) (O, error)
 Evaluate runs the entries against the input variables in topological order and returns the produced outputs. An output value whose runtime type disagrees with its declared output field is a bl.TypeError.
 
 <a name="DecisionExpression[I, O].GetDescription"></a>
-### func (\*DecisionExpression\[I, O\]) [GetDescription](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L339>)
+### func (\*DecisionExpression\[I, O\]) [GetDescription](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L280>)
 
 ```go
 func (d *DecisionExpression[I, O]) GetDescription() string
 ```
 
-GetDescription returns the node's description.
+
 
 <a name="DecisionExpression[I, O].GetId"></a>
-### func (\*DecisionExpression\[I, O\]) [GetId](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L333>)
+### func (\*DecisionExpression\[I, O\]) [GetId](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L278>)
 
 ```go
 func (d *DecisionExpression[I, O]) GetId() string
 ```
 
-GetId returns the node's identifier.
+DecisionNode\[I, O\] interface satisfaction.
 
 <a name="DecisionExpression[I, O].GetName"></a>
-### func (\*DecisionExpression\[I, O\]) [GetName](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L336>)
+### func (\*DecisionExpression\[I, O\]) [GetName](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L279>)
 
 ```go
 func (d *DecisionExpression[I, O]) GetName() string
 ```
 
-GetName returns the node's display name.
+
+
+<a name="DecisionExpression[I, O].Inputs"></a>
+### func (\*DecisionExpression\[I, O\]) [Inputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L281>)
+
+```go
+func (d *DecisionExpression[I, O]) Inputs() []Field
+```
+
+
+
+<a name="DecisionExpression[I, O].Outputs"></a>
+### func (\*DecisionExpression\[I, O\]) [Outputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L282>)
+
+```go
+func (d *DecisionExpression[I, O]) Outputs() []Field
+```
+
+
 
 <a name="DecisionExpression[I, O].Source"></a>
-### func (\*DecisionExpression\[I, O\]) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L342>)
+### func (\*DecisionExpression\[I, O\]) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L302>)
 
 ```go
 func (d *DecisionExpression[I, O]) Source(output string) (string, bool)
@@ -2011,16 +2118,16 @@ func (d *DecisionExpression[I, O]) Source(output string) (string, bool)
 Source returns the original raw source for an output name.
 
 <a name="DecisionExpression[I, O].ToMarkdown"></a>
-### func (\*DecisionExpression\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L351>)
+### func (\*DecisionExpression\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L310>)
 
 ```go
 func (d *DecisionExpression[I, O]) ToMarkdown() string
 ```
 
-ToMarkdown renders the node as markdown: the input variables (listed, not tabulated), then one table of name/expression rows — first any user\-defined functions, each shown by its call signature (e.g. addTax(amount)) and body, then the entries (output name and source expression) in output declaration order.
+ToMarkdown renders the node as markdown: the input variables (listed, not tabulated), then one table of name/expression rows — first any user\-defined functions, then the entries in output declaration order.
 
 <a name="DecisionExpressionConfig"></a>
-## type [DecisionExpressionConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L22-L35>)
+## type [DecisionExpressionConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L21-L34>)
 
 DecisionExpressionConfig configures a DecisionExpression. The input and output contracts are the type parameters I and O of NewDecisionExpression; the config carries identity and the entry sources.
 
@@ -2041,8 +2148,358 @@ type DecisionExpressionConfig struct {
 }
 ```
 
+<a name="DecisionNativeFunction"></a>
+## type [DecisionNativeFunction](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L14-L26>)
+
+DecisionNativeFunction is a DecisionNode whose logic is a plain Go function func(I) (O, error) over concrete input/output structs of Handle fields. It is the escape hatch for logic that is neither a table nor an expression.
+
+```go
+type DecisionNativeFunction[I, O any] struct {
+    In  I   // input port surface for wiring
+    Out O   // output port surface
+    // contains filtered or unexported fields
+}
+```
+
+<a name="NewDecisionNativeFunction"></a>
+### func [NewDecisionNativeFunction](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L46>)
+
+```go
+func NewDecisionNativeFunction[I, O any](config DecisionNativeFunctionConfig, fn func(I) (O, error)) *DecisionNativeFunction[I, O]
+```
+
+NewDecisionNativeFunction builds a node from a config and a typed function. It validates the contracts (every I/O field a Handle, non\-empty O), requires a non\-nil fn, and rejects a Retry with no limit. Problems are accumulated and raised once as a \*DecisionDefinitionError.
+
+<a name="DecisionNativeFunction[I, O].Concurrent"></a>
+### func (\*DecisionNativeFunction\[I, O\]) [Concurrent](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L127>)
+
+```go
+func (d *DecisionNativeFunction[I, O]) Concurrent() bool
+```
+
+Concurrent reports whether a containing DecisionTask may overlap this node.
+
+<a name="DecisionNativeFunction[I, O].Evaluate"></a>
+### func (\*DecisionNativeFunction\[I, O\]) [Evaluate](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L99>)
+
+```go
+func (d *DecisionNativeFunction[I, O]) Evaluate(in I) (O, error)
+```
+
+Evaluate runs Fn against the typed input and returns the typed output. A panic is recovered into an error; an error is retried per Retry; the final error (if any) is tagged with the node Id.
+
+<a name="DecisionNativeFunction[I, O].GetDescription"></a>
+### func (\*DecisionNativeFunction\[I, O\]) [GetDescription](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L132>)
+
+```go
+func (d *DecisionNativeFunction[I, O]) GetDescription() string
+```
+
+
+
+<a name="DecisionNativeFunction[I, O].GetId"></a>
+### func (\*DecisionNativeFunction\[I, O\]) [GetId](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L130>)
+
+```go
+func (d *DecisionNativeFunction[I, O]) GetId() string
+```
+
+DecisionNode\[I, O\] interface satisfaction.
+
+<a name="DecisionNativeFunction[I, O].GetName"></a>
+### func (\*DecisionNativeFunction\[I, O\]) [GetName](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L131>)
+
+```go
+func (d *DecisionNativeFunction[I, O]) GetName() string
+```
+
+
+
+<a name="DecisionNativeFunction[I, O].Inputs"></a>
+### func (\*DecisionNativeFunction\[I, O\]) [Inputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L133>)
+
+```go
+func (d *DecisionNativeFunction[I, O]) Inputs() []Field
+```
+
+
+
+<a name="DecisionNativeFunction[I, O].Outputs"></a>
+### func (\*DecisionNativeFunction\[I, O\]) [Outputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L134>)
+
+```go
+func (d *DecisionNativeFunction[I, O]) Outputs() []Field
+```
+
+
+
+<a name="DecisionNativeFunction[I, O].ToMarkdown"></a>
+### func (\*DecisionNativeFunction\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L155>)
+
+```go
+func (d *DecisionNativeFunction[I, O]) ToMarkdown() string
+```
+
+ToMarkdown renders the node: name heading, optional description, a Logic line naming the bound function, and the input/output contracts as typed tables.
+
+<a name="DecisionNativeFunctionConfig"></a>
+## type [DecisionNativeFunctionConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L30-L40>)
+
+DecisionNativeFunctionConfig configures a DecisionNativeFunction. The function itself is passed as a second constructor argument so I and O are inferred.
+
+```go
+type DecisionNativeFunctionConfig struct {
+    Id          string
+    Name        string
+    Description string
+
+    // Concurrent lets a containing DecisionTask overlap this node with others.
+    Concurrent bool
+
+    // Retry, when non-nil, re-runs Fn on a non-nil error per the RetryConfig.
+    Retry *RetryConfig
+}
+```
+
+<a name="DecisionNode"></a>
+## type [DecisionNode](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_node.go#L84-L91>)
+
+DecisionNode is the typed interface every decision node satisfies: identity, the reflected input/output contracts, and a typed Evaluate. A DecisionTask is itself a DecisionNode, so a whole decision composes into a larger one.
+
+```go
+type DecisionNode[I, O any] interface {
+    GetId() string
+    GetName() string
+    GetDescription() string
+    Inputs() []Field
+    Outputs() []Field
+    Evaluate(in I) (O, error)
+}
+```
+
+<a name="DecisionTable"></a>
+## type [DecisionTable](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L70-L88>)
+
+DecisionTable is a DecisionNode that defines decision logic as input columns, output columns, and rules whose cells are text expressions over a typed input struct I, producing a typed output struct O.
+
+```go
+type DecisionTable[I, O any] struct {
+    In  I
+    Out O
+    // contains filtered or unexported fields
+}
+```
+
+<a name="NewDecisionTable"></a>
+### func [NewDecisionTable](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L100>)
+
+```go
+func NewDecisionTable[I, O any](config DecisionTableConfig) *DecisionTable[I, O]
+```
+
+NewDecisionTable validates the contracts and compiles every cell into a program over the declared inputs. Problems are accumulated and raised once as a \*DecisionDefinitionError.
+
+<a name="DecisionTable[I, O].Evaluate"></a>
+### func (\*DecisionTable\[I, O\]) [Evaluate](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L306>)
+
+```go
+func (d *DecisionTable[I, O]) Evaluate(in I) (O, error)
+```
+
+Evaluate matches the rules against the inputs and combines them per the hit policy, returning a typed O.
+
+<a name="DecisionTable[I, O].GetDescription"></a>
+### func (\*DecisionTable\[I, O\]) [GetDescription](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L477>)
+
+```go
+func (d *DecisionTable[I, O]) GetDescription() string
+```
+
+
+
+<a name="DecisionTable[I, O].GetId"></a>
+### func (\*DecisionTable\[I, O\]) [GetId](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L475>)
+
+```go
+func (d *DecisionTable[I, O]) GetId() string
+```
+
+DecisionNode\[I, O\] interface satisfaction.
+
+<a name="DecisionTable[I, O].GetName"></a>
+### func (\*DecisionTable\[I, O\]) [GetName](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L476>)
+
+```go
+func (d *DecisionTable[I, O]) GetName() string
+```
+
+
+
+<a name="DecisionTable[I, O].Inputs"></a>
+### func (\*DecisionTable\[I, O\]) [Inputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L478>)
+
+```go
+func (d *DecisionTable[I, O]) Inputs() []Field
+```
+
+
+
+<a name="DecisionTable[I, O].Outputs"></a>
+### func (\*DecisionTable\[I, O\]) [Outputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L479>)
+
+```go
+func (d *DecisionTable[I, O]) Outputs() []Field
+```
+
+
+
+<a name="DecisionTable[I, O].ToMarkdown"></a>
+### func (\*DecisionTable\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L499>)
+
+```go
+func (d *DecisionTable[I, O]) ToMarkdown(showRuleIDs, showRuleDescriptions, showInputMappings bool) string
+```
+
+ToMarkdown renders the table as a GitHub\-flavoured markdown table.
+
+<a name="DecisionTableConfig"></a>
+## type [DecisionTableConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L54-L65>)
+
+DecisionTableConfig configures a DecisionTable. The input/output contracts are the type parameters I and O.
+
+```go
+type DecisionTableConfig struct {
+    Id          string
+    Name        string
+    Description string
+
+    HitPolicy   HitPolicy
+    Aggregation *Aggregation
+
+    Columns      []Column
+    Rules        Rules
+    Descriptions map[string]string
+}
+```
+
+<a name="DecisionTask"></a>
+## type [DecisionTask](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L50-L65>)
+
+DecisionTask is a graph of DecisionNodes wired into a compile\-checked netlist over a typed TaskIn/TaskOut. It is built from a config, then wired with Graph. A DecisionTask is itself a DecisionNode, so a whole decision composes into a larger one.
+
+```go
+type DecisionTask[TaskIn, TaskOut any] struct {
+    In  TaskIn  // input boundary handle surface
+    Out TaskOut // output boundary handle surface
+    // contains filtered or unexported fields
+}
+```
+
+<a name="NewDecisionTask"></a>
+### func [NewDecisionTask](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L69>)
+
+```go
+func NewDecisionTask[TaskIn, TaskOut any](config DecisionTaskConfig) *DecisionTask[TaskIn, TaskOut]
+```
+
+NewDecisionTask builds the task from its config and stamps the In/Out boundary handle surfaces. The returned task is not yet wired — call task.Graph(...).
+
+<a name="DecisionTask[TaskIn, TaskOut].Clone"></a>
+### func (\*DecisionTask\[TaskIn, TaskOut\]) [Clone](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L266>)
+
+```go
+func (d *DecisionTask[TaskIn, TaskOut]) Clone(config DecisionTaskConfig) *DecisionTask[TaskIn, TaskOut]
+```
+
+Clone returns a new task sharing the receiver's graph (and its derived nodes, reference data, and In/Out boundary) by reference, with identity from the config.
+
+<a name="DecisionTask[TaskIn, TaskOut].Evaluate"></a>
+### func (\*DecisionTask\[TaskIn, TaskOut\]) [Evaluate](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L219>)
+
+```go
+func (d *DecisionTask[TaskIn, TaskOut]) Evaluate(in TaskIn) (TaskOut, error)
+```
+
+Evaluate runs the decision logic against the typed input and returns TaskOut.
+
+<a name="DecisionTask[TaskIn, TaskOut].GetDescription"></a>
+### func (\*DecisionTask\[TaskIn, TaskOut\]) [GetDescription](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L286>)
+
+```go
+func (d *DecisionTask[TaskIn, TaskOut]) GetDescription() string
+```
+
+
+
+<a name="DecisionTask[TaskIn, TaskOut].GetId"></a>
+### func (\*DecisionTask\[TaskIn, TaskOut\]) [GetId](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L284>)
+
+```go
+func (d *DecisionTask[TaskIn, TaskOut]) GetId() string
+```
+
+DecisionNode\[TaskIn, TaskOut\] interface satisfaction — a DecisionTask is a node.
+
+<a name="DecisionTask[TaskIn, TaskOut].GetName"></a>
+### func (\*DecisionTask\[TaskIn, TaskOut\]) [GetName](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L285>)
+
+```go
+func (d *DecisionTask[TaskIn, TaskOut]) GetName() string
+```
+
+
+
+<a name="DecisionTask[TaskIn, TaskOut].Graph"></a>
+### func (\*DecisionTask\[TaskIn, TaskOut\]) [Graph](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L105>)
+
+```go
+func (d *DecisionTask[TaskIn, TaskOut]) Graph(edges ...edge) *DecisionTask[TaskIn, TaskOut]
+```
+
+Graph supplies the wiring and finalises the task: it derives the node set and reference data from the edges, topologically sorts them, rejects cycles, checks every node input is wired exactly once and every TaskOut field is produced, and panics once with a \*DecisionDefinitionError on any problem. It returns the task.
+
+<a name="DecisionTask[TaskIn, TaskOut].Inputs"></a>
+### func (\*DecisionTask\[TaskIn, TaskOut\]) [Inputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L287>)
+
+```go
+func (d *DecisionTask[TaskIn, TaskOut]) Inputs() []Field
+```
+
+
+
+<a name="DecisionTask[TaskIn, TaskOut].Outputs"></a>
+### func (\*DecisionTask\[TaskIn, TaskOut\]) [Outputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L288>)
+
+```go
+func (d *DecisionTask[TaskIn, TaskOut]) Outputs() []Field
+```
+
+
+
+<a name="DecisionTask[TaskIn, TaskOut].ToMarkdown"></a>
+### func (\*DecisionTask\[TaskIn, TaskOut\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L308>)
+
+```go
+func (d *DecisionTask[TaskIn, TaskOut]) ToMarkdown() string
+```
+
+ToMarkdown renders the task: title, contracts, and each node.
+
+<a name="DecisionTaskConfig"></a>
+## type [DecisionTaskConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L38-L42>)
+
+DecisionTaskConfig configures a DecisionTask's identity. (Process\-incorporation fields — input/output mappings, exit ports, loop, multi\-instance — arrive with the process layer.)
+
+```go
+type DecisionTaskConfig struct {
+    Id          string
+    Name        string
+    Description string
+}
+```
+
 <a name="Entries"></a>
-## type [Entries](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L17>)
+## type [Entries](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L16>)
 
 Entries maps each output name to the raw\-string source expression that produces it. The key is the output's variable name (its Go field name, or its \`expr:"name"\` rename) — the name entries reference — matching a field of O.
 
@@ -2064,6 +2521,58 @@ type Field struct {
     Fields  BlSchema // for TypeDictionary / TypeTable
     Element []Type   // for TypeList
 }
+```
+
+<a name="Handle"></a>
+## type [Handle](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_node.go#L14-L20>)
+
+Handle is one input or output field of a decision node's typed contract. It plays two roles: at wiring time it is a typed connection point (it carries its owning node and field name, stamped at construction), and at evaluation time it carries the value. Connecting two handles with Edge requires their T to match, so a mis\-typed connection is a Go compile error.
+
+```go
+type Handle[T BlValue] struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="NewHandle"></a>
+### func [NewHandle](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_node.go#L24>)
+
+```go
+func NewHandle[T BlValue](value T) Handle[T]
+```
+
+NewHandle wraps a value in a handle — used to build a typed input struct when calling Evaluate standalone. Inside a task the engine populates handles itself.
+
+<a name="Handle[T].Get"></a>
+### func (Handle\[T\]) [Get](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_node.go#L27>)
+
+```go
+func (h Handle[T]) Get() T
+```
+
+Get returns the handle's value.
+
+<a name="HitPolicy"></a>
+## type [HitPolicy](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L14>)
+
+HitPolicy determines how the engine combines multiple matching rules.
+
+```go
+type HitPolicy int
+```
+
+<a name="HitPolicyUnique"></a>
+
+```go
+const (
+    HitPolicyUnique      HitPolicy = iota // exactly one rule may match; multiple → error
+    HitPolicyFirst                        // rules in order; first match wins
+    HitPolicyPriority                     // among matches, the earliest (highest priority) wins
+    HitPolicyAny                          // multiple may match but must produce identical outputs
+    HitPolicyCollect                      // all matches collected; combined via Aggregation
+    HitPolicyRuleOrder                    // all matches returned in rule declaration order
+    HitPolicyOutputOrder                  // all matches returned in rule order (output priority)
+)
 ```
 
 <a name="ICalOption"></a>
@@ -2152,6 +2661,105 @@ func (e *ParseError) Unwrap() error
 
 
 
+<a name="ReferenceData"></a>
+## type [ReferenceData](<https://github.com/friendly-business-machines/blkit/blob/main/core/reference_data.go#L9-L17>)
+
+ReferenceData is a static value source within a decision model: a single constant BlValue paired with identity. It is not a DecisionNode and never runs; it exposes a single typed Value handle so it can be wired into a DecisionTask graph with Edge, exactly like a node output.
+
+```go
+type ReferenceData[T BlValue] struct {
+    Id          string
+    Name        string
+    Description string
+
+    // Value is the constant exposed as a wireable handle, stamped with this
+    // source's Id. Read the underlying BlValue with GetValue (or Value.Get()).
+    Value Handle[T]
+}
+```
+
+<a name="NewReferenceData"></a>
+### func [NewReferenceData](<https://github.com/friendly-business-machines/blkit/blob/main/core/reference_data.go#L43>)
+
+```go
+func NewReferenceData[T BlValue](config ReferenceDataConfig[T]) *ReferenceData[T]
+```
+
+NewReferenceData builds a ReferenceData from its config, wrapping the constant into the .Value handle stamped with the Id. An empty Id, or a nil Value, panics with a \*DecisionDefinitionError.
+
+<a name="ReferenceData[T].GetDescription"></a>
+### func (\*ReferenceData\[T\]) [GetDescription](<https://github.com/friendly-business-machines/blkit/blob/main/core/reference_data.go#L63>)
+
+```go
+func (r *ReferenceData[T]) GetDescription() string
+```
+
+
+
+<a name="ReferenceData[T].GetId"></a>
+### func (\*ReferenceData\[T\]) [GetId](<https://github.com/friendly-business-machines/blkit/blob/main/core/reference_data.go#L61>)
+
+```go
+func (r *ReferenceData[T]) GetId() string
+```
+
+GetId / GetName / GetDescription / GetValue satisfy ReferenceValue.
+
+<a name="ReferenceData[T].GetName"></a>
+### func (\*ReferenceData\[T\]) [GetName](<https://github.com/friendly-business-machines/blkit/blob/main/core/reference_data.go#L62>)
+
+```go
+func (r *ReferenceData[T]) GetName() string
+```
+
+
+
+<a name="ReferenceData[T].GetValue"></a>
+### func (\*ReferenceData\[T\]) [GetValue](<https://github.com/friendly-business-machines/blkit/blob/main/core/reference_data.go#L64>)
+
+```go
+func (r *ReferenceData[T]) GetValue() BlValue
+```
+
+
+
+<a name="ReferenceData[T].ToMarkdown"></a>
+### func (\*ReferenceData\[T\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/reference_data.go#L67>)
+
+```go
+func (r *ReferenceData[T]) ToMarkdown() string
+```
+
+ToMarkdown renders the value source as markdown.
+
+<a name="ReferenceDataConfig"></a>
+## type [ReferenceDataConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/reference_data.go#L21-L26>)
+
+ReferenceDataConfig configures a ReferenceData. Value is the constant; Id is mandatory. T is given by the config's type argument.
+
+```go
+type ReferenceDataConfig[T BlValue] struct {
+    Id          string
+    Name        string
+    Description string
+    Value       T
+}
+```
+
+<a name="ReferenceValue"></a>
+## type [ReferenceValue](<https://github.com/friendly-business-machines/blkit/blob/main/core/reference_data.go#L30-L35>)
+
+ReferenceValue is the non\-generic view of a ReferenceData, so a DecisionTask can hold the heterogeneous set of value sources it discovers from its graph edges.
+
+```go
+type ReferenceValue interface {
+    GetId() string
+    GetName() string
+    GetDescription() string
+    GetValue() BlValue
+}
+```
+
 <a name="RegexError"></a>
 ## type [RegexError](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L37-L40>)
 
@@ -2182,6 +2790,43 @@ func (e *RegexError) Unwrap() error
 
 
 
+<a name="RetryConfig"></a>
+## type [RetryConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L8-L13>)
+
+RetryConfig governs re\-running fallible work on error. It is shared by the decision layer's native\-function node (see DecisionNativeFunction) and will be shared with the process layer when that lands.
+
+```go
+type RetryConfig struct {
+    MaxRetries         int           // maximum re-attempts after the first try; 0 = unset
+    RetryFor           time.Duration // total time budget for retries; 0 = unset
+    RetryDelay         time.Duration // delay between attempts
+    ExponentialBackoff bool          // double the delay after each attempt
+}
+```
+
+<a name="NewRetryConfig"></a>
+### func [NewRetryConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L24>)
+
+```go
+func NewRetryConfig(opts RetryOpts) *RetryConfig
+```
+
+NewRetryConfig builds a RetryConfig from options.
+
+<a name="RetryOpts"></a>
+## type [RetryOpts](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L16-L21>)
+
+RetryOpts configures NewRetryConfig.
+
+```go
+type RetryOpts struct {
+    MaxRetries         int
+    RetryFor           time.Duration
+    RetryDelay         time.Duration
+    ExponentialBackoff bool
+}
+```
+
 <a name="Row"></a>
 ## type [Row](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L69>)
 
@@ -2189,6 +2834,24 @@ func (e *RegexError) Unwrap() error
 
 ```go
 type Row []any
+```
+
+<a name="Rule"></a>
+## type [Rule](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L47>)
+
+Rule is one row: optional leading id, then input cells (unary tests), then output cells (expressions), in column / output order.
+
+```go
+type Rule []string
+```
+
+<a name="Rules"></a>
+## type [Rules](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L50>)
+
+Rules is a table's rows.
+
+```go
+type Rules []Rule
 ```
 
 <a name="SchemaError"></a>

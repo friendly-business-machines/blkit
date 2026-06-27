@@ -48,10 +48,10 @@ nav = [
     "expressions/values-from-go.md",
   ] },
   { "Decisions" = [
-    "decisions/decision-expressions.md",
+    "decisions/overview.md",
     "decisions/decision-tables.md",
+    "decisions/decision-expressions.md",
     "decisions/decision-native-fn.md",
-    "decisions/sub-decisions.md",
     "decisions/reference-data.md",
     "decisions/decision-tasks.md",
   ] },
