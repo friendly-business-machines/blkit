@@ -1,6 +1,6 @@
 # blkit
 
-**A Go SDK for expressing and executing business logic.**
+**A Go SDK for expressing and executing business rules and processes.**
 
 blkit gives you a typed value system, an expression language, and (on the roadmap) a
 full decision-and-process execution stack — so that rules, calculations, and workflows
@@ -21,15 +21,16 @@ blkit pulls that logic out into a first-class, executable model:
 - **An expression language (`bl-expr`)** — write rules and calculations as plain strings
   (`creditScore >= 700 and dti <= 0.40`), compile them once, and evaluate them against
   many inputs.
-- **Decision and process layers (planned)** — model decision tables, business knowledge
-  models, and BPMN-style process graphs, then execute them with pluggable state,
-  message gateways, and a REST/MCP server frontend.
+- **Decision and process layers (in progress)** — model decision tables, business
+  knowledge models, and BPMN-style process graphs, then execute them with pluggable
+  state, message gateways, and a REST/MCP server frontend. Decision expressions are
+  available today; the tabular and process forms are being built.
 
 It's built for **developers**, **AI agents**, **low-code / no-code tools**, and
 **transpilers** — anything that needs to *generate* and *run* business logic rather than
 hard-code it.
 
-blkit draws on established standards — **BPMN 2.0** for processes, **DMN 1.4** for
+blkit draws on established standards — **BPMN 2.0** for processes, **DMN 1.5** for
 decisions, and **FEEL** for the expression language — but it is a practical,
 self-contained library, not a conformance implementation of any of them.
 
@@ -56,18 +57,21 @@ user- or AI-authored logic into a product.
 
 ## Project status
 
-The **expression engine and value system** (the root `blkit` package) is available
-today. The higher-level decision and process layers are on the roadmap.
+blkit's **business-friendly expression language**, and the compiler and evaluator
+that run it, are available today. blkit currently ships as a single Go package,
+`core` (imported as `bl`); the higher-level decision and process layers are being
+built and will live in the same module.
 
-| Component | Package | Status |
-|---|---|---|
-| Value type system & expression engine (`bl-expr`) | `blkit` (import as `bl`) | ✅ Available |
-| Decision models (tables, BKMs, literal expressions) | `blkit.decisions` | 🚧 Planned |
-| Process execution (BPMN-style graphs) | `blkit.processes` | 🚧 Planned |
-| Data contracts, execution context & state store | `blkit.data` | 🚧 Planned |
-| Message gateways (Redis, NATS, in-memory, …) | `blkit.messagegateway` | 🚧 Planned |
-| REST server with Server-Sent Events | `blkit.restserver` | 🚧 Planned |
-| MCP server | — | 🚧 Planned |
+| Component | Status |
+|---|---|
+| Business-friendly expression language — compiler & evaluator | ✅ Available |
+| Decision expressions | ✅ Available |
+| Decision tables, business knowledge models, boxed contexts | 🚧 Planned |
+| Process execution (BPMN-style graphs) | 🚧 Planned |
+| Data contracts, execution context & state store | 🚧 Planned |
+| Message gateways (Redis, NATS, in-memory, …) | 🚧 Planned |
+| REST server with Server-Sent Events | 🚧 Planned |
+| MCP server | 🚧 Planned |
 
 Everything in the **Quickstart** and **Components** sections below works against the
 shipped engine. Roadmap features are clearly marked *planned*.
@@ -82,7 +86,8 @@ Requires **Go 1.22+**.
 
 ## Quickstart
 
-Compile an expression once, then evaluate it against typed inputs:
+Declare your inputs as a struct, compile an expression once, then evaluate it against
+that typed input:
 
 ```go
 package main
@@ -93,32 +98,32 @@ import (
 	bl "github.com/friendly-business-machines/blkit/core"
 )
 
+// The env struct declares the variables the expression may reference. The
+// `expr` tag is the name as written in the source; referencing an undeclared
+// name is a compile-time error — the struct *is* the schema.
+type Applicant struct {
+	Age    bl.BlNumber `expr:"age"`
+	Income bl.BlNumber `expr:"income"`
+}
+
 func main() {
-	// Optionally declare the shape of the input for parse-time type checking.
-	schema, _ := bl.Schema(
-		bl.Field{Name: "age", Type: bl.TypeNumber},
-		bl.Field{Name: "income", Type: bl.TypeNumber},
-	)
-
 	// Parse and compile the rule once; reuse it for many evaluations.
-	eligible, _ := bl.Expr(`age >= 18 and income > 50000`, schema)
+	eligible, _ := bl.Expr[Applicant](`age >= 18 and income > 50000`)
 
-	// Build a typed input dictionary.
+	// Build a typed env value.
 	age, _ := bl.Number(21)
 	income, _ := bl.Number(60000)
-	inputs, _ := bl.Dictionary(map[string]bl.BlValue{
-		"age":    age,
-		"income": income,
-	})
 
 	// Evaluate. The result is a typed BlValue (here, a BlBoolean).
-	result, _ := eligible.Evaluate(inputs)
+	result, _ := eligible.Evaluate(Applicant{Age: age, Income: income})
 	fmt.Println(result.String()) // true
 }
 ```
 
-`Expr` accepts a `nil` schema if you don't want type checking. Every result is a
-`BlValue`, with a canonical `String()` rendering and a `Type()` tag.
+The env struct doubles as the schema: its fields declare every variable the source
+may reference. For a variable-free expression use `bl.ExprNoEnv` (shorthand for
+`bl.Expr[bl.NoEnv]`). Every result is a `BlValue`, with a canonical `String()`
+rendering and a `Type()` tag.
 
 ## A worked example: order discounts
 
@@ -128,32 +133,33 @@ and the single highest discount is applied to the subtotal — with exact decima
 math.
 
 ```go
-schema, _ := bl.Schema(
-	bl.Field{Name: "tier", Type: bl.TypeString},
-	bl.Field{Name: "accountAge", Type: bl.TypeNumber}, // months
-	bl.Field{Name: "subtotal", Type: bl.TypeNumber},
-	bl.Field{Name: "itemCount", Type: bl.TypeNumber},
-	bl.Field{Name: "category", Type: bl.TypeString},
-	bl.Field{Name: "code", Type: bl.TypeString},
-)
+// The env declares the order fields the rules reference.
+type Order struct {
+	Tier       bl.BlString `expr:"tier"`
+	AccountAge bl.BlNumber `expr:"accountAge"` // months
+	Subtotal   bl.BlNumber `expr:"subtotal"`
+	ItemCount  bl.BlNumber `expr:"itemCount"`
+	Category   bl.BlString `expr:"category"`
+	Code       bl.BlString `expr:"code"`
+}
 
 // Each rule contributes its discount when it matches, or 0 when it doesn't.
 // `max` picks the single best discount — they don't stack.
-discount, _ := bl.Expr(`max([
+discount, _ := bl.Expr[Order](`max([
 	(if accountAge >= 12 and tier = "gold" then 0.10 else 0),
 	(if accountAge < 3 then 0.10 else 0),
 	(if itemCount >= 25 then 0.12 else 0),
 	(if subtotal > 500 then 0.08 else 0),
 	(if category = "furniture" then 0.06 else 0),
 	(if code = "WELCOME20" then 0.20 else 0)
-])`, schema)
+])`)
 
 // Final order total — (1 - discount) is exact, no floating-point drift.
-total, _ := bl.Expr(`subtotal * (1 - (`+discount.Source()+`))`, schema)
+total, _ := bl.Expr[Order](`subtotal * (1 - (` + discount.Source() + `))`)
 ```
 
-Each `BlExpr` is evaluated against the same order dictionary and returns a typed result.
-As the **`blkit.decisions`** layer lands, the same rules will be expressible as a
+Each `BlExpr` is evaluated against the same order env and returns a typed result.
+As blkit's **decision** support grows, the same rules will be expressible as a
 **decision table** — the tabular form business analysts expect — instead of an inline
 list of conditionals.
 
@@ -168,8 +174,8 @@ expressions are the building blocks of decisions, and decisions are the steps wi
 
 `bl-expr`, a small expression language for writing business rules — built on a proven
 [`expr`](https://github.com/expr-lang/expr)-based evaluation engine and a business-focused
-type system (exact decimals, dates and durations, null-aware logic). It lives in the root
-`blkit` package (imported as `bl`). This is not string-parsing-at-runtime: each expression
+type system (exact decimals, dates and durations, null-aware logic). It lives in the
+`core` package (imported as `bl`). This is not string-parsing-at-runtime: each expression
 is compiled once into bytecode and runs on a stack-based VM, so a `BlExpr` is stateless,
 fast, and safe to evaluate against many inputs concurrently — use it directly for a single
 rule or calculation, or as the engine the Decisions and Processes components call into.
@@ -202,13 +208,15 @@ dictionaries and ranges, and every operator is null-aware — missing inputs pro
 `null` rather than crashing or guessing. Pass a schema to `Expr` and unknown references and
 type mismatches are caught at compile time, before any data flows through.
 
-### Decisions 🚧 *(planned)*
+### Decisions 🚧 *(in progress)*
 
-A declarative decisioning layer (`blkit.decisions`): **decision tables**, **business
-knowledge models**, **literal expressions**, and **boxed contexts**. Instead of an inline
-list of conditionals, related rules are expressed as a priority-ordered table that
-business analysts can read and maintain. Each cell is a `bl-expr`, so decisions inherit
-the expression layer's types and exact-decimal semantics.
+A declarative decisioning layer: **decision expressions**, **decision tables**,
+**business knowledge models**, and **boxed contexts**. Decision expressions — a typed
+input mapped through an expression to a typed output — are available in `core` today.
+The tabular forms come next: instead of an inline list of conditionals, related rules
+are expressed as a priority-ordered table that business analysts can read and maintain.
+Each cell is an expression, so decisions inherit the expression layer's types and
+exact-decimal semantics.
 
 ### Processes 🚧 *(planned)*
 
@@ -223,6 +231,11 @@ support — data contracts, a pluggable state store (`blkit.data`), message gate
 as services.
 
 ## Architecture
+
+> **Target design — not yet implemented.** This section describes how blkit's
+> *planned* process and service layers are intended to fit together. The expression
+> engine ships today; the roles, packages, and interfaces below (workers, message
+> gateways, the REST server, the state store) do not exist in the codebase yet.
 
 The components above can be embedded directly in a single Go program. To run processes
 *as a service* — many instances, across many machines, surviving restarts — blkit fans
@@ -336,10 +349,12 @@ flowchart LR
 
 ## Documentation
 
-A comprehensive documentation portal (GitHub Pages) with the full type, operator, and
-function reference plus worked examples (order discounts, product pricing, invoice
-processing, tax calculation, and more) is planned. Until then, this README and the
-package doc comments are the reference.
+The full documentation lives at the
+**[blkit documentation portal](https://friendly-business-machines.github.io/blkit/)**
+(GitHub Pages): a guide to the expression language and every value type, operator, and
+built-in function, plus worked examples (order discounts, product pricing, invoice
+processing, tax calculation, and more). The package doc comments and the generated Go
+API reference complement it.
 
 ## Dependencies
 
@@ -347,6 +362,8 @@ package doc comments are the reference.
 |---|---|
 | [`github.com/shopspring/decimal`](https://github.com/shopspring/decimal) | Arbitrary-precision decimal arithmetic backing `bl.BlNumber`. |
 | [`github.com/expr-lang/expr`](https://github.com/expr-lang/expr) | Expression engine foundation, extended with blkit's own type system, operators, and built-in functions. |
+| [`github.com/arran4/golang-ical`](https://github.com/arran4/golang-ical) | iCalendar parsing behind the `calendar` value type. |
+| [`github.com/teambition/rrule-go`](https://github.com/teambition/rrule-go) | Recurrence-rule (RRULE) expansion for calendar entries. |
 
 ## License
 
