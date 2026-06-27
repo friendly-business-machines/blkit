@@ -28,7 +28,7 @@ The documentation site is organised into the following top-level sections (at mi
 | **Templates** | Ready-to-copy project scaffolds and boilerplate patterns for common use cases |
 | **Examples** | Focused, self-contained code samples demonstrating specific features or combinations |
 | **Reference** | Complete API reference, organised by package and type |
-| **Expressions** | User guide to the expression language — one page per language area (data types, numbers, strings, dates and times, lists, …) |
+| **Expressions** | User guide to the expression language — an overview page plus one page per language area (numbers, strings, dates and times, lists, …) |
 | **Decisions** | User guide to the decision components (decision expressions, tables, native functions, sub-decisions, reference data, decision tasks) |
 | **Processes** | User guide to the process components (tasks, gateways, processes) |
 | **Architecture** | Internal design of blkit's subsystems — one deep-dive chapter per subsystem |
@@ -131,9 +131,9 @@ Generated Markdown is committed to `docs/reference/` and consumed by Zensical as
 
 ## Expressions Section
 
-The Expressions section is the user guide to blkit's expression language — the same engine documented internally in the Architecture section, but presented from the author's point of view. It is organised as one page per area of the language, each combining prose, syntax, and worked snippets. Each page's behaviour is defined authoritatively by the matching spec under `specs/expressions/`. Pages may be published as stubs and filled in incrementally; the expression engine itself is available today.
+The Expressions section is the user guide to blkit's expression language — the same engine documented internally in the Architecture section, but presented from the author's point of view. It opens with an orientation **overview** page and is then organised as one page per area of the language, each combining prose, syntax, and worked snippets. Each per-area page's behaviour is defined authoritatively by the matching spec under `specs/expressions/`; the `overview.md` page has no single matching spec — it is an orientation page that introduces what the language is (mirroring the Architecture chapter's framing) and catalogues the closed set of value types, linking out to each area's page.
 
-Pages: `data-types.md`, `numbers.md`, `strings.md`, `booleans-and-logic.md`, `dates-and-times.md`, `lists.md`, `dictionaries.md`, `ranges.md`, `tables.md`.
+Pages: `overview.md`, `numbers.md`, `strings.md`, `booleans-and-logic.md`, `dates-and-times.md`, `lists.md`, `dictionaries.md`, `ranges.md`, `tables.md`.
 
 ## Decisions Section
 

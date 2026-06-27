@@ -44,9 +44,35 @@ calculations and conditions —
 
 — and these rules tend to change far more often, and need to be understood by far
 more people, than the program that runs them. An expression language lets you
-lift that logic out of the host program's control flow and treat it as **data**:
-something you can store in a database, edit in a spreadsheet-like table, ship
-without recompiling, and hand to an analyst rather than a programmer.
+lift that logic out of the host program's control flow and capture it as a
+small, self-contained expression — short enough to read at a glance, and clear
+enough to hand to an analyst rather than a programmer to confirm it says what the
+business means.
+
+### Expression, scripting, and programming languages
+
+It helps to describe expression languages alongside the two kinds of language
+they are most easily confused with.
+
+**Expression languages** are designed for data manipulation and configuration.
+They are functional: evaluating an expression substitutes it for the value it
+produces, with no separate program to run. Because their syntax is small and
+deliberately limited, they are readable and usable by people without an extensive
+coding background as much as by professional developers — which is exactly why
+they suit rules, configuration, and decision logic. FEEL is one such language;
+spreadsheet formulas and CEL are others.
+
+**Scripting languages** add higher-level constructs that make code quicker and
+more concise to write than a general-purpose language would. They are usually
+interpreted — executed line by line — rather than compiled ahead of time, which
+suits automation, glue code, and fast application work for developers who value
+speed of writing. Python, JavaScript, and Ruby are common examples.
+
+**Programming languages** are general-purpose: they express arbitrary algorithms
+and instructions, with the breadth to build complete applications, data
+structures, and user interfaces. Compiling directly to machine code gives them
+strong performance, at the cost of more code and more ceremony, and they are the
+everyday tool of professional software engineers. C++, Java, and C# are examples.
 
 ### Where you've already met them
 
