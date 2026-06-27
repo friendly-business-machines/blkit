@@ -208,3 +208,21 @@ var s = greeting.Native()                  // Go string from a bl.BlString
 `bl.BlNumber` exposes `Decimal()` (then use the `shopspring/decimal` API —
 `IntPart`, `Float64`, `StringFixed`, …); the other scalar types expose a
 `Native()` accessor returning the corresponding Go value.
+
+When you don't know a result's type ahead of time, switch on it. Every
+`bl.BlValue` carries a `Type()` method returning a `bl.Type` tag — the host-side
+mirror of the language's [`instance of`](overview.md#testing-a-values-type-instance-of)
+test. Because the value set is closed, the switch can be exhaustive:
+
+```go
+// host-side (Go)
+var v, _ = eligible.Evaluate(env)
+switch v.Type() {
+case bl.TypeNumber:
+    // ...
+case bl.TypeBoolean:
+    // ...
+case bl.TypeNull:
+    // ...
+}
+```

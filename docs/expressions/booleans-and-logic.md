@@ -34,8 +34,8 @@ habit; they don't introduce extra literal values.
 Because every casing of `true` / `false` is reserved as a literal, a variable
 named `True`, `FALSE`, and so on is **not addressable**. An env field whose
 source-level name collides with a boolean literal in any casing is a compile
-error when you call `bl.Expr` (see [Data Types](data-types.md) for how env
-fields are declared).
+error when you call `bl.Expr` (see [Values from Go](values-from-go.md) for how
+env fields are declared).
 
 ## Operators
 
@@ -124,8 +124,67 @@ true = null                        // → false
 
 The practical consequence: **never test for absence with `x = null`** — it is
 always `false`, so the branch never fires. Use `isNull(x)` (or `x instance of
-null`) instead. See [Data Types → Null](data-types.md) for the full story on
-null and the null-handling helpers.
+null`) instead, covered in [Null](#null) below.
+
+## Null
+
+`null` is its own value type, with a single value written `null`. It means a
+value is **absent or unknown** — there is no data, or the data isn't known yet.
+Beyond literals you type yourself, the engine produces `null` for any operation
+whose normal result is undefined:
+
+- a dictionary key that isn't present,
+- a list index out of range,
+- division by zero,
+- any arithmetic or path expression whose operand was already `null`.
+
+```
+// expression-language
+applicant.middleName                // → null if the key is absent
+items[99]                           // → null if the list is shorter
+10 / 0                              // → null
+null + 1                            // → null  (null propagates)
+```
+
+That last line is the key behaviour: `null` **propagates**. An operation on
+another type — numeric addition, string concatenation, path access — that
+receives a `null` operand yields `null` rather than throwing. Combined with the
+three-valued logic above, this lets partial data flow through an expression and
+surface as a `null` result instead of an error.
+
+### Testing for null
+
+Because `x = null` is always `false` (see [Equality is never null](#equality-is-never-null)),
+there are two dedicated ways to test for null inside an expression:
+
+```
+// expression-language
+isNull(applicant.middleName)        // → true if the key is missing
+isNull(0)                           // → false  (zero is a defined value)
+isNull("")                          // → false  (empty string is defined)
+null instance of null               // → true
+```
+
+`isNull(x)` and `x instance of null` are equivalent. Prefer `isNull(x)` for
+brevity; `x instance of null` reads naturally alongside other `instance of`
+type tests. Both fire **only** on `null` — a defined-but-empty value (`0`, `""`,
+the empty list `[]`) is not null.
+
+### Supplying a fallback
+
+`getOrElse(value, default)` returns `default` when `value` is `null`, and
+`value` unchanged otherwise. It is the canonical null fallback — shorter than
+`if isNull(x) then d else x`, and it doesn't evaluate `x` twice:
+
+```
+// expression-language
+getOrElse(applicant.middleName, "")  // → "" when the name is absent
+getOrElse(null, 1)                   // → 1
+getOrElse(42, 1)                     // → 42
+```
+
+Like `isNull`, it only fires on `null`: a defined-but-empty value is returned
+as-is, not replaced.
 
 ## Booleans from Go
 

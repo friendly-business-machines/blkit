@@ -25,7 +25,7 @@
 - [Example: Australian Personal Income Tax Calculator](https://friendly-business-machines.github.io/blkit/examples/aus-personal-income-tax/): An accounting service calculates an individual's annual income tax liability for FY 2024–25 — building taxable income from many sources, applying progressive brackets, levies, offsets, and HELP/HECS, then reconciling against amounts already paid.
 
 ## Expressions
-- [Data Types](https://friendly-business-machines.github.io/blkit/expressions/data-types/): The blkit value system — numbers, strings, booleans, null, dates and times, durations, lists, dictionaries, ranges, and tables — its literal syntax, and how typed environments feed values into expressions.
+- [Overview](https://friendly-business-machines.github.io/blkit/expressions/overview/): What blkit's expression language is, where it comes from, and the complete set of values it works with — its literal syntax at a glance, and how to test a value's type.
 - [Numbers](https://friendly-business-machines.github.io/blkit/expressions/numbers/): Exact decimal arithmetic and the numeric functions — literals, operators, rounding, absolute value, powers, predicates, and more.
 - [Strings](https://friendly-business-machines.github.io/blkit/expressions/strings/): Working with text — concatenation, substring, search and replace, case conversion, and formatting functions.
 - [Booleans & Logic](https://friendly-business-machines.github.io/blkit/expressions/booleans-and-logic/): Boolean values and blkit's three-valued (true / false / null) logic, including and, or, not, and comparison results.

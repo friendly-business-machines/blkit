@@ -35,7 +35,7 @@ nav = [
     "examples/aus-personal-income-tax.md",
   ] },
   { "Expressions" = [
-    "expressions/data-types.md",
+    "expressions/overview.md",
     "expressions/numbers.md",
     "expressions/strings.md",
     "expressions/booleans-and-logic.md",
