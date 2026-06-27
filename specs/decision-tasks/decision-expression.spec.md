@@ -7,11 +7,9 @@ targets:
 
 # DecisionExpression
 
-A `DecisionExpression[I, O]` defines decision logic as a set of named entries over two concrete Go structs: an **input** struct `I` and an **output** struct `O`. Each entry binds one output to a value expression written in the [blkit expression language](../expressions/bl-expr.spec.md) — a raw-string source compiled via `bl.Expr`. Entries may reference the declared inputs, may reference one another by output name, and may call any [user-defined functions](../expressions/udf.spec.md) supplied in `Config.Funcs`; the constructor topologically sorts entries by their inter-entry dependencies.
+A `DecisionExpression[I, O]` is a [`DecisionNode[I, O]`](decision-node.spec.md) that defines decision logic as a set of named entries over two concrete Go structs: an **input** struct `I` and an **output** struct `O`. Each entry binds one output to a value expression written in the [blkit expression language](../expressions/bl-expr.spec.md) — a raw-string source compiled via `bl.Expr`. Entries may reference the declared inputs, may reference one another by output name, and may call any [user-defined functions](../expressions/udf.spec.md) supplied in `Config.Funcs`; the constructor topologically sorts entries by their inter-entry dependencies.
 
-Because the input and output contracts are concrete Go structs, a caller that passes the wrong input shape or reads a non-existent output gets a **Go compile error**, and `Evaluate(inputs I) (O, error)` carries the result back as a typed struct. Every exported field of `I` and `O` is a variable an entry may reference — by its Go field name, or by the name given in an optional `expr:"name"` tag — and each field must be a `BlValue`, so the contracts carry only blkit values, in and out.
-
-> **Note.** Genericising the input/output contracts takes `DecisionExpression` out of the uniform `map[string]BlValue`-based [`DecisionNode`](decision-node.spec.md) interface that a `DecisionTask` uses to hold heterogeneous nodes. Reconciling the decision-node family (uniform interface, task wiring) with the new generic, struct-typed contracts is tracked as follow-up work; this spec describes `DecisionExpression` as a standalone generic construct.
+Because the input and output contracts are concrete Go structs, a caller that passes the wrong input shape or reads a non-existent output gets a **Go compile error**, and `Evaluate(inputs I) (O, error)` carries the result back as a typed struct. Every exported field of `I` and `O` is a variable an entry may reference — by its Go field name, or by the name given in an optional `expr:"name"` tag — and each field must be a `bl.Handle[T]` whose `T` is a `BlValue`, following the family's [reflection contract](decision-node.spec.md#contracts-are-concrete-go-structs). Like every node it exposes `In`/`Out` handle surfaces so it can be wired into a [`DecisionTask`](decision-task.spec.md#wiring); the entry compilation and topological sort below are its kind-specific structure.
 
 It draws on two DMN boxed-expression forms: a single-output node is DMN's **literal expression** (one expression yielding one value), and a multi-output node is DMN's **boxed context** (named entries). `DecisionExpression` unifies them — a single-entry node is just the degenerate boxed context.
 
@@ -34,18 +32,23 @@ type DecisionExpressionConfig struct {
 }
 
 // I and O are concrete structs whose exported fields declare the inputs and
-// outputs; each field must be a BlValue and is exposed under its Go field name,
-// or under the name in an optional `expr:"name"` tag. NewDecisionExpression
-// accumulates every construction problem and panics once with a
-// *DecisionDefinitionError.
+// outputs; each field must be a bl.Handle[BlValue] and is exposed under its Go
+// field name, or under the name in an optional `expr:"name"` tag.
+// NewDecisionExpression accumulates every construction problem and panics once
+// with a *DecisionDefinitionError. The node exposes In/Out handle surfaces for
+// wiring (see decision-node.spec.md § Port surfaces).
 func NewDecisionExpression[I, O any](config DecisionExpressionConfig) *DecisionExpression[I, O]
 
+// DecisionNode[I, O] interface satisfaction.
 func (d *DecisionExpression[I, O]) Evaluate(inputs I) (O, error)
-func (d *DecisionExpression[I, O]) Source(output string) (string, bool)
-func (d *DecisionExpression[I, O]) ToMarkdown() string
 func (d *DecisionExpression[I, O]) GetId() string
 func (d *DecisionExpression[I, O]) GetName() string
 func (d *DecisionExpression[I, O]) GetDescription() string
+func (d *DecisionExpression[I, O]) Inputs() []Field  // reflected from I
+func (d *DecisionExpression[I, O]) Outputs() []Field // reflected from O
+
+func (d *DecisionExpression[I, O]) Source(output string) (string, bool)
+func (d *DecisionExpression[I, O]) ToMarkdown() string
 
 // DecisionDefinitionError reports one or more construction problems.
 type DecisionDefinitionError struct {
@@ -66,16 +69,13 @@ Because `NewDecisionExpression[I, O]` is generic, it does not know `I`'s and `O`
 
 **Every field is a variable.** Each field of `I` and `O` becomes one variable in the environment — there is no opt-out. By default a field's variable name is its Go field name; the `expr:"..."` tag is *optional* and is used only to expose a field under a different name (for example a Go field `LoanAmount` mapped to the variable `loan_amount`). So a struct of plainly-named fields needs no tags at all.
 
-It then checks the contracts are well-formed. Each failure is reported as a `DecisionDefinitionError`:
+It then checks the contracts against the family's [reflection contract](decision-node.spec.md#contracts-are-concrete-go-structs) — `I`/`O` are structs, every field an exported `bl.Handle[BlValue]` with a valid identifier name, each variable read through `Handle.Get()` — plus these expression-specific rules. Each failure is reported as a `DecisionDefinitionError`:
 
-- `I` and `O` must be structs, and every field must be exported (an unexported field cannot be a variable);
-- **every field must be a `BlValue`.** Entries operate on `BlValue`s and produce `BlValue`s, so the input and output contracts may hold only blkit values — a field of any other Go type (`int`, `string`, a plain struct, …) is rejected;
-- **every variable name must be a valid expr identifier** — a letter or `_` followed by letters, digits, or `_`. This is checked for the resolved name, so a malformed `expr` tag (`expr:"loan amount"`, `expr:"1st"`) is rejected at construction. (A Go field name is always a valid identifier, so untagged fields pass automatically.)
-- no name may be duplicated, and no input name may collide with an output name (they share one environment — see the next phase — so a collision would silently shadow one of them);
+- no input name may collide with an output name — unlike most nodes, an entry's environment combines the inputs and the sibling outputs (see the next phase), so a collision would silently shadow one of them;
 - `O` must declare at least one output;
 - the `Entries` key set must be exactly the `O` output names — no entry without a matching output, and no output without an entry.
 
-> **Why construction time, not compile time?** Go's generics can constrain a *type parameter*, but there is no constraint that says "a struct all of whose fields are `BlValue`" — field types cannot be expressed in the constraint system. So `[I, O any]` is the tightest signature available, and the `BlValue` rule is enforced by reflection when `NewDecisionExpression` runs. Because a `DecisionExpression` is typically a package-scope `var`, that check still fails at program (or test-binary) startup — the same load-time fail-fast as every other contract rule here.
+> **Why construction time, not compile time?** Go's generics can constrain a *type parameter*, but there is no constraint that says "a struct all of whose fields are `bl.Handle[BlValue]`" — field types cannot be expressed in the constraint system. So `[I, O any]` is the tightest signature available, and the `Handle` rule is enforced by reflection when `NewDecisionExpression` runs. Because a `DecisionExpression` is typically a package-scope `var`, that check still fails at program (or test-binary) startup — the same load-time fail-fast as every other contract rule here.
 
 ### 2. Combine the inputs and outputs into one environment
 
@@ -109,11 +109,11 @@ A single-output node is the expression-based way to author a one-value decision.
 
 ```go
 type PaymentInputs struct {
-    LoanAmount bl.BlNumber `expr:"loan_amount"`
-    Rate       bl.BlNumber `expr:"rate"`
+    LoanAmount bl.Handle[bl.BlNumber] `expr:"loan_amount"`
+    Rate       bl.Handle[bl.BlNumber] `expr:"rate"`
 }
 type PaymentOutputs struct {
-    Amount bl.BlNumber `expr:"amount"`
+    Amount bl.Handle[bl.BlNumber] `expr:"amount"`
 }
 
 var monthlyPayment = bl.NewDecisionExpression[PaymentInputs, PaymentOutputs](bl.DecisionExpressionConfig{
@@ -126,18 +126,21 @@ var monthlyPayment = bl.NewDecisionExpression[PaymentInputs, PaymentOutputs](bl.
 
 var amount, _ = bl.Number(200000)
 var rate, _   = bl.Number("0.05")
-var result, _ = monthlyPayment.Evaluate(PaymentInputs{LoanAmount: amount, Rate: rate})
-// result is PaymentOutputs{Amount: <bl.BlNumber>}
+var result, _ = monthlyPayment.Evaluate(PaymentInputs{
+    LoanAmount: bl.NewHandle(amount),
+    Rate:       bl.NewHandle(rate),
+})
+// result.Amount.Get() is a bl.BlNumber
 ```
 
 ### Conditional single output
 
 ```go
 type ScoreInputs struct {
-    Score bl.BlNumber `expr:"score"`
+    Score bl.Handle[bl.BlNumber] `expr:"score"`
 }
 type StatusOutputs struct {
-    Status bl.BlString `expr:"status"`
+    Status bl.Handle[bl.BlString] `expr:"status"`
 }
 
 var applicationStatus = bl.NewDecisionExpression[ScoreInputs, StatusOutputs](bl.DecisionExpressionConfig{
@@ -153,14 +156,14 @@ var applicationStatus = bl.NewDecisionExpression[ScoreInputs, StatusOutputs](bl.
 
 ```go
 type LoanInputs struct {
-    LoanAmount bl.BlNumber `expr:"loan_amount"`
-    Rate       bl.BlNumber `expr:"rate"`
-    Term       bl.BlNumber `expr:"term"`
+    LoanAmount bl.Handle[bl.BlNumber] `expr:"loan_amount"`
+    Rate       bl.Handle[bl.BlNumber] `expr:"rate"`
+    Term       bl.Handle[bl.BlNumber] `expr:"term"`
 }
 type Breakdown struct {
-    Principal bl.BlNumber `expr:"principal"`
-    Interest  bl.BlNumber `expr:"interest"`
-    Total     bl.BlNumber `expr:"total"`
+    Principal bl.Handle[bl.BlNumber] `expr:"principal"`
+    Interest  bl.Handle[bl.BlNumber] `expr:"interest"`
+    Total     bl.Handle[bl.BlNumber] `expr:"total"`
 }
 
 var monthlyBreakdown = bl.NewDecisionExpression[LoanInputs, Breakdown](bl.DecisionExpressionConfig{
@@ -176,8 +179,12 @@ var monthlyBreakdown = bl.NewDecisionExpression[LoanInputs, Breakdown](bl.Decisi
 var la, _   = bl.Number(120000)
 var r, _    = bl.Number("0.06")
 var term, _ = bl.Number(12)
-var out, _  = monthlyBreakdown.Evaluate(LoanInputs{LoanAmount: la, Rate: r, Term: term})
-// out is Breakdown{Principal: 10000, Interest: 600, Total: 10600}
+var out, _  = monthlyBreakdown.Evaluate(LoanInputs{
+    LoanAmount: bl.NewHandle(la),
+    Rate:       bl.NewHandle(r),
+    Term:       bl.NewHandle(term),
+})
+// out.Principal.Get()=10000, out.Interest.Get()=600, out.Total.Get()=10600
 ```
 
 The `total` entry references `principal` and `interest` by name. Those are this node's own outputs — referencing them declares cross-entry dependencies that `NewDecisionExpression` honours when sorting.
@@ -193,11 +200,11 @@ type TaxParams struct {
 var addTax, _ = bl.Func[TaxParams, bl.BlNumber]("addTax", `amount * 1.2`)
 
 type PriceInputs struct {
-    Base bl.BlNumber `expr:"base"`
+    Base bl.Handle[bl.BlNumber] `expr:"base"`
 }
 type PriceOutputs struct {
-    Gross        bl.BlNumber `expr:"gross"`
-    WithShipping bl.BlNumber `expr:"with_shipping"`
+    Gross        bl.Handle[bl.BlNumber] `expr:"gross"`
+    WithShipping bl.Handle[bl.BlNumber] `expr:"with_shipping"`
 }
 
 var grossPrice = bl.NewDecisionExpression[PriceInputs, PriceOutputs](bl.DecisionExpressionConfig{
@@ -211,8 +218,8 @@ var grossPrice = bl.NewDecisionExpression[PriceInputs, PriceOutputs](bl.Decision
 })
 
 var base, _ = bl.Number(100)
-var out, _  = grossPrice.Evaluate(PriceInputs{Base: base})
-// out is PriceOutputs{Gross: 120, WithShipping: 125}
+var out, _  = grossPrice.Evaluate(PriceInputs{Base: bl.NewHandle(base)})
+// out.Gross.Get()=120, out.WithShipping.Get()=125
 ```
 
 The functions are registered once, at construction, when each entry is compiled — so a call to a function that is not in `Funcs`, or a call with the wrong argument types, fails as a `DecisionDefinitionError` rather than at evaluation. Two `Funcs` sharing a name is also a `DecisionDefinitionError`.
@@ -231,7 +238,7 @@ What each moment catches, one per phase — compile, runtime init, and runtime:
 | Phase | Moment | Trigger | What it catches | Raised as |
 |-------|--------|---------|-----------------|-----------|
 | **Compile** | Go compilation | `go build` | A caller passing an input value of the wrong type, or reading an undeclared output field. | Go type error |
-| **Runtime init** | Node construction | `NewDecisionExpression` | A non-struct `I`/`O`; an unexported field; a field that is not a `BlValue`; a variable name that is not a valid expr identifier; a duplicate or colliding name; two `Funcs` sharing a name; an empty `O`; an `Entries` key set that is not exactly the output names; an entry that fails to compile, references an undeclared name, or calls an unregistered function; a dependency cycle. | `DecisionDefinitionError` |
+| **Runtime init** | Node construction | `NewDecisionExpression` | A non-struct `I`/`O`; an unexported field; a field that is not a `bl.Handle[BlValue]`; a variable name that is not a valid expr identifier; a duplicate or colliding name; two `Funcs` sharing a name; an empty `O`; an `Entries` key set that is not exactly the output names; an entry that fails to compile, references an undeclared name, or calls an unregistered function; a dependency cycle. | `DecisionDefinitionError` |
 | **Runtime** | Evaluation | `Evaluate` | A produced value whose runtime type disagrees with its declared output field; a runtime operator type error inside an entry's expression. | `bl.TypeError` |
 
 ---
@@ -284,8 +291,8 @@ Output:
 - An `O` with no exported output fields is invalid; `NewDecisionExpression` raises `DecisionDefinitionError`.
 - The `Entries` key set must be exactly the output names. An `Entries` key matching no output, or an output with no entry, is a `DecisionDefinitionError`.
 - The `expr` tag is optional — an untagged field is exposed under its Go field name; a tag only renames the variable.
-- An unexported field of `I` or `O` is a `DecisionDefinitionError` — every field must be an exported `BlValue` variable. There is no opt-out; `expr:"-"` is rejected rather than excluding the field.
-- A field whose type is not a `BlValue` is a `DecisionDefinitionError` at construction.
+- An unexported field of `I` or `O` is a `DecisionDefinitionError` — every field must be an exported `bl.Handle[BlValue]` variable. There is no opt-out; `expr:"-"` is rejected rather than excluding the field.
+- A field whose type is not a `bl.Handle[BlValue]` is a `DecisionDefinitionError` at construction.
 - A variable name (a field name, or its `expr` tag) that is not a valid expr identifier — a letter or `_` followed by letters, digits, or `_` — is a `DecisionDefinitionError`.
 - A duplicate variable name within `I` or `O`, or an input name that collides with an output name, is a `DecisionDefinitionError`.
 - An entry source that does not compile is a `DecisionDefinitionError` (wrapping the `bl.ParseError`).

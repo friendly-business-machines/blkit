@@ -1,104 +1,89 @@
 ---
 name: DecisionTable
-description: A DecisionNode that defines decision logic as input columns, output columns, and rules whose cells are text expressions (unary tests for inputs, expressions for outputs). Declares its input and output contracts as plain []Field data; cells compile against the bl expression language at construction.
+description: A generic DecisionNode[I, O] that defines decision logic as input columns, output columns, and rules whose cells are text expressions (unary tests for inputs, expressions for outputs) over a concrete Go input struct I, producing a concrete output struct O. Cells compile against the bl expression language at construction; Evaluate(in I) returns O, type-checked at Go compile time.
 targets:
   - ../../core/decision_table.go
 ---
 
 # DecisionTable
 
-A `DecisionTable` is a [`DecisionNode`](decision-node.spec.md) that defines decision logic as a table of input conditions and output values. Each row is a `Rule`; a rule matches when all of its input cells are satisfied. The hit policy determines how matching rules are combined into the output.
+A `DecisionTable[I, O]` is a [`DecisionNode[I, O]`](decision-node.spec.md) that defines decision logic as a table of input conditions and output values over two concrete Go structs: an **input** struct `I` and an **output** struct `O`. Each row is a `Rule`; a rule matches when all of its input cells are satisfied. The hit policy determines how matching rules are combined into the output.
 
-Like every node, a `DecisionTable` declares its contracts as plain data (see [decision-node.spec.md § Contracts are plain data](decision-node.spec.md#contracts-are-plain-data-not-go-generics)): `Inputs` is the list of named, typed variables it consumes from outside, and `Outputs` is the list of named, typed values it produces. Between them sit the table's `Columns` — the input columns that turn consumed variables into comparable cell values. There is no type parameter and no reflected outputs struct.
+Like every node, a `DecisionTable` declares its contracts as concrete Go structs whose every exported field is a `bl.Handle` variable (see [decision-node.spec.md § Contracts are concrete Go structs](decision-node.spec.md#contracts-are-concrete-go-structs)): the fields of `I` are the variables it consumes, and the fields of `O` are the values it produces — one per output column, in declaration order. Between the two sit the table's `Columns` — the input columns that turn consumed variables into comparable cell values.
+
+Because the contracts are concrete Go structs, a caller that passes the wrong input shape or reads a non-existent output gets a **Go compile error**, and `Evaluate(in I) (O, error)` returns a typed `O`. Within a task, the same node is driven through the netlist (see [decision-task.spec.md § Wiring](decision-task.spec.md#wiring)).
 
 Cells are **text expressions** in the blkit expression language (see [bl-expr.spec.md](../expressions/bl-expr.spec.md)). Input cells are **unary tests** (`>= 18`, `[650..749]`, `"US", "CA"`, `-`); output cells are **expressions** (`3.5`, `"eligible"`). Every cell is compiled once at construction into a `BlExpr` over the node's declared inputs — an input cell by inlining its column's `Expr` as the test subject (the `?`), an output cell directly via `bl.Expr` — so malformed cells fail fast as a `DecisionDefinitionError`. See [§ Compiling cells](#compiling-cells).
 
 ```go
-type DecisionTable struct {
+type DecisionTable[I, O any] struct {
+    In  I // input port surface — stamped handles for wiring (eligibility.In.Age)
+    Out O // output port surface — stamped handles for wiring (eligibility.Out.Eligibility)
+    // unexported: id, name, description, hit policy, aggregation, columns, rules,
+    // descriptions, and the compiled rule predicates/output expressions.
+}
+
+func NewDecisionTable[I, O any](config DecisionTableConfig) *DecisionTable[I, O]
+
+type DecisionTableConfig struct {
     Id          string
     Name        string
     Description string
 
-    HitPolicy   HitPolicy
-    Aggregation *Aggregation
-
-    Columns      []Column
-    Rules        Rules
-    Descriptions map[string]string // optional; rule id -> human-readable description
-
-    // inputs / outputs hold the declared contracts; exposed via the
-    // DecisionNode interface methods Inputs() / Outputs().
-    inputs  []Field
-    outputs []Field
-
-    // compiledRules parallels Rules in declaration order; each holds the rule's
-    // inlined input predicates and output expressions, all BlExpr over the
-    // inputs. Built by NewDecisionTable and walked by Evaluate.
-    compiledRules []compiledRule
-}
-
-type compiledRule struct {
-    inputs  []BlExpr // one per Column; a boolean predicate (the column Expr inlined as the `?` subject); the wildcard `-` is the constant-true predicate
-    outputs []BlExpr // one per Output; nil for an omitted (empty) cell, which yields bl.BlNull
-}
-
-func NewDecisionTable(opts DecisionTableOpts) *DecisionTable
-
-type DecisionTableOpts struct {
-    Id          string
-    Name        string
-    Description string
     HitPolicy   HitPolicy    // default: HitPolicyUnique
     Aggregation *Aggregation // only valid with HitPolicyCollect
 
-    // Inputs declares the named, typed variables the column and output
-    // expressions consume from outside this node (task inputs, upstream node
-    // outputs, or reference data).
-    Inputs []Field
+    // Columns are the input columns: each Expr is a source expression over the
+    // variables of I, inlined as the `?` subject of that column's input cells.
+    Columns []Column
 
-    // Outputs declares the named, typed values this node produces, one per
-    // output column, in declaration (column) order.
-    Outputs []Field
-
-    Columns      []Column
+    // Rules are the rows: input cells (unary tests) then output cells
+    // (expressions), one output cell per field of O in declaration order.
     Rules        Rules
-    Descriptions map[string]string
+    Descriptions map[string]string // optional; rule id -> human-readable description
 }
 
-// DecisionNode interface satisfaction.
-func (d *DecisionTable) GetId() string
-func (d *DecisionTable) GetName() string
-func (d *DecisionTable) GetDescription() string
-func (d *DecisionTable) Inputs() []Field
-func (d *DecisionTable) Outputs() []Field
+// DecisionNode[I, O] interface satisfaction.
+func (d *DecisionTable[I, O]) GetId() string
+func (d *DecisionTable[I, O]) GetName() string
+func (d *DecisionTable[I, O]) GetDescription() string
+func (d *DecisionTable[I, O]) Inputs() []Field  // reflected from I
+func (d *DecisionTable[I, O]) Outputs() []Field // reflected from O
 
-// Evaluate the table against the input variables, returning a map keyed by this
-// node's output names (see decision-node.spec.md). Single-hit policies map each
-// output name to a scalar; multi-hit policies map each output name to a list.
-func (d *DecisionTable) Evaluate(input map[string]BlValue) (map[string]BlValue, error)
+// Evaluate the table against the typed input struct, returning a typed output
+// struct. For single-hit policies each output handle holds a scalar; for
+// list-returning policies each output handle holds a bl.BlList.
+func (d *DecisionTable[I, O]) Evaluate(in I) (O, error)
 
-// Render the table as a markdown string
-func (d *DecisionTable) ToMarkdown(
+// Render the table as a markdown string.
+func (d *DecisionTable[I, O]) ToMarkdown(
     showRuleIDs bool,
     showRuleDescriptions bool,
     showInputMappings bool,
 ) string
+
+// DecisionDefinitionError reports one or more construction problems (shared
+// across the decision family).
+type DecisionDefinitionError struct {
+    Node     string
+    Problems []string
+}
 ```
 
-`NewDecisionTable` validates the input and output contracts (well-formed names and types, no duplicates), compiles every column expression and output cell against a schema built from the declared inputs, compiles every input cell into a boolean predicate over those inputs (its column's `Expr` inlined as the test subject), and checks that every rule row is the expected width and that every declared output is set by at least one rule. See [§ Compiling cells](#compiling-cells) for the full pipeline.
+`NewDecisionTable` reflects over `I` and `O` to validate the contracts (the shared reflection contract: every field an exported `bl.Handle[BlValue]`, valid identifier names, no duplicate name within a struct), compiles every column expression and output cell against a schema built from `I`, compiles every input cell into a boolean predicate over `I` (its column's `Expr` inlined as the test subject), and checks that every rule row is the expected width and that every field of `O` is set by at least one rule. See [§ Compiling cells](#compiling-cells).
 
-The exported `Columns` and `Rules` retain their original raw sources (used by `ToMarkdown` and for inspection). The compiled predicates and output expressions live in the unexported `compiledRules`, populated by `NewDecisionTable`. There is **no separate column storage** — each column's `Expr` is folded into the input predicates that reference it — and **no topological sort**: rules and columns keep declaration order (which the `First`, `Priority`, and `RuleOrder` hit policies depend on), so there is no `evalPlan`-style structure as in [`DecisionExpression`](decision-expression.spec.md).
+The compiled predicates and output expressions live unexported; the original raw `Columns`/`Rules` sources are retained (for `ToMarkdown` and inspection). There is **no topological sort**: rules and columns keep declaration order (which the `First`, `Priority`, and `RuleOrder` hit policies depend on).
 
 ---
 
 ## Column
 
-A `Column` is a labelled, typed input column. `Expr` is a source expression over the node's declared inputs; at construction it is inlined as the subject (the `?`) of each of this column's input cells. `Type` is the type that subject holds and **bounds the valid unary-test forms** for the column. A column whose `Expr` is a bare input name simply forwards that input.
+A `Column` is a labelled, typed input column. `Expr` is a source expression over the variables of `I`; at construction it is inlined as the subject (the `?`) of each of this column's input cells. `Type` is the type that subject holds and **bounds the valid unary-test forms** for the column. A column whose `Expr` is a bare input variable simply forwards it.
 
 ```go
 type Column struct {
     Label string // column header
-    Expr  string // source expression over declared inputs; inlined as the `?` subject of each input cell
+    Expr  string // source expression over I's variables; inlined as the `?` subject of each input cell
     Type  Type   // the type the column subject holds; bounds the valid unary-test forms
 }
 ```
@@ -123,13 +108,13 @@ Row layout is one of:
 [ id, inputCells…, outputCells… ]        // id column present
 ```
 
-The id column is **all-or-nothing per table**: either every row carries a leading id cell or none do. The constructor infers which from the uniform row width — `len(Columns) + len(Outputs)` means no id column; one more means the first cell is the id. Rows of differing width, or a width matching neither, are a `DecisionDefinitionError`.
+There is one output cell per field of `O`, in `O`'s declaration order. The id column is **all-or-nothing per table**: either every row carries a leading id cell or none do. The constructor infers which from the uniform row width — `len(Columns) + (number of O fields)` means no id column; one more means the first cell is the id. Rows of differing width, or a width matching neither, are a `DecisionDefinitionError`.
 
 Cell conventions:
 
 - **id cell** — empty (`` `` ``) means this rule has no id; a non-empty id must be unique within the table.
-- **input cell** — a unary-test source (see [bl-expr.spec.md § Unary tests](../expressions/bl-expr.spec.md#unary-tests)). At construction the column's `Expr` is substituted for the test's `?` subject, producing a boolean `BlExpr` over the inputs (compiled via `bl.Expr`). `-` is the wildcard → the constant-true predicate (matches any value, including null). An empty input cell is invalid — write `-` for "matches anything".
-- **output cell** — an expression source compiled via `bl.Expr` against the input contract, in `Outputs` order. An empty output cell (`` `` ``) means "no value" and yields `bl.BlNull` for that output (it is not compiled).
+- **input cell** — a unary-test source (see [bl-expr.spec.md § Unary tests](../expressions/bl-expr.spec.md#unary-tests)). At construction the column's `Expr` is substituted for the test's `?` subject, producing a boolean `BlExpr` over `I` (compiled via `bl.Expr`). `-` is the wildcard → the constant-true predicate (matches any value, including null). An empty input cell is invalid — write `-` for "matches anything".
+- **output cell** — an expression source compiled via `bl.Expr` against `I`, assigned to the matching field of `O`. An empty output cell (`` `` ``) means "no value" and yields `bl.BlNull` for that output (it is not compiled).
 
 Use Go **raw string literals** (backticks) for cells, so expression-language string literals need no escaping: an output of the string `eligible` is the cell `` `"eligible"` ``.
 
@@ -138,17 +123,18 @@ A rule matches when **all** of its non-wildcard input cells evaluate to `bl.BlBo
 ### Example — Single Output Column
 
 ```go
-var eligibility = bl.NewDecisionTable(bl.DecisionTableOpts{
+type EligibilityInputs struct {
+    Age    bl.Handle[bl.BlNumber] `expr:"age"`
+    Income bl.Handle[bl.BlNumber] `expr:"income"`
+}
+type EligibilityOutputs struct {
+    Eligibility bl.Handle[bl.BlString] `expr:"eligibility"`
+}
+
+var eligibility = bl.NewDecisionTable[EligibilityInputs, EligibilityOutputs](bl.DecisionTableConfig{
     Id:        "eligibility",
     Name:      "Eligibility Check",
     HitPolicy: bl.HitPolicyUnique,
-    Inputs: []bl.Field{
-        {Name: "age", Type: bl.TypeNumber},
-        {Name: "income", Type: bl.TypeNumber},
-    },
-    Outputs: []bl.Field{
-        {Name: "eligibility", Type: bl.TypeString},
-    },
     Columns: []bl.Column{
         {Label: "Age", Expr: `age`, Type: bl.TypeNumber},
         {Label: "Income", Expr: `income`, Type: bl.TypeNumber},
@@ -160,6 +146,15 @@ var eligibility = bl.NewDecisionTable(bl.DecisionTableOpts{
         {`-`, `< 30000`, `"ineligible"`},
     },
 })
+
+// Standalone evaluation builds a typed input struct with value-carrying handles.
+var age, _    = bl.Number(30)
+var income, _ = bl.Number(50000)
+var out, _    = eligibility.Evaluate(EligibilityInputs{
+    Age:    bl.NewHandle(age),
+    Income: bl.NewHandle(income),
+})
+// out.Eligibility.Get() == bl.String("eligible")
 ```
 
 Output of `eligibility.ToMarkdown(false, false, false)`:
@@ -174,27 +169,28 @@ Output of `eligibility.ToMarkdown(false, false, false)`:
 
 ### Example — Multiple Output Columns
 
-Output cells are positional, in `Outputs` order (`rate`, then `term`). This table uses the optional id column.
+Output cells are positional, in `O`'s field-declaration order (`Rate`, then `Term`). This table uses the optional id column.
 
 ```go
-var loanPricing = bl.NewDecisionTable(bl.DecisionTableOpts{
+type LoanInputs struct {
+    CreditScore bl.Handle[bl.BlNumber] `expr:"credit_score"`
+    LoanAmount  bl.Handle[bl.BlNumber] `expr:"loan_amount"`
+}
+type LoanPricing struct {
+    Rate bl.Handle[bl.BlNumber] `expr:"rate"`
+    Term bl.Handle[bl.BlNumber] `expr:"term"`
+}
+
+var loanPricing = bl.NewDecisionTable[LoanInputs, LoanPricing](bl.DecisionTableConfig{
     Id:        "pricing",
     Name:      "Loan Pricing",
     HitPolicy: bl.HitPolicyUnique,
-    Inputs: []bl.Field{
-        {Name: "credit_score", Type: bl.TypeNumber},
-        {Name: "loan_amount", Type: bl.TypeNumber},
-    },
-    Outputs: []bl.Field{
-        {Name: "rate", Type: bl.TypeNumber},
-        {Name: "term", Type: bl.TypeNumber},
-    },
     Columns: []bl.Column{
         {Label: "Score", Expr: `credit_score`, Type: bl.TypeNumber},
         {Label: "Amount", Expr: `loan_amount`, Type: bl.TypeNumber},
     },
     Rules: bl.Rules{
-        // id        Score         Amount       rate   term
+        // id          Score         Amount       rate   term
         {`prime`, `>= 750`, `<= 500000`, `3.5`, `360`},
         {`standard`, `[650..749]`, `-`, `5.0`, `240`},
         {`subprime`, `< 650`, `-`, `7.5`, `180`},
@@ -217,17 +213,18 @@ Output of `loanPricing.ToMarkdown(true, false, false)`:
 Range membership is the interval unary test (`<= 5`, `(5..20]`); list membership is the comma-disjunction form (`"US", "CA"` matches either value).
 
 ```go
-var shipping = bl.NewDecisionTable(bl.DecisionTableOpts{
+type ShippingInputs struct {
+    Weight      bl.Handle[bl.BlNumber] `expr:"weight"`
+    Destination bl.Handle[bl.BlString] `expr:"destination"`
+}
+type ShippingOutputs struct {
+    Cost bl.Handle[bl.BlNumber] `expr:"cost"`
+}
+
+var shipping = bl.NewDecisionTable[ShippingInputs, ShippingOutputs](bl.DecisionTableConfig{
     Id:        "shipping",
     Name:      "Shipping Cost",
     HitPolicy: bl.HitPolicyFirst,
-    Inputs: []bl.Field{
-        {Name: "weight", Type: bl.TypeNumber},
-        {Name: "destination", Type: bl.TypeString},
-    },
-    Outputs: []bl.Field{
-        {Name: "cost", Type: bl.TypeNumber},
-    },
     Columns: []bl.Column{
         {Label: "Weight", Expr: `weight`, Type: bl.TypeNumber},
         {Label: "Destination", Expr: `destination`, Type: bl.TypeString},
@@ -251,18 +248,20 @@ Output:
 | 3 | fallback        | -       | -           | █ | 49.99 |
 ```
 
-### Example — Referencing upstream nodes
+### Output cells reference input variables
 
-A node consumes an upstream node's output by declaring an input of that output's name (see [decision-task.spec.md § Wiring](decision-task.spec.md#wiring)). An **input column** turns a consumed value into a comparable column by naming it in the column's `Expr`; the cell then tests the resulting column value with the implicit-input forms. An **output cell**, being a full `bl.Expr` over the input contract, may reference consumed inputs directly.
+An output cell is a full `bl.Expr` over `I`, so it may reference any input variable by its `expr` name, not just compare it in a column:
 
 ```go
-Inputs: []bl.Field{
-    {Name: "eligibility", Type: bl.TypeString}, // an upstream node's output
-    {Name: "reviewer", Type: bl.TypeString},    // an upstream node's output
-},
-Outputs: []bl.Field{
-    {Name: "decision", Type: bl.TypeString},
-},
+type ReviewInputs struct {
+    Eligibility bl.Handle[bl.BlString] `expr:"eligibility"`
+    Reviewer    bl.Handle[bl.BlString] `expr:"reviewer"`
+}
+type ReviewOutputs struct {
+    Decision bl.Handle[bl.BlString] `expr:"decision"`
+}
+
+// Columns over `eligibility`; the output cell reads `reviewer` directly.
 Columns: []bl.Column{
     {Label: "Eligibility", Expr: `eligibility`, Type: bl.TypeString},
 },
@@ -273,7 +272,7 @@ Rules: bl.Rules{
 },
 ```
 
-The input cell `"eligible"` is the equality unary test (`? = "eligible"`, where `?` is the column value); `not("eligible")` negates it. The output cell `"approved by " + reviewer` references the consumed input `reviewer` directly.
+Whether `eligibility` and `reviewer` are fed from a task input, an upstream node's output, or reference data is decided when the node is wired into a task (see [decision-task.spec.md § Wiring](decision-task.spec.md#wiring)) — by connecting a producer's output handle to `node.In.Eligibility` / `node.In.Reviewer`. The input cell `"eligible"` is the equality unary test (`? = "eligible"`); `not("eligible")` negates it.
 
 ---
 
@@ -306,7 +305,7 @@ const (
 
 ### Hit Policy Semantics
 
-Every policy returns a `map[string]BlValue` keyed by output name. The shape of each output's value depends on the policy:
+Every policy fills the fields of `O`. The shape each output field holds depends on the policy:
 
 | Policy | Per-output value | Multiple matches | Notes |
 |---|---|---|---|
@@ -319,22 +318,23 @@ Every policy returns a `map[string]BlValue` keyed by output name. The shape of e
 | `RuleOrder` | list | all matches in rule order | — |
 | `OutputOrder` | list | all matches sorted by priority | — |
 
-Each output column is collected independently: under a list-returning policy, every output name maps to its own `bl.BlList` of values across the matching rules.
+Each output column is collected independently. A **list-returning** policy (`Collect` with no aggregation, `RuleOrder`, `OutputOrder`) yields a `bl.BlList` per output, so **every field of `O` must be a `bl.Handle[bl.BlList]`** — declaring a scalar output under such a policy is a `DecisionDefinitionError` at construction. Single-hit policies and `Collect`+aggregation fill scalar output handles.
 
 ### Example — FIRST Hit Policy
 
 ```go
-var discount = bl.NewDecisionTable(bl.DecisionTableOpts{
+type DiscountInputs struct {
+    CustomerType bl.Handle[bl.BlString] `expr:"customer_type"`
+    OrderTotal   bl.Handle[bl.BlNumber] `expr:"order_total"`
+}
+type DiscountOutputs struct {
+    Discount bl.Handle[bl.BlNumber] `expr:"discount"`
+}
+
+var discount = bl.NewDecisionTable[DiscountInputs, DiscountOutputs](bl.DecisionTableConfig{
     Id:        "discount",
     Name:      "Discount Rules",
     HitPolicy: bl.HitPolicyFirst,
-    Inputs: []bl.Field{
-        {Name: "customer_type", Type: bl.TypeString},
-        {Name: "order_total", Type: bl.TypeNumber},
-    },
-    Outputs: []bl.Field{
-        {Name: "discount", Type: bl.TypeNumber},
-    },
     Columns: []bl.Column{
         {Label: "Type", Expr: `customer_type`, Type: bl.TypeString},
         {Label: "Total", Expr: `order_total`, Type: bl.TypeNumber},
@@ -347,30 +347,33 @@ var discount = bl.NewDecisionTable(bl.DecisionTableOpts{
     },
 })
 
-var result, _ = discount.Evaluate(map[string]bl.BlValue{
-    "customer_type": bl.String("VIP"),
-    "order_total":   bl.Number(1000),
+var ct, _     = bl.String("VIP")
+var ot, _     = bl.Number(1000)
+var result, _ = discount.Evaluate(DiscountInputs{
+    CustomerType: bl.NewHandle(ct),
+    OrderTotal:   bl.NewHandle(ot),
 })
-// result is map[string]bl.BlValue{"discount": 0.20} — first rule matched
+// result.Discount.Get() == bl.Number(0.20) — first rule matched
 ```
 
 ### Example — COLLECT with Aggregation
 
 ```go
+type PenaltyInputs struct {
+    Speed    bl.Handle[bl.BlNumber] `expr:"speed"`
+    ZoneType bl.Handle[bl.BlString] `expr:"zone_type"`
+}
+type PenaltyOutputs struct {
+    Fine bl.Handle[bl.BlNumber] `expr:"fine"`
+}
+
 var sumAgg = bl.AggregationSum
 
-var penalties = bl.NewDecisionTable(bl.DecisionTableOpts{
+var penalties = bl.NewDecisionTable[PenaltyInputs, PenaltyOutputs](bl.DecisionTableConfig{
     Id:          "penalties",
     Name:        "Penalty Assessment",
     HitPolicy:   bl.HitPolicyCollect,
     Aggregation: &sumAgg,
-    Inputs: []bl.Field{
-        {Name: "speed", Type: bl.TypeNumber},
-        {Name: "zone_type", Type: bl.TypeString},
-    },
-    Outputs: []bl.Field{
-        {Name: "fine", Type: bl.TypeNumber},
-    },
     Columns: []bl.Column{
         {Label: "Speed", Expr: `speed`, Type: bl.TypeNumber},
         {Label: "Zone", Expr: `zone_type`, Type: bl.TypeString},
@@ -383,50 +386,45 @@ var penalties = bl.NewDecisionTable(bl.DecisionTableOpts{
     },
 })
 
-var result, _ = penalties.Evaluate(map[string]bl.BlValue{
-    "speed":     bl.Number(55),
-    "zone_type": bl.String("school"),
+var sp, _     = bl.Number(55)
+var zt, _     = bl.String("school")
+var result, _ = penalties.Evaluate(PenaltyInputs{
+    Speed:    bl.NewHandle(sp),
+    ZoneType: bl.NewHandle(zt),
 })
-// All three rules match — result is map[string]bl.BlValue{"fine": 400} (200 + 150 + 50)
+// All three rules match — result.Fine.Get() == bl.Number(400) (200 + 150 + 50)
 ```
 
 ---
 
 ## Compiling cells
 
-`NewDecisionTable` validates the contracts and compiles every cell into a `BlExpr` over the declared inputs. It proceeds in four steps:
+`NewDecisionTable` validates the contracts and compiles every cell into a `BlExpr` over `I`. It proceeds in four steps:
 
-1. **Validate the contracts.** Each failure is a `DecisionDefinitionError`:
-   - `Inputs` and `Outputs` are each well-formed: every `Field` has a valid name and type;
-   - no name is duplicated within `Inputs`, nor within `Outputs`;
-   - `Outputs` is non-empty.
-2. **Compile each column `Expr`** via `bl.Expr` against a schema of the declared `Inputs`, validating it (well-formed, references only declared inputs). Doing this for every column — not only those reached by a non-wildcard cell — catches a malformed column expression even when all of its cells are wildcards.
-3. **Compile each rule's cells** into `compiledRule`:
-   - **input cell** — the column's `Expr` is substituted for the unary test's `?` subject and the resulting predicate is compiled via `bl.Expr` against the input schema, giving a boolean `BlExpr` over the inputs; `-` compiles to the constant-true predicate. The column `Type` bounds the legal forms (an ordering/interval form against a non-comparable column is rejected here).
-   - **output cell** — compiled via `bl.Expr` against the input schema; an empty cell is left `nil` and yields `bl.BlNull`.
-4. **Structural checks** — every rule row is the expected width; every declared output is set by at least one rule; rule ids are unique; every `Descriptions` key matches a rule id; a `Collect` `Sum`/`Min`/`Max` aggregation targets a numeric output.
+1. **Validate the contracts.** Reflect over `I` and `O` and apply the shared reflection contract (see [decision-node.spec.md § Contracts are concrete Go structs](decision-node.spec.md#contracts-are-concrete-go-structs)): every field an exported `bl.Handle[BlValue]`, names valid identifiers, no duplicate within a struct, and `O` non-empty. Each failure is a `DecisionDefinitionError`.
+2. **Compile each column `Expr`** via `bl.Expr` against a schema of `I`'s variables, validating it (well-formed, references only declared inputs). Doing this for every column — not only those reached by a non-wildcard cell — catches a malformed column expression even when all of its cells are wildcards.
+3. **Compile each rule's cells**:
+   - **input cell** — the column's `Expr` is substituted for the unary test's `?` subject and the resulting predicate is compiled via `bl.Expr` against `I`, giving a boolean `BlExpr`; `-` compiles to the constant-true predicate. The column `Type` bounds the legal forms (an ordering/interval form against a non-comparable column is rejected here).
+   - **output cell** — compiled via `bl.Expr` against `I`; an empty cell is left uncompiled and yields `bl.BlNull`.
+4. **Structural checks** — every rule row is the expected width; every field of `O` is set by at least one rule; rule ids are unique; every `Descriptions` key matches a rule id; a `Collect` `Sum`/`Min`/`Max` aggregation targets a numeric output; a list-returning policy's `O` fields are all `Handle[bl.BlList]`.
 
-There is no topological sort: rules and columns keep declaration order. The compiled forms are stored in `compiledRules`; the raw sources stay in the exported `Columns`/`Rules`.
+There is no topological sort: rules and columns keep declaration order. The compiled forms are stored unexported; the raw sources stay in the retained `Columns`/`Rules`.
 
 ---
 
 ## Validation and type safety
 
-A `DecisionTable` carries its own contracts as plain data, so safety is contract-matching, not name-inference. Following the family rule (see [decision-node.spec.md § Where type-safety happens](decision-node.spec.md#where-type-safety-happens)), the checks are concentrated at **construction** — the mental model is *if construction does not complain, the node is well-formed* — with only value-versus-declaration correctness left to evaluation.
+A `DecisionTable` gets its safety from the family's three moments (see [decision-node.spec.md § Where type-safety happens](decision-node.spec.md#where-type-safety-happens)): Go compile time for the typed boundary and the wiring netlist, construction for everything outside the Go type system, and evaluation for runtime values.
 
-These are **runtime** checks, not Go compile-time ones. "Construction" means the moment the `NewDecisionTable` (or `NewDecisionTask`) constructor executes; a `DecisionTable`'s contracts are `[]Field` data and its cells are raw strings, all outside the Go type system, so a malformed node is rejected when its constructor runs, never by `go build`. Likewise "a cell compiles" means `bl.Expr` parses its expression-language source — also at construction — not Go compilation.
+Following the decision-family convention, `NewDecisionTable` does not return an error: it accumulates every construction problem and **panics once** with a `*DecisionDefinitionError`. Because a `DecisionTable` is typically a package-scope `var`, a malformed node aborts the program (or its test binary) at startup — deterministic load-time fail-fast.
 
-`NewDecisionTable` does not return an error: following the decision-family convention, it accumulates every construction-time problem and **panics once** with a `*DecisionDefinitionError` (see [decision-task.spec.md](decision-task.spec.md), which documents the same convention). Because a `DecisionTable` is typically declared as a package-scope `var` — including inside a package the application author writes — its construction runs during that package's **initialisation**, when the program (or its test binary) starts, before `main`. A malformed node therefore aborts the program at startup: the panic lists each problem and the stack trace pins the offending declaration. This is not compile-time safety, but it is deterministic **load-time fail-fast** — any run of the program, or any test that merely imports the declaring package, surfaces every construction error, regardless of whether a code path later evaluates the node.
+What each moment catches, one per phase — compile, runtime init, and runtime:
 
-Three moments catch three distinct classes of problem:
-
-| Moment | Trigger | What it catches | Raised as |
-|--------|---------|-----------------|-----------|
-| **Node construction** | `NewDecisionTable` | A malformed contract (an ill-formed `Inputs`/`Outputs` name or type, a duplicate name within either list, or an empty `Outputs`); a column `Expr` or output cell that fails to compile; an input cell whose inlined predicate fails to compile (including an ordering/interval form against a non-comparable column type); a name referenced but not declared in `Inputs`; a wrong-width rule row; an empty input cell (`-` is required); a duplicate rule id; a `Descriptions` key matching no rule; a declared output set by no rule; a `Collect` `Sum`/`Min`/`Max` over a non-numeric output. | `DecisionDefinitionError` |
-| **Task construction** | `NewDecisionTask` | A declared input with no producer of matching name **and** declared type; an output name or `Id` that collides with another node in the task; a cross-node cycle. | `DecisionDefinitionError` |
-| **Evaluation** | `Evaluate` | A runtime type mismatch inside an input predicate or output expression — e.g. a column value that disagrees with the form it is tested against. | `bl.TypeError` |
-
-**Node construction** is detailed in [§ Compiling cells](#compiling-cells): it checks the one node in isolation. **Task construction** checks the whole graph and is detailed in [decision-task.spec.md § Wiring](decision-task.spec.md#wiring); a standalone node — evaluated with no containing task — skips this moment entirely, and the caller is then responsible for supplying inputs of the right type. **Evaluation** is the only moment that inspects *values*: the expression engine is runtime-typed, so a value that disagrees with a declared type cannot be caught earlier and surfaces here as a `bl.TypeError`.
+| Phase | Moment | Trigger | What it catches | Raised as |
+|-------|--------|---------|-----------------|-----------|
+| **Compile** | Go compilation | `go build` | A caller passing an input value of the wrong type to `Evaluate`, or reading an undeclared output field; a `bl.Edge` connecting one of this node's handles to a handle of a different type, or naming a field it does not have. | Go type error |
+| **Runtime init** | Node construction | `NewDecisionTable` | A non-struct `I`/`O`; an unexported field; a field that is not a `bl.Handle[BlValue]`; an invalid variable name; a duplicate name within a struct; an empty `O`; a column `Expr` or output cell that fails to compile; an input cell whose inlined predicate fails to compile (including an ordering/interval form against a non-comparable column); a name referenced but not declared in `I`; a wrong-width rule row; an empty input cell (`-` is required); a duplicate rule id; a `Descriptions` key matching no rule; an output set by no rule; a `Collect` `Sum`/`Min`/`Max` over a non-numeric output; a list-returning policy whose `O` fields are not all `Handle[bl.BlList]`. | `DecisionDefinitionError` |
+| **Runtime** | Evaluation | `Evaluate` | A runtime type mismatch inside an input predicate or output expression — e.g. a column value that disagrees with the form it is tested against, or a produced value whose type disagrees with its declared output handle. | `bl.TypeError` |
 
 ---
 
@@ -434,23 +432,21 @@ Three moments catch three distinct classes of problem:
 
 `Evaluate` is stateless: the `DecisionTable` is immutable after construction, and each call works against its own local scope, so concurrent calls do not interfere.
 
-The scope is a `BlDictionary` of the supplied input variables — the one `BlValue` shape a compiled `bl.BlExpr` spreads into named variables when evaluated (see [bl-expr.spec.md](../expressions/bl-expr.spec.md)). The `map[string]BlValue` of the `Evaluate` signature is just the API boundary; internally it is carried as this dictionary. Unlike [`DecisionExpression`](decision-expression.spec.md), there is **no column-binding step and no inter-rule accumulation**: every input predicate and output expression is a self-contained `BlExpr` evaluated against this same input scope (each column's `Expr` is already inlined into the predicates that use it).
+The scope is built from the supplied input struct `I`: each input handle's value is bound under its variable name, giving the `BlDictionary` a compiled `bl.BlExpr` spreads into named variables when evaluated (see [bl-expr.spec.md](../expressions/bl-expr.spec.md)). Every input predicate and output expression is a self-contained `BlExpr` evaluated against this scope (each column's `Expr` is already inlined into the predicates that use it).
 
 1. **Match.** For each `Rule`, evaluate its input predicates against the scope. The rule matches when **all** of them yield `bl.BlBoolean` true; a wildcard (`-`) is the constant-true predicate.
 2. **Combine.** Apply the hit policy to the set of matching rules, evaluating their output expressions against the scope; an empty output cell yields `bl.BlNull`.
-3. **Project.** The result is a fresh `map[string]BlValue` keyed by the declared output names — a scalar per output for single-hit policies, a `bl.BlList` per output for list-returning policies. The input variables are never copied into the result.
+3. **Project.** Write the combined results into a fresh `O` — a scalar per output field for single-hit policies, a `bl.BlList` per output field for list-returning policies — and return it.
 4. If no rule matches:
-   - For `Unique`, `First`, `Priority`, `Any`: every output maps to `bl.BlNull`.
-   - For `Collect`, `RuleOrder`, `OutputOrder`: every output maps to an empty list.
+   - For `Unique`, `First`, `Priority`, `Any`: every output field is `bl.BlNull`.
+   - For `Collect`, `RuleOrder`, `OutputOrder`: every output field is an empty list.
 
 ### Standalone vs. within a task
 
-The input map handed to `Evaluate` is the same map of `Inputs()` values regardless of how the node is driven; only its source differs:
+`Evaluate` behaves identically however the node is driven; only the source of its inputs differs:
 
-- **Standalone** — with no containing task, the caller supplies every value the node's `Inputs()` declare directly to `Evaluate`.
-- **Within a `DecisionTask`** — the task resolves each declared input from the producer it was wired to at task construction (an upstream node output, a task input, or reference data) and passes the assembled map to `Evaluate`.
-
-Either way `Evaluate` behaves identically: it builds the scope from the supplied inputs and evaluates the rules as above.
+- **Standalone** — the caller builds a typed `I` with value-carrying handles (`bl.NewHandle(...)`) and passes it directly.
+- **Within a `DecisionTask`** — the task populates this node's input handles from the producers wired to them at construction (an upstream node output, a task input, or reference data), runs the node through its internal run-thunk, and routes the output handles onward (see [decision-task.spec.md § Evaluation](decision-task.spec.md#evaluation)).
 
 ---
 
@@ -460,7 +456,7 @@ Either way `Evaluate` behaves identically: it builds the scope from the supplied
 
 ### Format
 
-- The first row is headers: hit policy indicator in the first cell, then column labels, then output names.
+- The first row is headers: hit policy indicator in the first cell, then column labels, then output names (the `expr` names of `O`'s fields).
 - The hit policy indicator is the standard single-letter abbreviation (`U`, `F`, `C`, …). For `Collect` with an aggregation, the aggregation symbol is appended (`C+`, `C<`, `C>`, `C#`).
 - A visual separator column is placed between the last input column and the first output column. The header cell is empty, and every data row contains `█` (Unicode full block).
 - Each subsequent row is a rule: rule index, then (if `showRuleIDs=true`) the rule id in a `rule-id` column, then input cells rendered as their unary-test source (`-` for wildcards), then the `█` separator, then output cells rendered as their expression source (empty for omitted outputs).
@@ -470,18 +466,19 @@ Either way `Evaluate` behaves identically: it builds the scope from the supplied
 ### Example
 
 ```go
-var riskLevel = bl.NewDecisionTable(bl.DecisionTableOpts{
+type RiskInputs struct {
+    Age         bl.Handle[bl.BlNumber] `expr:"age"`
+    CreditScore bl.Handle[bl.BlNumber] `expr:"credit_score"`
+}
+type RiskOutputs struct {
+    Risk   bl.Handle[bl.BlString] `expr:"risk"`
+    Reason bl.Handle[bl.BlString] `expr:"reason"`
+}
+
+var riskLevel = bl.NewDecisionTable[RiskInputs, RiskOutputs](bl.DecisionTableConfig{
     Id:        "risk",
     Name:      "Risk Level",
     HitPolicy: bl.HitPolicyUnique,
-    Inputs: []bl.Field{
-        {Name: "age", Type: bl.TypeNumber},
-        {Name: "credit_score", Type: bl.TypeNumber},
-    },
-    Outputs: []bl.Field{
-        {Name: "risk", Type: bl.TypeString},
-        {Name: "reason", Type: bl.TypeString},
-    },
     Columns: []bl.Column{
         {Label: "Age", Expr: `age`, Type: bl.TypeNumber},
         {Label: "Score", Expr: `credit_score`, Type: bl.TypeNumber},
@@ -509,21 +506,25 @@ Output:
 | 2 | >= 25 | -     | █ | "medium" |                          |
 ```
 
+`[@test] ../../core/decision_table_test.go`
+
 ---
 
 ## Edge Cases
 
 - A `DecisionTable` with no columns is valid; rows carry only output cells (and an optional id) and all rules match unconditionally.
-- A `DecisionTable` whose `Outputs` is empty is invalid — `NewDecisionTable` raises `DecisionDefinitionError`.
-- A `DecisionTable` with no `Rule` entries evaluates each output to `bl.BlNull` (or an empty list for multi-result policies) without error.
-- Rows of inconsistent width, or a width matching neither `len(Columns) + len(Outputs)` nor one more (id column), are a `DecisionDefinitionError`.
-- A duplicate name within `Inputs` or within `Outputs` is a `DecisionDefinitionError`.
+- A `DecisionTable` whose `O` has no fields is invalid — `NewDecisionTable` raises `DecisionDefinitionError`.
+- A `DecisionTable` with no `Rule` entries evaluates each output field to `bl.BlNull` (or an empty list for list-returning policies) without error.
+- Rows of inconsistent width, or a width matching neither `len(Columns) + len(O fields)` nor one more (id column), are a `DecisionDefinitionError`.
+- An `I`/`O` field that is not a `bl.Handle[BlValue]`, or an unexported field, is a `DecisionDefinitionError`.
+- A duplicate variable name within `I` or within `O` is a `DecisionDefinitionError`. Names need not be unique across nodes.
 - A non-empty rule id that duplicates another rule's id in the table is a `DecisionDefinitionError`.
 - An empty input cell is a `DecisionDefinitionError` — wildcards must be written `-`.
 - An input cell whose inlined predicate does not compile — including an ordering/interval form against an unordered column — is a `DecisionDefinitionError` (wrapping the `bl.ParseError`).
 - An output cell, or a column expression, that does not compile via `bl.Expr` is a `DecisionDefinitionError` (wrapping the `bl.ParseError`).
-- A column or output expression that references a name not declared in `Inputs` is a `DecisionDefinitionError`.
+- A column or output expression that references a name not declared in `I` is a `DecisionDefinitionError`.
 - A `Descriptions` key with no matching rule id is a `DecisionDefinitionError`.
-- An output set by no rule (every rule's cell for it is empty) is a `DecisionDefinitionError` — every declared output must be reachable.
+- An output set by no rule (every rule's cell for it is empty) is a `DecisionDefinitionError` — every field of `O` must be reachable.
 - `HitPolicyCollect` with `AggregationSum`, `AggregationMin`, or `AggregationMax` over a non-numeric output is a `DecisionDefinitionError`.
+- A list-returning hit policy (`Collect` with no aggregation, `RuleOrder`, `OutputOrder`) whose `O` fields are not all `bl.Handle[bl.BlList]` is a `DecisionDefinitionError`.
 - A runtime type mismatch inside an input predicate (the column value versus the form it is tested against) surfaces as a `bl.TypeError` at evaluation time.
