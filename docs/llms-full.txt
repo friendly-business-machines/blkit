@@ -28,7 +28,7 @@ conformance implementation of either standard.
 | [Installation](installation/index.md) | Adding blkit to your project and pinning a version. |
 | [Tutorials](tutorials/index.md) | Guided, narrative walkthroughs of complete use cases. |
 | [Templates](templates/index.md) | Ready-to-copy project scaffolds for common patterns. |
-| [Examples](examples/index.md) | Focused, self-contained demonstrations of specific features. |
+| [Examples](examples/loan-eligibility.md) | Focused, self-contained demonstrations of specific features. |
 | [Reference](reference/blkit.md) | The complete Go API reference, generated from source. |
 
 !!! note "Documentation in progress"
@@ -124,8 +124,8 @@ full options.
 
 - **[Tutorials](../tutorials/index.md)** — a guided walkthrough of a complete
   use case, start to finish.
-- **[Examples](../examples/index.md)** — a library of focused, self-contained
-  feature demonstrations.
+- **[Examples](../examples/loan-eligibility.md)** — a library of focused,
+  self-contained feature demonstrations.
 - **[Reference](../reference/blkit.md)** — the full Go API reference.
 - New to the standards blkit draws from? The
   [DMN](https://www.omg.org/dmn/) and [BPMN](https://www.bpmn.org/) overviews
@@ -219,44 +219,9 @@ guidance.
 
 ---
 
-<!-- Source: https://friendly-business-machines.github.io/blkit/examples/ -->
-
-# Examples
-
-> Focused, self-contained demonstrations of specific blkit features.
-
-Each example takes a real-world business process, describes it in plain
-language, and then shows a complete, working implementation using blkit.
-
-!!! note "Implementations pending"
-    The business overview, rules, and worked examples on each page are published
-    now. The runnable Go implementations demonstrate defining and executing
-    decisions and processes, which depend on the `decisions` and `processes`
-    packages. Those packages are still being built, so each page currently marks
-    its **Implementation** section as pending; the blkit code will be added once
-    the required packages land.
-
-    Each page also links to its authoritative business-level specification.
-
-| Business process | Example page | Specification |
-|---|---|---|
-| Retail bank personal loan eligibility decision | [Loan eligibility](loan-eligibility.md) | [spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/loan-eligibility.spec.md) |
-| E-commerce parcel shipping cost calculation | [Shipping rate](shipping-rate.md) | [spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/shipping-rate.spec.md) |
-| E-commerce order handling from placement to delivery | [Order fulfillment](order-fulfillment.md) | [spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/order-fulfillment.spec.md) |
-| Employee expense claim approval routing | [Expense approval](expense-approval.md) | [spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/expense-approval.spec.md) |
-| SaaS subscription pricing with compounding discounts | [Product pricing](product-pricing.md) | [spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/product-pricing.spec.md) |
-| Accounts payable invoice validation and payment scheduling | [Invoice processing](invoice-processing.md) | [spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/invoice-processing.spec.md) |
-| Parallel new-hire setup across IT, HR, and Facilities | [Employee onboarding](employee-onboarding.md) | [spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/employee-onboarding.spec.md) |
-| Motor insurance claim assessment and settlement calculation | [Insurance claim](insurance-claim.md) | [spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/insurance-claim.spec.md) |
-| Best-discount selection across multiple applicable rules | [Customer discount](customer-discount.md) | [spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/customer-discount.spec.md) |
-| Product return request handling and refund or replacement routing | [Product return](product-return.md) | [spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/product-return.spec.md) |
-| Australian personal income tax calculation (FY 2024–25) | [Personal income tax](aus-personal-income-tax.md) | [spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/aus-personal-income-tax.spec.md) |
-
----
-
 <!-- Source: https://friendly-business-machines.github.io/blkit/examples/loan-eligibility/ -->
 
-# Example: Loan Eligibility
+# Loan Eligibility
 
 > A retail bank decides whether a personal loan application is approved,
 > conditionally approved, or declined — and on what terms — from the applicant's
@@ -347,7 +312,7 @@ Declined applications return a maximum loan amount of zero and no rate tier.
 
 <!-- Source: https://friendly-business-machines.github.io/blkit/examples/shipping-rate/ -->
 
-# Example: Shipping Rate Calculator
+# Shipping Rate Calculator
 
 > An e-commerce platform calculates the total shipping charge for a parcel from
 > billable weight, destination zone, speed tier, and a fuel surcharge —
@@ -463,7 +428,7 @@ total             = subtotal + fuel_surcharge
 
 <!-- Source: https://friendly-business-machines.github.io/blkit/examples/order-fulfillment/ -->
 
-# Example: Order Fulfillment Process
+# Order Fulfillment Process
 
 > An e-commerce platform handles an order from placement through stock
 > reservation, payment, picking, dispatch, and delivery — with explicit branches
@@ -558,7 +523,7 @@ StartEvent("start")
 
 <!-- Source: https://friendly-business-machines.github.io/blkit/examples/expense-approval/ -->
 
-# Example: Employee Expense Approval
+# Employee Expense Approval
 
 > An employee submits a business expense claim; the approval route — automatic,
 > manager, or finance director — is determined by amount, category, and the
@@ -651,7 +616,7 @@ Finance Director regardless of category or employee level.
 
 <!-- Source: https://friendly-business-machines.github.io/blkit/examples/product-pricing/ -->
 
-# Example: SaaS Subscription Pricing Engine
+# SaaS Subscription Pricing Engine
 
 > A SaaS company calculates the final per-seat price and total monthly charge for
 > a subscription from plan, billing cycle, seat count, loyalty tier, and an
@@ -762,7 +727,7 @@ Total monthly = 18.63 × 30 = **558.90**.
 
 <!-- Source: https://friendly-business-machines.github.io/blkit/examples/invoice-processing/ -->
 
-# Example: Invoice Processing Workflow
+# Invoice Processing Workflow
 
 > An accounts payable team runs three concurrent validation checks on a supplier
 > invoice, assigns GL codes, routes for amount-based approval, and schedules
@@ -864,7 +829,7 @@ or before the due date, and a payment batch reference is recorded.
 
 <!-- Source: https://friendly-business-machines.github.io/blkit/examples/employee-onboarding/ -->
 
-# Example: Employee Onboarding
+# Employee Onboarding
 
 > When a new employee is hired, IT, HR, and Facilities run their setup tasks in
 > parallel; the process completes only when all three signal readiness, and
@@ -990,7 +955,7 @@ instructions, and the HR portal link.
 
 <!-- Source: https://friendly-business-machines.github.io/blkit/examples/insurance-claim/ -->
 
-# Example: Insurance Claim Assessment
+# Insurance Claim Assessment
 
 > A motor insurer assesses a claim's eligibility, scores the damage severity,
 > and calculates a settlement offer — referring high-value settlements to a
@@ -1139,7 +1104,7 @@ Gross = £12,000 × 35% = £4,200; net = £4,200 − £500 = **£3,700**, below 
 
 <!-- Source: https://friendly-business-machines.github.io/blkit/examples/customer-discount/ -->
 
-# Example: Customer Discount Eligibility
+# Customer Discount Eligibility
 
 > A pricing engine evaluates an order against many discount rules, collects every
 > rule that matches, and applies the single highest percentage — discounts do
@@ -1249,7 +1214,7 @@ For C-003, four rules match — R1 (5%), R6 (12%), R7 (8%), R8 (6%). The highest
 
 <!-- Source: https://friendly-business-machines.github.io/blkit/examples/product-return/ -->
 
-# Example: Product Return and Refund
+# Product Return and Refund
 
 > A customer requests a return; the process validates eligibility within the
 > return window, grades the item's condition on receipt, and issues a refund,
@@ -1417,7 +1382,7 @@ issued at 110% = **£385**.
 
 <!-- Source: https://friendly-business-machines.github.io/blkit/examples/aus-personal-income-tax/ -->
 
-# Example: Australian Personal Income Tax Calculator
+# Australian Personal Income Tax Calculator
 
 > An accounting service calculates an individual's annual income tax liability
 > for FY 2024–25 — building taxable income from many sources, applying

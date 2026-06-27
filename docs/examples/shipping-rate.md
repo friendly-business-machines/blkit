@@ -1,4 +1,4 @@
-# Example: Shipping Rate Calculator
+# Shipping Rate Calculator
 
 > An e-commerce platform calculates the total shipping charge for a parcel from
 > billable weight, destination zone, speed tier, and a fuel surcharge —

@@ -1,4 +1,4 @@
-# Example: Insurance Claim Assessment
+# Insurance Claim Assessment
 
 > A motor insurer assesses a claim's eligibility, scores the damage severity,
 > and calculates a settlement offer — referring high-value settlements to a

@@ -1,4 +1,4 @@
-# Example: SaaS Subscription Pricing Engine
+# SaaS Subscription Pricing Engine
 
 > A SaaS company calculates the final per-seat price and total monthly charge for
 > a subscription from plan, billing cycle, seat count, loyalty tier, and an

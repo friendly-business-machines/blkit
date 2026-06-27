@@ -1,4 +1,4 @@
-# Example: Invoice Processing Workflow
+# Invoice Processing Workflow
 
 > An accounts payable team runs three concurrent validation checks on a supplier
 > invoice, assigns GL codes, routes for amount-based approval, and schedules

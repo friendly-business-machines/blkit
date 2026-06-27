@@ -1,4 +1,4 @@
-# Example: Product Return and Refund
+# Product Return and Refund
 
 > A customer requests a return; the process validates eligibility within the
 > return window, grades the item's condition on receipt, and issues a refund,

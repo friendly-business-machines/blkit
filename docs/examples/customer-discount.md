@@ -1,4 +1,4 @@
-# Example: Customer Discount Eligibility
+# Customer Discount Eligibility
 
 > A pricing engine evaluates an order against many discount rules, collects every
 > rule that matches, and applies the single highest percentage — discounts do

@@ -1,4 +1,4 @@
-# Example: Employee Expense Approval
+# Employee Expense Approval
 
 > An employee submits a business expense claim; the approval route — automatic,
 > manager, or finance director — is determined by amount, category, and the

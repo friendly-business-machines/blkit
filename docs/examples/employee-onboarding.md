@@ -1,4 +1,4 @@
-# Example: Employee Onboarding
+# Employee Onboarding
 
 > When a new employee is hired, IT, HR, and Facilities run their setup tasks in
 > parallel; the process completes only when all three signal readiness, and

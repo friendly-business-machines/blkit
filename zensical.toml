@@ -21,7 +21,6 @@ nav = [
   { "Tutorials" = "tutorials/index.md" },
   { "Templates" = "templates/index.md" },
   { "Examples" = [
-    "examples/index.md",
     "examples/loan-eligibility.md",
     "examples/shipping-rate.md",
     "examples/order-fulfillment.md",

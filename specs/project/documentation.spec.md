@@ -85,6 +85,8 @@ The Getting Started page(s) must be reviewed and, if necessary, updated as part 
 
 The Examples section of the documentation site contains one page per business process example. Each page presents the business process in plain language and then shows a complete, working implementation of that process using blkit.
 
+Like the Architecture section, the Examples section has no landing page of its own; the nav group header is a non-clickable grouping over the example pages. Each example page's H1 is the business process name alone, with no `Example:` prefix, so the nav sidebar stays uncluttered.
+
 ### Business Process Specs
 
 Each example is defined at the business level in a spec file under `specs/examples/`. These specs describe what the process does — its input data, decision rules or process steps, outcomes, and worked examples — without any reference to code or implementation details. They are the authoritative description of the business problem that the implementation must solve.

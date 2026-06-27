@@ -17,7 +17,7 @@ conformance implementation of either standard.
 | [Installation](installation/index.md) | Adding blkit to your project and pinning a version. |
 | [Tutorials](tutorials/index.md) | Guided, narrative walkthroughs of complete use cases. |
 | [Templates](templates/index.md) | Ready-to-copy project scaffolds for common patterns. |
-| [Examples](examples/index.md) | Focused, self-contained demonstrations of specific features. |
+| [Examples](examples/loan-eligibility.md) | Focused, self-contained demonstrations of specific features. |
 | [Reference](reference/blkit.md) | The complete Go API reference, generated from source. |
 
 !!! note "Documentation in progress"

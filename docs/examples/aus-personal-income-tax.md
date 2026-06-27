@@ -1,4 +1,4 @@
-# Example: Australian Personal Income Tax Calculator
+# Australian Personal Income Tax Calculator
 
 > An accounting service calculates an individual's annual income tax liability
 > for FY 2024–25 — building taxable income from many sources, applying

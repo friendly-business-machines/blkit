@@ -1,4 +1,4 @@
-# Example: Loan Eligibility
+# Loan Eligibility
 
 > A retail bank decides whether a personal loan application is approved,
 > conditionally approved, or declined — and on what terms — from the applicant's

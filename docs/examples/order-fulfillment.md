@@ -1,4 +1,4 @@
-# Example: Order Fulfillment Process
+# Order Fulfillment Process
 
 > An e-commerce platform handles an order from placement through stock
 > reservation, payment, picking, dispatch, and delivery — with explicit branches
