@@ -61,9 +61,16 @@ Process graphs are declared by chaining `.to()` calls from a `start()` node thro
 ```go
 import bl "github.com/friendly-business-machines/blkit/core"
 
+type BranchEnv struct {
+    Kind bl.BlString `expr:"kind" ctx:"taskA.kind"`
+}
+
 var myProcess = bl.NewProcess("my-process", "1.0", []bl.Edge{
     bl.Start("start", "Start", bl.NewInputContract()).To(taskA),
-    taskA.To(bl.Xor(conditions, map[string]bl.ProcessNode{"b": taskB, "c": taskC})),
+    taskA.To(bl.Xor[BranchEnv](
+        bl.Branch("b", `kind = "b"`, taskB),
+        bl.DefaultBranch("c", taskC),
+    )),
     bl.Join(taskB, taskC).To(taskD),
     taskD.To(bl.End("done", "Done")),
 })

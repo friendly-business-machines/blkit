@@ -288,12 +288,10 @@ calculateScore := scoringTemplate().Clone(DecisionTaskOpts{
     ),
 })
 
-// Gateway conditions
-riskConditions := bl.NewGatewayConditions(
-    bl.NewBranch("offer", bl.StringVar("fraud-check.risk").Equals(bl.String("low"))),
-    bl.NewBranch("counter", bl.StringVar("fraud-check.risk").Equals(bl.String("medium"))),
-    DefaultBranch("decline"),
-)
+// Gateway env — the context values the branch conditions read
+type RiskEnv struct {
+    Risk bl.BlString `expr:"risk" ctx:"fraud-check.risk"`
+}
 
 // Boundary events
 start := bl.Start("start", "Start", bl.NewInputContract(
@@ -320,11 +318,11 @@ loanApplication := bl.NewProcess("loan-application", "1.0", ProcessOpts{
 
         calculateScore.To(fraudRiskCheck),
 
-        fraudRiskCheck.To(Xor(riskConditions, map[string]ProcessNode{
-            "offer":   issueOfferLetter,
-            "counter": proposeCounter,
-            "decline": declineApplication,
-        })),
+        fraudRiskCheck.To(Xor[RiskEnv](
+            bl.Branch("offer",   `risk = "low"`,    issueOfferLetter),
+            bl.Branch("counter", `risk = "medium"`, proposeCounter),
+            bl.DefaultBranch("decline", declineApplication),
+        )),
 
         Join(issueOfferLetter,
             proposeCounter,
@@ -397,11 +395,10 @@ assessRisk := riskAssessmentTemplate().Clone(DecisionTaskOpts{
     ),
 })
 
-// Gateway conditions
-decisionConditions := bl.NewGatewayConditions(
-    bl.NewBranch("approve", bl.StringVar("assess-risk.risk_level").Equals(bl.String("low"))),
-    DefaultBranch("reject"),
-)
+// Gateway env — the context values the branch conditions read
+type DecisionEnv struct {
+    RiskLevel bl.BlString `expr:"risk_level" ctx:"assess-risk.risk_level"`
+}
 
 // Boundary events — each entrypoint declares its own input shape
 newApp := bl.Start("new", "New Application", bl.NewInputContract(
@@ -427,10 +424,10 @@ loanDecision := bl.NewProcess("loan-decision", "1.0", ProcessOpts{
         reassess.To(assessRisk),
 
         // After risk assessment, branch on outcome
-        assessRisk.To(Xor(decisionConditions, map[string]ProcessNode{
-            "approve": generateOffer,
-            "reject":  sendRejection,
-        })),
+        assessRisk.To(Xor[DecisionEnv](
+            bl.Branch("approve", `risk_level = "low"`, generateOffer),
+            bl.DefaultBranch("reject", sendRejection),
+        )),
 
         // Approved path
         generateOffer.To(notify),
@@ -501,6 +498,7 @@ result, err := process.Evaluate(EvaluateOpts{Context: ctx, History: hist})
 Concurrency emerges from the scheduler dispatching every ready task as its own goroutine within the same tick — there is no per-branch walker and no explicit parallelism primitive. The graph topology decides what becomes ready; the scheduler dispatches everything ready immediately. There is no concurrency limit or backpressure.
 
 The returned `EvaluationResult` contains:
+
 - `Context` — the final `ExecutionContext` after all tasks have executed.
 - `History` — the complete `ExecutionHistory` with all steps from the entire run.
 - `Status` — `COMPLETED`, `SUSPENDED`, `CANCELLED`, or `FAILED`.
@@ -530,7 +528,7 @@ Every task goroutine the scheduler dispatches receives a `context.Context` deriv
 
 - An `ErrorEvent`, `CancelEvent`, or `TerminateEvent` is reached.
 - A task fails and no error boundary event catches it (Error Handling above).
-- `MaxRunTime` or `MaxCompletionTime` expires (see [Timeouts](#timeouts) and [Process Options](#process-options)).
+- `MaxRunTime` or `MaxCompletionTime` expires (see the timing semantics on [`ProcessOpts`](#process)).
 
 Task implementations are expected to honour `context.Context` cancellation. `NativeFunctionTask.Fn` and any external I/O performed by a task body should be wrapped in `ctx.Done()`-aware patterns; long-running CPU work should periodically check `ctx.Err()`. When a cancelled task goroutine returns, the scheduler calls `ctx.Abort(nodeID)` to discard its Pending transactions and records `NODE_FAILED` (or `NODE_CANCELLED` if cancellation was the explicit cause) for that node.
 

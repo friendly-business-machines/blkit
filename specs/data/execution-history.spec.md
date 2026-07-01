@@ -663,18 +663,17 @@ var reject = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOut
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
 
-conditions := bl.NewGatewayConditions(
-    bl.NewBranch("approve", bl.StringVar("assess-risk.risk_level").Equals(bl.String("low"))),
-    DefaultBranch("reject"),
-)
+type RiskEnv struct {
+    RiskLevel bl.BlString `expr:"risk_level" ctx:"assess-risk.risk_level"`
+}
 
 riskDecision := bl.NewProcess("risk-decision", "1.0", ProcessOpts{
     Graph: []Edge{
         bl.Start("start", "Start", bl.NewInputContract()).To(assessRisk),
-        assessRisk.To(Xor(conditions, map[string]ProcessNode{
-            "approve": approve,
-            "reject":  reject,
-        })),
+        assessRisk.To(Xor[RiskEnv](
+            bl.Branch("approve", `risk_level = "low"`, approve),
+            bl.DefaultBranch("reject", reject),
+        )),
         approve.To(bl.End("done", "Done")),
         reject.To(bl.End("done", "Done")),
     },
@@ -978,18 +977,17 @@ var revise = bl.NewNativeFunctionTask(NativeFunctionTaskOpts[StepInputs, StepOut
     Fn: func(in *StepInputs) (StepOutputs, error) { /* body */ },
 })
 
-conditions := bl.NewGatewayConditions(
-    bl.NewBranch("approved", bl.StringVar("review.status").Equals(bl.String("approved"))),
-    DefaultBranch("needs_revision"),
-)
+type ReviewEnv struct {
+    Status bl.BlString `expr:"status" ctx:"review.status"`
+}
 
 docReview := bl.NewProcess("doc-review", "1.0", ProcessOpts{
     Graph: []Edge{
         bl.Start("start", "Start", bl.NewInputContract()).To(review),
-        review.To(Xor(conditions, map[string]ProcessNode{
-            "approved":       bl.End("done", "Done"),
-            "needs_revision": revise,
-        })),
+        review.To(Xor[ReviewEnv](
+            bl.Branch("approved", `status = "approved"`, bl.End("done", "Done")),
+            bl.DefaultBranch("needs_revision", revise),
+        )),
         revise.To(review),
     },
 })
