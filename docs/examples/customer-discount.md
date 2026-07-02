@@ -99,7 +99,7 @@ For C-003, four rules match — R1 (5%), R6 (12%), R7 (8%), R8 (6%). The highest
 ## Notes
 
 - This is the **collect-max** counterpart to first-match tables like
-  [loan-eligibility](loan-eligibility.md): instead of stopping at the first hit,
+  [admission](admission.md): instead of stopping at the first hit,
   it evaluates all rules and reduces the matches with a `max` aggregation.
 - The bands are deliberately non-overlapping at the edges — R5 is item count ≥ 10
   **and < 25**, so a 30-item order matches R6 (large) but not R5 (small).

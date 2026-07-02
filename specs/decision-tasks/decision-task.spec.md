@@ -106,7 +106,7 @@ The set of edges **is** the graph, and the single source of truth: each handle c
 - **Node ids are unique** and non-empty (handles are stamped with node id; duplicates make handles ambiguous).
 - **The graph is acyclic** — a cycle in the connections is a `DecisionDefinitionError`.
 
-A task input wired to no node (e.g. a `loan_amount` the rules never consult) is allowed and simply ignored.
+A task input wired to no node (e.g. a `referrals` the rules never consult) is allowed and simply ignored.
 
 ---
 
@@ -128,27 +128,27 @@ Each node is built via its constructor ([`NewDecisionTable`](decision-table.spec
 
 ```go
 // The task's external contracts.
-type LoanInputs struct {
-    Age        bl.Handle[bl.BlNumber] `expr:"age"`
-    Income     bl.Handle[bl.BlNumber] `expr:"income"`
-    LoanAmount bl.Handle[bl.BlNumber] `expr:"loan_amount"`
+type MembershipInputs struct {
+    Age       bl.Handle[bl.BlNumber] `expr:"age"`
+    Points    bl.Handle[bl.BlNumber] `expr:"points"`
+    Referrals bl.Handle[bl.BlNumber] `expr:"referrals"`
 }
-type LoanOutputs struct {
+type MembershipOutputs struct {
     Status bl.Handle[bl.BlString] `expr:"status"`
 }
 
-// Reference-data constant: the minimum qualifying income (see reference-data.spec.md).
-var minIncome = bl.NewReferenceData(bl.ReferenceDataConfig[bl.BlNumber]{
-    Id:    "min_income",
-    Name:  "Minimum Income",
+// Reference-data constant: the minimum qualifying points (see reference-data.spec.md).
+var minPoints = bl.NewReferenceData(bl.ReferenceDataConfig[bl.BlNumber]{
+    Id:    "min_points",
+    Name:  "Minimum Points",
     Value: bl.Number(30000),
 })
 
-// A table: consumes age, income, and the min_income constant; produces eligibility.
+// A table: consumes age, points, and the min_points constant; produces eligibility.
 type EligibilityInputs struct {
     Age       bl.Handle[bl.BlNumber] `expr:"age"`
-    Income    bl.Handle[bl.BlNumber] `expr:"income"`
-    MinIncome bl.Handle[bl.BlNumber] `expr:"min_income"`
+    Points    bl.Handle[bl.BlNumber] `expr:"points"`
+    MinPoints bl.Handle[bl.BlNumber] `expr:"min_points"`
 }
 type EligibilityOutputs struct {
     Eligibility bl.Handle[bl.BlString] `expr:"eligibility"`
@@ -159,12 +159,12 @@ var eligibility = bl.NewDecisionTable[EligibilityInputs, EligibilityOutputs](bl.
     HitPolicy: bl.HitPolicyUnique,
     Columns: []bl.Column{
         {Label: "Age", Expr: `age`, Type: bl.TypeNumber},
-        {Label: "Income", Expr: `income`, Type: bl.TypeNumber},
+        {Label: "Points", Expr: `points`, Type: bl.TypeNumber},
     },
     Rules: bl.Rules{
-        {`>= 18`, `>= min_income`, `"eligible"`},
+        {`>= 18`, `>= min_points`, `"eligible"`},
         {`< 18`, `-`, `"ineligible"`},
-        {`-`, `< min_income`, `"ineligible"`},
+        {`-`, `< min_points`, `"ineligible"`},
     },
 })
 
@@ -177,43 +177,43 @@ type ApprovalOutputs struct {
 }
 var approval = bl.NewDecisionExpression[ApprovalInputs, ApprovalOutputs](bl.DecisionExpressionConfig{
     Id:   "approval",
-    Name: "Loan Approval",
+    Name: "Membership Approval",
     Entries: bl.Entries{
         "status": `if eligibility = "eligible" then "approved" else "denied"`,
     },
 })
 
 // The task: build it, then wire it. Nodes (eligibility, approval) and reference
-// data (minIncome) are discovered from the edges — nothing is listed separately.
-var loanApproval = bl.NewDecisionTask[LoanInputs, LoanOutputs](bl.DecisionTaskConfig{
-    Description: "Approves or denies a loan based on eligibility",
+// data (minPoints) are discovered from the edges — nothing is listed separately.
+var membershipApproval = bl.NewDecisionTask[MembershipInputs, MembershipOutputs](bl.DecisionTaskConfig{
+    Description: "Approves or denies a membership based on eligibility",
 })
 
-var _ = loanApproval.Graph(
-    bl.Edge(loanApproval.In.Age,         eligibility.In.Age),
-    bl.Edge(loanApproval.In.Income,      eligibility.In.Income),
-    bl.Edge(minIncome.Value,             eligibility.In.MinIncome),
+var _ = membershipApproval.Graph(
+    bl.Edge(membershipApproval.In.Age,   eligibility.In.Age),
+    bl.Edge(membershipApproval.In.Points, eligibility.In.Points),
+    bl.Edge(minPoints.Value,             eligibility.In.MinPoints),
     bl.Edge(eligibility.Out.Eligibility, approval.In.Eligibility),
-    bl.Edge(approval.Out.Status,         loanApproval.Out.Status),
+    bl.Edge(approval.Out.Status,         membershipApproval.Out.Status),
 )
 
 // Standalone evaluation works on the template — no Clone needed.
 var age, _    = bl.Number(30)
-var income, _ = bl.Number(50000)
-var amount, _ = bl.Number(200000)
-var result, err = loanApproval.Evaluate(LoanInputs{
-    Age:        bl.NewHandle(age),
-    Income:     bl.NewHandle(income),
-    LoanAmount: bl.NewHandle(amount),
+var points, _ = bl.Number(50000)
+var refs, _   = bl.Number(200000)
+var result, err = membershipApproval.Evaluate(MembershipInputs{
+    Age:       bl.NewHandle(age),
+    Points:    bl.NewHandle(points),
+    Referrals: bl.NewHandle(refs),
 })
 // result.Status.Get() == bl.String("approved")
 ```
 
-The graph draws the edges: `loanApproval.In.Age`/`In.Income` feed the table; `minIncome.Value` feeds its `min_income` input; the table's `eligibility` output feeds `approval`; `approval`'s `status` feeds the task output. `loan_amount` is a task input consumed by no node — allowed and simply ignored. The `var _ = loanApproval.Graph(...)` statement runs at package initialisation, so a malformed graph panics at startup (load-time fail-fast).
+The graph draws the edges: `membershipApproval.In.Age`/`In.Points` feed the table; `minPoints.Value` feeds its `min_points` input; the table's `eligibility` output feeds `approval`; `approval`'s `status` feeds the task output. `referrals` is a task input consumed by no node — allowed and simply ignored. The `var _ = membershipApproval.Graph(...)` statement runs at package initialisation, so a malformed graph panics at startup (load-time fail-fast).
 
 ### Including reference data
 
-A [`ReferenceData`](reference-data.spec.md) constant exposes a single `.Value` handle, so it is wired exactly like a node output: `bl.Edge(minIncome.Value, eligibility.In.MinIncome)`. It is not a `DecisionNode`; the task discovers it from the edge (the handle carries its owning source) and binds its value before the consuming node runs. Because reference data is part of the wiring, clones share it by reference.
+A [`ReferenceData`](reference-data.spec.md) constant exposes a single `.Value` handle, so it is wired exactly like a node output: `bl.Edge(minPoints.Value, eligibility.In.MinPoints)`. It is not a `DecisionNode`; the task discovers it from the edge (the handle carries its owning source) and binds its value before the consuming node runs. Because reference data is part of the wiring, clones share it by reference.
 
 ---
 
@@ -222,7 +222,7 @@ A [`ReferenceData`](reference-data.spec.md) constant exposes a single `.Value` h
 The common case constructs a `DecisionTask` fully baked in one place — config plus wiring — when it is only used once:
 
 ```go
-var oneShotDecision = bl.NewDecisionTask[LoanInputs, LoanOutputs](bl.DecisionTaskConfig{
+var oneShotDecision = bl.NewDecisionTask[MembershipInputs, MembershipOutputs](bl.DecisionTaskConfig{
     Id:             "decide",
     Name:           "Decide",
     InputMappings:  im,
@@ -238,41 +238,41 @@ To reuse the same decision logic across multiple processes, build and wire it on
 
 ```go
 // Use in process A — Id, Name, InputMappings all required.
-var riskCheckA = loanApproval.Clone(bl.DecisionTaskConfig{
-    Id:   "risk-check",
-    Name: "Risk Assessment",
+var vipCheckA = membershipApproval.Clone(bl.DecisionTaskConfig{
+    Id:   "vip-check",
+    Name: "VIP Check",
     InputMappings: bl.NewVariableMapping(
-        [2]string{"start.age",         "age"},
-        [2]string{"start.income",      "income"},
-        [2]string{"start.loan_amount", "loan_amount"},
+        [2]string{"start.age",       "age"},
+        [2]string{"start.points",    "points"},
+        [2]string{"start.referrals", "referrals"},
     ),
     OutputMappings: bl.NewVariableMapping(
-        [2]string{"status", "risk-check.status"},
+        [2]string{"status", "vip-check.status"},
     ),
 })
 
 // Use in process B with different mappings, a Loop, and an SLA exit port.
 var slaTimer = bl.NewInterruptingTimerExitPort("sla", bl.DaysTimeDuration("PT1M"))
-var riskEvalB = loanApproval.Clone(bl.DecisionTaskConfig{
-    Id:   "risk-eval",
-    Name: "Risk Evaluation",
+var renewalB = membershipApproval.Clone(bl.DecisionTaskConfig{
+    Id:   "renewal",
+    Name: "Renewal Review",
     InputMappings: bl.NewVariableMapping(
-        [2]string{"start.age_v2",      "age"},
-        [2]string{"start.income",      "income"},
-        [2]string{"start.loan_amount", "loan_amount"},
+        [2]string{"start.age_v2",    "age"},
+        [2]string{"start.points",    "points"},
+        [2]string{"start.referrals", "referrals"},
     ),
     OutputMappings: bl.NewVariableMapping(
-        [2]string{"status", "risk-eval.status"},
+        [2]string{"status", "renewal.status"},
     ),
     Loop: bl.NewLoopConfig(
-        bl.StringVar("risk-eval.status").Equals(bl.String("indeterminate")),
+        bl.StringVar("renewal.status").Equals(bl.String("indeterminate")),
         3,
     ),
     ExitPorts: []bl.ExitPort{slaTimer},
 })
 ```
 
-The clones are placed in their process graphs, and exit-port flow targets are wired in the graph block as for any other Task (`riskEvalB.ExitPort("sla").To(escalateB)…`).
+The clones are placed in their process graphs, and exit-port flow targets are wired in the graph block as for any other Task (`renewalB.ExitPort("sla").To(escalateB)…`).
 
 ---
 
@@ -324,15 +324,15 @@ Because the contracts are Go types, a caller passing the wrong input struct, or 
 `DecisionTask[TaskIn, TaskOut]` has a typed `Evaluate(in TaskIn) (TaskOut, error)` and `In`/`Out` boundary handle surfaces, so it **satisfies [`DecisionNode[TaskIn, TaskOut]`](decision-node.spec.md)**. A complete decision therefore composes into a larger one exactly like any other node — wire its `child.In.*` / `child.Out.*` handles in the parent's graph:
 
 ```go
-// creditModel is a *bl.DecisionTask[CreditInputs, CreditOutputs] declared elsewhere.
+// ratingModel is a *bl.DecisionTask[RatingInputs, RatingOutputs] declared elsewhere.
 var application = bl.NewDecisionTask[AppInputs, AppOutputs](bl.DecisionTaskConfig{
     Id: "application",
 })
 
 var _ = application.Graph(
-    bl.Edge(application.In.Income,  creditModel.In.Income),
-    bl.Edge(application.In.Age,     creditModel.In.Age),
-    bl.Edge(creditModel.Out.Score,  decision.In.Score),   // child output → sibling input
+    bl.Edge(application.In.Points,  ratingModel.In.Points),
+    bl.Edge(application.In.Age,     ratingModel.In.Age),
+    bl.Edge(ratingModel.Out.Score,  decision.In.Score),   // child output → sibling input
     bl.Edge(decision.Out.Verdict,   application.Out.Verdict),
 )
 ```

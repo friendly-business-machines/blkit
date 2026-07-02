@@ -18,7 +18,7 @@ func hStr(t *testing.T, s string) Handle[BlString] {
 
 type eligIn struct {
 	Age    Handle[BlNumber] `expr:"age"`
-	Income Handle[BlNumber] `expr:"income"`
+	Points Handle[BlNumber] `expr:"points"`
 }
 type eligOut struct {
 	Eligibility Handle[BlString] `expr:"eligibility"`
@@ -31,7 +31,7 @@ func TestDecisionTableUnique(t *testing.T) {
 		HitPolicy: HitPolicyUnique,
 		Columns: []Column{
 			{Label: "Age", Expr: `age`, Type: TypeNumber},
-			{Label: "Income", Expr: `income`, Type: TypeNumber},
+			{Label: "Points", Expr: `points`, Type: TypeNumber},
 		},
 		Rules: Rules{
 			{`>= 18`, `>= 30000`, `"eligible"`},
@@ -40,15 +40,15 @@ func TestDecisionTableUnique(t *testing.T) {
 		},
 	})
 	for _, c := range []struct {
-		age, income int
+		age, points int
 		want        string
 	}{{30, 50000, "eligible"}, {16, 50000, "ineligible"}, {40, 20000, "ineligible"}} {
-		out, err := tbl.Evaluate(eligIn{Age: hNum(t, c.age), Income: hNum(t, c.income)})
+		out, err := tbl.Evaluate(eligIn{Age: hNum(t, c.age), Points: hNum(t, c.points)})
 		if err != nil {
 			t.Fatalf("evaluate: %v", err)
 		}
 		if out.Eligibility.Get().String() != c.want {
-			t.Errorf("age=%d income=%d: got %s want %s", c.age, c.income, out.Eligibility.Get().String(), c.want)
+			t.Errorf("age=%d points=%d: got %s want %s", c.age, c.points, out.Eligibility.Get().String(), c.want)
 		}
 	}
 	md := tbl.ToMarkdown(false, false, false)
@@ -132,13 +132,13 @@ func TestDecisionTableConstructionErrors(t *testing.T) {
 	}
 	mustPanic("wrong width", func() {
 		NewDecisionTable[eligIn, eligOut](DecisionTableConfig{
-			Columns: []Column{{Label: "Age", Expr: `age`, Type: TypeNumber}, {Label: "Income", Expr: `income`, Type: TypeNumber}},
+			Columns: []Column{{Label: "Age", Expr: `age`, Type: TypeNumber}, {Label: "Points", Expr: `points`, Type: TypeNumber}},
 			Rules:   Rules{{`>= 18`, `"eligible"`}}, // missing a cell
 		})
 	})
 	mustPanic("empty input cell", func() {
 		NewDecisionTable[eligIn, eligOut](DecisionTableConfig{
-			Columns: []Column{{Label: "Age", Expr: `age`, Type: TypeNumber}, {Label: "Income", Expr: `income`, Type: TypeNumber}},
+			Columns: []Column{{Label: "Age", Expr: `age`, Type: TypeNumber}, {Label: "Points", Expr: `points`, Type: TypeNumber}},
 			Rules:   Rules{{`>= 18`, ``, `"eligible"`}},
 		})
 	})
@@ -156,8 +156,8 @@ func TestDecisionTableConstructionErrors(t *testing.T) {
 // --- DecisionNativeFunction --------------------------------------------------
 
 type scoreIn struct {
-	Age    Handle[BlNumber] `expr:"age"`
-	Income Handle[BlNumber] `expr:"income"`
+	Age   Handle[BlNumber] `expr:"age"`
+	Steps Handle[BlNumber] `expr:"steps"`
 }
 type scoreOut struct {
 	Score Handle[BlNumber] `expr:"score"`
@@ -165,11 +165,11 @@ type scoreOut struct {
 
 func TestDecisionNativeFunction(t *testing.T) {
 	fn := func(in scoreIn) (scoreOut, error) {
-		sum, _ := Number(in.Age.Get().Decimal().Add(in.Income.Get().Decimal()))
+		sum, _ := Number(in.Age.Get().Decimal().Add(in.Steps.Get().Decimal()))
 		return scoreOut{Score: NewHandle(sum)}, nil
 	}
-	node := NewDecisionNativeFunction(DecisionNativeFunctionConfig{Id: "score", Name: "Score"}, fn)
-	out, err := node.Evaluate(scoreIn{Age: hNum(t, 40), Income: hNum(t, 60)})
+	node := NewDecisionNativeFunction(DecisionNativeFunctionConfig{Id: "fitness_score", Name: "Fitness Score"}, fn)
+	out, err := node.Evaluate(scoreIn{Age: hNum(t, 40), Steps: hNum(t, 60)})
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestDecisionNativeFunction(t *testing.T) {
 func TestDecisionNativeFunctionPanicRecovered(t *testing.T) {
 	fn := func(in scoreIn) (scoreOut, error) { panic("boom") }
 	node := NewDecisionNativeFunction(DecisionNativeFunctionConfig{Id: "x"}, fn)
-	if _, err := node.Evaluate(scoreIn{Age: hNum(t, 1), Income: hNum(t, 1)}); err == nil {
+	if _, err := node.Evaluate(scoreIn{Age: hNum(t, 1), Steps: hNum(t, 1)}); err == nil {
 		t.Errorf("expected a recovered-panic error, got nil")
 	}
 }
@@ -192,8 +192,8 @@ func TestDecisionNativeFunctionPanicRecovered(t *testing.T) {
 // --- ReferenceData -----------------------------------------------------------
 
 func TestReferenceData(t *testing.T) {
-	r := NewReferenceData(ReferenceDataConfig[BlNumber]{Id: "min_income", Name: "Minimum Income", Value: mustNum(t, 30000)})
-	if r.GetId() != "min_income" || r.GetValue().String() != "30000" {
+	r := NewReferenceData(ReferenceDataConfig[BlNumber]{Id: "min_points", Name: "Minimum Points", Value: mustNum(t, 30000)})
+	if r.GetId() != "min_points" || r.GetValue().String() != "30000" {
 		t.Errorf("got id=%s value=%s", r.GetId(), r.GetValue().String())
 	}
 	var rv ReferenceValue = r
@@ -214,9 +214,9 @@ func TestReferenceDataEmptyIdPanics(t *testing.T) {
 // --- DecisionTask (full wiring) ----------------------------------------------
 
 type taskIn struct {
-	Age        Handle[BlNumber] `expr:"age"`
-	Income     Handle[BlNumber] `expr:"income"`
-	LoanAmount Handle[BlNumber] `expr:"loan_amount"`
+	Age       Handle[BlNumber] `expr:"age"`
+	Points    Handle[BlNumber] `expr:"points"`
+	Referrals Handle[BlNumber] `expr:"referrals"`
 }
 type taskOut struct {
 	Status Handle[BlString] `expr:"status"`
@@ -224,8 +224,8 @@ type taskOut struct {
 
 type eligIn3 struct {
 	Age       Handle[BlNumber] `expr:"age"`
-	Income    Handle[BlNumber] `expr:"income"`
-	MinIncome Handle[BlNumber] `expr:"min_income"`
+	Points    Handle[BlNumber] `expr:"points"`
+	MinPoints Handle[BlNumber] `expr:"min_points"`
 }
 type apprIn struct {
 	Eligibility Handle[BlString] `expr:"eligibility"`
@@ -234,31 +234,31 @@ type apprOut struct {
 	Status Handle[BlString] `expr:"status"`
 }
 
-func buildLoanTask(t *testing.T) *DecisionTask[taskIn, taskOut] {
+func buildMembershipTask(t *testing.T) *DecisionTask[taskIn, taskOut] {
 	t.Helper()
-	minIncome := NewReferenceData(ReferenceDataConfig[BlNumber]{Id: "min_income", Value: mustNum(t, 30000)})
+	minPoints := NewReferenceData(ReferenceDataConfig[BlNumber]{Id: "min_points", Value: mustNum(t, 30000)})
 	elig := NewDecisionTable[eligIn3, eligOut](DecisionTableConfig{
 		Id:        "eligibility",
 		HitPolicy: HitPolicyUnique,
 		Columns: []Column{
 			{Label: "Age", Expr: `age`, Type: TypeNumber},
-			{Label: "Income", Expr: `income`, Type: TypeNumber},
+			{Label: "Points", Expr: `points`, Type: TypeNumber},
 		},
 		Rules: Rules{
-			{`>= 18`, `>= min_income`, `"eligible"`},
+			{`>= 18`, `>= min_points`, `"eligible"`},
 			{`< 18`, `-`, `"ineligible"`},
-			{`-`, `< min_income`, `"ineligible"`},
+			{`-`, `< min_points`, `"ineligible"`},
 		},
 	})
 	appr := NewDecisionExpression[apprIn, apprOut](DecisionExpressionConfig{
 		Id:      "approval",
 		Entries: Entries{"status": `if eligibility = "eligible" then "approved" else "denied"`},
 	})
-	task := NewDecisionTask[taskIn, taskOut](DecisionTaskConfig{Id: "loan", Name: "Loan Approval"})
+	task := NewDecisionTask[taskIn, taskOut](DecisionTaskConfig{Id: "membership", Name: "Membership Approval"})
 	task.Graph(
 		Edge(task.In.Age, elig.In.Age),
-		Edge(task.In.Income, elig.In.Income),
-		Edge(minIncome.Value, elig.In.MinIncome),
+		Edge(task.In.Points, elig.In.Points),
+		Edge(minPoints.Value, elig.In.MinPoints),
 		Edge(elig.Out.Eligibility, appr.In.Eligibility),
 		Edge(appr.Out.Status, task.Out.Status),
 	)
@@ -266,27 +266,27 @@ func buildLoanTask(t *testing.T) *DecisionTask[taskIn, taskOut] {
 }
 
 func TestDecisionTaskFullWiring(t *testing.T) {
-	task := buildLoanTask(t)
+	task := buildMembershipTask(t)
 	for _, c := range []struct {
-		age, income int
+		age, points int
 		want        string
 	}{{30, 50000, "approved"}, {16, 50000, "denied"}, {40, 20000, "denied"}} {
-		out, err := task.Evaluate(taskIn{Age: hNum(t, c.age), Income: hNum(t, c.income), LoanAmount: hNum(t, 200000)})
+		out, err := task.Evaluate(taskIn{Age: hNum(t, c.age), Points: hNum(t, c.points), Referrals: hNum(t, 200000)})
 		if err != nil {
 			t.Fatalf("evaluate: %v", err)
 		}
 		if out.Status.Get().String() != c.want {
-			t.Errorf("age=%d income=%d: got %s want %s", c.age, c.income, out.Status.Get().String(), c.want)
+			t.Errorf("age=%d points=%d: got %s want %s", c.age, c.points, out.Status.Get().String(), c.want)
 		}
 	}
 }
 
 func TestDecisionTaskCloneEvaluates(t *testing.T) {
-	clone := buildLoanTask(t).Clone(DecisionTaskConfig{Id: "risk-check", Name: "Risk Check"})
-	if clone.GetId() != "risk-check" {
+	clone := buildMembershipTask(t).Clone(DecisionTaskConfig{Id: "vip-check", Name: "VIP Check"})
+	if clone.GetId() != "vip-check" {
 		t.Errorf("clone id = %s", clone.GetId())
 	}
-	out, err := clone.Evaluate(taskIn{Age: hNum(t, 30), Income: hNum(t, 50000), LoanAmount: hNum(t, 1)})
+	out, err := clone.Evaluate(taskIn{Age: hNum(t, 30), Points: hNum(t, 50000), Referrals: hNum(t, 1)})
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}

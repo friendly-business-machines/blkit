@@ -67,7 +67,7 @@ type DecisionDefinitionError struct {
 
 Because `NewDecisionExpression[I, O]` is generic, it does not know `I`'s and `O`'s fields when it is written — they depend on the concrete structs each caller supplies. So it *reflects* over them: Go's `reflect` package lets code examine a value's type at runtime, walking each struct's fields to read their names, types, and `expr:"..."` tags. That is how the constructor discovers the declared input and output variables without you listing them separately.
 
-**Every field is a variable.** Each field of `I` and `O` becomes one variable in the environment — there is no opt-out. By default a field's variable name is its Go field name; the `expr:"..."` tag is *optional* and is used only to expose a field under a different name (for example a Go field `LoanAmount` mapped to the variable `loan_amount`). So a struct of plainly-named fields needs no tags at all.
+**Every field is a variable.** Each field of `I` and `O` becomes one variable in the environment — there is no opt-out. By default a field's variable name is its Go field name; the `expr:"..."` tag is *optional* and is used only to expose a field under a different name (for example a Go field `PerParcel` mapped to the variable `per_parcel`). So a struct of plainly-named fields needs no tags at all.
 
 It then checks the contracts against the family's [reflection contract](decision-node.spec.md#contracts-are-concrete-go-structs) — `I`/`O` are structs, every field an exported `bl.Handle[BlValue]` with a valid identifier name, each variable read through `Handle.Get()` — plus these expression-specific rules. Each failure is reported as a `DecisionDefinitionError`:
 
@@ -91,7 +91,7 @@ The environment is *strict*, and blkit adds its own pre-pass that flags any name
 
 ### 4. Order the entries by dependency
 
-An entry may reference this node's own outputs — for example a `total` entry that reads `principal` and `interest`. Those references are the entry's *intra-node dependencies*, discovered by walking the entry's parsed expression (its AST — the tree the parser produces from the source). The entries are then *topologically sorted* by these dependencies: ordered so that every entry runs after the sibling outputs it reads. A self-reference, or a dependency cycle (A needs B while B needs A), cannot be ordered and is reported as a `DecisionDefinitionError`.
+An entry may reference this node's own outputs — for example a `total` entry that reads `per_parcel` and `freight`. Those references are the entry's *intra-node dependencies*, discovered by walking the entry's parsed expression (its AST — the tree the parser produces from the source). The entries are then *topologically sorted* by these dependencies: ordered so that every entry runs after the sibling outputs it reads. A self-reference, or a dependency cycle (A needs B while B needs A), cannot be ordered and is reported as a `DecisionDefinitionError`.
 
 ### After the four phases
 
@@ -108,27 +108,27 @@ Every problem found across these phases is **accumulated and raised together** a
 A single-output node is the expression-based way to author a one-value decision.
 
 ```go
-type PaymentInputs struct {
-    LoanAmount bl.Handle[bl.BlNumber] `expr:"loan_amount"`
-    Rate       bl.Handle[bl.BlNumber] `expr:"rate"`
+type QuoteInputs struct {
+    Weight bl.Handle[bl.BlNumber] `expr:"weight"`
+    Rate   bl.Handle[bl.BlNumber] `expr:"rate"`
 }
-type PaymentOutputs struct {
+type QuoteOutputs struct {
     Amount bl.Handle[bl.BlNumber] `expr:"amount"`
 }
 
-var monthlyPayment = bl.NewDecisionExpression[PaymentInputs, PaymentOutputs](bl.DecisionExpressionConfig{
-    Id:   "monthly_payment",
-    Name: "Monthly Payment",
+var freightQuote = bl.NewDecisionExpression[QuoteInputs, QuoteOutputs](bl.DecisionExpressionConfig{
+    Id:   "freight_quote",
+    Name: "Freight Quote",
     Entries: bl.Entries{
-        "amount": `loan_amount * rate / 12`,
+        "amount": `weight * rate / 12`,
     },
 })
 
-var amount, _ = bl.Number(200000)
+var weight, _ = bl.Number(200000)
 var rate, _   = bl.Number("0.05")
-var result, _ = monthlyPayment.Evaluate(PaymentInputs{
-    LoanAmount: bl.NewHandle(amount),
-    Rate:       bl.NewHandle(rate),
+var result, _ = freightQuote.Evaluate(QuoteInputs{
+    Weight: bl.NewHandle(weight),
+    Rate:   bl.NewHandle(rate),
 })
 // result.Amount.Get() is a bl.BlNumber
 ```
@@ -155,39 +155,39 @@ var applicationStatus = bl.NewDecisionExpression[ScoreInputs, StatusOutputs](bl.
 ### Multiple outputs with cross-entry references
 
 ```go
-type LoanInputs struct {
-    LoanAmount bl.Handle[bl.BlNumber] `expr:"loan_amount"`
-    Rate       bl.Handle[bl.BlNumber] `expr:"rate"`
-    Term       bl.Handle[bl.BlNumber] `expr:"term"`
+type ShipmentInputs struct {
+    Weight  bl.Handle[bl.BlNumber] `expr:"weight"`
+    Rate    bl.Handle[bl.BlNumber] `expr:"rate"`
+    Parcels bl.Handle[bl.BlNumber] `expr:"parcels"`
 }
 type Breakdown struct {
-    Principal bl.Handle[bl.BlNumber] `expr:"principal"`
-    Interest  bl.Handle[bl.BlNumber] `expr:"interest"`
+    PerParcel bl.Handle[bl.BlNumber] `expr:"per_parcel"`
+    Freight   bl.Handle[bl.BlNumber] `expr:"freight"`
     Total     bl.Handle[bl.BlNumber] `expr:"total"`
 }
 
-var monthlyBreakdown = bl.NewDecisionExpression[LoanInputs, Breakdown](bl.DecisionExpressionConfig{
-    Id:   "monthly_breakdown",
-    Name: "Monthly Breakdown",
+var freightBreakdown = bl.NewDecisionExpression[ShipmentInputs, Breakdown](bl.DecisionExpressionConfig{
+    Id:   "freight_breakdown",
+    Name: "Freight Breakdown",
     Entries: bl.Entries{
-        "principal": `loan_amount / term`,
-        "interest":  `loan_amount * rate / 12`,
-        "total":     `principal + interest`,
+        "per_parcel": `weight / parcels`,
+        "freight":    `weight * rate / 12`,
+        "total":      `per_parcel + freight`,
     },
 })
 
-var la, _   = bl.Number(120000)
-var r, _    = bl.Number("0.06")
-var term, _ = bl.Number(12)
-var out, _  = monthlyBreakdown.Evaluate(LoanInputs{
-    LoanAmount: bl.NewHandle(la),
-    Rate:       bl.NewHandle(r),
-    Term:       bl.NewHandle(term),
+var w, _       = bl.Number(120000)
+var r, _       = bl.Number("0.06")
+var parcels, _ = bl.Number(12)
+var out, _     = freightBreakdown.Evaluate(ShipmentInputs{
+    Weight:  bl.NewHandle(w),
+    Rate:    bl.NewHandle(r),
+    Parcels: bl.NewHandle(parcels),
 })
-// out.Principal.Get()=10000, out.Interest.Get()=600, out.Total.Get()=10600
+// out.PerParcel.Get()=10000, out.Freight.Get()=600, out.Total.Get()=10600
 ```
 
-The `total` entry references `principal` and `interest` by name. Those are this node's own outputs — referencing them declares cross-entry dependencies that `NewDecisionExpression` honours when sorting.
+The `total` entry references `per_parcel` and `freight` by name. Those are this node's own outputs — referencing them declares cross-entry dependencies that `NewDecisionExpression` honours when sorting.
 
 ### Calling user-defined functions
 

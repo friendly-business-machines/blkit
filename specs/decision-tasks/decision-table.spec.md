@@ -125,7 +125,7 @@ A rule matches when **all** of its non-wildcard input cells evaluate to `bl.BlBo
 ```go
 type EligibilityInputs struct {
     Age    bl.Handle[bl.BlNumber] `expr:"age"`
-    Income bl.Handle[bl.BlNumber] `expr:"income"`
+    Points bl.Handle[bl.BlNumber] `expr:"points"`
 }
 type EligibilityOutputs struct {
     Eligibility bl.Handle[bl.BlString] `expr:"eligibility"`
@@ -137,10 +137,10 @@ var eligibility = bl.NewDecisionTable[EligibilityInputs, EligibilityOutputs](bl.
     HitPolicy: bl.HitPolicyUnique,
     Columns: []bl.Column{
         {Label: "Age", Expr: `age`, Type: bl.TypeNumber},
-        {Label: "Income", Expr: `income`, Type: bl.TypeNumber},
+        {Label: "Points", Expr: `points`, Type: bl.TypeNumber},
     },
     Rules: bl.Rules{
-        // Age    Income      eligibility
+        // Age    Points      eligibility
         {`>= 18`, `>= 30000`, `"eligible"`},
         {`< 18`, `-`, `"ineligible"`},
         {`-`, `< 30000`, `"ineligible"`},
@@ -149,10 +149,10 @@ var eligibility = bl.NewDecisionTable[EligibilityInputs, EligibilityOutputs](bl.
 
 // Standalone evaluation builds a typed input struct with value-carrying handles.
 var age, _    = bl.Number(30)
-var income, _ = bl.Number(50000)
+var points, _ = bl.Number(50000)
 var out, _    = eligibility.Evaluate(EligibilityInputs{
     Age:    bl.NewHandle(age),
-    Income: bl.NewHandle(income),
+    Points: bl.NewHandle(points),
 })
 // out.Eligibility.Get() == bl.String("eligible")
 ```
@@ -160,7 +160,7 @@ var out, _    = eligibility.Evaluate(EligibilityInputs{
 Output of `eligibility.ToMarkdown(false, false, false)`:
 
 ```text
-| U | Age   | Income   |   | eligibility  |
+| U | Age   | Points   |   | eligibility  |
 |---|-------|----------|---|--------------|
 | 1 | >= 18 | >= 30000 | █ | "eligible"   |
 | 2 | < 18  | -        | █ | "ineligible" |
@@ -172,40 +172,40 @@ Output of `eligibility.ToMarkdown(false, false, false)`:
 Output cells are positional, in `O`'s field-declaration order (`Rate`, then `Term`). This table uses the optional id column.
 
 ```go
-type LoanInputs struct {
-    CreditScore bl.Handle[bl.BlNumber] `expr:"credit_score"`
-    LoanAmount  bl.Handle[bl.BlNumber] `expr:"loan_amount"`
+type PlanInputs struct {
+    Usage  bl.Handle[bl.BlNumber] `expr:"usage"`
+    Volume bl.Handle[bl.BlNumber] `expr:"volume"`
 }
-type LoanPricing struct {
+type PlanPricing struct {
     Rate bl.Handle[bl.BlNumber] `expr:"rate"`
     Term bl.Handle[bl.BlNumber] `expr:"term"`
 }
 
-var loanPricing = bl.NewDecisionTable[LoanInputs, LoanPricing](bl.DecisionTableConfig{
+var planPricing = bl.NewDecisionTable[PlanInputs, PlanPricing](bl.DecisionTableConfig{
     Id:        "pricing",
-    Name:      "Loan Pricing",
+    Name:      "Plan Pricing",
     HitPolicy: bl.HitPolicyUnique,
     Columns: []bl.Column{
-        {Label: "Score", Expr: `credit_score`, Type: bl.TypeNumber},
-        {Label: "Amount", Expr: `loan_amount`, Type: bl.TypeNumber},
+        {Label: "Usage", Expr: `usage`, Type: bl.TypeNumber},
+        {Label: "Volume", Expr: `volume`, Type: bl.TypeNumber},
     },
     Rules: bl.Rules{
-        // id          Score         Amount       rate   term
-        {`prime`, `>= 750`, `<= 500000`, `3.5`, `360`},
+        // id          Usage         Volume       rate   term
+        {`platinum`, `>= 750`, `<= 500000`, `3.5`, `360`},
         {`standard`, `[650..749]`, `-`, `5.0`, `240`},
-        {`subprime`, `< 650`, `-`, `7.5`, `180`},
+        {`starter`, `< 650`, `-`, `7.5`, `180`},
     },
 })
 ```
 
-Output of `loanPricing.ToMarkdown(true, false, false)`:
+Output of `planPricing.ToMarkdown(true, false, false)`:
 
 ```text
-| U | rule-id  | Score      | Amount    |   | rate | term |
+| U | rule-id  | Usage      | Volume    |   | rate | term |
 |---|----------|------------|-----------|---|------|------|
-| 1 | prime    | >= 750     | <= 500000 | █ | 3.5  | 360  |
+| 1 | platinum | >= 750     | <= 500000 | █ | 3.5  | 360  |
 | 2 | standard | [650..749] | -         | █ | 5.0  | 240  |
-| 3 | subprime | < 650      | -         | █ | 7.5  | 180  |
+| 3 | starter  | < 650      | -         | █ | 7.5  | 180  |
 ```
 
 ### Example — Range and List Membership
@@ -467,8 +467,8 @@ The scope is built from the supplied input struct `I`: each input handle's value
 
 ```go
 type RiskInputs struct {
-    Age         bl.Handle[bl.BlNumber] `expr:"age"`
-    CreditScore bl.Handle[bl.BlNumber] `expr:"credit_score"`
+    Age   bl.Handle[bl.BlNumber] `expr:"age"`
+    Score bl.Handle[bl.BlNumber] `expr:"score"`
 }
 type RiskOutputs struct {
     Risk   bl.Handle[bl.BlString] `expr:"risk"`
@@ -481,16 +481,16 @@ var riskLevel = bl.NewDecisionTable[RiskInputs, RiskOutputs](bl.DecisionTableCon
     HitPolicy: bl.HitPolicyUnique,
     Columns: []bl.Column{
         {Label: "Age", Expr: `age`, Type: bl.TypeNumber},
-        {Label: "Score", Expr: `credit_score`, Type: bl.TypeNumber},
+        {Label: "Score", Expr: `score`, Type: bl.TypeNumber},
     },
     Rules: bl.Rules{
         // id                 Age      Score    risk        reason
-        {`young-good-credit`, `< 25`, `> 700`, `"low"`, `"Young with good credit"`},
-        {`older-any-credit`, `>= 25`, `-`, `"medium"`, ``},
+        {`young-strong`, `< 25`, `> 700`, `"low"`, `"Young with good record"`},
+        {`older-any`, `>= 25`, `-`, `"medium"`, ``},
     },
     Descriptions: map[string]string{
-        `young-good-credit`: `Young applicant with strong credit history`,
-        `older-any-credit`:  `Standard risk for older applicants`,
+        `young-strong`: `Young applicant with a strong track record`,
+        `older-any`:    `Standard risk for older applicants`,
     },
 })
 
@@ -502,7 +502,7 @@ Output:
 ```text
 | U | Age   | Score |   | risk     | reason                   |
 |---|-------|-------|---|----------|--------------------------|
-| 1 | < 25  | > 700 | █ | "low"    | "Young with good credit" |
+| 1 | < 25  | > 700 | █ | "low"    | "Young with good record" |
 | 2 | >= 25 | -     | █ | "medium" |                          |
 ```
 

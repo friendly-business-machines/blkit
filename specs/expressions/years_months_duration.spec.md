@@ -117,7 +117,7 @@ wrapped-`Bl*` forms:
 ```go
 // host-side (Go)
 // ISO 8601 string — convenient when the value comes from config or persistence.
-var mortgage, _  = bl.YMDuration("P30Y")
+var warranty, _  = bl.YMDuration("P30Y")
 var grace,    _  = bl.YMDuration("P1Y6M")
 var lowered,  _  = bl.YMDuration("p1y6m")            // designators are case-insensitive on input
 var bad,    err  = bl.YMDuration("P1DT2H")           // err != nil — D/T designators not allowed

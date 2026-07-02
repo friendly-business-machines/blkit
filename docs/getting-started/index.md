@@ -81,7 +81,7 @@ full options.
 
 - **[Tutorials](../tutorials/index.md)** — a guided walkthrough of a complete
   use case, start to finish.
-- **[Examples](../examples/loan-eligibility.md)** — a library of focused,
+- **[Examples](../examples/admission.md)** — a library of focused,
   self-contained feature demonstrations.
 - **[Reference](../reference/blkit.md)** — the full Go API reference.
 - New to the standards blkit draws from? The

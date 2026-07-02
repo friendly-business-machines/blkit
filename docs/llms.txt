@@ -11,7 +11,7 @@
 - [Templates](https://friendly-business-machines.github.io/blkit/templates/): Ready-to-copy project scaffolds and boilerplate patterns for common use cases.
 
 ## Examples
-- [Loan Eligibility](https://friendly-business-machines.github.io/blkit/examples/loan-eligibility/): A retail bank decides whether a personal loan application is approved, conditionally approved, or declined — and on what terms — from the applicant's credit profile.
+- [Course Admission](https://friendly-business-machines.github.io/blkit/examples/admission/): A university admissions office decides whether an undergraduate application is admitted, waitlisted, or declined — and on what terms — from the applicant's academic profile.
 - [Shipping Rate Calculator](https://friendly-business-machines.github.io/blkit/examples/shipping-rate/): An e-commerce platform calculates the total shipping charge for a parcel from billable weight, destination zone, speed tier, and a fuel surcharge — composed entirely from blkit expressions.
 - [Order Fulfillment Process](https://friendly-business-machines.github.io/blkit/examples/order-fulfillment/): An e-commerce platform handles an order from placement through stock reservation, payment, picking, dispatch, and delivery — with explicit branches for out-of-stock and payment-failure cases.
 - [Employee Expense Approval](https://friendly-business-machines.github.io/blkit/examples/expense-approval/): An employee submits a business expense claim; the approval route — automatic, manager, or finance director — is determined by amount, category, and the employee's seniority, then the matching review runs.

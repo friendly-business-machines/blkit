@@ -2,9 +2,9 @@ package core
 
 import "testing"
 
-type ageIncomeEnv struct {
+type agePointsEnv struct {
 	Age    BlNumber `expr:"age"`
-	Income BlNumber `expr:"income"`
+	Points BlNumber `expr:"points"`
 }
 
 type ageEnv struct {
@@ -16,13 +16,13 @@ type scoreEnv struct {
 }
 
 func TestEngineEvaluateWithSchema(t *testing.T) {
-	eligible, err := Expr[ageIncomeEnv](`age >= 18 and income > 50000`)
+	eligible, err := Expr[agePointsEnv](`age >= 18 and points > 50000`)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
 	age, _ := Number(21)
-	income, _ := Number(60000)
-	out, err := eligible.Evaluate(ageIncomeEnv{Age: age, Income: income})
+	points, _ := Number(60000)
+	out, err := eligible.Evaluate(agePointsEnv{Age: age, Points: points})
 	if err != nil {
 		t.Fatalf("eval: %v", err)
 	}
@@ -94,8 +94,8 @@ func TestConditionalNested(t *testing.T) {
 	cases := []struct {
 		score int
 		want  string
-	}{{800, "prime"}, {700, "standard"}, {600, "subprime"}}
-	e, err := Expr[scoreEnv](`if score >= 750 then "prime" else if score >= 650 then "standard" else "subprime"`)
+	}{{800, "gold"}, {700, "silver"}, {600, "bronze"}}
+	e, err := Expr[scoreEnv](`if score >= 750 then "gold" else if score >= 650 then "silver" else "bronze"`)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}

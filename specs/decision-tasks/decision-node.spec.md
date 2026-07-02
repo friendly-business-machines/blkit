@@ -40,9 +40,9 @@ A static value with identity is **not** a node: it is a [`ReferenceData`](refere
 A node declares what it consumes and produces as two concrete Go structs. Every exported field is one variable of the node's contract:
 
 ```go
-type LoanInputs struct {
+type MembershipInputs struct {
     Age    bl.Handle[bl.BlNumber] `expr:"age"`
-    Income bl.Handle[bl.BlNumber] `expr:"income"`
+    Points bl.Handle[bl.BlNumber] `expr:"points"`
 }
 type Eligibility struct {
     Eligibility bl.Handle[bl.BlString] `expr:"eligibility"`
@@ -53,7 +53,7 @@ The constructor *reflects* over `I` and `O` — Go's `reflect` package lets code
 
 - `I` and `O` must be structs, and every field must be **exported** (an unexported field cannot be a variable);
 - **every field must be a `bl.Handle[T]` whose `T` is a `BlValue`** (see [§ Handle\[T\]](#handlet--the-typed-io-field)). A field of any other Go type — a bare `bl.BlNumber`, an `int`, a plain struct — is rejected;
-- **every variable name must be a valid expr identifier** — a letter or `_` followed by letters, digits, or `_`. The name is the field's `expr:"…"` tag, or its Go field name when untagged. A malformed tag (`expr:"loan amount"`, `expr:"1st"`) is rejected; an untagged field always passes, since a Go field name is a valid identifier;
+- **every variable name must be a valid expr identifier** — a letter or `_` followed by letters, digits, or `_`. The name is the field's `expr:"…"` tag, or its Go field name when untagged. A malformed tag (`expr:"full name"`, `expr:"1st"`) is rejected; an untagged field always passes, since a Go field name is a valid identifier;
 - no variable name may be duplicated **within** the same struct. Names need **not** be unique across nodes: wiring connects specific handles, not names (see [§ Where type-safety happens](#where-type-safety-happens)), so two nodes may both produce an output called `result`.
 
 The `expr:"…"` tag is *optional* and only renames a variable — a struct of plainly-named fields needs no tags. It is the name an expression node's sources reference (`age`, `eligibility`); the **Go field name** (`Age`, `Eligibility`) is what the wiring netlist uses (`node.In.Age`, `node.Out.Eligibility`).

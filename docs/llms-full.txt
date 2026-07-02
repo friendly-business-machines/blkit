@@ -28,7 +28,7 @@ conformance implementation of either standard.
 | [Installation](installation/index.md) | Adding blkit to your project and pinning a version. |
 | [Tutorials](tutorials/index.md) | Guided, narrative walkthroughs of complete use cases. |
 | [Templates](templates/index.md) | Ready-to-copy project scaffolds for common patterns. |
-| [Examples](examples/loan-eligibility.md) | Focused, self-contained demonstrations of specific features. |
+| [Examples](examples/admission.md) | Focused, self-contained demonstrations of specific features. |
 | [Reference](reference/blkit.md) | The complete Go API reference, generated from source. |
 
 !!! note "Documentation in progress"
@@ -124,7 +124,7 @@ full options.
 
 - **[Tutorials](../tutorials/index.md)** — a guided walkthrough of a complete
   use case, start to finish.
-- **[Examples](../examples/loan-eligibility.md)** — a library of focused,
+- **[Examples](../examples/admission.md)** — a library of focused,
   self-contained feature demonstrations.
 - **[Reference](../reference/blkit.md)** — the full Go API reference.
 - New to the standards blkit draws from? The
@@ -219,73 +219,73 @@ guidance.
 
 ---
 
-<!-- Source: https://friendly-business-machines.github.io/blkit/examples/loan-eligibility/ -->
+<!-- Source: https://friendly-business-machines.github.io/blkit/examples/admission/ -->
 
-# Loan Eligibility
+# Course Admission
 
-> A retail bank decides whether a personal loan application is approved,
-> conditionally approved, or declined — and on what terms — from the applicant's
-> credit profile.
+> A university admissions office decides whether an undergraduate application is
+> admitted, waitlisted, or declined — and on what terms — from the applicant's
+> academic profile.
 
 ## Business overview
 
-A retail bank evaluates personal loan applications at the point of submission.
-The decision is fully automated, taken in a single step with no human review.
-Given information about the applicant, the bank must decide:
+A university admissions office evaluates undergraduate applications at the point
+of submission. The decision is fully automated, taken in a single step with no
+human review. Given information about the applicant, the office must decide:
 
-- Whether the application is **approved**, **conditionally approved**, or **declined**.
-- If approved or conditional: the **maximum loan amount** the applicant may receive.
-- If approved or conditional: the **interest rate tier** that will apply.
+- Whether the application is **admitted**, **waitlisted**, or **declined**.
+- If admitted or waitlisted: the **maximum first-term credit load** the applicant may enrol in.
+- If admitted or waitlisted: the **advising track** that will apply.
 
 ### Applicant information
 
 | Field | Description |
 |---|---|
-| Credit score | An integer credit score, typically in the range 300–850 |
-| Annual income | The applicant's gross annual income |
-| Debt-to-income ratio | Total monthly debt obligations divided by gross monthly income, as a decimal (e.g. 0.35 = 35%) |
-| Employment status | One of: employed, self-employed, unemployed |
+| Aptitude score | An integer entrance-exam score, typically in the range 400–1600 |
+| Grade average | The applicant's secondary-school grade point average (0.0–4.0) |
+| Absence ratio | Days absent divided by total school days, as a decimal (e.g. 0.35 = 35%) |
+| Enrolment status | One of: full-time, part-time, withdrawn |
 
 ### Decision rules
 
 Decisions are evaluated in priority order. The first rule that matches all
 conditions is applied; no further rules are evaluated.
 
-| Priority | Credit Score | Employment Status | Debt-to-Income Ratio | Decision | Max Loan | Rate Tier |
+| Priority | Aptitude Score | Enrolment Status | Absence Ratio | Decision | Max Credits | Track |
 |---|---|---|---|---|---|---|
-| 1 | 750 or above | Employed or self-employed | 30% or below | Approved | 5× annual income | Prime |
-| 2 | 700 or above | Employed or self-employed | 40% or below | Approved | 4× annual income | Standard |
-| 3 | 650 or above | Employed or self-employed | 40% or below | Conditional | 3× annual income | Elevated |
-| 4 | 600 or above | Employed or self-employed | 50% or below | Conditional | 2× annual income | Subprime |
+| 1 | 750 or above | Full-time or part-time | 30% or below | Admitted | 21 | Honors |
+| 2 | 700 or above | Full-time or part-time | 40% or below | Admitted | 18 | Standard |
+| 3 | 650 or above | Full-time or part-time | 40% or below | Waitlisted | 15 | Foundation |
+| 4 | 600 or above | Full-time or part-time | 50% or below | Waitlisted | 12 | Support |
 | 5 | Below 600 | Any | Any | Declined | — | — |
-| 6 | Any | Unemployed | Any | Declined | — | — |
+| 6 | Any | Withdrawn | Any | Declined | — | — |
 | 7 | Any | Any | Above 50% | Declined | — | — |
 
 Rules 5, 6, and 7 are catch-alls that ensure every application receives a
-decision. An unemployed applicant with a high credit score matches rule 6 before
+decision. A withdrawn applicant with a high aptitude score matches rule 6 before
 reaching any of rules 1–4.
 
 ### Outcomes
 
 | Decision | Meaning |
 |---|---|
-| **Approved** | The bank offers the applicant a loan up to the stated maximum at the stated rate tier |
-| **Conditional** | The application requires secondary checks (e.g. affordability confirmation) before a final offer; indicative terms are returned |
-| **Declined** | The application does not meet the minimum criteria; no loan is offered |
+| **Admitted** | The university offers the applicant a place with the stated maximum credit load and advising track |
+| **Waitlisted** | The application requires a secondary review (e.g. portfolio or interview) before a final offer; indicative terms are returned |
+| **Declined** | The application does not meet the minimum criteria; no place is offered |
 
-Declined applications return a maximum loan amount of zero and no rate tier.
+Declined applications return a maximum credit load of zero and no advising track.
 
 ### Worked examples
 
-| Credit Score | Income | DTI | Employment | Decision | Max Loan | Rate Tier |
+| Aptitude Score | GPA | Absence | Enrolment | Decision | Max Credits | Track |
 |---|---|---|---|---|---|---|
-| 780 | 100,000 | 25% | Employed | Approved | 500,000 | Prime |
-| 710 | 60,000 | 38% | Self-employed | Approved | 240,000 | Standard |
-| 660 | 45,000 | 39% | Employed | Conditional | 135,000 | Elevated |
-| 610 | 30,000 | 48% | Employed | Conditional | 60,000 | Subprime |
-| 580 | 50,000 | 30% | Employed | Declined | — | — |
-| 700 | 70,000 | 55% | Employed | Declined | — | — |
-| 730 | 90,000 | 28% | Unemployed | Declined | — | — |
+| 780 | 3.9 | 25% | Full-time | Admitted | 21 | Honors |
+| 710 | 3.2 | 38% | Part-time | Admitted | 18 | Standard |
+| 660 | 2.8 | 39% | Full-time | Waitlisted | 15 | Foundation |
+| 610 | 2.5 | 48% | Full-time | Waitlisted | 12 | Support |
+| 580 | 3.0 | 30% | Full-time | Declined | — | — |
+| 700 | 3.4 | 55% | Full-time | Declined | — | — |
+| 730 | 3.7 | 28% | Withdrawn | Declined | — | — |
 
 ## Implementation
 
@@ -296,7 +296,7 @@ Declined applications return a maximum loan amount of zero and no rate tier.
     blkit code will be added once that package lands.
 
     In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/loan-eligibility.spec.md),
+    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/admission.spec.md),
     [Getting started](../getting-started/index.md) for orientation, and the
     [Reference](../reference/blkit.md) for the expression engine available today.
 
@@ -304,9 +304,9 @@ Declined applications return a maximum loan amount of zero and no rate tier.
 
 - The rule order matters: priority rows are tested top-to-bottom and the first
   match wins, so the catch-all decline rules (5–7) only apply once no
-  higher-priority approval rule has matched.
-- The max-loan multiplier (5×/4×/3×/2× annual income) is an outcome of the
-  matched rule, not a separate calculation step.
+  higher-priority admission rule has matched.
+- The credit load and advising track are outcomes of the matched rule, not a
+  separate calculation step.
 
 ---
 
@@ -1205,7 +1205,7 @@ For C-003, four rules match — R1 (5%), R6 (12%), R7 (8%), R8 (6%). The highest
 ## Notes
 
 - This is the **collect-max** counterpart to first-match tables like
-  [loan-eligibility](loan-eligibility.md): instead of stopping at the first hit,
+  [admission](admission.md): instead of stopping at the first hit,
   it evaluates all rules and reduces the matches with a `max` aggregation.
 - The bands are deliberately non-overlapping at the edges — R5 is item count ≥ 10
   **and < 25**, so a 30-item order matches R6 (large) but not R5 (small).

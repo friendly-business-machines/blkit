@@ -19,7 +19,7 @@ blkit pulls that logic out into a first-class, executable model:
 - **A typed value system** — numbers (exact decimals), strings, booleans, dates, times,
   durations, lists, dictionaries, and ranges — with consistent, null-aware semantics.
 - **An expression language (`bl-expr`)** — write rules and calculations as plain strings
-  (`creditScore >= 700 and dti <= 0.40`), compile them once, and evaluate them against
+  (`aptitude >= 700 and absenceRatio <= 0.40`), compile them once, and evaluate them against
   many inputs.
 - **A decision layer (available today)** — model decisions as typed, compile-checked
   nodes (decision tables, expressions, and native Go functions) and wire them into a
@@ -105,19 +105,19 @@ import (
 // name is a compile-time error — the struct *is* the schema.
 type Applicant struct {
 	Age    bl.BlNumber `expr:"age"`
-	Income bl.BlNumber `expr:"income"`
+	Points bl.BlNumber `expr:"points"`
 }
 
 func main() {
 	// Parse and compile the rule once; reuse it for many evaluations.
-	eligible, _ := bl.Expr[Applicant](`age >= 18 and income > 50000`)
+	eligible, _ := bl.Expr[Applicant](`age >= 18 and points > 50000`)
 
 	// Build a typed env value.
 	age, _ := bl.Number(21)
-	income, _ := bl.Number(60000)
+	points, _ := bl.Number(60000)
 
 	// Evaluate. The result is a typed BlValue (here, a BlBoolean).
-	result, _ := eligible.Evaluate(Applicant{Age: age, Income: income})
+	result, _ := eligible.Evaluate(Applicant{Age: age, Points: points})
 	fmt.Println(result.String()) // true
 }
 ```
@@ -186,8 +186,8 @@ rule or calculation, or as the engine the Decisions and Processes components cal
 A few rules that show the kind of business logic `bl-expr` is written for:
 
 ```
-// Loan eligibility — exact-decimal ratios, no floating-point drift
-creditScore >= 700 and debtToIncome <= 0.40
+// Course admission — exact-decimal ratios, no floating-point drift
+aptitude >= 700 and absenceRatio <= 0.40
 
 // Tiered classification — a conditional that returns a typed result
 if annualSpend > 100000 then "enterprise" else "standard"
@@ -197,7 +197,7 @@ customerTier = "gold" or orderTotal >= 50
 
 // Fraud screen — `in` membership and null-aware logic: a missing
 // priorFlags propagates to null instead of silently passing
-claimAmount > 10000 and region in ["EU", "UK"] and priorFlags != null
+orderAmount > 10000 and region in ["EU", "UK"] and priorFlags != null
 
 // Order fulfilment — every line item must be in stock
 every line in order.items satisfies line.inStock

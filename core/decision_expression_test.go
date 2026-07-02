@@ -5,21 +5,21 @@ import (
 	"testing"
 )
 
-type loanInputs struct {
-	LoanAmount Handle[BlNumber] `expr:"loan_amount"`
-	Rate       Handle[BlNumber] `expr:"rate"`
-	Term       Handle[BlNumber] `expr:"term"`
+type shipmentInputs struct {
+	Weight  Handle[BlNumber] `expr:"weight"`
+	Rate    Handle[BlNumber] `expr:"rate"`
+	Parcels Handle[BlNumber] `expr:"parcels"`
 }
 
 type breakdownOutputs struct {
-	Principal Handle[BlNumber] `expr:"principal"`
-	Interest  Handle[BlNumber] `expr:"interest"`
+	PerParcel Handle[BlNumber] `expr:"per_parcel"`
+	Freight   Handle[BlNumber] `expr:"freight"`
 	Total     Handle[BlNumber] `expr:"total"`
 }
 
-type paymentInputs struct {
-	LoanAmount Handle[BlNumber] `expr:"loan_amount"`
-	Rate       Handle[BlNumber] `expr:"rate"`
+type quoteInputs struct {
+	Weight Handle[BlNumber] `expr:"weight"`
+	Rate   Handle[BlNumber] `expr:"rate"`
 }
 
 type amountOutput struct {
@@ -32,12 +32,12 @@ func hNum(t *testing.T, n int) Handle[BlNumber]       { t.Helper(); return NewHa
 func hNumStr(t *testing.T, s string) Handle[BlNumber] { t.Helper(); return NewHandle(numStr(t, s)) }
 
 func TestDecisionExpressionSingleOutput(t *testing.T) {
-	d := NewDecisionExpression[paymentInputs, amountOutput](DecisionExpressionConfig{
-		Id:      "monthly_payment",
-		Name:    "Monthly Payment",
-		Entries: Entries{"amount": `loan_amount * rate / 12`},
+	d := NewDecisionExpression[quoteInputs, amountOutput](DecisionExpressionConfig{
+		Id:      "freight_quote",
+		Name:    "Freight Quote",
+		Entries: Entries{"amount": `weight * rate / 12`},
 	})
-	out, err := d.Evaluate(paymentInputs{LoanAmount: hNum(t, 24000), Rate: hNumStr(t, "0.06")})
+	out, err := d.Evaluate(quoteInputs{Weight: hNum(t, 24000), Rate: hNumStr(t, "0.06")})
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -47,25 +47,25 @@ func TestDecisionExpressionSingleOutput(t *testing.T) {
 }
 
 func TestDecisionExpressionCrossEntry(t *testing.T) {
-	d := NewDecisionExpression[loanInputs, breakdownOutputs](DecisionExpressionConfig{
-		Id:   "monthly_breakdown",
-		Name: "Monthly Breakdown",
+	d := NewDecisionExpression[shipmentInputs, breakdownOutputs](DecisionExpressionConfig{
+		Id:   "freight_breakdown",
+		Name: "Freight Breakdown",
 		Entries: Entries{
-			"principal": `loan_amount / term`,
-			"interest":  `loan_amount * rate / 12`,
-			"total":     `principal + interest`, // references sibling outputs
+			"per_parcel": `weight / parcels`,
+			"freight":    `weight * rate / 12`,
+			"total":      `per_parcel + freight`, // references sibling outputs
 		},
 	})
-	out, err := d.Evaluate(loanInputs{
-		LoanAmount: hNum(t, 120000),
-		Rate:       hNumStr(t, "0.06"),
-		Term:       hNum(t, 12),
+	out, err := d.Evaluate(shipmentInputs{
+		Weight:  hNum(t, 120000),
+		Rate:    hNumStr(t, "0.06"),
+		Parcels: hNum(t, 12),
 	})
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
-	if out.Principal.Get().String() != "10000" || out.Interest.Get().String() != "600" || out.Total.Get().String() != "10600" {
-		t.Errorf("got principal=%s interest=%s total=%s", out.Principal.Get().String(), out.Interest.Get().String(), out.Total.Get().String())
+	if out.PerParcel.Get().String() != "10000" || out.Freight.Get().String() != "600" || out.Total.Get().String() != "10600" {
+		t.Errorf("got per_parcel=%s freight=%s total=%s", out.PerParcel.Get().String(), out.Freight.Get().String(), out.Total.Get().String())
 	}
 }
 
@@ -145,31 +145,31 @@ func TestDecisionExpressionCallsUDF(t *testing.T) {
 }
 
 func TestDecisionExpressionToMarkdown(t *testing.T) {
-	d := NewDecisionExpression[loanInputs, breakdownOutputs](DecisionExpressionConfig{
-		Name: "Monthly Breakdown",
+	d := NewDecisionExpression[shipmentInputs, breakdownOutputs](DecisionExpressionConfig{
+		Name: "Freight Breakdown",
 		Entries: Entries{
-			"principal": `loan_amount / term`,
-			"interest":  `loan_amount * rate / 12`,
-			"total":     `principal + interest`,
+			"per_parcel": `weight / parcels`,
+			"freight":    `weight * rate / 12`,
+			"total":      `per_parcel + freight`,
 		},
 	})
 	md := d.ToMarkdown()
-	if !strings.Contains(md, "### Monthly Breakdown") {
+	if !strings.Contains(md, "### Freight Breakdown") {
 		t.Errorf("missing header:\n%s", md)
 	}
-	if !strings.Contains(md, "**Inputs:** loan_amount, rate, term") {
+	if !strings.Contains(md, "**Inputs:** weight, rate, parcels") {
 		t.Errorf("missing inputs line:\n%s", md)
 	}
-	if !strings.Contains(md, "| principal | loan_amount / term") {
-		t.Errorf("missing principal row:\n%s", md)
+	if !strings.Contains(md, "| per_parcel | weight / parcels") {
+		t.Errorf("missing per_parcel row:\n%s", md)
 	}
 }
 
 func TestDecisionExpressionOutputTypeMismatch(t *testing.T) {
-	d := NewDecisionExpression[paymentInputs, amountOutput](DecisionExpressionConfig{
+	d := NewDecisionExpression[quoteInputs, amountOutput](DecisionExpressionConfig{
 		Entries: Entries{"amount": `"not a number"`},
 	})
-	if _, err := d.Evaluate(paymentInputs{LoanAmount: hNum(t, 1), Rate: hNum(t, 1)}); err == nil {
+	if _, err := d.Evaluate(quoteInputs{Weight: hNum(t, 1), Rate: hNum(t, 1)}); err == nil {
 		t.Errorf("expected a TypeError for a string produced for a number output")
 	}
 }
@@ -186,40 +186,40 @@ func TestDecisionExpressionConstructionErrors(t *testing.T) {
 		})
 	}
 	mustPanic("missing entry", func() {
-		NewDecisionExpression[paymentInputs, breakdownOutputs](DecisionExpressionConfig{
-			Entries: Entries{"principal": `1`},
+		NewDecisionExpression[quoteInputs, breakdownOutputs](DecisionExpressionConfig{
+			Entries: Entries{"per_parcel": `1`},
 		})
 	})
 	mustPanic("extra entry", func() {
-		NewDecisionExpression[paymentInputs, amountOutput](DecisionExpressionConfig{
+		NewDecisionExpression[quoteInputs, amountOutput](DecisionExpressionConfig{
 			Entries: Entries{"amount": `1`, "bogus": `2`},
 		})
 	})
 	mustPanic("undefined name", func() {
-		NewDecisionExpression[paymentInputs, amountOutput](DecisionExpressionConfig{
-			Entries: Entries{"amount": `loan_amount + missing`},
+		NewDecisionExpression[quoteInputs, amountOutput](DecisionExpressionConfig{
+			Entries: Entries{"amount": `weight + missing`},
 		})
 	})
 	mustPanic("cycle", func() {
-		NewDecisionExpression[paymentInputs, breakdownOutputs](DecisionExpressionConfig{
-			Entries: Entries{"principal": `total`, "interest": `1`, "total": `principal`},
+		NewDecisionExpression[quoteInputs, breakdownOutputs](DecisionExpressionConfig{
+			Entries: Entries{"per_parcel": `total`, "freight": `1`, "total": `per_parcel`},
 		})
 	})
 	mustPanic("empty outputs", func() {
-		NewDecisionExpression[paymentInputs, struct{}](DecisionExpressionConfig{Entries: Entries{}})
+		NewDecisionExpression[quoteInputs, struct{}](DecisionExpressionConfig{Entries: Entries{}})
 	})
 	mustPanic("duplicate output tag", func() {
 		type dupOut struct {
 			A Handle[BlNumber] `expr:"x"`
 			B Handle[BlNumber] `expr:"x"`
 		}
-		NewDecisionExpression[paymentInputs, dupOut](DecisionExpressionConfig{Entries: Entries{"x": `1`}})
+		NewDecisionExpression[quoteInputs, dupOut](DecisionExpressionConfig{Entries: Entries{"x": `1`}})
 	})
 	mustPanic("input/output collision", func() {
 		type collideOut struct {
-			LoanAmount Handle[BlNumber] `expr:"loan_amount"`
+			Weight Handle[BlNumber] `expr:"weight"`
 		}
-		NewDecisionExpression[paymentInputs, collideOut](DecisionExpressionConfig{Entries: Entries{"loan_amount": `1`}})
+		NewDecisionExpression[quoteInputs, collideOut](DecisionExpressionConfig{Entries: Entries{"weight": `1`}})
 	})
 	mustPanic("non-handle input field", func() {
 		type badIn struct {
@@ -231,34 +231,34 @@ func TestDecisionExpressionConstructionErrors(t *testing.T) {
 		type badOut struct {
 			Amount BlNumber `expr:"amount"`
 		}
-		NewDecisionExpression[paymentInputs, badOut](DecisionExpressionConfig{Entries: Entries{"amount": `1`}})
+		NewDecisionExpression[quoteInputs, badOut](DecisionExpressionConfig{Entries: Entries{"amount": `1`}})
 	})
 	mustPanic("invalid identifier tag", func() {
 		type badName struct {
 			Amount Handle[BlNumber] `expr:"not a name"`
 		}
-		NewDecisionExpression[paymentInputs, badName](DecisionExpressionConfig{Entries: Entries{"not a name": `1`}})
+		NewDecisionExpression[quoteInputs, badName](DecisionExpressionConfig{Entries: Entries{"not a name": `1`}})
 	})
 	mustPanic("excluded field via expr:-", func() {
 		type excludedOut struct {
 			Amount Handle[BlNumber] `expr:"amount"`
 			Hidden Handle[BlNumber] `expr:"-"`
 		}
-		NewDecisionExpression[paymentInputs, excludedOut](DecisionExpressionConfig{Entries: Entries{"amount": `1`}})
+		NewDecisionExpression[quoteInputs, excludedOut](DecisionExpressionConfig{Entries: Entries{"amount": `1`}})
 	})
 	mustPanic("unexported field", func() {
 		type unexportedIn struct {
-			LoanAmount Handle[BlNumber] `expr:"loan_amount"`
-			secret     Handle[BlNumber] `expr:"secret"`
+			Weight Handle[BlNumber] `expr:"weight"`
+			secret Handle[BlNumber] `expr:"secret"`
 		}
 		_ = unexportedIn{}.secret
-		NewDecisionExpression[unexportedIn, amountOutput](DecisionExpressionConfig{Entries: Entries{"amount": `loan_amount`}})
+		NewDecisionExpression[unexportedIn, amountOutput](DecisionExpressionConfig{Entries: Entries{"amount": `weight`}})
 	})
 	mustPanic("duplicate function name", func() {
 		f1, _ := Func[taxParams, BlNumber]("addTax", `amount * 1.2`)
 		f2, _ := Func[taxParams, BlNumber]("addTax", `amount * 1.3`)
-		NewDecisionExpression[paymentInputs, amountOutput](DecisionExpressionConfig{
-			Entries: Entries{"amount": `loan_amount`},
+		NewDecisionExpression[quoteInputs, amountOutput](DecisionExpressionConfig{
+			Entries: Entries{"amount": `weight`},
 			Funcs:   []UDF{f1, f2},
 		})
 	})

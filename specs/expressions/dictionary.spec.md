@@ -61,14 +61,14 @@ rejected at the assembly step.
 var applicant, _ = bl.Dictionary(map[string]bl.BlValue{
     "name":   bl.String("Alice"),
     "age":    bl.Number(30),
-    "income": bl.Number(75000),
+    "points": bl.Number(75000),
 })
 
 // Hand it to the engine as an env field.
 type ApplicantEnv struct {
     Applicant bl.BlDictionary `expr:"applicant"`
 }
-var eligible, _ = bl.Expr[ApplicantEnv](`applicant.age >= 18 and applicant.income > 50000`)
+var eligible, _ = bl.Expr[ApplicantEnv](`applicant.age >= 18 and applicant.points > 50000`)
 var result, _ = eligible.Evaluate(ApplicantEnv{Applicant: applicant})
 // result is bl.BlBoolean(true)
 ```

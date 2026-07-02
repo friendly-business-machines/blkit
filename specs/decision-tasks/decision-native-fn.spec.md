@@ -75,65 +75,65 @@ type DecisionDefinitionError struct {
 
 ```go
 type ScoreInputs struct {
-    Age    bl.Handle[bl.BlNumber] `expr:"age"`
-    Income bl.Handle[bl.BlNumber] `expr:"income"`
+    Age   bl.Handle[bl.BlNumber] `expr:"age"`
+    Steps bl.Handle[bl.BlNumber] `expr:"steps"`
 }
 type ScoreOutputs struct {
     Score bl.Handle[bl.BlNumber] `expr:"score"`
 }
 
-// scoreApplicant runs the model and returns the typed output struct.
-func scoreApplicant(in ScoreInputs) (ScoreOutputs, error) {
-    var score = scoreModel(in.Age.Get(), in.Income.Get()) // any Go: a bespoke algorithm, a PMML/ONNX model, …
+// scoreFitness runs the model and returns the typed output struct.
+func scoreFitness(in ScoreInputs) (ScoreOutputs, error) {
+    var score = scoreModel(in.Age.Get(), in.Steps.Get()) // any Go: a bespoke algorithm, a PMML/ONNX model, …
     return ScoreOutputs{Score: bl.NewHandle(score)}, nil
 }
 
-var creditScore = bl.NewDecisionNativeFunction(bl.DecisionNativeFunctionConfig{
-    Id:          "credit_score",
-    Name:        "Credit Score",
-    Description: "Scores an applicant's creditworthiness.",
-}, scoreApplicant)
-// I, O are inferred from scoreApplicant — no explicit [ScoreInputs, ScoreOutputs].
+var fitnessScore = bl.NewDecisionNativeFunction(bl.DecisionNativeFunctionConfig{
+    Id:          "fitness_score",
+    Name:        "Fitness Score",
+    Description: "Scores a member's cardio fitness.",
+}, scoreFitness)
+// I, O are inferred from scoreFitness — no explicit [ScoreInputs, ScoreOutputs].
 
-var age, _    = bl.Number(42)
-var income, _ = bl.Number(90000)
-var out, _    = creditScore.Evaluate(ScoreInputs{
-    Age:    bl.NewHandle(age),
-    Income: bl.NewHandle(income),
+var age, _   = bl.Number(42)
+var steps, _ = bl.Number(90000)
+var out, _   = fitnessScore.Evaluate(ScoreInputs{
+    Age:   bl.NewHandle(age),
+    Steps: bl.NewHandle(steps),
 })
 // out.Score.Get() is a bl.BlNumber
 ```
 
-`age` and `income` are this node's input variables; inside a task they are fed from a task input or an upstream node's output by wiring a producer's output handle to `creditScore.In.Age` / `creditScore.In.Income`. `score` is the produced output; downstream nodes consume it by wiring `creditScore.Out.Score` to one of their inputs.
+`age` and `steps` are this node's input variables; inside a task they are fed from a task input or an upstream node's output by wiring a producer's output handle to `fitnessScore.In.Age` / `fitnessScore.In.Steps`. `score` is the produced output; downstream nodes consume it by wiring `fitnessScore.Out.Score` to one of their inputs.
 
 ### Multiple outputs
 
 ```go
-type RiskInputs struct {
+type ZoneInputs struct {
     Score   bl.Handle[bl.BlNumber] `expr:"score"`
     History bl.Handle[bl.BlList]   `expr:"history"`
 }
-type RiskOutputs struct {
-    Band    bl.Handle[bl.BlString] `expr:"band"`
-    Premium bl.Handle[bl.BlNumber] `expr:"premium"`
+type ZoneOutputs struct {
+    Zone   bl.Handle[bl.BlString] `expr:"zone"`
+    Target bl.Handle[bl.BlNumber] `expr:"target"`
 }
 
-// assessRisk derives the risk band and premium from the score and history.
-func assessRisk(in RiskInputs) (RiskOutputs, error) {
-    var band, premium = assess(in.Score.Get(), in.History.Get())
-    return RiskOutputs{
-        Band:    bl.NewHandle(band),
-        Premium: bl.NewHandle(premium),
+// assessFitness derives the training zone and target from the score and history.
+func assessFitness(in ZoneInputs) (ZoneOutputs, error) {
+    var zone, target = assess(in.Score.Get(), in.History.Get())
+    return ZoneOutputs{
+        Zone:   bl.NewHandle(zone),
+        Target: bl.NewHandle(target),
     }, nil
 }
 
-var riskAssessment = bl.NewDecisionNativeFunction(bl.DecisionNativeFunctionConfig{
-    Id:   "risk_assessment",
-    Name: "Risk Assessment",
-}, assessRisk)
+var zoneAssessment = bl.NewDecisionNativeFunction(bl.DecisionNativeFunctionConfig{
+    Id:   "zone_assessment",
+    Name: "Zone Assessment",
+}, assessFitness)
 ```
 
-The Go compiler guarantees `assessRisk` returns a `RiskOutputs` with both declared fields, each of its declared type — there is no runtime "missing output" class as there was with a map return.
+The Go compiler guarantees `assessFitness` returns a `ZoneOutputs` with both declared fields, each of its declared type — there is no runtime "missing output" class as there was with a map return.
 
 ---
 
@@ -196,24 +196,24 @@ So a fully composed decision has a layered, configured error path — a `Decisio
 `ToMarkdown()` returns a markdown string with, in order: the node's name as a heading; its `Description`, if set; a `Logic` line identifying the implementation as native Go (there is no source expression to render) and naming the bound `Fn`; and the input and output contracts as two typed tables under `Inputs` and `Outputs` subheadings.
 
 ```go
-fmt.Println(creditScore.ToMarkdown())
+fmt.Println(fitnessScore.ToMarkdown())
 ```
 
 Output:
 
 ```text
-### Credit Score
+### Fitness Score
 
-_Scores an applicant's creditworthiness._
+_Scores a member's cardio fitness._
 
-**Logic:** native Go function `scoreApplicant`
+**Logic:** native Go function `scoreFitness`
 
 #### Inputs
 
-| Name   | Type   |
-|--------|--------|
-| age    | Number |
-| income | Number |
+| Name  | Type   |
+|-------|--------|
+| age   | Number |
+| steps | Number |
 
 #### Outputs
 

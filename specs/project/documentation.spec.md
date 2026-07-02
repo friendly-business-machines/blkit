@@ -95,7 +95,7 @@ The eleven examples currently defined in `specs/examples/` are:
 
 | Spec file | Business process |
 |---|---|
-| `loan-eligibility.spec.md` | Retail bank personal loan eligibility decision |
+| `admission.spec.md` | University undergraduate course admission decision |
 | `shipping-rate.spec.md` | E-commerce parcel shipping cost calculation |
 | `order-fulfillment.spec.md` | E-commerce order handling from placement to delivery |
 | `expense-approval.spec.md` | Employee expense claim approval routing |
@@ -188,7 +188,7 @@ not at the domain root.
     under a **Documentation** heading; each nav entry whose value is a list
     (e.g. Examples, Reference) becomes its own H2 section.
   - Each link is an absolute URL built from `site_url`, using Zensical's
-    directory-URL form (`examples/loan-eligibility.md` → `examples/loan-eligibility/`,
+    directory-URL form (`examples/admission.md` → `examples/admission/`,
     `index.md` → the section root). Link titles come from the nav label for
     top-level pages and from the page's first H1 for list children. Where a page
     opens with a blockquote summary, it is appended after the link as a

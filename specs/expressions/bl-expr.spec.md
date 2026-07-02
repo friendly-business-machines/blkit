@@ -8,7 +8,7 @@ targets:
 # The blkit expression language
 
 This spec defines **blkit's expression language**: a compact, business-readable syntax for writing
-expressions as text — `age >= 18 and income > 50000`, `sum(lineItems.amount)`,
+expressions as text — `age >= 18 and points > 50000`, `sum(lineItems.amount)`,
 `if score >= 700 then "approve" else "review"` — that evaluate to blkit value types (`bl.BlNumber`,
 `bl.BlString`, `bl.BlList`, …, each documented in its own spoke spec; see [§ Data types](#data-types)).
 
@@ -62,13 +62,13 @@ accessors). There are no `bl.Number(…)`-style expression factories.
 // host-side (Go)
 type ApplicantEnv struct {
     Age    bl.BlNumber `expr:"age"`
-    Income bl.BlNumber `expr:"income"`
+    Points bl.BlNumber `expr:"points"`
 }
-var eligible, _ = bl.Expr[ApplicantEnv](`age >= 18 and income > 50000`)
+var eligible, _ = bl.Expr[ApplicantEnv](`age >= 18 and points > 50000`)
 
 var age,    _ = bl.Number(21)
-var income, _ = bl.Number(60000)
-var result, _ = eligible.Evaluate(ApplicantEnv{Age: age, Income: income})
+var points, _ = bl.Number(60000)
+var result, _ = eligible.Evaluate(ApplicantEnv{Age: age, Points: points})
 // result is the bl.BlBoolean true
 ```
 
@@ -169,7 +169,7 @@ names. See [§ Relationship to FEEL](#relationship-to-feel-and-future-direction)
 ```
 // expression-language
 age                   // value of the `age` variable
-loanAmount * 12       // identifier used in arithmetic
+basketSize * 12       // identifier used in arithmetic
 ```
 
 Variables are supplied at evaluation time via the `input` map and, when an expression is compiled
@@ -317,9 +317,9 @@ Conditionals nest:
 
 ```
 // expression-language
-if score >= 750 then "prime"
-else if score >= 650 then "standard"
-else "subprime"
+if score >= 750 then "gold"
+else if score >= 650 then "silver"
+else "bronze"
 ```
 
 `[@test] ../../core/engine_test.go`
@@ -520,7 +520,7 @@ some  x in ? satisfies x.is_priority  // at least one element passes
 // expression-language — input is a dictionary
 
 .tier = "gold"                        // field equality (leading-dot shorthand for ?.tier)
-.applicant.income >= 50000            // nested path
+.applicant.points >= 50000            // nested path
 has(?, "approver")                    // key presence
 getValue(?, "tier") = "gold"          // explicit lookup (equivalent to .tier)
 size(?) > 0                           // non-empty dictionary
@@ -1336,7 +1336,7 @@ behaviour, and the rationale.
 **Divergences from FEEL (v1):**
 
 - **No spaces in identifiers.** FEEL permits multi-word names with embedded spaces, for both
-  variables and built-in functions (`loan amount`, `string length`, `day of week`). blkit forbids
+  variables and built-in functions (`full name`, `string length`, `day of week`). blkit forbids
   spaces — identifiers are letters, digits, and underscores. *Rationale:* removes FEEL's hardest
   parsing ambiguity (longest-match names colliding with the `and`/`or` keywords), matches
   conventional programming identifiers, and lets the grammar sit directly on `expr`'s lexer.
