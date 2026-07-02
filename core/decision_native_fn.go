@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
-	"time"
 )
 
 // DecisionNativeFunction is a DecisionNode whose logic is a plain Go function
@@ -19,8 +18,6 @@ type DecisionNativeFunction[I, O any] struct {
 	name        string
 	description string
 	fn          func(I) (O, error)
-	conc        bool
-	retry       *RetryConfig
 
 	ivars, ovars []decisionVar
 }
@@ -31,18 +28,12 @@ type DecisionNativeFunctionConfig struct {
 	Id          string
 	Name        string
 	Description string
-
-	// Concurrent lets a containing DecisionTask overlap this node with others.
-	Concurrent bool
-
-	// Retry, when non-nil, re-runs Fn on a non-nil error per the RetryConfig.
-	Retry *RetryConfig
 }
 
 // NewDecisionNativeFunction builds a node from a config and a typed function. It
-// validates the contracts (every I/O field a Handle, non-empty O), requires a
-// non-nil fn, and rejects a Retry with no limit. Problems are accumulated and
-// raised once as a *DecisionDefinitionError.
+// validates the contracts (every I/O field a Handle, non-empty O) and requires a
+// non-nil fn. Problems are accumulated and raised once as a
+// *DecisionDefinitionError.
 func NewDecisionNativeFunction[I, O any](config DecisionNativeFunctionConfig, fn func(I) (O, error)) *DecisionNativeFunction[I, O] {
 	var problems []string
 	iType := reflect.TypeOf((*I)(nil)).Elem()
@@ -61,9 +52,6 @@ func NewDecisionNativeFunction[I, O any](config DecisionNativeFunctionConfig, fn
 	if fn == nil {
 		problems = append(problems, "a non-nil Fn is required")
 	}
-	if config.Retry != nil && !config.Retry.bounded() {
-		problems = append(problems, "Retry must set MaxRetries or RetryFor")
-	}
 	if len(problems) > 0 {
 		panic(&DecisionDefinitionError{Node: nodeLabel(config.Id, config.Name, "DecisionNativeFunction"), Problems: problems})
 	}
@@ -73,8 +61,6 @@ func NewDecisionNativeFunction[I, O any](config DecisionNativeFunctionConfig, fn
 		name:        config.Name,
 		description: config.Description,
 		fn:          fn,
-		conc:        config.Concurrent,
-		retry:       config.Retry,
 		ivars:       ivars,
 		ovars:       ovars,
 	}
@@ -94,37 +80,14 @@ func (d *DecisionNativeFunction[I, O]) attempt(in I) (out O, err error) {
 }
 
 // Evaluate runs Fn against the typed input and returns the typed output. A panic
-// is recovered into an error; an error is retried per Retry; the final error (if
-// any) is tagged with the node Id.
+// is recovered into an error; the error (if any) is tagged with the node Id.
 func (d *DecisionNativeFunction[I, O]) Evaluate(in I) (O, error) {
 	out, err := d.attempt(in)
-	if err != nil && d.retry != nil {
-		start := time.Now()
-		delay := d.retry.RetryDelay
-		for attempts := 0; err != nil; attempts++ {
-			if d.retry.MaxRetries > 0 && attempts >= d.retry.MaxRetries {
-				break
-			}
-			if d.retry.RetryFor > 0 && time.Since(start) >= d.retry.RetryFor {
-				break
-			}
-			if delay > 0 {
-				time.Sleep(delay)
-				if d.retry.ExponentialBackoff {
-					delay *= 2
-				}
-			}
-			out, err = d.attempt(in)
-		}
-	}
 	if err != nil {
 		return out, fmt.Errorf("%s: %w", nodeLabel(d.id, d.name, "DecisionNativeFunction"), err)
 	}
 	return out, nil
 }
-
-// Concurrent reports whether a containing DecisionTask may overlap this node.
-func (d *DecisionNativeFunction[I, O]) Concurrent() bool { return d.conc }
 
 // DecisionNode[I, O] interface satisfaction.
 func (d *DecisionNativeFunction[I, O]) GetId() string          { return d.id }
@@ -136,7 +99,6 @@ func (d *DecisionNativeFunction[I, O]) Outputs() []Field       { return fieldsOf
 // erased decisionNode satisfaction.
 func (d *DecisionNativeFunction[I, O]) inVars() []decisionVar  { return d.ivars }
 func (d *DecisionNativeFunction[I, O]) outVars() []decisionVar { return d.ovars }
-func (d *DecisionNativeFunction[I, O]) concurrent() bool       { return d.conc }
 
 func (d *DecisionNativeFunction[I, O]) runErased(in map[string]BlValue) (map[string]BlValue, error) {
 	input, err := inputFromMap(reflect.TypeOf((*I)(nil)).Elem(), d.ivars, in)
@@ -163,9 +125,6 @@ func (d *DecisionNativeFunction[I, O]) ToMarkdown() string {
 		b.WriteString("_" + d.description + "_\n\n")
 	}
 	logic := "**Logic:** native Go function `" + funcName(d.fn) + "`"
-	if d.conc {
-		logic += " · runs concurrently"
-	}
 	b.WriteString(logic + "\n\n")
 	b.WriteString("#### Inputs\n\n")
 	contractTable(&b, d.ivars)

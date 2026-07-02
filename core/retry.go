@@ -2,9 +2,12 @@ package core
 
 import "time"
 
-// RetryConfig governs re-running fallible work on error. It is shared by the
-// decision layer's native-function node (see DecisionNativeFunction) and will be
-// shared with the process layer when that lands.
+// RetryConfig governs re-running fallible work on error. It is the process
+// layer's shared retry policy — used by the native-function task and other
+// retrying nodes when that layer lands (see process.spec.md). The decision
+// layer's native-function node deliberately does not retry: it is for pure
+// algorithms and models, so I/O or otherwise fallible work belongs in a
+// process-layer native-function task instead.
 type RetryConfig struct {
 	MaxRetries         int           // maximum re-attempts after the first try; 0 = unset
 	RetryFor           time.Duration // total time budget for retries; 0 = unset

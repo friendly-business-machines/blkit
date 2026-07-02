@@ -481,7 +481,6 @@ func (d *DecisionTable[I, O]) Outputs() []Field       { return fieldsOf(d.ovars)
 // erased decisionNode satisfaction.
 func (d *DecisionTable[I, O]) inVars() []decisionVar  { return d.ivars }
 func (d *DecisionTable[I, O]) outVars() []decisionVar { return d.ovars }
-func (d *DecisionTable[I, O]) concurrent() bool       { return false }
 
 func (d *DecisionTable[I, O]) runErased(in map[string]BlValue) (map[string]BlValue, error) {
 	input, err := inputFromMap(reflect.TypeOf((*I)(nil)).Elem(), d.ivars, in)

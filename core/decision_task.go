@@ -290,7 +290,6 @@ func (d *DecisionTask[TaskIn, TaskOut]) Outputs() []Field       { return fieldsO
 // erased decisionNode satisfaction (so a DecisionTask can be wired as a child).
 func (d *DecisionTask[TaskIn, TaskOut]) inVars() []decisionVar  { return d.invars }
 func (d *DecisionTask[TaskIn, TaskOut]) outVars() []decisionVar { return d.outvars }
-func (d *DecisionTask[TaskIn, TaskOut]) concurrent() bool       { return false }
 
 func (d *DecisionTask[TaskIn, TaskOut]) runErased(in map[string]BlValue) (map[string]BlValue, error) {
 	input, err := inputFromMap(reflect.TypeOf((*TaskIn)(nil)).Elem(), d.invars, in)

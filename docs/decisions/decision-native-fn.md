@@ -4,9 +4,16 @@
 > better expressed outside — tables and expressions.
 
 A **decision native function** is the escape hatch of the decision family: its
-logic is an ordinary Go function. When a step needs to run a bespoke algorithm,
-score a machine-learning model, or call a service, you write it in Go and wrap it
-as a node — and it composes with tables and expressions exactly like any other.
+logic is an ordinary Go function. When a step needs to run a bespoke algorithm, a
+calculation, or a model that is simply too hard to express as a table or
+expression, you write it in Go and wrap it as a node — and it composes with tables
+and expressions exactly like any other.
+
+It is for **pure computation**, not I/O. Anything that calls a service, queries a
+database, or touches storage belongs in a process-layer native-function task
+instead — that is where retries, timeouts, and concurrency live. A decision native
+function deliberately has none of those: it runs its function exactly once,
+synchronously.
 
 A `bl.DecisionNativeFunction[I, O]` is generic over a typed input struct `I` and
 output struct `O`. The function is passed to the constructor, so `I` and `O` are
@@ -40,38 +47,25 @@ Because `I` and `O` are real structs, the body reads `in.Age.Get()` and returns
 wrong. The function body itself is yours; blkit only checks the contract at its
 edges.
 
-## Keep it pure where you can
+## Keep it pure
 
 A native function *can* reach outside pure computation — call a service, query a
-database — but it is easier to test and reason about when it is a pure function of
-its declared inputs. Prefer feeding external data in as inputs (from
-[reference data](reference-data.md) or an upstream node) and keeping the body a
-calculation.
+database — but that is not what it is for: such work belongs in a process-layer
+native-function task. Keep the body a pure function of its declared inputs. It is
+easier to test and reason about, and you feed external data in as inputs (from
+[reference data](reference-data.md) or an upstream node) rather than fetching it
+inside the function.
 
-## Errors, panics, and retries
+## Errors and panics
 
 A non-nil error from the function is returned (tagged with the node id) and, inside
 a [task](decision-tasks.md), aborts the decision. A **panic** is recovered and
 turned into that same kind of error, so a buggy function never crashes the program.
 
-Set `Retry` to re-run the function on error:
-
-```go
-bl.NewDecisionNativeFunction(bl.DecisionNativeFunctionConfig{
-    Id:    "credit_score",
-    Retry: bl.NewRetryConfig(bl.RetryOpts{MaxRetries: 3, ExponentialBackoff: true}),
-}, scoreApplicant)
-```
-
-Retry fires on *any* error, so don't combine it with using an error as a deliberate
-"no result" signal.
-
-## Running concurrently
-
-Set `Concurrent: true` to let a containing task overlap a slow function (scoring a
-large model, say) with independent work. It is purely a scheduling change — the
-result is identical to running in order; only the wall-clock timing differs, and
-the function must be safe to run alongside the rest of the graph.
+The function runs **exactly once** — there is no retry. Retrying is a property of
+fallible I/O, which belongs in a native-function task, not a decision. (Returning
+an error as a deliberate "no result" signal works cleanly for the same reason:
+nothing re-runs the function behind your back.)
 
 ## Inside a task
 

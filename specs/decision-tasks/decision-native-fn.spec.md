@@ -1,6 +1,6 @@
 ---
 name: DecisionNativeFunction
-description: A generic DecisionNode[I, O] whose logic is an arbitrary native Go function func(I) (O, error) over concrete input/output structs of bl.Handle fields. Evaluate hands the function the typed input struct and returns the typed output struct it produces. The escape hatch for logic that is neither a table nor an expression — call a model, a service, or any Go code, with compile-time-typed inputs and outputs.
+description: A generic DecisionNode[I, O] whose logic is an arbitrary native Go function func(I) (O, error) over concrete input/output structs of bl.Handle fields. Evaluate hands the function the typed input struct and returns the typed output struct it produces. The escape hatch for a decision's pure computation that is neither a table nor an expression — a bespoke algorithm, calculation, or model, with compile-time-typed inputs and outputs. It runs Fn exactly once, with no retry or concurrent-execution config; fallible I/O belongs in a process-layer native-function task instead.
 targets:
   - ../../core/decision_native_fn.go
 ---
@@ -9,9 +9,18 @@ targets:
 
 A `DecisionNativeFunction[I, O]` is a [`DecisionNode[I, O]`](decision-node.spec.md) whose logic is a plain Go function `func(I) (O, error)`. Like every node it declares its contracts as concrete Go structs whose fields are `bl.Handle` variables (see [decision-node.spec.md § Contracts are concrete Go structs](decision-node.spec.md#contracts-are-concrete-go-structs)): `I`'s fields are the variables it consumes, `O`'s the values it produces. `Evaluate` hands the function the typed input struct and returns the typed output struct.
 
-It is the **escape hatch** of the decision family. Where [`DecisionTable`](decision-table.spec.md) expresses logic as tabular rules and [`DecisionExpression`](decision-expression.spec.md) as named text expressions, a `DecisionNativeFunction` expresses it as ordinary Go — and because `I` and `O` are concrete structs, the function body reads `in.Age.Get()` and returns `Out{Score: bl.NewHandle(score)}` with full Go type-checking. When a decision needs something neither other form can do — run a bespoke algorithm, or score a PMML or ONNX model — you write it in `Fn`.
+It is the **escape hatch** of the decision family. Where [`DecisionTable`](decision-table.spec.md) expresses logic as tabular rules and [`DecisionExpression`](decision-expression.spec.md) as named text expressions, a `DecisionNativeFunction` expresses it as ordinary Go — and because `I` and `O` are concrete structs, the function body reads `in.Age.Get()` and returns `Out{Score: bl.NewHandle(score)}` with full Go type-checking. When a decision needs something neither other form can do — run a bespoke algorithm, a calculation, or a model (a pressure-relief-valve equation, a PMML or ONNX scorer) — you write it in `Fn`.
 
-Because `Fn` is ordinary Go, it *can* also reach outside pure computation — call an external service, query a database, read from disk. That is technically supported but not especially encouraged: a node that performs I/O or carries side effects is harder to test, cache, and reason about than a pure one, and it makes the decision's result depend on state the framework cannot see. Prefer feeding such data in as declared inputs (resolved from reference data or an upstream node) and keeping `Fn` a pure function of its inputs; reach for in-`Fn` I/O only when that is genuinely impractical.
+## Intended use: pure computation, not I/O
+
+A `DecisionNativeFunction` is meant for an **algorithm, calculation, or model** that is simply too hard to express as a table or expression — a self-contained computation over its declared inputs. That is the whole reason it exists.
+
+Because `Fn` is ordinary Go, nothing *stops* it from reaching outside pure computation — calling an external service, querying a database, reading or writing storage — but that is **not the intent**. Work like that belongs in a process-layer **native-function task** ([native-function-task.spec.md](../processes/native-function-task.spec.md)), which is built for it: it runs against an `ExecutionContext`, and it carries the operational controls such work needs — retry, timeout, and concurrency. A `DecisionNativeFunction` deliberately carries **none** of those:
+
+- **No retry.** A decision native function runs its `Fn` exactly once; there is no retry config. Retrying is a property of fallible I/O, which belongs in a native-function task. (If a node uses an `Fn` error as a deliberate "no result" signal, single-shot evaluation is exactly what you want anyway.)
+- **No concurrent execution.** A decision native function is always evaluated synchronously, in dependency order, by its containing task. There is no way to mark it to run in a goroutine. Overlapping slow I/O with other work is, again, a native-function-task concern.
+
+So keep `Fn` a pure function of its inputs: feed any external data in as declared inputs (resolved from reference data or an upstream node) rather than fetching it inside `Fn`. A pure node is easier to test, cache, and reason about, and it keeps the decision's result from depending on state the framework cannot see.
 
 ```go
 // The node is opaque apart from its In/Out port surfaces; it is built from a
@@ -20,7 +29,7 @@ Because `Fn` is ordinary Go, it *can* also reach outside pure computation — ca
 type DecisionNativeFunction[I, O any] struct {
     In  I // input port surface for wiring
     Out O // output port surface for wiring
-    // unexported: id, name, description, fn, concurrent, retry
+    // unexported: id, name, description, fn
 }
 
 func NewDecisionNativeFunction[I, O any](
@@ -32,19 +41,6 @@ type DecisionNativeFunctionConfig struct {
     Id          string
     Name        string
     Description string
-
-    // Concurrent, when true, lets a containing DecisionTask evaluate this node in
-    // a goroutine — overlapping its Fn with independent nodes — and join the
-    // result before any node that consumes this node's outputs. Default false. It
-    // has no effect on a standalone Evaluate; see § Concurrent execution.
-    Concurrent bool
-
-    // Retry, when non-nil, re-runs Fn on a non-nil error using the shared
-    // bl.RetryConfig (see process.spec.md) — up to MaxRetries attempts and/or for
-    // RetryFor, with RetryDelay and optional ExponentialBackoff between attempts.
-    // The last error is returned once retries are exhausted. Default nil (no
-    // retry). See § Retry.
-    Retry *RetryConfig
 }
 
 // DecisionNode[I, O] interface satisfaction.
@@ -53,10 +49,6 @@ func (d *DecisionNativeFunction[I, O]) GetName() string
 func (d *DecisionNativeFunction[I, O]) GetDescription() string
 func (d *DecisionNativeFunction[I, O]) Inputs() []Field  // reflected from I
 func (d *DecisionNativeFunction[I, O]) Outputs() []Field // reflected from O
-
-// Concurrent reports whether a containing DecisionTask may evaluate this node in
-// a goroutine (see § Concurrent execution).
-func (d *DecisionNativeFunction[I, O]) Concurrent() bool
 
 // Evaluate runs Fn against the typed input struct and returns the typed output
 // struct. A panic in Fn is recovered and returned as an Id-tagged error rather
@@ -156,7 +148,7 @@ What each moment catches, across three phases — compile, runtime init, and run
 | Phase | Moment | Trigger | What it catches | Raised as |
 |-------|--------|---------|-----------------|-----------|
 | **Compile** | Go compilation | `go build` | A caller passing the wrong input struct to `Evaluate`, or reading an output field that does not exist; an `Fn` whose signature is not `func(I) (O, error)`; a body reading or writing a handle field of the wrong type; a `bl.Edge` connecting one of this node's handles to a handle of a different type. | Go type error |
-| **Runtime init** | Node construction | `NewDecisionNativeFunction` | A non-struct `I`/`O`; an unexported field; a field that is not a `bl.Handle[BlValue]`; an invalid or duplicated variable name within a struct; an empty `O`; a nil `Fn`; a `Retry` with neither `MaxRetries` nor `RetryFor` set. | `DecisionDefinitionError` |
+| **Runtime init** | Node construction | `NewDecisionNativeFunction` | A non-struct `I`/`O`; an unexported field; a field that is not a `bl.Handle[BlValue]`; an invalid or duplicated variable name within a struct; an empty `O`; a nil `Fn`. | `DecisionDefinitionError` |
 | **Runtime** | Evaluation | `Evaluate` | Not a type error: `Fn` returning a non-nil error, or panicking (recovered into an `Id`-tagged error). The result's shape and field types are already guaranteed by `O`; an output handle the body leaves unset reads as `bl.BlNull`. | `error` (Id-tagged) |
 
 A non-nil error returned by `Fn` — or a panic inside `Fn`, which `Evaluate` recovers into an equivalent `Id`-tagged error — is a separate outcome from any contract problem. `Evaluate` returns it directly, so a deliberate "no decision" or a downstream failure propagates to the caller — see [§ Error handling](#error-handling) for where it lands.
@@ -168,9 +160,9 @@ A non-nil error returned by `Fn` — or a panic inside `Fn`, which `Evaluate` re
 `Evaluate` is stateless: the node is immutable after construction, and `Fn` receives a fresh typed input each call, so concurrency-safety is a property of `Fn` itself. Each call:
 
 1. Passes the supplied input struct `I` to `Fn`.
-2. Runs `Fn`. On success it returns the produced `O`. On a non-nil error: if a `Retry` config is set, `Evaluate` re-runs `Fn` per that config (see [§ Retry](#retry)); once retries are exhausted — or immediately, when no `Retry` is set — the error is returned, tagged with the node `Id`.
+2. Runs `Fn` **exactly once**. On success it returns the produced `O`. On a non-nil error it returns that error immediately, tagged with the node `Id` — there is no retry (see [§ Intended use](#intended-use-pure-computation-not-io)).
 
-If `Fn` **panics** instead of returning, `Evaluate` recovers the panic and converts it into an `Id`-tagged error, handled identically to an error `Fn` returned — it is subject to `Retry` and surfaces the same way (see [§ Error handling](#error-handling)). This keeps a buggy `Fn` from crashing the program, and is what makes a `Concurrent` node panic-safe (an unrecovered panic in a goroutine cannot be caught from outside it). The unrecoverable exceptions — fatal runtime conditions (e.g. concurrent map writes, out-of-memory, stack overflow), `os.Exit`, and panics in goroutines `Fn` itself spawns — still crash the process.
+If `Fn` **panics** instead of returning, `Evaluate` recovers the panic and converts it into an `Id`-tagged error, handled identically to an error `Fn` returned, and surfaces the same way (see [§ Error handling](#error-handling)). This keeps a buggy `Fn` from crashing the program. The unrecoverable exceptions — fatal runtime conditions (e.g. concurrent map writes, out-of-memory, stack overflow), `os.Exit`, and panics in goroutines `Fn` itself spawns — still crash the process.
 
 Because the function is opaque, blkit checks only its contract — guaranteed at the boundary by `I`/`O` — never the body.
 
@@ -183,32 +175,9 @@ Because the function is opaque, blkit checks only its contract — guaranteed at
 
 ---
 
-## Retry
-
-By default a non-nil error from `Fn` is returned immediately. Set `Retry` to re-run `Fn` on error instead, using blkit's shared [`RetryConfig`](../processes/process.spec.md) — the same type and semantics processes and the process-layer native-function task already use, so retry behaves consistently across the stack.
-
-```go
-var creditScore = bl.NewDecisionNativeFunction(bl.DecisionNativeFunctionConfig{
-    Id:    "credit_score",
-    Name:  "Credit Score",
-    Retry: bl.NewRetryConfig(bl.RetryOpts{MaxRetries: 3, ExponentialBackoff: true}),
-}, scoreApplicant)
-```
-
-On a non-nil error `Evaluate` waits `RetryDelay` (doubling each time when `ExponentialBackoff` is set) and runs `Fn` again, up to `MaxRetries` attempts and/or for `RetryFor`, whichever limit is reached first. The first successful attempt's output is returned as usual; if every attempt fails, the **last** error is returned, tagged with the node `Id`. A `Retry` with neither `MaxRetries` nor `RetryFor` set is rejected at construction — that would mean unbounded retries — matching the `RetryConfig` rules in [process.spec.md](../processes/process.spec.md).
-
-Two things to keep in mind:
-
-- **Retry fires on *any* `Fn` error.** A node that uses `Fn`'s error as a deliberate "no result" signal should not set `Retry`, or it will re-run the function on that intended outcome.
-- **Retry covers a returned error and a recovered panic.** `Evaluate` recovers a panic in `Fn` into an `Id`-tagged error (see [§ Error handling](#error-handling)), which is then retried like any other error. The unrecoverable exceptions — fatal runtime conditions, `os.Exit`, panics in goroutines `Fn` spawns — are not turned into errors and so are not retried.
-
-When the node is also `Concurrent`, the retry loop runs inside its goroutine; the task joins only the final outcome — the first success, or the last error after the budget is exhausted.
-
----
-
 ## Error handling
 
-A `DecisionNativeFunction` does not *resolve* an `Fn` error itself (beyond [retrying](#retry)); it **surfaces** it. Where that error lands depends on how the node is driven — and in a real deployment it is handled declaratively, by composition, not by imperative `if err != nil` code:
+A `DecisionNativeFunction` does not *resolve* an `Fn` error itself; it **surfaces** it. Where that error lands depends on how the node is driven — and in a real deployment it is handled declaratively, by composition, not by imperative `if err != nil` code:
 
 - **Standalone** — `Evaluate` returns the `Id`-tagged error to its direct caller, which inspects it like any Go error.
 - **Within a `DecisionTask`** — the error aborts the decision: the task stops (no later node runs) and `DecisionTask.Evaluate` returns the same `Id`-tagged error, so the **whole `DecisionTask` fails**. The `Id` identifies which node failed.
@@ -216,23 +185,9 @@ A `DecisionNativeFunction` does not *resolve* an `Fn` error itself (beyond [retr
   - if the `DecisionTask` has an [`ErrorExitPort`](../processes/task-nodes.spec.md) wired (`bl.WithExitPorts(bl.NewErrorExitPort("…"))`, routed via `task.ExitPort(id).To(…)`), flow follows that port to a recovery branch — this is the declarative "catch";
   - otherwise the error is unhandled and the process instance ends as `ProcessStatusFailed`; how the originating request is then retried, redelivered, or dead-lettered is the worker / message-gateway layer's concern.
 
-So a fully composed decision has a layered, configured error path — node-level [`Retry`](#retry), then a `DecisionTask` `ErrorExitPort`, then process- and worker-level policy — and no call site to hand-write. A node can also stay off the error path entirely by returning a *normal* output (e.g. a `status` value) that downstream logic branches on, instead of returning an error (the deliberate "no result" pattern — which is why such a node should not set `Retry`).
+So a fully composed decision has a layered, configured error path — a `DecisionTask` `ErrorExitPort`, then process- and worker-level policy — and no call site to hand-write. A node can also stay off the error path entirely by returning a *normal* output (e.g. a `status` value) that downstream logic branches on, instead of returning an error (the deliberate "no result" pattern).
 
-> **Panics are recovered into errors.** `Evaluate` wraps the `Fn` call in a deferred `recover`: a panic inside `Fn` is caught and returned as an `Id`-tagged error, indistinguishable downstream from an error `Fn` returned — so it is subject to `Retry`, surfaces as a `DecisionTask` failure, and is catchable at an `ErrorExitPort`. A buggy `Fn` therefore does **not** crash the program, and a `Concurrent` node is panic-safe (the recover runs inside its goroutine, the only place a goroutine's panic can be caught). The exceptions are genuinely unrecoverable and still crash the process: **fatal runtime conditions** (concurrent map writes, out-of-memory, stack overflow), **`os.Exit`**, and **panics in goroutines `Fn` itself spawns** (a different goroutine, outside `Evaluate`'s reach).
-
----
-
-## Concurrent execution
-
-By default a node is evaluated synchronously: a containing [`DecisionTask`](decision-task.spec.md) calls its `Evaluate` in dependency order and blocks until it returns. Setting `Concurrent: true` lets the task overlap this node with others instead.
-
-When the task reaches a concurrent node, it populates the node's input handles, launches `Evaluate` in a goroutine, and carries on evaluating later nodes that do **not** depend on this one. It joins the goroutine — routing its outputs onward, or surfacing its error — before evaluating the first later node that consumes one of this node's outputs, and joins any still-running concurrent nodes before assembling the `DecisionResult`.
-
-This is purely a **scheduling** change. Because the join always precedes any consumer, every node sees exactly the context it would under sequential evaluation, so the `DecisionResult` — and any error — is identical; only the wall-clock overlap differs. It is worth turning on for a node whose `Fn` does heavy or slow work (scoring a large model, a long computation) that can run while the task makes progress on independent branches.
-
-The node's input values are captured when the goroutine is launched, so `Fn` never reads the task's evolving shared context concurrently. Beyond that, `Fn` must be safe to run alongside the other nodes' work — the I/O and side-effect guidance from the introduction applies with extra force: keep it a pure function of its inputs, and any shared mutable state or unsynchronised side effect is the author's responsibility.
-
-A standalone `Evaluate` call ignores `Concurrent`: a lone node has nothing to overlap with, so it runs synchronously.
+> **Panics are recovered into errors.** `Evaluate` wraps the `Fn` call in a deferred `recover`: a panic inside `Fn` is caught and returned as an `Id`-tagged error, indistinguishable downstream from an error `Fn` returned — so it surfaces as a `DecisionTask` failure and is catchable at an `ErrorExitPort`. A buggy `Fn` therefore does **not** crash the program. The exceptions are genuinely unrecoverable and still crash the process: **fatal runtime conditions** (concurrent map writes, out-of-memory, stack overflow), **`os.Exit`**, and **panics in goroutines `Fn` itself spawns** (a different goroutine, outside `Evaluate`'s reach).
 
 ---
 
@@ -267,11 +222,7 @@ _Scores an applicant's creditworthiness._
 | score | Number |
 ```
 
-The `Logic` line names `Fn` by its Go function name, recovered by reflection (`runtime.FuncForPC`): a named function shows its name, an anonymous function literal a synthetic one (`func1`). The full source is not available — a compiled `func` carries no source text — so only the name is shown. The description line appears only when `Description` is set. When the node has `Concurrent: true`, the line appends `· runs concurrently`:
-
-```text
-**Logic:** native Go function `scoreApplicant` · runs concurrently
-```
+The `Logic` line names `Fn` by its Go function name, recovered by reflection (`runtime.FuncForPC`): a named function shows its name, an anonymous function literal a synthetic one (`func1`). The full source is not available — a compiled `func` carries no source text — so only the name is shown. The description line appears only when `Description` is set.
 
 ---
 
@@ -284,8 +235,5 @@ The `Logic` line names `Fn` by its Go function name, recovered by reflection (`r
 - `Fn` returning a non-nil error is valid and expected: `Evaluate` returns that error (tagged with the node `Id`) — it is the node's way to signal a runtime failure or a deliberate no-result.
 - An output handle that `Fn` leaves unset reads as `bl.BlNull`; the result shape and field types are otherwise guaranteed by `O` at compile time.
 - The function body is the author's responsibility: blkit validates only the contract boundary, never the logic inside `Fn`.
-- `Concurrent` defaults to false. A standalone `Evaluate` ignores it and runs synchronously; it only affects scheduling inside a `DecisionTask`.
-- A concurrent node produces the same outputs, and surfaces the same errors (joined before any consumer and before the final result), as if it had run sequentially — only the timing differs. Running `Fn` concurrently with the rest of the graph is safe only if `Fn` itself is; that is the author's responsibility.
-- `Retry` defaults to nil (no retry). With it set, every non-nil `Fn` error is retried per the `RetryConfig` until `MaxRetries`/`RetryFor` is exhausted, after which the last error is returned (`Id`-tagged). A `Retry` with neither limit set is a `DecisionDefinitionError`.
-- `Retry` retries *any* error — including one recovered from a panic — so it should not be combined with using an `Fn` error as a deliberate no-result.
-- A panic inside `Fn` is recovered by `Evaluate` and returned as an `Id`-tagged error, so it does not crash the program and flows through `Retry` and the `DecisionTask`'s `ErrorExitPort` like any other `Fn` error. The exceptions — fatal runtime conditions (concurrent map writes, out-of-memory, stack overflow), `os.Exit`, and panics in goroutines `Fn` itself spawns — remain unrecoverable and crash the process.
+- `Fn` runs exactly once per `Evaluate`: a `DecisionNativeFunction` has no retry and no concurrent-execution config, by design (see [§ Intended use](#intended-use-pure-computation-not-io)). Fallible I/O that needs retry or overlap belongs in a process-layer [native-function task](../processes/native-function-task.spec.md).
+- A panic inside `Fn` is recovered by `Evaluate` and returned as an `Id`-tagged error, so it does not crash the program and flows through the `DecisionTask`'s `ErrorExitPort` like any other `Fn` error. The exceptions — fatal runtime conditions (concurrent map writes, out-of-memory, stack overflow), `os.Exit`, and panics in goroutines `Fn` itself spawns — remain unrecoverable and crash the process.

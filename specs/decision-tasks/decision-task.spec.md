@@ -299,12 +299,12 @@ The task threads one shared, handle-keyed value environment. When `Evaluate(in)`
 
 1. Seed the environment with the input boundary handles (from `in`) and each reference-data value.
 2. Iterate the nodes in stored order (already topologically sorted by `Graph`).
-3. For each node: read its input handles from the environment (each populated by an earlier edge), run the node — through its typed `Evaluate`, driven internally (synchronously, unless the node is concurrent — see below) — and write its output handles back into the environment along their outgoing edges.
+3. For each node: read its input handles from the environment (each populated by an earlier edge), run the node — synchronously, through its typed `Evaluate`, driven internally — and write its output handles back into the environment along their outgoing edges.
 4. After every node has run, read the output boundary handles into a fresh `TaskOut` and return it.
 
 Because the graph is topologically sorted, every handle a node reads is already produced by the time that node runs.
 
-**Concurrent nodes.** A node that reports `Concurrent()` true — a [`DecisionNativeFunction`](decision-native-fn.spec.md#concurrent-execution) configured with `Concurrent: true` — is not awaited in place at step 3. The task captures its already-resolved inputs, runs it in a goroutine, and proceeds to later independent nodes; it joins the goroutine (routing its outputs, or returning its error tagged with the node `Id`) before evaluating the first later node that consumes one of its outputs, and joins any still-running concurrent nodes before step 4. Every join precedes the consumer, so the result is identical to fully sequential evaluation; only the overlap of independent work differs.
+Every node is evaluated synchronously, in dependency order. Overlapping slow or I/O-bound work with the rest of a graph is a process-layer concern (a [native-function task](../processes/native-function-task.spec.md)), not a decision one — decision nodes are pure computations over their inputs.
 
 ---
 

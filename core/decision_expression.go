@@ -284,7 +284,6 @@ func (d *DecisionExpression[I, O]) Outputs() []Field       { return fieldsOf(d.o
 // erased decisionNode satisfaction.
 func (d *DecisionExpression[I, O]) inVars() []decisionVar  { return d.ivars }
 func (d *DecisionExpression[I, O]) outVars() []decisionVar { return d.ovars }
-func (d *DecisionExpression[I, O]) concurrent() bool       { return false }
 
 func (d *DecisionExpression[I, O]) runErased(in map[string]BlValue) (map[string]BlValue, error) {
 	input, err := inputFromMap(reflect.TypeOf((*I)(nil)).Elem(), d.ivars, in)

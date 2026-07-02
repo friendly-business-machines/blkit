@@ -1,7 +1,6 @@
 package core
 
 import (
-	"errors"
 	"strings"
 	"testing"
 )
@@ -188,38 +187,6 @@ func TestDecisionNativeFunctionPanicRecovered(t *testing.T) {
 	if _, err := node.Evaluate(scoreIn{Age: hNum(t, 1), Income: hNum(t, 1)}); err == nil {
 		t.Errorf("expected a recovered-panic error, got nil")
 	}
-}
-
-func TestDecisionNativeFunctionRetry(t *testing.T) {
-	calls := 0
-	fn := func(in scoreIn) (scoreOut, error) {
-		calls++
-		if calls < 3 {
-			return scoreOut{}, errors.New("transient")
-		}
-		return scoreOut{Score: hNum(t, 7)}, nil
-	}
-	node := NewDecisionNativeFunction(DecisionNativeFunctionConfig{
-		Id:    "x",
-		Retry: NewRetryConfig(RetryOpts{MaxRetries: 5}),
-	}, fn)
-	out, err := node.Evaluate(scoreIn{Age: hNum(t, 1), Income: hNum(t, 1)})
-	if err != nil {
-		t.Fatalf("evaluate: %v", err)
-	}
-	if calls != 3 || out.Score.Get().String() != "7" {
-		t.Errorf("calls=%d score=%s, want 3 and 7", calls, out.Score.Get().String())
-	}
-}
-
-func TestDecisionNativeFunctionUnboundedRetryRejected(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Errorf("expected panic for unbounded retry")
-		}
-	}()
-	fn := func(in scoreIn) (scoreOut, error) { return scoreOut{Score: hNum(t, 1)}, nil }
-	NewDecisionNativeFunction(DecisionNativeFunctionConfig{Id: "x", Retry: NewRetryConfig(RetryOpts{})}, fn)
 }
 
 // --- ReferenceData -----------------------------------------------------------

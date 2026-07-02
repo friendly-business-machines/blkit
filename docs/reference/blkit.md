@@ -207,7 +207,6 @@ import "github.com/friendly-business-machines/blkit/core"
 - [type DecisionExpressionConfig](<#DecisionExpressionConfig>)
 - [type DecisionNativeFunction](<#DecisionNativeFunction>)
   - [func NewDecisionNativeFunction\[I, O any\](config DecisionNativeFunctionConfig, fn func(I) (O, error)) \*DecisionNativeFunction\[I, O\]](<#NewDecisionNativeFunction>)
-  - [func (d \*DecisionNativeFunction\[I, O\]) Concurrent() bool](<#DecisionNativeFunction[I, O].Concurrent>)
   - [func (d \*DecisionNativeFunction\[I, O\]) Evaluate(in I) (O, error)](<#DecisionNativeFunction[I, O].Evaluate>)
   - [func (d \*DecisionNativeFunction\[I, O\]) GetDescription() string](<#DecisionNativeFunction[I, O].GetDescription>)
   - [func (d \*DecisionNativeFunction\[I, O\]) GetId() string](<#DecisionNativeFunction[I, O].GetId>)
@@ -2109,7 +2108,7 @@ func (d *DecisionExpression[I, O]) Outputs() []Field
 
 
 <a name="DecisionExpression[I, O].Source"></a>
-### func (\*DecisionExpression\[I, O\]) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L302>)
+### func (\*DecisionExpression\[I, O\]) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L301>)
 
 ```go
 func (d *DecisionExpression[I, O]) Source(output string) (string, bool)
@@ -2118,7 +2117,7 @@ func (d *DecisionExpression[I, O]) Source(output string) (string, bool)
 Source returns the original raw source for an output name.
 
 <a name="DecisionExpression[I, O].ToMarkdown"></a>
-### func (\*DecisionExpression\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L310>)
+### func (\*DecisionExpression\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L309>)
 
 ```go
 func (d *DecisionExpression[I, O]) ToMarkdown() string
@@ -2149,7 +2148,7 @@ type DecisionExpressionConfig struct {
 ```
 
 <a name="DecisionNativeFunction"></a>
-## type [DecisionNativeFunction](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L14-L26>)
+## type [DecisionNativeFunction](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L13-L23>)
 
 DecisionNativeFunction is a DecisionNode whose logic is a plain Go function func(I) (O, error) over concrete input/output structs of Handle fields. It is the escape hatch for logic that is neither a table nor an expression.
 
@@ -2162,34 +2161,25 @@ type DecisionNativeFunction[I, O any] struct {
 ```
 
 <a name="NewDecisionNativeFunction"></a>
-### func [NewDecisionNativeFunction](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L46>)
+### func [NewDecisionNativeFunction](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L37>)
 
 ```go
 func NewDecisionNativeFunction[I, O any](config DecisionNativeFunctionConfig, fn func(I) (O, error)) *DecisionNativeFunction[I, O]
 ```
 
-NewDecisionNativeFunction builds a node from a config and a typed function. It validates the contracts (every I/O field a Handle, non\-empty O), requires a non\-nil fn, and rejects a Retry with no limit. Problems are accumulated and raised once as a \*DecisionDefinitionError.
-
-<a name="DecisionNativeFunction[I, O].Concurrent"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [Concurrent](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L127>)
-
-```go
-func (d *DecisionNativeFunction[I, O]) Concurrent() bool
-```
-
-Concurrent reports whether a containing DecisionTask may overlap this node.
+NewDecisionNativeFunction builds a node from a config and a typed function. It validates the contracts (every I/O field a Handle, non\-empty O) and requires a non\-nil fn. Problems are accumulated and raised once as a \*DecisionDefinitionError.
 
 <a name="DecisionNativeFunction[I, O].Evaluate"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [Evaluate](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L99>)
+### func (\*DecisionNativeFunction\[I, O\]) [Evaluate](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L84>)
 
 ```go
 func (d *DecisionNativeFunction[I, O]) Evaluate(in I) (O, error)
 ```
 
-Evaluate runs Fn against the typed input and returns the typed output. A panic is recovered into an error; an error is retried per Retry; the final error (if any) is tagged with the node Id.
+Evaluate runs Fn against the typed input and returns the typed output. A panic is recovered into an error; the error (if any) is tagged with the node Id.
 
 <a name="DecisionNativeFunction[I, O].GetDescription"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [GetDescription](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L132>)
+### func (\*DecisionNativeFunction\[I, O\]) [GetDescription](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L95>)
 
 ```go
 func (d *DecisionNativeFunction[I, O]) GetDescription() string
@@ -2198,7 +2188,7 @@ func (d *DecisionNativeFunction[I, O]) GetDescription() string
 
 
 <a name="DecisionNativeFunction[I, O].GetId"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [GetId](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L130>)
+### func (\*DecisionNativeFunction\[I, O\]) [GetId](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L93>)
 
 ```go
 func (d *DecisionNativeFunction[I, O]) GetId() string
@@ -2207,7 +2197,7 @@ func (d *DecisionNativeFunction[I, O]) GetId() string
 DecisionNode\[I, O\] interface satisfaction.
 
 <a name="DecisionNativeFunction[I, O].GetName"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [GetName](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L131>)
+### func (\*DecisionNativeFunction\[I, O\]) [GetName](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L94>)
 
 ```go
 func (d *DecisionNativeFunction[I, O]) GetName() string
@@ -2216,7 +2206,7 @@ func (d *DecisionNativeFunction[I, O]) GetName() string
 
 
 <a name="DecisionNativeFunction[I, O].Inputs"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [Inputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L133>)
+### func (\*DecisionNativeFunction\[I, O\]) [Inputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L96>)
 
 ```go
 func (d *DecisionNativeFunction[I, O]) Inputs() []Field
@@ -2225,7 +2215,7 @@ func (d *DecisionNativeFunction[I, O]) Inputs() []Field
 
 
 <a name="DecisionNativeFunction[I, O].Outputs"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [Outputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L134>)
+### func (\*DecisionNativeFunction\[I, O\]) [Outputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L97>)
 
 ```go
 func (d *DecisionNativeFunction[I, O]) Outputs() []Field
@@ -2234,7 +2224,7 @@ func (d *DecisionNativeFunction[I, O]) Outputs() []Field
 
 
 <a name="DecisionNativeFunction[I, O].ToMarkdown"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L155>)
+### func (\*DecisionNativeFunction\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L117>)
 
 ```go
 func (d *DecisionNativeFunction[I, O]) ToMarkdown() string
@@ -2243,7 +2233,7 @@ func (d *DecisionNativeFunction[I, O]) ToMarkdown() string
 ToMarkdown renders the node: name heading, optional description, a Logic line naming the bound function, and the input/output contracts as typed tables.
 
 <a name="DecisionNativeFunctionConfig"></a>
-## type [DecisionNativeFunctionConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L30-L40>)
+## type [DecisionNativeFunctionConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L27-L31>)
 
 DecisionNativeFunctionConfig configures a DecisionNativeFunction. The function itself is passed as a second constructor argument so I and O are inferred.
 
@@ -2252,12 +2242,6 @@ type DecisionNativeFunctionConfig struct {
     Id          string
     Name        string
     Description string
-
-    // Concurrent lets a containing DecisionTask overlap this node with others.
-    Concurrent bool
-
-    // Retry, when non-nil, re-runs Fn on a non-nil error per the RetryConfig.
-    Retry *RetryConfig
 }
 ```
 
@@ -2354,7 +2338,7 @@ func (d *DecisionTable[I, O]) Outputs() []Field
 
 
 <a name="DecisionTable[I, O].ToMarkdown"></a>
-### func (\*DecisionTable\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L499>)
+### func (\*DecisionTable\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L498>)
 
 ```go
 func (d *DecisionTable[I, O]) ToMarkdown(showRuleIDs, showRuleDescriptions, showInputMappings bool) string
@@ -2477,7 +2461,7 @@ func (d *DecisionTask[TaskIn, TaskOut]) Outputs() []Field
 
 
 <a name="DecisionTask[TaskIn, TaskOut].ToMarkdown"></a>
-### func (\*DecisionTask\[TaskIn, TaskOut\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L308>)
+### func (\*DecisionTask\[TaskIn, TaskOut\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L307>)
 
 ```go
 func (d *DecisionTask[TaskIn, TaskOut]) ToMarkdown() string
@@ -2791,9 +2775,9 @@ func (e *RegexError) Unwrap() error
 
 
 <a name="RetryConfig"></a>
-## type [RetryConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L8-L13>)
+## type [RetryConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L11-L16>)
 
-RetryConfig governs re\-running fallible work on error. It is shared by the decision layer's native\-function node (see DecisionNativeFunction) and will be shared with the process layer when that lands.
+RetryConfig governs re\-running fallible work on error. It is the process layer's shared retry policy — used by the native\-function task and other retrying nodes when that layer lands (see process.spec.md). The decision layer's native\-function node deliberately does not retry: it is for pure algorithms and models, so I/O or otherwise fallible work belongs in a process\-layer native\-function task instead.
 
 ```go
 type RetryConfig struct {
@@ -2805,7 +2789,7 @@ type RetryConfig struct {
 ```
 
 <a name="NewRetryConfig"></a>
-### func [NewRetryConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L24>)
+### func [NewRetryConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L27>)
 
 ```go
 func NewRetryConfig(opts RetryOpts) *RetryConfig
@@ -2814,7 +2798,7 @@ func NewRetryConfig(opts RetryOpts) *RetryConfig
 NewRetryConfig builds a RetryConfig from options.
 
 <a name="RetryOpts"></a>
-## type [RetryOpts](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L16-L21>)
+## type [RetryOpts](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L19-L24>)
 
 RetryOpts configures NewRetryConfig.
 

@@ -5240,9 +5240,16 @@ wired into a [decision task](decision-tasks.md) by connecting handles with
 > better expressed outside — tables and expressions.
 
 A **decision native function** is the escape hatch of the decision family: its
-logic is an ordinary Go function. When a step needs to run a bespoke algorithm,
-score a machine-learning model, or call a service, you write it in Go and wrap it
-as a node — and it composes with tables and expressions exactly like any other.
+logic is an ordinary Go function. When a step needs to run a bespoke algorithm, a
+calculation, or a model that is simply too hard to express as a table or
+expression, you write it in Go and wrap it as a node — and it composes with tables
+and expressions exactly like any other.
+
+It is for **pure computation**, not I/O. Anything that calls a service, queries a
+database, or touches storage belongs in a process-layer native-function task
+instead — that is where retries, timeouts, and concurrency live. A decision native
+function deliberately has none of those: it runs its function exactly once,
+synchronously.
 
 A `bl.DecisionNativeFunction[I, O]` is generic over a typed input struct `I` and
 output struct `O`. The function is passed to the constructor, so `I` and `O` are
@@ -5276,38 +5283,25 @@ Because `I` and `O` are real structs, the body reads `in.Age.Get()` and returns
 wrong. The function body itself is yours; blkit only checks the contract at its
 edges.
 
-## Keep it pure where you can
+## Keep it pure
 
 A native function *can* reach outside pure computation — call a service, query a
-database — but it is easier to test and reason about when it is a pure function of
-its declared inputs. Prefer feeding external data in as inputs (from
-[reference data](reference-data.md) or an upstream node) and keeping the body a
-calculation.
+database — but that is not what it is for: such work belongs in a process-layer
+native-function task. Keep the body a pure function of its declared inputs. It is
+easier to test and reason about, and you feed external data in as inputs (from
+[reference data](reference-data.md) or an upstream node) rather than fetching it
+inside the function.
 
-## Errors, panics, and retries
+## Errors and panics
 
 A non-nil error from the function is returned (tagged with the node id) and, inside
 a [task](decision-tasks.md), aborts the decision. A **panic** is recovered and
 turned into that same kind of error, so a buggy function never crashes the program.
 
-Set `Retry` to re-run the function on error:
-
-```go
-bl.NewDecisionNativeFunction(bl.DecisionNativeFunctionConfig{
-    Id:    "credit_score",
-    Retry: bl.NewRetryConfig(bl.RetryOpts{MaxRetries: 3, ExponentialBackoff: true}),
-}, scoreApplicant)
-```
-
-Retry fires on *any* error, so don't combine it with using an error as a deliberate
-"no result" signal.
-
-## Running concurrently
-
-Set `Concurrent: true` to let a containing task overlap a slow function (scoring a
-large model, say) with independent work. It is purely a scheduling change — the
-result is identical to running in order; only the wall-clock timing differs, and
-the function must be safe to run alongside the rest of the graph.
+The function runs **exactly once** — there is no retry. Retrying is a property of
+fallible I/O, which belongs in a native-function task, not a decision. (Returning
+an error as a deliberate "no result" signal works cleanly for the same reason:
+nothing re-runs the function behind your back.)
 
 ## Inside a task
 
@@ -6243,7 +6237,6 @@ import "github.com/friendly-business-machines/blkit/core"
 - [type DecisionExpressionConfig](<#DecisionExpressionConfig>)
 - [type DecisionNativeFunction](<#DecisionNativeFunction>)
   - [func NewDecisionNativeFunction\[I, O any\](config DecisionNativeFunctionConfig, fn func(I) (O, error)) \*DecisionNativeFunction\[I, O\]](<#NewDecisionNativeFunction>)
-  - [func (d \*DecisionNativeFunction\[I, O\]) Concurrent() bool](<#DecisionNativeFunction[I, O].Concurrent>)
   - [func (d \*DecisionNativeFunction\[I, O\]) Evaluate(in I) (O, error)](<#DecisionNativeFunction[I, O].Evaluate>)
   - [func (d \*DecisionNativeFunction\[I, O\]) GetDescription() string](<#DecisionNativeFunction[I, O].GetDescription>)
   - [func (d \*DecisionNativeFunction\[I, O\]) GetId() string](<#DecisionNativeFunction[I, O].GetId>)
@@ -8145,7 +8138,7 @@ func (d *DecisionExpression[I, O]) Outputs() []Field
 
 
 <a name="DecisionExpression[I, O].Source"></a>
-### func (\*DecisionExpression\[I, O\]) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L302>)
+### func (\*DecisionExpression\[I, O\]) [Source](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L301>)
 
 ```go
 func (d *DecisionExpression[I, O]) Source(output string) (string, bool)
@@ -8154,7 +8147,7 @@ func (d *DecisionExpression[I, O]) Source(output string) (string, bool)
 Source returns the original raw source for an output name.
 
 <a name="DecisionExpression[I, O].ToMarkdown"></a>
-### func (\*DecisionExpression\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L310>)
+### func (\*DecisionExpression\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L309>)
 
 ```go
 func (d *DecisionExpression[I, O]) ToMarkdown() string
@@ -8185,7 +8178,7 @@ type DecisionExpressionConfig struct {
 ```
 
 <a name="DecisionNativeFunction"></a>
-## type [DecisionNativeFunction](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L14-L26>)
+## type [DecisionNativeFunction](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L13-L23>)
 
 DecisionNativeFunction is a DecisionNode whose logic is a plain Go function func(I) (O, error) over concrete input/output structs of Handle fields. It is the escape hatch for logic that is neither a table nor an expression.
 
@@ -8198,34 +8191,25 @@ type DecisionNativeFunction[I, O any] struct {
 ```
 
 <a name="NewDecisionNativeFunction"></a>
-### func [NewDecisionNativeFunction](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L46>)
+### func [NewDecisionNativeFunction](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L37>)
 
 ```go
 func NewDecisionNativeFunction[I, O any](config DecisionNativeFunctionConfig, fn func(I) (O, error)) *DecisionNativeFunction[I, O]
 ```
 
-NewDecisionNativeFunction builds a node from a config and a typed function. It validates the contracts (every I/O field a Handle, non\-empty O), requires a non\-nil fn, and rejects a Retry with no limit. Problems are accumulated and raised once as a \*DecisionDefinitionError.
-
-<a name="DecisionNativeFunction[I, O].Concurrent"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [Concurrent](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L127>)
-
-```go
-func (d *DecisionNativeFunction[I, O]) Concurrent() bool
-```
-
-Concurrent reports whether a containing DecisionTask may overlap this node.
+NewDecisionNativeFunction builds a node from a config and a typed function. It validates the contracts (every I/O field a Handle, non\-empty O) and requires a non\-nil fn. Problems are accumulated and raised once as a \*DecisionDefinitionError.
 
 <a name="DecisionNativeFunction[I, O].Evaluate"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [Evaluate](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L99>)
+### func (\*DecisionNativeFunction\[I, O\]) [Evaluate](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L84>)
 
 ```go
 func (d *DecisionNativeFunction[I, O]) Evaluate(in I) (O, error)
 ```
 
-Evaluate runs Fn against the typed input and returns the typed output. A panic is recovered into an error; an error is retried per Retry; the final error (if any) is tagged with the node Id.
+Evaluate runs Fn against the typed input and returns the typed output. A panic is recovered into an error; the error (if any) is tagged with the node Id.
 
 <a name="DecisionNativeFunction[I, O].GetDescription"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [GetDescription](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L132>)
+### func (\*DecisionNativeFunction\[I, O\]) [GetDescription](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L95>)
 
 ```go
 func (d *DecisionNativeFunction[I, O]) GetDescription() string
@@ -8234,7 +8218,7 @@ func (d *DecisionNativeFunction[I, O]) GetDescription() string
 
 
 <a name="DecisionNativeFunction[I, O].GetId"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [GetId](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L130>)
+### func (\*DecisionNativeFunction\[I, O\]) [GetId](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L93>)
 
 ```go
 func (d *DecisionNativeFunction[I, O]) GetId() string
@@ -8243,7 +8227,7 @@ func (d *DecisionNativeFunction[I, O]) GetId() string
 DecisionNode\[I, O\] interface satisfaction.
 
 <a name="DecisionNativeFunction[I, O].GetName"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [GetName](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L131>)
+### func (\*DecisionNativeFunction\[I, O\]) [GetName](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L94>)
 
 ```go
 func (d *DecisionNativeFunction[I, O]) GetName() string
@@ -8252,7 +8236,7 @@ func (d *DecisionNativeFunction[I, O]) GetName() string
 
 
 <a name="DecisionNativeFunction[I, O].Inputs"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [Inputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L133>)
+### func (\*DecisionNativeFunction\[I, O\]) [Inputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L96>)
 
 ```go
 func (d *DecisionNativeFunction[I, O]) Inputs() []Field
@@ -8261,7 +8245,7 @@ func (d *DecisionNativeFunction[I, O]) Inputs() []Field
 
 
 <a name="DecisionNativeFunction[I, O].Outputs"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [Outputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L134>)
+### func (\*DecisionNativeFunction\[I, O\]) [Outputs](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L97>)
 
 ```go
 func (d *DecisionNativeFunction[I, O]) Outputs() []Field
@@ -8270,7 +8254,7 @@ func (d *DecisionNativeFunction[I, O]) Outputs() []Field
 
 
 <a name="DecisionNativeFunction[I, O].ToMarkdown"></a>
-### func (\*DecisionNativeFunction\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L155>)
+### func (\*DecisionNativeFunction\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L117>)
 
 ```go
 func (d *DecisionNativeFunction[I, O]) ToMarkdown() string
@@ -8279,7 +8263,7 @@ func (d *DecisionNativeFunction[I, O]) ToMarkdown() string
 ToMarkdown renders the node: name heading, optional description, a Logic line naming the bound function, and the input/output contracts as typed tables.
 
 <a name="DecisionNativeFunctionConfig"></a>
-## type [DecisionNativeFunctionConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L30-L40>)
+## type [DecisionNativeFunctionConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_native_fn.go#L27-L31>)
 
 DecisionNativeFunctionConfig configures a DecisionNativeFunction. The function itself is passed as a second constructor argument so I and O are inferred.
 
@@ -8288,12 +8272,6 @@ type DecisionNativeFunctionConfig struct {
     Id          string
     Name        string
     Description string
-
-    // Concurrent lets a containing DecisionTask overlap this node with others.
-    Concurrent bool
-
-    // Retry, when non-nil, re-runs Fn on a non-nil error per the RetryConfig.
-    Retry *RetryConfig
 }
 ```
 
@@ -8390,7 +8368,7 @@ func (d *DecisionTable[I, O]) Outputs() []Field
 
 
 <a name="DecisionTable[I, O].ToMarkdown"></a>
-### func (\*DecisionTable\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L499>)
+### func (\*DecisionTable\[I, O\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L498>)
 
 ```go
 func (d *DecisionTable[I, O]) ToMarkdown(showRuleIDs, showRuleDescriptions, showInputMappings bool) string
@@ -8513,7 +8491,7 @@ func (d *DecisionTask[TaskIn, TaskOut]) Outputs() []Field
 
 
 <a name="DecisionTask[TaskIn, TaskOut].ToMarkdown"></a>
-### func (\*DecisionTask\[TaskIn, TaskOut\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L308>)
+### func (\*DecisionTask\[TaskIn, TaskOut\]) [ToMarkdown](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_task.go#L307>)
 
 ```go
 func (d *DecisionTask[TaskIn, TaskOut]) ToMarkdown() string
@@ -8827,9 +8805,9 @@ func (e *RegexError) Unwrap() error
 
 
 <a name="RetryConfig"></a>
-## type [RetryConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L8-L13>)
+## type [RetryConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L11-L16>)
 
-RetryConfig governs re\-running fallible work on error. It is shared by the decision layer's native\-function node (see DecisionNativeFunction) and will be shared with the process layer when that lands.
+RetryConfig governs re\-running fallible work on error. It is the process layer's shared retry policy — used by the native\-function task and other retrying nodes when that layer lands (see process.spec.md). The decision layer's native\-function node deliberately does not retry: it is for pure algorithms and models, so I/O or otherwise fallible work belongs in a process\-layer native\-function task instead.
 
 ```go
 type RetryConfig struct {
@@ -8841,7 +8819,7 @@ type RetryConfig struct {
 ```
 
 <a name="NewRetryConfig"></a>
-### func [NewRetryConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L24>)
+### func [NewRetryConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L27>)
 
 ```go
 func NewRetryConfig(opts RetryOpts) *RetryConfig
@@ -8850,7 +8828,7 @@ func NewRetryConfig(opts RetryOpts) *RetryConfig
 NewRetryConfig builds a RetryConfig from options.
 
 <a name="RetryOpts"></a>
-## type [RetryOpts](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L16-L21>)
+## type [RetryOpts](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L19-L24>)
 
 RetryOpts configures NewRetryConfig.
 

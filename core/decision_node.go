@@ -98,7 +98,6 @@ type decisionNode interface {
 	GetDescription() string
 	inVars() []decisionVar
 	outVars() []decisionVar
-	concurrent() bool
 	runErased(in map[string]BlValue) (map[string]BlValue, error)
 }
 
