@@ -6040,6 +6040,10 @@ import "github.com/friendly-business-machines/blkit/core"
 
 ## Index
 
+- [func RunStateStoreConformance(t \*testing.T, open func(t \*testing.T) (store StateStore, reopen func() StateStore))](<#RunStateStoreConformance>)
+- [func SortHistoryRecords(recs \[\]HistoryRecord)](<#SortHistoryRecords>)
+- [func SortValueRecords(recs \[\]ValueRecord)](<#SortValueRecords>)
+- [func ValidateWriteOp(op WriteOp) error](<#ValidateWriteOp>)
 - [type Aggregation](<#Aggregation>)
 - [type BlBoolean](<#BlBoolean>)
   - [func Boolean\[T BooleanInput\](v T) (BlBoolean, error)](<#Boolean>)
@@ -6214,6 +6218,7 @@ import "github.com/friendly-business-machines/blkit/core"
 - [type Col](<#Col>)
 - [type Cols](<#Cols>)
 - [type Column](<#Column>)
+- [type CurrentVersion](<#CurrentVersion>)
 - [type DHMSNumberInput](<#DHMSNumberInput>)
 - [type DTDurationInput](<#DTDurationInput>)
 - [type DateComponents](<#DateComponents>)
@@ -6270,14 +6275,26 @@ import "github.com/friendly-business-machines/blkit/core"
 - [type DecisionTaskConfig](<#DecisionTaskConfig>)
 - [type Entries](<#Entries>)
 - [type Field](<#Field>)
+- [type FullHistory](<#FullHistory>)
 - [type Handle](<#Handle>)
   - [func NewHandle\[T BlValue\](value T) Handle\[T\]](<#NewHandle>)
   - [func (h Handle\[T\]) Get() T](<#Handle[T].Get>)
+- [type HistoryEntry](<#HistoryEntry>)
+- [type HistoryRecord](<#HistoryRecord>)
 - [type HitPolicy](<#HitPolicy>)
 - [type ICalOption](<#ICalOption>)
   - [func WithICalExpansionWindow(r BlRange) ICalOption](<#WithICalExpansionWindow>)
   - [func WithICalStrict(strict bool) ICalOption](<#WithICalStrict>)
   - [func WithICalValidity(r BlRange) ICalOption](<#WithICalValidity>)
+- [type InMemoryStateStore](<#InMemoryStateStore>)
+  - [func NewInMemoryStateStore() \*InMemoryStateStore](<#NewInMemoryStateStore>)
+  - [func (s \*InMemoryStateStore) Close() error](<#InMemoryStateStore.Close>)
+  - [func (s \*InMemoryStateStore) Config() (map\[string\]string, error)](<#InMemoryStateStore.Config>)
+  - [func (s \*InMemoryStateStore) CurrentVersion(runID string) (\*CurrentVersion, error)](<#InMemoryStateStore.CurrentVersion>)
+  - [func (s \*InMemoryStateStore) Flush(runID string) error](<#InMemoryStateStore.Flush>)
+  - [func (s \*InMemoryStateStore) FullHistory(runID string) (\*FullHistory, error)](<#InMemoryStateStore.FullHistory>)
+  - [func (s \*InMemoryStateStore) Save(meta RunMetadata) error](<#InMemoryStateStore.Save>)
+  - [func (s \*InMemoryStateStore) WriteBatch(ops \[\]WriteOp) error](<#InMemoryStateStore.WriteBatch>)
 - [type NoEnv](<#NoEnv>)
 - [type NumberInput](<#NumberInput>)
 - [type ParseError](<#ParseError>)
@@ -6301,9 +6318,12 @@ import "github.com/friendly-business-machines/blkit/core"
 - [type Row](<#Row>)
 - [type Rule](<#Rule>)
 - [type Rules](<#Rules>)
+- [type RunMetadata](<#RunMetadata>)
 - [type SchemaError](<#SchemaError>)
   - [func (e \*SchemaError) Error() string](<#SchemaError.Error>)
   - [func (e \*SchemaError) Unwrap() error](<#SchemaError.Unwrap>)
+- [type StateStore](<#StateStore>)
+- [type StatusFlip](<#StatusFlip>)
 - [type StringInput](<#StringInput>)
 - [type TimeComponents](<#TimeComponents>)
   - [func ToTimeComponentsAsNaive(t time.Time) TimeComponents](<#ToTimeComponentsAsNaive>)
@@ -6312,9 +6332,54 @@ import "github.com/friendly-business-machines/blkit/core"
 - [type TypeError](<#TypeError>)
   - [func (e \*TypeError) Error() string](<#TypeError.Error>)
 - [type UDF](<#UDF>)
+- [type ValueRecord](<#ValueRecord>)
+- [type ValueStatus](<#ValueStatus>)
+  - [func ParseValueStatus(s string) (ValueStatus, error)](<#ParseValueStatus>)
+  - [func (s ValueStatus) String() string](<#ValueStatus.String>)
+- [type ValueWrite](<#ValueWrite>)
+- [type WriteOp](<#WriteOp>)
+- [type WriteOpKind](<#WriteOpKind>)
 - [type YMDurationInput](<#YMDurationInput>)
 - [type YMNumberInput](<#YMNumberInput>)
 
+
+<a name="RunStateStoreConformance"></a>
+## func [RunStateStoreConformance](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store_conformance.go#L21>)
+
+```go
+func RunStateStoreConformance(t *testing.T, open func(t *testing.T) (store StateStore, reopen func() StateStore))
+```
+
+RunStateStoreConformance runs the shared state\-store conformance suite against a backend. Every backend module calls it from its own tests, so all backends are held to the identical write contract (specs/stores/overview.spec.md § Testing).
+
+open is called once per subtest and must return a fresh, empty store plus a reopen function. reopen, when non\-nil, is called after the store has been Closed and must return a new handle onto the SAME underlying storage — this is how the suite checks read\-your\-writes across handles (durability). Backends with no reopenable storage (in\-memory) return a nil reopen.
+
+<a name="SortHistoryRecords"></a>
+## func [SortHistoryRecords](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L248>)
+
+```go
+func SortHistoryRecords(recs []HistoryRecord)
+```
+
+SortHistoryRecords sorts records into replay order: (Timestamp, Seq).
+
+<a name="SortValueRecords"></a>
+## func [SortValueRecords](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L238>)
+
+```go
+func SortValueRecords(recs []ValueRecord)
+```
+
+SortValueRecords sorts records into replay order: (Timestamp, Seq). Backends whose storage does not already iterate in replay order use it before returning FullHistory.
+
+<a name="ValidateWriteOp"></a>
+## func [ValidateWriteOp](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L191>)
+
+```go
+func ValidateWriteOp(op WriteOp) error
+```
+
+ValidateWriteOp checks the structural invariants of a WriteOp. Backends call it at the top of WriteBatch so malformed ops fail identically everywhere.
 
 <a name="Aggregation"></a>
 ## type [Aggregation](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L27>)
@@ -7952,6 +8017,18 @@ type Column struct {
 }
 ```
 
+<a name="CurrentVersion"></a>
+## type [CurrentVersion](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L141-L144>)
+
+CurrentVersion is the current version of a run's ProcessState: the latest committed value per (task, field), plus the run metadata. Pending and Aborted writes never appear here.
+
+```go
+type CurrentVersion struct {
+    Meta   RunMetadata
+    Values map[string]map[string][]byte // taskID -> field -> JSON-encoded value
+}
+```
+
 <a name="DHMSNumberInput"></a>
 ## type [DHMSNumberInput](<https://github.com/friendly-business-machines/blkit/blob/main/core/days_time_duration.go#L79-L84>)
 
@@ -8537,6 +8614,19 @@ type Field struct {
 }
 ```
 
+<a name="FullHistory"></a>
+## type [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L149-L153>)
+
+FullHistory is everything stored for a run — every value write (any status) and every history entry, in replay order — for diagnostics and audit.
+
+```go
+type FullHistory struct {
+    Meta    RunMetadata
+    Values  []ValueRecord
+    History []HistoryRecord
+}
+```
+
 <a name="Handle"></a>
 ## type [Handle](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_node.go#L14-L20>)
 
@@ -8565,6 +8655,37 @@ func (h Handle[T]) Get() T
 ```
 
 Get returns the handle's value.
+
+<a name="HistoryEntry"></a>
+## type [HistoryEntry](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L95-L101>)
+
+HistoryEntry is one execution\-history entry (task scheduled / started / finished / failed, path chosen, run started / finished). Payload carries the remaining entry fields (error, iteration, ...), JSON\-encoded.
+
+```go
+type HistoryEntry struct {
+    Kind        string // e.g. "NODE_STARTED", "GATEWAY_RESOLVED"
+    NodeID      *string
+    ExecutionID string
+    Payload     []byte
+    Timestamp   time.Time
+}
+```
+
+<a name="HistoryRecord"></a>
+## type [HistoryRecord](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L116-L123>)
+
+HistoryRecord is a stored HistoryEntry plus its arrival number.
+
+```go
+type HistoryRecord struct {
+    Kind        string
+    NodeID      *string
+    ExecutionID string
+    Payload     []byte
+    Timestamp   time.Time
+    Seq         uint64
+}
+```
 
 <a name="HitPolicy"></a>
 ## type [HitPolicy](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_table.go#L14>)
@@ -8624,6 +8745,89 @@ func WithICalValidity(r BlRange) ICalOption
 ```
 
 WithICalValidity sets the imported calendar's validity bounds.
+
+<a name="InMemoryStateStore"></a>
+## type [InMemoryStateStore](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_state_store.go#L12-L15>)
+
+InMemoryStateStore keeps each run's ProcessState in memory. It is the built\-in, zero\-dependency backend used for tests, examples, and local single\-process runs. Not durable, cannot be shared across processes. See specs/stores/in\-memory\-state\-store.spec.md.
+
+```go
+type InMemoryStateStore struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="NewInMemoryStateStore"></a>
+### func [NewInMemoryStateStore](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_state_store.go#L26>)
+
+```go
+func NewInMemoryStateStore() *InMemoryStateStore
+```
+
+NewInMemoryStateStore returns an empty in\-memory state store.
+
+<a name="InMemoryStateStore.Close"></a>
+### func (\*InMemoryStateStore) [Close](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_state_store.go#L156>)
+
+```go
+func (s *InMemoryStateStore) Close() error
+```
+
+Close releases nothing; it exists to satisfy StateStore.
+
+<a name="InMemoryStateStore.Config"></a>
+### func (\*InMemoryStateStore) [Config](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_state_store.go#L151>)
+
+```go
+func (s *InMemoryStateStore) Config() (map[string]string, error)
+```
+
+Config returns an error: in\-memory state cannot be reached from another process.
+
+<a name="InMemoryStateStore.CurrentVersion"></a>
+### func (\*InMemoryStateStore) [CurrentVersion](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_state_store.go#L105>)
+
+```go
+func (s *InMemoryStateStore) CurrentVersion(runID string) (*CurrentVersion, error)
+```
+
+CurrentVersion folds the run's value records into the latest committed value per (task, field). Returns (nil, nil) for an unknown run.
+
+<a name="InMemoryStateStore.Flush"></a>
+### func (\*InMemoryStateStore) [Flush](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_state_store.go#L101>)
+
+```go
+func (s *InMemoryStateStore) Flush(runID string) error
+```
+
+Flush is a no\-op: writes are applied synchronously in memory.
+
+<a name="InMemoryStateStore.FullHistory"></a>
+### func (\*InMemoryStateStore) [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_state_store.go#L132>)
+
+```go
+func (s *InMemoryStateStore) FullHistory(runID string) (*FullHistory, error)
+```
+
+FullHistory returns every stored record for the run — pending and aborted included — in replay order. Returns (nil, nil) for an unknown run.
+
+<a name="InMemoryStateStore.Save"></a>
+### func (\*InMemoryStateStore) [Save](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_state_store.go#L40>)
+
+```go
+func (s *InMemoryStateStore) Save(meta RunMetadata) error
+```
+
+Save upserts the run's metadata.
+
+<a name="InMemoryStateStore.WriteBatch"></a>
+### func (\*InMemoryStateStore) [WriteBatch](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_state_store.go#L54>)
+
+```go
+func (s *InMemoryStateStore) WriteBatch(ops []WriteOp) error
+```
+
+WriteBatch applies the ops synchronously under the store lock, so the batch is atomic with respect to readers.
 
 <a name="NoEnv"></a>
 ## type [NoEnv](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L102>)
@@ -8868,6 +9072,24 @@ Rules is a table's rows.
 type Rules []Rule
 ```
 
+<a name="RunMetadata"></a>
+## type [RunMetadata](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L127-L136>)
+
+RunMetadata is the run\-level metadata written directly by the executor at evaluation boundaries via Save (bypassing the writer pool).
+
+```go
+type RunMetadata struct {
+    RunID           string
+    ProcessID       string
+    ProcessVersion  string
+    Status          string
+    PublishedAt     *time.Time
+    StartedAt       *time.Time
+    CompletedAt     *time.Time
+    EvaluationCount int
+}
+```
+
 <a name="SchemaError"></a>
 ## type [SchemaError](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L60-L63>)
 
@@ -8897,6 +9119,56 @@ func (e *SchemaError) Unwrap() error
 ```
 
 
+
+<a name="StateStore"></a>
+## type [StateStore](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L160-L186>)
+
+StateStore is implemented by every backend. Implementations must be safe for concurrent use: parallel tasks within one run and many runs at once all write through the same store.
+
+Reads for an unknown run id return (nil, nil) — not found is not an error.
+
+```go
+type StateStore interface {
+    // Save persists (upserts) run metadata. Called directly by the executor
+    // at evaluation boundaries; also how a fresh run's metadata first lands.
+    Save(meta RunMetadata) error
+
+    // WriteBatch applies a batch of write ops. Backends apply the batch
+    // atomically where the storage engine supports it (transaction, write
+    // batch); engines with no batching primitive apply ops one by one.
+    WriteBatch(ops []WriteOp) error
+
+    // Flush is a per-run durability barrier: when it returns, every
+    // previously accepted write op for the run is durable.
+    Flush(runID string) error
+
+    // CurrentVersion loads the current version of the run's ProcessState.
+    CurrentVersion(runID string) (*CurrentVersion, error)
+
+    // FullHistory reads everything stored for the run, in replay order.
+    FullHistory(runID string) (*FullHistory, error)
+
+    // Config returns the connection details another process needs to reach
+    // the same store, or an error for stores that cannot be shared.
+    Config() (map[string]string, error)
+
+    // Close releases the store's resources.
+    Close() error
+}
+```
+
+<a name="StatusFlip"></a>
+## type [StatusFlip](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L86-L90>)
+
+StatusFlip settles every Pending ValueWrite for TaskID in its run, atomically, to Committed or Aborted.
+
+```go
+type StatusFlip struct {
+    TaskID    string
+    NewStatus ValueStatus // ValueStatusCommitted or ValueStatusAborted
+    Timestamp time.Time
+}
+```
 
 <a name="StringInput"></a>
 ## type [StringInput](<https://github.com/friendly-business-machines/blkit/blob/main/core/string.go#L35>)
@@ -9007,6 +9279,110 @@ UDF is a named, host\-defined function compiled from an expression string. It is
 type UDF interface {
     // contains filtered or unexported methods
 }
+```
+
+<a name="ValueRecord"></a>
+## type [ValueRecord](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L105-L113>)
+
+ValueRecord is a stored ValueWrite as a backend serves it back: the write plus its settled status and the backend\-assigned arrival number.
+
+```go
+type ValueRecord struct {
+    TaskID      string
+    ExecutionID string
+    Field       string
+    Value       []byte
+    Status      ValueStatus
+    Timestamp   time.Time
+    Seq         uint64 // backend-assigned arrival order; replay tiebreak
+}
+```
+
+<a name="ValueStatus"></a>
+## type [ValueStatus](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L20>)
+
+ValueStatus is the lifecycle state of a task's value write. Writes land as Pending and are settled by a StatusFlip to Committed (task finished successfully) or Aborted (task failed). Aborted writes are retained for audit but never surface in the current version.
+
+```go
+type ValueStatus int
+```
+
+<a name="ValueStatusPending"></a>
+
+```go
+const (
+    ValueStatusPending ValueStatus = iota
+    ValueStatusCommitted
+    ValueStatusAborted
+)
+```
+
+<a name="ParseValueStatus"></a>
+### func [ParseValueStatus](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L42>)
+
+```go
+func ParseValueStatus(s string) (ValueStatus, error)
+```
+
+ParseValueStatus is the inverse of ValueStatus.String. Backends that store the status as text use it when reading records back.
+
+<a name="ValueStatus.String"></a>
+### func (ValueStatus) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L28>)
+
+```go
+func (s ValueStatus) String() string
+```
+
+
+
+<a name="ValueWrite"></a>
+## type [ValueWrite](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L76-L82>)
+
+ValueWrite is one field written by a task. It arrives with status Pending. Value carries the Bl value encoded as JSON.
+
+```go
+type ValueWrite struct {
+    TaskID      string    // node path, e.g. "screen" or "verify-step.check-docs"
+    ExecutionID string    // distinct per task execution (loop iterations differ)
+    Field       string    // output field name, e.g. "Score"
+    Value       []byte    // the Bl value, JSON-encoded
+    Timestamp   time.Time // set by the worker when the write was produced
+}
+```
+
+<a name="WriteOp"></a>
+## type [WriteOp](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L65-L72>)
+
+WriteOp is one unit of the write stream a backend receives. Exactly one of the payload pointers is set, matching Kind.
+
+```go
+type WriteOp struct {
+    RunID string
+    Kind  WriteOpKind
+
+    ValueWrite   *ValueWrite
+    StatusFlip   *StatusFlip
+    HistoryEntry *HistoryEntry
+}
+```
+
+<a name="WriteOpKind"></a>
+## type [WriteOpKind](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L55>)
+
+WriteOpKind discriminates the three write\-op payloads.
+
+```go
+type WriteOpKind int
+```
+
+<a name="OpValueWrite"></a>
+
+```go
+const (
+    OpValueWrite WriteOpKind = iota
+    OpStatusFlip
+    OpHistoryEntry
+)
 ```
 
 <a name="YMDurationInput"></a>
