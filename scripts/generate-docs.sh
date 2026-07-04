@@ -54,53 +54,30 @@ if ! command -v gomarkdoc >/dev/null 2>&1; then
   PATH="${PATH}:$(go env GOPATH)/bin"
 fi
 
-# Discover every buildable package to document. The core module's packages come
-# from `go list ./...`. The state-store backends under stores/<name>/ are each
-# their OWN Go module (a separate go.mod), so `go list ./...` does not descend
-# into them — but the workspace (go.work) makes each reachable as
-# `go list ./stores/<name>/...`. gomarkdoc accepts the resulting full import
-# paths directly, and the naming logic below flattens e.g.
-# .../stores/postgres into docs/reference/stores-postgres.md.
-packages=()
-while IFS= read -r line; do
-  packages+=("$line")
-done < <(go list ./... 2>/dev/null) || fail "go list failed — module does not build"
-
-# Append each state-store backend module, if any are present. Each is discovered
-# and documented independently so a broken backend module fails loudly by name.
-if [ -d "${REPO_ROOT}/stores" ]; then
-  for dir in "${REPO_ROOT}"/stores/*/; do
-    [ -f "${dir}go.mod" ] || continue
-    store="$(basename "$dir")"
-    store_pkgs="$(go list "./stores/${store}/..." 2>/dev/null)" \
-      || fail "go list failed for store module ${store} — module does not build"
-    while IFS= read -r line; do
-      [ -n "$line" ] && packages+=("$line")
-    done <<< "$store_pkgs"
-  done
-fi
-
-[ "${#packages[@]}" -gt 0 ] || fail "no Go packages found to document"
-
 mkdir -p "$REFERENCE_DIR"
 
-for pkg in "${packages[@]}"; do
-  # Derive a stable, flat file name from the import path: the core package
-  # becomes blkit.md (it is the project's primary reference page and the site
-  # nav links to reference/blkit.md), sub-packages become e.g. messagegateway.md.
-  rel="${pkg#"$MODULE_PATH"}"
-  rel="${rel#/}"
-  name="${rel:-blkit}"
-  name="${name//\//-}"
-  [ "$name" = "core" ] && name="blkit"
-  out="${REFERENCE_DIR}/${name}.md"
+# document_pkg IMPORT_PATH OUTPUT_NAME WORKDIR REPO_PATH [GOWORK]
+#
+# Generate docs/reference/OUTPUT_NAME.md for one package. gomarkdoc is run from
+# WORKDIR so it resolves the package in the intended module context, and
+# REPO_PATH is the package's path within the repository (mapped to the module
+# root) so the source-link URLs point at the right subdirectory. When GOWORK is
+# given (e.g. "off") it is exported for the invocation — used to document the
+# store backends in single-module mode; see the store loop below.
+document_pkg() {
+  local import_path="$1" name="$2" workdir="$3" repo_path="$4" gowork="${5:-}"
+  local out="${REFERENCE_DIR}/${name}.md"
 
-  echo "generate-docs: ${pkg} -> docs/reference/${name}.md"
-  gomarkdoc \
-    --repository.url "$REPO_URL" \
-    --repository.default-branch "$REPO_BRANCH" \
-    --repository.path "$REPO_DOC_PATH" \
-    --output "$out" "$pkg" || fail "gomarkdoc failed for ${pkg}"
+  echo "generate-docs: ${import_path} -> docs/reference/${name}.md"
+  (
+    cd "$workdir"
+    [ -n "$gowork" ] && export GOWORK="$gowork"
+    gomarkdoc \
+      --repository.url "$REPO_URL" \
+      --repository.default-branch "$REPO_BRANCH" \
+      --repository.path "$repo_path" \
+      --output "$out" "$import_path"
+  ) || fail "gomarkdoc failed for ${import_path}"
 
   # Un-escape parentheses. gomarkdoc targets GitHub-flavored Markdown and
   # defensively backslash-escapes parentheses in headings and link text (e.g.
@@ -114,10 +91,55 @@ for pkg in "${packages[@]}"; do
   sed -i 's/\\(/(/g; s/\\)/)/g' "$out"
 
   # Prepend the generated-file banner.
+  local tmp
   tmp="$(mktemp)"
   { printf '%s\n\n' "$GENERATED_BANNER"; cat "$out"; } >"$tmp"
   mv "$tmp" "$out"
   chmod 0644 "$out"
-done
+}
 
-echo "generate-docs: wrote reference Markdown for ${#packages[@]} package(s) to docs/reference/"
+count=0
+
+# Core module. `go list ./...` from the repo root finds its packages directly.
+core_pkgs="$(go list ./... 2>/dev/null)" || fail "go list failed — module does not build"
+[ -n "$core_pkgs" ] || fail "no Go packages found to document"
+while IFS= read -r pkg; do
+  [ -n "$pkg" ] || continue
+  # Derive a stable, flat file name from the import path: the core package
+  # becomes blkit.md (it is the project's primary reference page and the site
+  # nav links to reference/blkit.md), sub-packages become e.g. messagegateway.md.
+  rel="${pkg#"$MODULE_PATH"}"
+  rel="${rel#/}"
+  name="${rel:-blkit}"
+  name="${name//\//-}"
+  [ "$name" = "core" ] && name="blkit"
+  document_pkg "$pkg" "$name" "$REPO_ROOT" "$REPO_DOC_PATH"
+  count=$((count + 1))
+done <<< "$core_pkgs"
+
+# State-store backends. Each stores/<name>/ is its OWN Go module, and both
+# go.work and go.work.sum are git-ignored — so they are absent from a fresh CI
+# checkout. Discovering the backends through the workspace (`go list
+# ./stores/<name>/...` from the root) therefore works locally but fails in CI
+# with "directory prefix ... does not contain main module". Instead, document
+# each backend in SINGLE-MODULE mode: run go/gomarkdoc with GOWORK=off from
+# inside the module directory, so resolution depends only on that module's own
+# committed go.mod/go.sum. The repo path is set to /stores/<name> so the
+# source-link URLs still point at the module's subdirectory in the repository.
+if [ -d "${REPO_ROOT}/stores" ]; then
+  for dir in "${REPO_ROOT}"/stores/*/; do
+    [ -f "${dir}go.mod" ] || continue
+    store="$(basename "$dir")"
+    store_pkgs="$(cd "$dir" && GOWORK=off go list ./...)" \
+      || fail "go list failed for store module ${store} — module does not build"
+    while IFS= read -r pkg; do
+      [ -n "$pkg" ] || continue
+      rel="${pkg#"$MODULE_PATH"/}"   # e.g. stores/postgres
+      name="${rel//\//-}"            # stores-postgres
+      document_pkg "$pkg" "$name" "$dir" "/${rel}" "off"
+      count=$((count + 1))
+    done <<< "$store_pkgs"
+  done
+fi
+
+echo "generate-docs: wrote reference Markdown for ${count} package(s) to docs/reference/"
