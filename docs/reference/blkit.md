@@ -320,7 +320,7 @@ import "github.com/friendly-business-machines/blkit/core"
 func RunStateStoreConformance(t *testing.T, open func(t *testing.T) (store StateStore, reopen func() StateStore))
 ```
 
-RunStateStoreConformance runs the shared state\-store conformance suite against a backend. Every backend module calls it from its own tests, so all backends are held to the identical write contract (specs/stores/overview.spec.md § Testing).
+RunStateStoreConformance runs the shared state\-store conformance suite against a backend. Every backend module calls it from its own tests, so all backends are held to the identical write contract (specs/state\-stores/overview.spec.md § Testing).
 
 open is called once per subtest and must return a fresh, empty store plus a reopen function. reopen, when non\-nil, is called after the store has been Closed and must return a new handle onto the SAME underlying storage — this is how the suite checks read\-your\-writes across handles (durability). Backends with no reopenable storage (in\-memory) return a nil reopen.
 
@@ -2719,7 +2719,7 @@ WithICalValidity sets the imported calendar's validity bounds.
 <a name="InMemoryStateStore"></a>
 ## type [InMemoryStateStore](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_state_store.go#L12-L15>)
 
-InMemoryStateStore keeps each run's ProcessState in memory. It is the built\-in, zero\-dependency backend used for tests, examples, and local single\-process runs. Not durable, cannot be shared across processes. See specs/stores/in\-memory\-state\-store.spec.md.
+InMemoryStateStore keeps each run's ProcessState in memory. It is the built\-in, zero\-dependency backend used for tests, examples, and local single\-process runs. Not durable, cannot be shared across processes. See specs/state\-stores/in\-memory\-state\-store.spec.md.
 
 ```go
 type InMemoryStateStore struct {

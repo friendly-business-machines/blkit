@@ -1,7 +1,7 @@
 // Package mysql is the MySQL state-store backend for blkit: a durable,
 // shareable store keeping each run's ProcessState in MySQL, built on the
 // go-sql-driver/mysql driver via database/sql.
-// See specs/stores/mysql-state-store.spec.md.
+// See specs/state-stores/mysql-state-store.spec.md.
 package mysql
 
 import (

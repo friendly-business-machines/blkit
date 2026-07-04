@@ -8,7 +8,7 @@ import (
 // InMemoryStateStore keeps each run's ProcessState in memory. It is the
 // built-in, zero-dependency backend used for tests, examples, and local
 // single-process runs. Not durable, cannot be shared across processes.
-// See specs/stores/in-memory-state-store.spec.md.
+// See specs/state-stores/in-memory-state-store.spec.md.
 type InMemoryStateStore struct {
 	mu   sync.RWMutex
 	runs map[string]*inMemoryRun

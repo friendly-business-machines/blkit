@@ -8,7 +8,7 @@
 import "github.com/friendly-business-machines/blkit/stores/sqlite"
 ```
 
-Package sqlite is the SQLite state\-store backend for blkit: a durable, embedded store keeping each run's ProcessState in a single SQL\-queryable file on local disk, built on the pure\-Go modernc.org/sqlite driver so CGO\_ENABLED=0 static builds keep working. See specs/stores/sqlite\-state\-store.spec.md.
+Package sqlite is the SQLite state\-store backend for blkit: a durable, embedded store keeping each run's ProcessState in a single SQL\-queryable file on local disk, built on the pure\-Go modernc.org/sqlite driver so CGO\_ENABLED=0 static builds keep working. See specs/state\-stores/sqlite\-state\-store.spec.md.
 
 ## Index
 

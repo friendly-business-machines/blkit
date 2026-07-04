@@ -8,7 +8,7 @@
 import "github.com/friendly-business-machines/blkit/stores/bbolt"
 ```
 
-Package bbolt is the bbolt state\-store backend for blkit: a durable, embedded store keeping each run's ProcessState in a single file on local disk. See specs/stores/bbolt\-state\-store.spec.md.
+Package bbolt is the bbolt state\-store backend for blkit: a durable, embedded store keeping each run's ProcessState in a single file on local disk. See specs/state\-stores/bbolt\-state\-store.spec.md.
 
 ## Index
 

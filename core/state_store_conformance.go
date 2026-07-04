@@ -11,7 +11,7 @@ import (
 // RunStateStoreConformance runs the shared state-store conformance suite
 // against a backend. Every backend module calls it from its own tests, so all
 // backends are held to the identical write contract
-// (specs/stores/overview.spec.md § Testing).
+// (specs/state-stores/overview.spec.md § Testing).
 //
 // open is called once per subtest and must return a fresh, empty store plus a
 // reopen function. reopen, when non-nil, is called after the store has been

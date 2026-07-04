@@ -8,7 +8,7 @@
 import "github.com/friendly-business-machines/blkit/stores/mariadb"
 ```
 
-Package mariadb is the MariaDB state\-store backend for blkit: a durable, shareable store keeping each run's ProcessState in MariaDB. It shares the go\-sql\-driver/mysql driver with the MySQL backend but is tuned for MariaDB's own features — INSERT ... RETURNING (10.5\+) and LONGTEXT with a JSON\_VALID check in place of a native JSON type. See specs/stores/mariadb\-state\-store.spec.md.
+Package mariadb is the MariaDB state\-store backend for blkit: a durable, shareable store keeping each run's ProcessState in MariaDB. It shares the go\-sql\-driver/mysql driver with the MySQL backend but is tuned for MariaDB's own features — INSERT ... RETURNING (10.5\+) and LONGTEXT with a JSON\_VALID check in place of a native JSON type. See specs/state\-stores/mariadb\-state\-store.spec.md.
 
 ## Index
 

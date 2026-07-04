@@ -8,7 +8,7 @@
 import "github.com/friendly-business-machines/blkit/stores/badger"
 ```
 
-Package badger is the BadgerDB state\-store backend for blkit: a durable, embedded store keeping each run's ProcessState in local files, tuned for write throughput. See specs/stores/badger\-state\-store.spec.md.
+Package badger is the BadgerDB state\-store backend for blkit: a durable, embedded store keeping each run's ProcessState in local files, tuned for write throughput. See specs/state\-stores/badger\-state\-store.spec.md.
 
 ## Index
 

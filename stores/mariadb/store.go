@@ -3,7 +3,7 @@
 // go-sql-driver/mysql driver with the MySQL backend but is tuned for
 // MariaDB's own features — INSERT ... RETURNING (10.5+) and LONGTEXT with a
 // JSON_VALID check in place of a native JSON type.
-// See specs/stores/mariadb-state-store.spec.md.
+// See specs/state-stores/mariadb-state-store.spec.md.
 package mariadb
 
 import (

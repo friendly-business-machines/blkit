@@ -1,7 +1,7 @@
 // Package pebble is the Pebble state-store backend for blkit: a durable,
 // embedded store keeping each run's ProcessState in local files, with
 // balanced read-and-write performance. It shares the Badger backend's key
-// scheme. See specs/stores/pebble-state-store.spec.md.
+// scheme. See specs/state-stores/pebble-state-store.spec.md.
 package pebble
 
 import (

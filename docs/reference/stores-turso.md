@@ -8,7 +8,7 @@
 import "github.com/friendly-business-machines/blkit/stores/turso"
 ```
 
-Package turso is the Turso Database state\-store backend for blkit: a durable, embedded store keeping each run's ProcessState in a Turso database file on local disk. Turso Database is the ground\-up rewrite of SQLite in Rust (formerly "Limbo") — in\-process, SQLite\-compatible in query language and file format, and currently in BETA. The driver is pure Go (purego \+ a bundled platform library; no CGO at build time). See specs/stores/turso\-state\-store.spec.md.
+Package turso is the Turso Database state\-store backend for blkit: a durable, embedded store keeping each run's ProcessState in a Turso database file on local disk. Turso Database is the ground\-up rewrite of SQLite in Rust (formerly "Limbo") — in\-process, SQLite\-compatible in query language and file format, and currently in BETA. The driver is pure Go (purego \+ a bundled platform library; no CGO at build time). See specs/state\-stores/turso\-state\-store.spec.md.
 
 ## Index
 

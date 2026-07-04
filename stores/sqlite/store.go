@@ -2,7 +2,7 @@
 // embedded store keeping each run's ProcessState in a single SQL-queryable
 // file on local disk, built on the pure-Go modernc.org/sqlite driver so
 // CGO_ENABLED=0 static builds keep working.
-// See specs/stores/sqlite-state-store.spec.md.
+// See specs/state-stores/sqlite-state-store.spec.md.
 package sqlite
 
 import (

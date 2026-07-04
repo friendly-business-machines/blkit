@@ -8,7 +8,7 @@
 import "github.com/friendly-business-machines/blkit/stores/postgres"
 ```
 
-Package postgres is the PostgreSQL state\-store backend for blkit: a durable, strongly consistent, shareable store keeping each run's ProcessState in PostgreSQL, built on pgx/v5 with pgx.Batch pipelining. See specs/stores/postgres\-state\-store.spec.md.
+Package postgres is the PostgreSQL state\-store backend for blkit: a durable, strongly consistent, shareable store keeping each run's ProcessState in PostgreSQL, built on pgx/v5 with pgx.Batch pipelining. See specs/state\-stores/postgres\-state\-store.spec.md.
 
 ## Index
 

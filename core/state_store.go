@@ -9,9 +9,9 @@ import (
 // This file defines the shared write contract every state-store backend
 // implements — the WriteOp kinds streamed by the worker's writer pool, the
 // records a backend serves back, and the StateStore interface itself. The
-// contract is specified in specs/stores/overview.spec.md ("The write
+// contract is specified in specs/state-stores/overview.spec.md ("The write
 // contract"); the per-backend layouts live in the sibling specs under
-// specs/stores/.
+// specs/state-stores/.
 
 // ValueStatus is the lifecycle state of a task's value write. Writes land as
 // Pending and are settled by a StatusFlip to Committed (task finished

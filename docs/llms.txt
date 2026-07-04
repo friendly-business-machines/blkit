@@ -51,7 +51,7 @@
 - [Processes](https://friendly-business-machines.github.io/blkit/processes/processes/): Assemble tasks and gateways into an executable process graph that runs from a start event through to an end event.
 
 ## State Stores
-- [State Stores](https://friendly-business-machines.github.io/blkit/state-stores/overview/): Where blkit keeps the state of a running process — pick the backend that fits your deployment, from a zero-dependency in-memory store to PostgreSQL, NATS, or an embedded file.
+- [Overview](https://friendly-business-machines.github.io/blkit/state-stores/overview/): Where blkit keeps the state of a running process — pick the backend that fits your deployment, from a zero-dependency in-memory store to PostgreSQL, NATS, or an embedded file.
 - [In-memory](https://friendly-business-machines.github.io/blkit/state-stores/in-memory/): The built-in state store — zero dependencies, not durable — the default for tests, examples, and local single-process runs.
 - [PostgreSQL](https://friendly-business-machines.github.io/blkit/state-stores/postgres/): A durable, strongly consistent, shareable state store backed by PostgreSQL — a good default for production.
 - [SQL Server](https://friendly-business-machines.github.io/blkit/state-stores/mssql/): A durable, strongly consistent, shareable state store backed by Microsoft SQL Server — for shops standardised on SQL Server.

@@ -31,9 +31,10 @@ The documentation site is organised into the following top-level sections (at mi
 | **Expressions** | User guide to the expression language — an overview page plus one page per language area (numbers, strings, dates and times, lists, …) |
 | **Decisions** | User guide to the decision components (decision expressions, tables, native functions, sub-decisions, reference data, decision tasks) |
 | **Processes** | User guide to the process components (tasks, gateways, processes) |
+| **State Stores** | User guide to the pluggable state-store backends — an overview plus one page per backend |
 | **Architecture** | Internal design of blkit's subsystems — one deep-dive chapter per subsystem |
 
-The first six sections in the table are required before the documentation site is considered minimally complete. **Expressions**, **Decisions**, **Processes**, and **Architecture** are additional sections that grow as the corresponding capabilities are documented: the three user-guide sections (Expressions, Decisions, Processes) describe how to *use* each component, while the Architecture section describes how each is *built*.
+The first six sections in the table are required before the documentation site is considered minimally complete. **Expressions**, **Decisions**, **Processes**, **State Stores**, and **Architecture** are additional sections that grow as the corresponding capabilities are documented: the four user-guide sections (Expressions, Decisions, Processes, State Stores) describe how to *use* each component, while the Architecture section describes how each is *built*.
 
 ## Getting Started Section
 
@@ -131,6 +132,8 @@ The Reference section contains the Go API reference, generated from `//` godoc c
 
 Generated Markdown is committed to `docs/reference/` and consumed by Zensical as ordinary source files. The generation step runs in CI on every release.
 
+The section covers **every** buildable package in the workspace, not only the `core` module. Because each state-store backend under `stores/<name>/` is its own Go module (see the State Stores Section below), `go list ./...` on its own does not reach them; `scripts/generate-docs.sh` additionally discovers each store module through the workspace and documents it. The `core` package is written as `reference/blkit.md`; each backend module as `reference/stores-<name>.md` (e.g. `reference/stores-postgres.md`). All of these pages are wired into the Reference nav group.
+
 ## Expressions Section
 
 The Expressions section is the user guide to blkit's expression language — the same engine documented internally in the Architecture section, but presented from the author's point of view. It opens with an orientation **overview** page and is then organised as one page per area of the language, each combining prose, syntax, and worked snippets. Each per-area page's behaviour is defined authoritatively by the matching spec under `specs/expressions/`; the `overview.md` page has no single matching spec — it is an orientation page that introduces what the language is (mirroring the Architecture chapter's framing) and catalogues the closed set of value types, linking out to each area's page.
@@ -148,6 +151,16 @@ Pages: `decision-expressions.md`, `decision-tables.md`, `decision-native-fn.md`,
 The Processes section is the user guide to blkit's process components — tasks, gateways, and whole processes. Its pages are published as placeholders until the process and worker packages land.
 
 Pages: `tasks.md`, `gateways.md`, `processes.md`.
+
+## State Stores Section
+
+The State Stores section is the user guide to blkit's pluggable state-store backends — where a process instance's state (the values its tasks produce and its execution history) is kept. It describes how to *use* and *choose* a backend, not the internal design.
+
+It opens with an orientation **overview** page (what a state store is, what every backend does, how to choose one, and the shared conformance guarantee) and is then organised as one page per backend. Each page's behaviour is defined authoritatively by the matching spec under `specs/state-stores/`: the overview by `overview.spec.md`, and each backend page by its `<name>-state-store.spec.md`. The pages are hand-authored user-guide prose, so they omit the specs' status banners, Go interface details, and `[@test]` links; those live in the specs and (for the API surface) in the generated Reference pages, which each backend page links to.
+
+Pages: `overview.md`, `in-memory.md`, `postgres.md`, `mssql.md`, `mysql.md`, `mariadb.md`, `nats.md`, `sqlite.md`, `bbolt.md`, `badger.md`, `pebble.md`.
+
+The in-memory backend is built into core, so its API appears in `reference/blkit.md`; every other backend is a separate module with its own `reference/stores-<name>.md` page (see the Reference Section above).
 
 ## Architecture Section
 

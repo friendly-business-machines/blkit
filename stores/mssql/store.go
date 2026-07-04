@@ -1,7 +1,7 @@
 // Package mssql is the Microsoft SQL Server state-store backend for blkit: a
 // durable, strongly consistent, shareable store keeping each run's
 // ProcessState in SQL Server, built on the official microsoft/go-mssqldb
-// driver via database/sql. See specs/stores/mssql-state-store.spec.md.
+// driver via database/sql. See specs/state-stores/mssql-state-store.spec.md.
 package mssql
 
 import (

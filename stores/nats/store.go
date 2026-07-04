@@ -1,7 +1,7 @@
 // Package nats is the NATS JetStream state-store backend for blkit: a
 // durable, shareable store keeping each run's ProcessState in a JetStream
 // key-value bucket — a natural fit when NATS is already the message broker.
-// See specs/stores/nats-state-store.spec.md.
+// See specs/state-stores/nats-state-store.spec.md.
 package nats
 
 import (

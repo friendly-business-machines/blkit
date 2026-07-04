@@ -4,7 +4,7 @@
 // SQLite in Rust (formerly "Limbo") — in-process, SQLite-compatible in query
 // language and file format, and currently in BETA. The driver is pure Go
 // (purego + a bundled platform library; no CGO at build time).
-// See specs/stores/turso-state-store.spec.md.
+// See specs/state-stores/turso-state-store.spec.md.
 package turso
 
 import (

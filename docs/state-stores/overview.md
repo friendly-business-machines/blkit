@@ -1,4 +1,4 @@
-# State Stores
+# Overview
 
 > Where blkit keeps the state of a running process — pick the backend that fits
 > your deployment, from a zero-dependency in-memory store to PostgreSQL, NATS, or
@@ -70,16 +70,6 @@ durability, and whether runs must be shared across more than one machine.
 |---|---|
 | [In-memory](in-memory.md) | Tests, examples, and local runs. Zero dependencies; lost when the program exits. |
 
-**Durable and shared across machines — a server you run separately:**
-
-| Backend | Use it for |
-|---|---|
-| [PostgreSQL](postgres.md) | The default for production: durable, strongly consistent, shareable. |
-| [SQL Server](mssql.md) | Shops standardised on Microsoft SQL Server. |
-| [MySQL](mysql.md) | Shops running MySQL. |
-| [MariaDB](mariadb.md) | Shops running MariaDB — a separate backend from MySQL. |
-| [NATS](nats.md) | When NATS is already your message broker: store state in the same system. |
-
 **Durable but local to one machine — embedded, no server to run:**
 
 | Backend | Use it for |
@@ -89,6 +79,16 @@ durability, and whether runs must be shared across more than one machine.
 | [bbolt](bbolt.md) | The simplest durable key-value option; a single file tuned for reads. |
 | [Badger](badger.md) | A directory of files tuned for heavy writes. |
 | [Pebble](pebble.md) | A directory of files with balanced read-and-write performance. |
+
+**Durable and shared across machines — a server you run separately:**
+
+| Backend | Use it for |
+|---|---|
+| [PostgreSQL](postgres.md) | The default for production: durable, strongly consistent, shareable. |
+| [SQL Server](mssql.md) | Shops standardised on Microsoft SQL Server. |
+| [MySQL](mysql.md) | Shops running MySQL. |
+| [MariaDB](mariadb.md) | Shops running MariaDB — a separate backend from MySQL. |
+| [NATS](nats.md) | When NATS is already your message broker: store state in the same system. |
 
 ## Conformance
 
