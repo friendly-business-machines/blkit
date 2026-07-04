@@ -5679,6 +5679,156 @@ page (for example, [PostgreSQL](../reference/stores-postgres.md)).
 
 ---
 
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/badger/ -->
+
+# Badger
+
+> A durable, embedded state store kept in a local BadgerDB directory — tuned for
+> heavy write throughput.
+
+The Badger backend keeps each run's state in a BadgerDB store — a pure-Go key-value
+store that lives in **local files on disk**. It is **embedded**: there is no separate
+server to run. Data is **durable** — it survives a restart.
+
+It lives in its own module, so its dependency is only pulled in by applications that
+use it:
+
+```go
+import (
+    bl          "github.com/friendly-business-machines/blkit"
+    badgerstore "github.com/friendly-business-machines/blkit/stores/badger"
+)
+
+var store = badgerstore.New(badgerstore.Config{Path: "/var/lib/blkit/badger"})
+```
+
+The backend is built on [dgraph-io/badger](https://github.com/dgraph-io/badger) —
+pure Go, no CGO. Records are encoded as JSON, and arrival-order numbers come from
+Badger's own durable monotonic counter, so they survive a reopen.
+
+## What it's good for
+
+- **Single-node deployments** that want durability without running a separate
+  database server.
+- **Write-heavy workloads** — Badger is built to take a high rate of writes and
+  handles large values well.
+
+## How state is stored
+
+Badger has a flat keyspace, so runs are separated by key prefixes — one prefix each
+for run metadata, value records, history records, and a pending-write index. Keys
+embed a big-endian nanosecond timestamp and a sequence number, so Badger's
+lexicographic key order **is** the replay order. A batch of writes is applied in a
+single Badger transaction. For write throughput the backend runs with synchronous
+writes off and provides durability at a flush barrier, which calls Badger's `Sync`.
+
+## Configuration
+
+Construct the backend with the **path to a directory** where BadgerDB keeps its
+files. There is no server address and no credentials — the store is opened directly
+by the program.
+
+## What to keep in mind
+
+- **It is local to one machine.** The files live on that machine's disk, so runs
+  cannot be shared with workers elsewhere. For shared runs, use a server-based
+  backend such as [PostgreSQL](postgres.md) or [NATS](nats.md).
+- **One program at a time** opens the store, so it suits one worker process on the
+  machine rather than several sharing the files.
+
+Compared with the other embedded backends: [bbolt](bbolt.md) is a single file tuned
+for reads; Badger and [Pebble](pebble.md) keep a directory of files and take writes
+at a higher rate. If you want SQL-queryable history, use [SQLite](sqlite.md) instead.
+
+## Concurrency
+
+Different runs use different keys within the same store, so many runs handled by the
+one worker process do not interfere. Parallel tasks within a run each write their own
+keys; Badger applies concurrent writes safely.
+
+## Reference
+
+The backend's API is in the [Badger reference](../reference/stores-badger.md); the
+`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/bbolt/ -->
+
+# bbolt
+
+> A durable, embedded state store kept in a single bbolt file — the simplest durable
+> key-value option, tuned for reads.
+
+The bbolt backend keeps each run's state in a bbolt database — a small, pure-Go
+key-value store in a **single file on local disk**. It is **embedded**: there is no
+separate server to run, just a file the program opens directly. Data is **durable** —
+it survives a restart.
+
+It lives in its own module, so its dependency is only pulled in by applications that
+use it:
+
+```go
+import (
+    bl         "github.com/friendly-business-machines/blkit"
+    bboltstore "github.com/friendly-business-machines/blkit/stores/bbolt"
+)
+
+var store = bboltstore.New(bboltstore.Config{Path: "/var/lib/blkit/state.db"})
+```
+
+The backend is built on [go.etcd.io/bbolt](https://github.com/etcd-io/bbolt) — the
+maintained etcd fork of Bolt, pure Go with no CGO. Records are encoded as JSON, so
+the file stays inspectable with the `bbolt` CLI during debugging.
+
+## What it's good for
+
+- **Single-node deployments** that want durability without running a separate
+  database server.
+- **Read-heavy workloads** — bbolt is a B+tree store that is very fast to read from.
+- **Simple operations** — the whole state is one file to back up or move.
+
+## How state is stored
+
+bbolt's nested buckets map naturally onto runs: one top-level bucket holds a
+sub-bucket per run, containing the run's metadata, its value records, its history
+records, and a small index used to settle a task's pending writes. Keys are built
+from a big-endian nanosecond timestamp and a per-bucket sequence number, so bbolt's
+natural key order **is** the replay order — reading a run's history is a single
+in-order cursor walk with no sorting step. A batch of writes is applied in one bbolt
+transaction, atomic and durable when it returns.
+
+## Configuration
+
+Construct the backend with the **path to the database file**. There is no server
+address and no credentials — the file is opened directly by the program.
+
+## What to keep in mind
+
+- **It is local to one machine.** The file lives on that machine's disk, so runs
+  cannot be shared with workers elsewhere. For shared runs, use a server-based
+  backend such as [PostgreSQL](postgres.md) or [NATS](nats.md).
+- **One program at a time** opens the file. bbolt allows a single writer, so it suits
+  one worker process on the machine rather than several sharing the file.
+
+Compared with the other embedded backends ([Badger](badger.md), [Pebble](pebble.md)),
+bbolt is the simplest — a single file and a B+tree that favours fast reads over heavy
+write throughput. If you want SQL-queryable history, use [SQLite](sqlite.md) instead.
+
+## Concurrency
+
+Different runs use different keys within the same file, so many runs handled by the
+one worker process do not interfere. Parallel tasks within a run each write their own
+keys; bbolt serialises writes internally, so concurrent writes within a run are
+applied safely one after another.
+
+## Reference
+
+The backend's API is in the [bbolt reference](../reference/stores-bbolt.md); the
+`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+
+---
+
 <!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/in-memory/ -->
 
 # In-memory
@@ -5728,93 +5878,101 @@ core API [Reference](../reference/blkit.md).
 
 ---
 
-<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/postgres/ -->
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/mariadb/ -->
 
-# PostgreSQL
+# MariaDB
 
-> A durable, strongly consistent, shareable state store backed by PostgreSQL — a
-> good default for production.
+> A durable, strongly consistent, shareable state store backed by MariaDB — a
+> separate backend from MySQL, tuned for MariaDB.
 
-The PostgreSQL backend keeps each run's state in a PostgreSQL database. It is
-**durable** (the data survives restarts), **strongly consistent** (a write is
-always visible to the next read), and **shareable** (workers on different machines
-can all reach the same database), which makes it a good default for production.
+The MariaDB backend keeps each run's state in a MariaDB database. On a single primary
+it is **durable**, **strongly consistent**, and **shareable** across workers on
+different machines. Choose it when your organisation runs MariaDB.
 
-It lives in its own module, so the database driver it needs is only pulled in by
-applications that use it:
+MariaDB began as a fork of MySQL and shares its wire protocol, but the two have
+diverged — so this is a **separate backend from [MySQL](mysql.md)**, tuned for
+MariaDB's own features, clustering, and managed services.
+
+It lives in its own module, so its driver is only pulled in by applications that
+use it:
 
 ```go
 import (
-    "os"
-
-    bl      "github.com/friendly-business-machines/blkit"
-    pgstore "github.com/friendly-business-machines/blkit/stores/postgres"
+    bl           "github.com/friendly-business-machines/blkit"
+    mariadbstore "github.com/friendly-business-machines/blkit/stores/mariadb"
 )
 
-var store = pgstore.New(pgstore.Config{DSN: os.Getenv("DATABASE_URL")})
+var store = mariadbstore.New(mariadbstore.Config{
+    DSN: "user:pass@tcp(host:3306)/blkit?parseTime=true",
+})
 ```
 
-The backend is built on [pgx](https://github.com/jackc/pgx), the actively
-maintained PostgreSQL driver for Go: a whole batch of writes is sent as one
-pipelined round-trip inside a single transaction, and encoded values are stored as
-`JSONB` so the audit history is queryable with SQL down into the values.
+The backend is built on [go-sql-driver/mysql](https://github.com/go-sql-driver/mysql),
+which is MariaDB-aware, through `database/sql`. It uses transactional InnoDB tables
+with `utf8mb4`, MariaDB's `INSERT ... RETURNING` (10.5+) to confirm writes in one
+round-trip, and `LONGTEXT` columns with a `JSON_VALID` constraint for encoded values
+— so it does not depend on a native JSON column type.
 
 ## What it's good for
 
 - **Production runs** that must survive restarts and crashes.
-- **Runs shared across many workers**, on one machine or many.
-- **Auditing and reporting** — because the history is ordinary database rows, it
-  can be queried directly with SQL.
+- **Organisations already running MariaDB**, so state lives in familiar
+  infrastructure.
+- **Auditing and reporting** — the history is ordinary rows, queryable with SQL.
 
 ## Storage layout
 
-On first use the backend creates three tables (their names carry a configurable
-prefix, `blkit_` by default):
-
-- **`blkit_runs`** — one row per run: its id, process id and version, status, and
-  timestamps.
-- **`blkit_values`** — one row per value a task writes, each with a `pending` /
-  `committed` / `aborted` status. A task finishing flips all of its pending rows to
-  committed in a single statement; a failure flips them to aborted. The current
-  state reads the latest committed row per field; the full history returns every
-  row, with its status.
-- **`blkit_history`** — one row per execution-history entry.
-
-Both event tables carry a timestamp and an auto-increment id, and reads sort on
-`(timestamp, id)`, so the order events arrived in does not matter.
+The backend uses the same three tables as the
+[PostgreSQL layout](postgres.md#storage-layout) — `blkit_runs`, `blkit_values`,
+`blkit_history` — with the same columns and behaviour, differing only in dialect:
+`BIGINT AUTO_INCREMENT` for the arrival-order id, `DATETIME(6)` timestamps stored as
+UTC, a plain composite index for the pending lookup, a `ROW_NUMBER()` window function
+for the latest-committed-per-field read, and `INSERT ... RETURNING` on inserts. A
+batch of writes executes as a single transaction, and a task finishing settles all
+of its pending rows in one statement.
 
 ## Configuration
 
-Construct the backend with a connection string (`DSN`) pointing at the PostgreSQL
-server and database. Because the data is in a shared database, the same connection
-details can be handed to workers in other processes or on other machines, so they
-can all work on the same runs.
+Construct the backend with a connection string (`DSN`) in the driver's format,
+pointing at the MariaDB server and database. Because the data is shared, the same
+details can be handed to workers in other processes or on other machines.
 
-### Managed and cloud PostgreSQL
+### Managed and cloud MariaDB
 
-This backend speaks to any PostgreSQL-compatible server, so it also works — with no
-code change, just a different `DSN` — against the managed PostgreSQL services on the
-major clouds:
+Managed MariaDB is less widely offered than MySQL, which is one reason it has its own
+backend. The backend works — with no code change, just a different `DSN` — against:
 
-- **AWS** — Amazon RDS for PostgreSQL, and Amazon Aurora PostgreSQL-Compatible Edition.
-- **GCP** — Cloud SQL for PostgreSQL, and AlloyDB for PostgreSQL.
-- **Azure** — Azure Database for PostgreSQL.
+- **AWS** — Amazon RDS for MariaDB.
+- **MariaDB SkySQL** — the vendor's own managed cloud service.
 
-There is no separate backend for these — point the `DSN` at the managed endpoint.
-Use a primary (read-write) endpoint; reading from an asynchronous read replica can
-return stale data.
+Note the gaps: **Azure's managed MariaDB service has been retired**, and **GCP Cloud
+SQL does not offer MariaDB**. On those clouds MariaDB must be self-managed (for
+example on virtual machines or Kubernetes), and the backend connects to it the same
+way.
+
+## Consistency
+
+On a single primary (InnoDB), MariaDB is strongly consistent — read-your-writes, no
+stale reads — and that is the recommended setup. A few things to keep in mind in HA
+topologies:
+
+- **Asynchronous read replicas can serve stale data.** Route reads to the primary.
+- **Asynchronous replication with automatic failover can lose acknowledged writes.**
+  Use semi-synchronous replication.
+- **Galera Cluster** is virtually synchronous, but a read on another node may not
+  have applied the latest write yet. Set `wsrep_sync_wait` to force causal
+  (read-your-writes) reads.
 
 ## Concurrency
 
-Different runs are independent rows keyed by different run ids, so many runs — and
-many workers — can share one database without interfering. Parallel tasks within a
-run each write their own rows, and the order is sorted out from the timestamps at
-read time.
+Different runs are independent rows keyed by different run ids, so many runs and
+workers can share one database without interfering. Parallel tasks within a run each
+write their own rows, and the order is sorted out from the timestamps at read time.
 
 ## Reference
 
-The backend's API is in the [PostgreSQL reference](../reference/stores-postgres.md);
-the `StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+The backend's API is in the [MariaDB reference](../reference/stores-mariadb.md); the
+`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
 
 ---
 
@@ -5989,104 +6147,6 @@ The backend's API is in the [MySQL reference](../reference/stores-mysql.md); the
 
 ---
 
-<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/mariadb/ -->
-
-# MariaDB
-
-> A durable, strongly consistent, shareable state store backed by MariaDB — a
-> separate backend from MySQL, tuned for MariaDB.
-
-The MariaDB backend keeps each run's state in a MariaDB database. On a single primary
-it is **durable**, **strongly consistent**, and **shareable** across workers on
-different machines. Choose it when your organisation runs MariaDB.
-
-MariaDB began as a fork of MySQL and shares its wire protocol, but the two have
-diverged — so this is a **separate backend from [MySQL](mysql.md)**, tuned for
-MariaDB's own features, clustering, and managed services.
-
-It lives in its own module, so its driver is only pulled in by applications that
-use it:
-
-```go
-import (
-    bl           "github.com/friendly-business-machines/blkit"
-    mariadbstore "github.com/friendly-business-machines/blkit/stores/mariadb"
-)
-
-var store = mariadbstore.New(mariadbstore.Config{
-    DSN: "user:pass@tcp(host:3306)/blkit?parseTime=true",
-})
-```
-
-The backend is built on [go-sql-driver/mysql](https://github.com/go-sql-driver/mysql),
-which is MariaDB-aware, through `database/sql`. It uses transactional InnoDB tables
-with `utf8mb4`, MariaDB's `INSERT ... RETURNING` (10.5+) to confirm writes in one
-round-trip, and `LONGTEXT` columns with a `JSON_VALID` constraint for encoded values
-— so it does not depend on a native JSON column type.
-
-## What it's good for
-
-- **Production runs** that must survive restarts and crashes.
-- **Organisations already running MariaDB**, so state lives in familiar
-  infrastructure.
-- **Auditing and reporting** — the history is ordinary rows, queryable with SQL.
-
-## Storage layout
-
-The backend uses the same three tables as the
-[PostgreSQL layout](postgres.md#storage-layout) — `blkit_runs`, `blkit_values`,
-`blkit_history` — with the same columns and behaviour, differing only in dialect:
-`BIGINT AUTO_INCREMENT` for the arrival-order id, `DATETIME(6)` timestamps stored as
-UTC, a plain composite index for the pending lookup, a `ROW_NUMBER()` window function
-for the latest-committed-per-field read, and `INSERT ... RETURNING` on inserts. A
-batch of writes executes as a single transaction, and a task finishing settles all
-of its pending rows in one statement.
-
-## Configuration
-
-Construct the backend with a connection string (`DSN`) in the driver's format,
-pointing at the MariaDB server and database. Because the data is shared, the same
-details can be handed to workers in other processes or on other machines.
-
-### Managed and cloud MariaDB
-
-Managed MariaDB is less widely offered than MySQL, which is one reason it has its own
-backend. The backend works — with no code change, just a different `DSN` — against:
-
-- **AWS** — Amazon RDS for MariaDB.
-- **MariaDB SkySQL** — the vendor's own managed cloud service.
-
-Note the gaps: **Azure's managed MariaDB service has been retired**, and **GCP Cloud
-SQL does not offer MariaDB**. On those clouds MariaDB must be self-managed (for
-example on virtual machines or Kubernetes), and the backend connects to it the same
-way.
-
-## Consistency
-
-On a single primary (InnoDB), MariaDB is strongly consistent — read-your-writes, no
-stale reads — and that is the recommended setup. A few things to keep in mind in HA
-topologies:
-
-- **Asynchronous read replicas can serve stale data.** Route reads to the primary.
-- **Asynchronous replication with automatic failover can lose acknowledged writes.**
-  Use semi-synchronous replication.
-- **Galera Cluster** is virtually synchronous, but a read on another node may not
-  have applied the latest write yet. Set `wsrep_sync_wait` to force causal
-  (read-your-writes) reads.
-
-## Concurrency
-
-Different runs are independent rows keyed by different run ids, so many runs and
-workers can share one database without interfering. Parallel tasks within a run each
-write their own rows, and the order is sorted out from the timestamps at read time.
-
-## Reference
-
-The backend's API is in the [MariaDB reference](../reference/stores-mariadb.md); the
-`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
-
----
-
 <!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/nats/ -->
 
 # NATS
@@ -6160,6 +6220,173 @@ and the order is sorted out from the timestamps at read time.
 
 The backend's API is in the [NATS reference](../reference/stores-nats.md); the
 `StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/pebble/ -->
+
+# Pebble
+
+> A durable, embedded state store kept in a local Pebble directory — strong,
+> balanced read-and-write performance.
+
+The Pebble backend keeps each run's state in a Pebble store — a pure-Go key-value
+store that lives in **local files on disk**. It is **embedded**: there is no separate
+server to run. Data is **durable** — it survives a restart.
+
+It lives in its own module, so its dependency is only pulled in by applications that
+use it:
+
+```go
+import (
+    bl          "github.com/friendly-business-machines/blkit"
+    pebblestore "github.com/friendly-business-machines/blkit/stores/pebble"
+)
+
+var store = pebblestore.New(pebblestore.Config{Path: "/var/lib/blkit/pebble"})
+```
+
+The backend is built on [cockroachdb/pebble](https://github.com/cockroachdb/pebble) —
+the pure-Go LSM store that underpins CockroachDB. Records are encoded as JSON, and
+arrival-order numbers come from an atomic counter seeded at open from the highest
+existing sequence in the store.
+
+## What it's good for
+
+- **Single-node deployments** that want durability without running a separate
+  database server.
+- **Mixed read-and-write workloads** — Pebble is a general-purpose store with strong
+  all-round performance.
+
+## How state is stored
+
+Pebble uses the **same key scheme as the [Badger backend](badger.md#how-state-is-stored)**
+— prefixes for run metadata, value records, history records, and a pending-write
+index, with big-endian nanosecond timestamps and a sequence tiebreak — so its
+lexicographic key order is the replay order. A batch of writes is applied as a single
+Pebble batch. For write throughput batches are applied without syncing, and a flush
+barrier applies an empty synced batch, which makes every previously applied batch
+durable when it returns.
+
+## Configuration
+
+Construct the backend with the **path to a directory** where Pebble keeps its files.
+There is no server address and no credentials — the store is opened directly by the
+program.
+
+## What to keep in mind
+
+- **It is local to one machine.** The files live on that machine's disk, so runs
+  cannot be shared with workers elsewhere. For shared runs, use a server-based
+  backend such as [PostgreSQL](postgres.md) or [NATS](nats.md).
+- **One program at a time** opens the store, so it suits one worker process on the
+  machine rather than several sharing the files.
+
+Compared with the other embedded backends: [bbolt](bbolt.md) is a single file tuned
+for reads; [Badger](badger.md) and Pebble keep a directory of files and take writes
+at a higher rate, with Pebble aiming for balanced read-and-write performance. If you
+want SQL-queryable history, use [SQLite](sqlite.md) instead.
+
+## Concurrency
+
+Different runs use different keys within the same store, so many runs handled by the
+one worker process do not interfere. Parallel tasks within a run each write their own
+keys; Pebble applies concurrent writes safely.
+
+## Reference
+
+The backend's API is in the [Pebble reference](../reference/stores-pebble.md); the
+`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/postgres/ -->
+
+# PostgreSQL
+
+> A durable, strongly consistent, shareable state store backed by PostgreSQL — a
+> good default for production.
+
+The PostgreSQL backend keeps each run's state in a PostgreSQL database. It is
+**durable** (the data survives restarts), **strongly consistent** (a write is
+always visible to the next read), and **shareable** (workers on different machines
+can all reach the same database), which makes it a good default for production.
+
+It lives in its own module, so the database driver it needs is only pulled in by
+applications that use it:
+
+```go
+import (
+    "os"
+
+    bl      "github.com/friendly-business-machines/blkit"
+    pgstore "github.com/friendly-business-machines/blkit/stores/postgres"
+)
+
+var store = pgstore.New(pgstore.Config{DSN: os.Getenv("DATABASE_URL")})
+```
+
+The backend is built on [pgx](https://github.com/jackc/pgx), the actively
+maintained PostgreSQL driver for Go: a whole batch of writes is sent as one
+pipelined round-trip inside a single transaction, and encoded values are stored as
+`JSONB` so the audit history is queryable with SQL down into the values.
+
+## What it's good for
+
+- **Production runs** that must survive restarts and crashes.
+- **Runs shared across many workers**, on one machine or many.
+- **Auditing and reporting** — because the history is ordinary database rows, it
+  can be queried directly with SQL.
+
+## Storage layout
+
+On first use the backend creates three tables (their names carry a configurable
+prefix, `blkit_` by default):
+
+- **`blkit_runs`** — one row per run: its id, process id and version, status, and
+  timestamps.
+- **`blkit_values`** — one row per value a task writes, each with a `pending` /
+  `committed` / `aborted` status. A task finishing flips all of its pending rows to
+  committed in a single statement; a failure flips them to aborted. The current
+  state reads the latest committed row per field; the full history returns every
+  row, with its status.
+- **`blkit_history`** — one row per execution-history entry.
+
+Both event tables carry a timestamp and an auto-increment id, and reads sort on
+`(timestamp, id)`, so the order events arrived in does not matter.
+
+## Configuration
+
+Construct the backend with a connection string (`DSN`) pointing at the PostgreSQL
+server and database. Because the data is in a shared database, the same connection
+details can be handed to workers in other processes or on other machines, so they
+can all work on the same runs.
+
+### Managed and cloud PostgreSQL
+
+This backend speaks to any PostgreSQL-compatible server, so it also works — with no
+code change, just a different `DSN` — against the managed PostgreSQL services on the
+major clouds:
+
+- **AWS** — Amazon RDS for PostgreSQL, and Amazon Aurora PostgreSQL-Compatible Edition.
+- **GCP** — Cloud SQL for PostgreSQL, and AlloyDB for PostgreSQL.
+- **Azure** — Azure Database for PostgreSQL.
+
+There is no separate backend for these — point the `DSN` at the managed endpoint.
+Use a primary (read-write) endpoint; reading from an asynchronous read replica can
+return stale data.
+
+## Concurrency
+
+Different runs are independent rows keyed by different run ids, so many runs — and
+many workers — can share one database without interfering. Parallel tasks within a
+run each write their own rows, and the order is sorted out from the timestamps at
+read time.
+
+## Reference
+
+The backend's API is in the [PostgreSQL reference](../reference/stores-postgres.md);
+the `StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
 
 ---
 
@@ -6353,233 +6580,6 @@ and applied one statement after another.
 ## Reference
 
 The backend's API is in the [Turso reference](../reference/stores-turso.md); the
-`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
-
----
-
-<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/bbolt/ -->
-
-# bbolt
-
-> A durable, embedded state store kept in a single bbolt file — the simplest durable
-> key-value option, tuned for reads.
-
-The bbolt backend keeps each run's state in a bbolt database — a small, pure-Go
-key-value store in a **single file on local disk**. It is **embedded**: there is no
-separate server to run, just a file the program opens directly. Data is **durable** —
-it survives a restart.
-
-It lives in its own module, so its dependency is only pulled in by applications that
-use it:
-
-```go
-import (
-    bl         "github.com/friendly-business-machines/blkit"
-    bboltstore "github.com/friendly-business-machines/blkit/stores/bbolt"
-)
-
-var store = bboltstore.New(bboltstore.Config{Path: "/var/lib/blkit/state.db"})
-```
-
-The backend is built on [go.etcd.io/bbolt](https://github.com/etcd-io/bbolt) — the
-maintained etcd fork of Bolt, pure Go with no CGO. Records are encoded as JSON, so
-the file stays inspectable with the `bbolt` CLI during debugging.
-
-## What it's good for
-
-- **Single-node deployments** that want durability without running a separate
-  database server.
-- **Read-heavy workloads** — bbolt is a B+tree store that is very fast to read from.
-- **Simple operations** — the whole state is one file to back up or move.
-
-## How state is stored
-
-bbolt's nested buckets map naturally onto runs: one top-level bucket holds a
-sub-bucket per run, containing the run's metadata, its value records, its history
-records, and a small index used to settle a task's pending writes. Keys are built
-from a big-endian nanosecond timestamp and a per-bucket sequence number, so bbolt's
-natural key order **is** the replay order — reading a run's history is a single
-in-order cursor walk with no sorting step. A batch of writes is applied in one bbolt
-transaction, atomic and durable when it returns.
-
-## Configuration
-
-Construct the backend with the **path to the database file**. There is no server
-address and no credentials — the file is opened directly by the program.
-
-## What to keep in mind
-
-- **It is local to one machine.** The file lives on that machine's disk, so runs
-  cannot be shared with workers elsewhere. For shared runs, use a server-based
-  backend such as [PostgreSQL](postgres.md) or [NATS](nats.md).
-- **One program at a time** opens the file. bbolt allows a single writer, so it suits
-  one worker process on the machine rather than several sharing the file.
-
-Compared with the other embedded backends ([Badger](badger.md), [Pebble](pebble.md)),
-bbolt is the simplest — a single file and a B+tree that favours fast reads over heavy
-write throughput. If you want SQL-queryable history, use [SQLite](sqlite.md) instead.
-
-## Concurrency
-
-Different runs use different keys within the same file, so many runs handled by the
-one worker process do not interfere. Parallel tasks within a run each write their own
-keys; bbolt serialises writes internally, so concurrent writes within a run are
-applied safely one after another.
-
-## Reference
-
-The backend's API is in the [bbolt reference](../reference/stores-bbolt.md); the
-`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
-
----
-
-<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/badger/ -->
-
-# Badger
-
-> A durable, embedded state store kept in a local BadgerDB directory — tuned for
-> heavy write throughput.
-
-The Badger backend keeps each run's state in a BadgerDB store — a pure-Go key-value
-store that lives in **local files on disk**. It is **embedded**: there is no separate
-server to run. Data is **durable** — it survives a restart.
-
-It lives in its own module, so its dependency is only pulled in by applications that
-use it:
-
-```go
-import (
-    bl          "github.com/friendly-business-machines/blkit"
-    badgerstore "github.com/friendly-business-machines/blkit/stores/badger"
-)
-
-var store = badgerstore.New(badgerstore.Config{Path: "/var/lib/blkit/badger"})
-```
-
-The backend is built on [dgraph-io/badger](https://github.com/dgraph-io/badger) —
-pure Go, no CGO. Records are encoded as JSON, and arrival-order numbers come from
-Badger's own durable monotonic counter, so they survive a reopen.
-
-## What it's good for
-
-- **Single-node deployments** that want durability without running a separate
-  database server.
-- **Write-heavy workloads** — Badger is built to take a high rate of writes and
-  handles large values well.
-
-## How state is stored
-
-Badger has a flat keyspace, so runs are separated by key prefixes — one prefix each
-for run metadata, value records, history records, and a pending-write index. Keys
-embed a big-endian nanosecond timestamp and a sequence number, so Badger's
-lexicographic key order **is** the replay order. A batch of writes is applied in a
-single Badger transaction. For write throughput the backend runs with synchronous
-writes off and provides durability at a flush barrier, which calls Badger's `Sync`.
-
-## Configuration
-
-Construct the backend with the **path to a directory** where BadgerDB keeps its
-files. There is no server address and no credentials — the store is opened directly
-by the program.
-
-## What to keep in mind
-
-- **It is local to one machine.** The files live on that machine's disk, so runs
-  cannot be shared with workers elsewhere. For shared runs, use a server-based
-  backend such as [PostgreSQL](postgres.md) or [NATS](nats.md).
-- **One program at a time** opens the store, so it suits one worker process on the
-  machine rather than several sharing the files.
-
-Compared with the other embedded backends: [bbolt](bbolt.md) is a single file tuned
-for reads; Badger and [Pebble](pebble.md) keep a directory of files and take writes
-at a higher rate. If you want SQL-queryable history, use [SQLite](sqlite.md) instead.
-
-## Concurrency
-
-Different runs use different keys within the same store, so many runs handled by the
-one worker process do not interfere. Parallel tasks within a run each write their own
-keys; Badger applies concurrent writes safely.
-
-## Reference
-
-The backend's API is in the [Badger reference](../reference/stores-badger.md); the
-`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
-
----
-
-<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/pebble/ -->
-
-# Pebble
-
-> A durable, embedded state store kept in a local Pebble directory — strong,
-> balanced read-and-write performance.
-
-The Pebble backend keeps each run's state in a Pebble store — a pure-Go key-value
-store that lives in **local files on disk**. It is **embedded**: there is no separate
-server to run. Data is **durable** — it survives a restart.
-
-It lives in its own module, so its dependency is only pulled in by applications that
-use it:
-
-```go
-import (
-    bl          "github.com/friendly-business-machines/blkit"
-    pebblestore "github.com/friendly-business-machines/blkit/stores/pebble"
-)
-
-var store = pebblestore.New(pebblestore.Config{Path: "/var/lib/blkit/pebble"})
-```
-
-The backend is built on [cockroachdb/pebble](https://github.com/cockroachdb/pebble) —
-the pure-Go LSM store that underpins CockroachDB. Records are encoded as JSON, and
-arrival-order numbers come from an atomic counter seeded at open from the highest
-existing sequence in the store.
-
-## What it's good for
-
-- **Single-node deployments** that want durability without running a separate
-  database server.
-- **Mixed read-and-write workloads** — Pebble is a general-purpose store with strong
-  all-round performance.
-
-## How state is stored
-
-Pebble uses the **same key scheme as the [Badger backend](badger.md#how-state-is-stored)**
-— prefixes for run metadata, value records, history records, and a pending-write
-index, with big-endian nanosecond timestamps and a sequence tiebreak — so its
-lexicographic key order is the replay order. A batch of writes is applied as a single
-Pebble batch. For write throughput batches are applied without syncing, and a flush
-barrier applies an empty synced batch, which makes every previously applied batch
-durable when it returns.
-
-## Configuration
-
-Construct the backend with the **path to a directory** where Pebble keeps its files.
-There is no server address and no credentials — the store is opened directly by the
-program.
-
-## What to keep in mind
-
-- **It is local to one machine.** The files live on that machine's disk, so runs
-  cannot be shared with workers elsewhere. For shared runs, use a server-based
-  backend such as [PostgreSQL](postgres.md) or [NATS](nats.md).
-- **One program at a time** opens the store, so it suits one worker process on the
-  machine rather than several sharing the files.
-
-Compared with the other embedded backends: [bbolt](bbolt.md) is a single file tuned
-for reads; [Badger](badger.md) and Pebble keep a directory of files and take writes
-at a higher rate, with Pebble aiming for balanced read-and-write performance. If you
-want SQL-queryable history, use [SQLite](sqlite.md) instead.
-
-## Concurrency
-
-Different runs use different keys within the same store, so many runs handled by the
-one worker process do not interfere. Parallel tasks within a run each write their own
-keys; Pebble applies concurrent writes safely.
-
-## Reference
-
-The backend's API is in the [Pebble reference](../reference/stores-pebble.md); the
 `StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
 
 ---

@@ -52,17 +52,17 @@
 
 ## State Stores
 - [Overview](https://friendly-business-machines.github.io/blkit/state-stores/overview/): Where blkit keeps the state of a running process — pick the backend that fits your deployment, from a zero-dependency in-memory store to PostgreSQL, NATS, or an embedded file.
+- [Badger](https://friendly-business-machines.github.io/blkit/state-stores/badger/): A durable, embedded state store kept in a local BadgerDB directory — tuned for heavy write throughput.
+- [bbolt](https://friendly-business-machines.github.io/blkit/state-stores/bbolt/): A durable, embedded state store kept in a single bbolt file — the simplest durable key-value option, tuned for reads.
 - [In-memory](https://friendly-business-machines.github.io/blkit/state-stores/in-memory/): The built-in state store — zero dependencies, not durable — the default for tests, examples, and local single-process runs.
-- [PostgreSQL](https://friendly-business-machines.github.io/blkit/state-stores/postgres/): A durable, strongly consistent, shareable state store backed by PostgreSQL — a good default for production.
+- [MariaDB](https://friendly-business-machines.github.io/blkit/state-stores/mariadb/): A durable, strongly consistent, shareable state store backed by MariaDB — a separate backend from MySQL, tuned for MariaDB.
 - [SQL Server](https://friendly-business-machines.github.io/blkit/state-stores/mssql/): A durable, strongly consistent, shareable state store backed by Microsoft SQL Server — for shops standardised on SQL Server.
 - [MySQL](https://friendly-business-machines.github.io/blkit/state-stores/mysql/): A durable, strongly consistent, shareable state store backed by MySQL — for shops running MySQL.
-- [MariaDB](https://friendly-business-machines.github.io/blkit/state-stores/mariadb/): A durable, strongly consistent, shareable state store backed by MariaDB — a separate backend from MySQL, tuned for MariaDB.
 - [NATS](https://friendly-business-machines.github.io/blkit/state-stores/nats/): A durable, shareable state store backed by NATS JetStream — a natural fit when NATS is already your message broker.
+- [Pebble](https://friendly-business-machines.github.io/blkit/state-stores/pebble/): A durable, embedded state store kept in a local Pebble directory — strong, balanced read-and-write performance.
+- [PostgreSQL](https://friendly-business-machines.github.io/blkit/state-stores/postgres/): A durable, strongly consistent, shareable state store backed by PostgreSQL — a good default for production.
 - [SQLite](https://friendly-business-machines.github.io/blkit/state-stores/sqlite/): A durable, embedded state store kept in a single SQLite file — the most broadly useful embedded default, and the only one whose history is queryable with SQL.
 - [Turso](https://friendly-business-machines.github.io/blkit/state-stores/turso/): A durable, embedded state store kept in a Turso Database file — Turso Database is the ground-up rewrite of SQLite in Rust, in-process and compatible with SQLite's query language and file format. Beta engine.
-- [bbolt](https://friendly-business-machines.github.io/blkit/state-stores/bbolt/): A durable, embedded state store kept in a single bbolt file — the simplest durable key-value option, tuned for reads.
-- [Badger](https://friendly-business-machines.github.io/blkit/state-stores/badger/): A durable, embedded state store kept in a local BadgerDB directory — tuned for heavy write throughput.
-- [Pebble](https://friendly-business-machines.github.io/blkit/state-stores/pebble/): A durable, embedded state store kept in a local Pebble directory — strong, balanced read-and-write performance.
 
 ## Architecture
 - [Expressions](https://friendly-business-machines.github.io/blkit/architecture/expressions/): blkit's expression language: a FEEL-flavoured language for business logic, built by extending the Expr engine. Where it comes from, and how it compiles and runs.
