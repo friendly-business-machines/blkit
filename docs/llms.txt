@@ -59,6 +59,7 @@
 - [MariaDB](https://friendly-business-machines.github.io/blkit/state-stores/mariadb/): A durable, strongly consistent, shareable state store backed by MariaDB — a separate backend from MySQL, tuned for MariaDB.
 - [NATS](https://friendly-business-machines.github.io/blkit/state-stores/nats/): A durable, shareable state store backed by NATS JetStream — a natural fit when NATS is already your message broker.
 - [SQLite](https://friendly-business-machines.github.io/blkit/state-stores/sqlite/): A durable, embedded state store kept in a single SQLite file — the most broadly useful embedded default, and the only one whose history is queryable with SQL.
+- [Turso](https://friendly-business-machines.github.io/blkit/state-stores/turso/): A durable, embedded state store kept in a Turso Database file — Turso Database is the ground-up rewrite of SQLite in Rust, in-process and compatible with SQLite's query language and file format. Beta engine.
 - [bbolt](https://friendly-business-machines.github.io/blkit/state-stores/bbolt/): A durable, embedded state store kept in a single bbolt file — the simplest durable key-value option, tuned for reads.
 - [Badger](https://friendly-business-machines.github.io/blkit/state-stores/badger/): A durable, embedded state store kept in a local BadgerDB directory — tuned for heavy write throughput.
 - [Pebble](https://friendly-business-machines.github.io/blkit/state-stores/pebble/): A durable, embedded state store kept in a local Pebble directory — strong, balanced read-and-write performance.
@@ -78,3 +79,4 @@
 - [pebble](https://friendly-business-machines.github.io/blkit/reference/stores-pebble/)
 - [postgres](https://friendly-business-machines.github.io/blkit/reference/stores-postgres/)
 - [sqlite](https://friendly-business-machines.github.io/blkit/reference/stores-sqlite/)
+- [turso](https://friendly-business-machines.github.io/blkit/reference/stores-turso/)

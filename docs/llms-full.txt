@@ -5652,6 +5652,7 @@ durability, and whether runs must be shared across more than one machine.
 | Backend | Use it for |
 |---|---|
 | [SQLite](sqlite.md) | The most broadly useful embedded default — a single file whose history is queryable with SQL. |
+| [Turso](turso.md) | The ground-up rewrite of SQLite in Rust (beta) — in-process, SQLite-compatible file format. |
 | [bbolt](bbolt.md) | The simplest durable key-value option; a single file tuned for reads. |
 | [Badger](badger.md) | A directory of files tuned for heavy writes. |
 | [Pebble](pebble.md) | A directory of files with balanced read-and-write performance. |
@@ -6249,6 +6250,109 @@ mode keeps reads flowing while that happens.
 ## Reference
 
 The backend's API is in the [SQLite reference](../reference/stores-sqlite.md); the
+`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/turso/ -->
+
+# Turso
+
+> A durable, embedded state store kept in a Turso Database file — Turso Database
+> is the ground-up rewrite of SQLite in Rust, in-process and compatible with
+> SQLite's query language and file format. Beta engine.
+
+The Turso backend keeps each run's state in a **Turso Database** file on local
+disk. Turso Database is the ground-up **rewrite of SQLite in Rust** (formerly
+"Limbo"): an **in-process, embedded** engine — no server to run, just a file the
+program opens directly — compatible with SQLite in both query language and file
+format. Data is **durable** — it survives a restart.
+
+!!! warning "Beta engine"
+
+    Turso Database is in **beta**. blkit's conformance suite passes against it,
+    but the vendor's own guidance applies: use caution with production data and
+    keep backups. For a battle-tested embedded SQL store, use the
+    [SQLite backend](sqlite.md); choose this backend to run on the Rust engine.
+
+A naming note: this backend is built on **Turso Database, the Rust engine** — not
+on libSQL, Turso's earlier C fork of SQLite that powers their managed cloud
+service.
+
+It lives in its own module, so its dependency is only pulled in by applications
+that use it:
+
+```go
+import (
+    bl         "github.com/friendly-business-machines/blkit"
+    tursostore "github.com/friendly-business-machines/blkit/stores/turso"
+)
+
+var store = tursostore.New(tursostore.Config{Path: "/var/lib/blkit/state.db"})
+```
+
+The backend is built on Turso's official Go bindings
+([turso.tech/database/tursogo](https://pkg.go.dev/turso.tech/database/tursogo)),
+which call the Rust core through purego with a bundled platform library — **no
+CGO at build time**, so `CGO_ENABLED=0` builds keep working. One runtime caveat
+follows: the bundled library is extracted and loaded dynamically, so a container
+image needs a libc-based dynamic loader (for example `distroless/base`); a fully
+static `scratch` image cannot load it.
+
+## What it's good for
+
+- **Running blkit state on the Rust engine** — for teams adopting Turso
+  Database, with the same operational shape as the SQLite backend.
+- **Single-node deployments** that want durability without running a separate
+  database server.
+- **SQLite-compatible file format** — the database file follows SQLite's format,
+  keeping the state inspectable with familiar tooling.
+
+## Storage layout
+
+The backend uses the same three tables as the
+[PostgreSQL layout](postgres.md#storage-layout) — `blkit_runs`, `blkit_values`,
+`blkit_history` — in SQLite's dialect, as in the
+[SQLite backend](sqlite.md#storage-layout): rowid for the arrival-order id,
+`INTEGER` Unix-nanosecond timestamps, and `TEXT` JSON for encoded values. To stay
+well inside the beta engine's supported SQL surface, the backend keeps its SQL
+deliberately conservative: plain composite indexes rather than partial indexes,
+and the latest-committed-per-field read folds in Go over an ordered scan rather
+than using a window function. A batch of writes executes as a single
+transaction, and a task finishing settles all of its pending rows in one
+statement.
+
+## Configuration
+
+Construct the backend with the **path to the database file**. There is no server
+address and no credentials — the file is opened directly by the program.
+
+## Consistency
+
+Turso Database is an embedded engine with transactions on a single local file: a
+committed write is always visible to the next read. There is no replication, so
+the stale-read concerns that apply to server-based backends in HA setups do not
+arise.
+
+## What to keep in mind
+
+- **Beta engine** — see the warning above.
+- **It is local to one machine.** The file lives on that machine's disk, so runs
+  cannot be shared with workers elsewhere. For shared runs, use a server-based
+  backend such as [PostgreSQL](postgres.md) or [NATS](nats.md).
+- **One worker process per file**, with all access serialised through a single
+  connection.
+
+## Concurrency
+
+Different runs are independent rows keyed by different run ids, so many runs
+handled by the one worker process do not interfere. Parallel tasks within a run
+each write their own rows; all access is funnelled through the single connection
+and applied one statement after another.
+
+## Reference
+
+The backend's API is in the [Turso reference](../reference/stores-turso.md); the
 `StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
 
 ---
@@ -11462,5 +11566,134 @@ func (s *Store) WriteBatch(ops []bl.WriteOp) error
 ```
 
 WriteBatch applies the ops in a single transaction on the writer connection, so a task's outputs land together.
+
+Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/reference/stores-turso/ -->
+
+<!-- Generated by scripts/generate-docs.sh — DO NOT EDIT. -->
+
+<!-- Code generated by gomarkdoc. DO NOT EDIT -->
+
+# turso
+
+```go
+import "github.com/friendly-business-machines/blkit/stores/turso"
+```
+
+Package turso is the Turso Database state\-store backend for blkit: a durable, embedded store keeping each run's ProcessState in a Turso database file on local disk. Turso Database is the ground\-up rewrite of SQLite in Rust (formerly "Limbo") — in\-process, SQLite\-compatible in query language and file format, and currently in BETA. The driver is pure Go (purego \+ a bundled platform library; no CGO at build time). See specs/stores/turso\-state\-store.spec.md.
+
+## Index
+
+- [type Config](<#Config>)
+- [type Store](<#Store>)
+  - [func New(cfg Config) \*Store](<#New>)
+  - [func (s \*Store) Close() error](<#Store.Close>)
+  - [func (s \*Store) Config() (map\[string\]string, error)](<#Store.Config>)
+  - [func (s \*Store) CurrentVersion(runID string) (\*bl.CurrentVersion, error)](<#Store.CurrentVersion>)
+  - [func (s \*Store) Flush(runID string) error](<#Store.Flush>)
+  - [func (s \*Store) FullHistory(runID string) (\*bl.FullHistory, error)](<#Store.FullHistory>)
+  - [func (s \*Store) Save(meta bl.RunMetadata) error](<#Store.Save>)
+  - [func (s \*Store) WriteBatch(ops \[\]bl.WriteOp) error](<#Store.WriteBatch>)
+
+
+<a name="Config"></a>
+## type [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/turso/store.go#L23-L28>)
+
+Config holds the construction parameters for the Turso backend.
+
+```go
+type Config struct {
+    Path string // path to the database file; required
+
+    // TablePrefix is the table-name prefix; defaults to "blkit_".
+    TablePrefix string
+}
+```
+
+<a name="Store"></a>
+## type [Store](<https://github.com/friendly-business-machines/blkit/blob/main/stores/turso/store.go#L34-L40>)
+
+Store implements bl.StateStore on a Turso database file. All access is funnelled through a single connection — the engine is in beta, and serialising access through one connection keeps its concurrency surface out of play.
+
+```go
+type Store struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="New"></a>
+### func [New](<https://github.com/friendly-business-machines/blkit/blob/main/stores/turso/store.go#L49>)
+
+```go
+func New(cfg Config) *Store
+```
+
+New opens (creating if needed) the database file and returns the store. Following the blkit constructor convention it panics on an invalid config or an unopenable file.
+
+<a name="Store.Close"></a>
+### func (\*Store) [Close](<https://github.com/friendly-business-machines/blkit/blob/main/stores/turso/store.go#L390>)
+
+```go
+func (s *Store) Close() error
+```
+
+Close closes the database handle.
+
+<a name="Store.Config"></a>
+### func (\*Store) [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/turso/store.go#L385>)
+
+```go
+func (s *Store) Config() (map[string]string, error)
+```
+
+Config returns an error: a Turso database file is local to one process on one machine and cannot be shared.
+
+<a name="Store.CurrentVersion"></a>
+### func (\*Store) [CurrentVersion](<https://github.com/friendly-business-machines/blkit/blob/main/stores/turso/store.go#L281>)
+
+```go
+func (s *Store) CurrentVersion(runID string) (*bl.CurrentVersion, error)
+```
+
+CurrentVersion returns the latest committed value per (task, field). The fold is done in Go over a replay\-ordered scan rather than with a window function, staying inside the beta engine's supported SQL surface. Returns (nil, nil) for an unknown run.
+
+<a name="Store.Flush"></a>
+### func (\*Store) [Flush](<https://github.com/friendly-business-machines/blkit/blob/main/stores/turso/store.go#L246>)
+
+```go
+func (s *Store) Flush(runID string) error
+```
+
+Flush is a no\-op: writes are synchronous once the transaction commits.
+
+<a name="Store.FullHistory"></a>
+### func (\*Store) [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/stores/turso/store.go#L316>)
+
+```go
+func (s *Store) FullHistory(runID string) (*bl.FullHistory, error)
+```
+
+FullHistory returns every stored record for the run in replay order (ts, id). Returns (nil, nil) for an unknown run.
+
+<a name="Store.Save"></a>
+### func (\*Store) [Save](<https://github.com/friendly-business-machines/blkit/blob/main/stores/turso/store.go#L140>)
+
+```go
+func (s *Store) Save(meta bl.RunMetadata) error
+```
+
+Save upserts the run's metadata. The upsert is UPDATE\-then\-INSERT inside a transaction rather than ON CONFLICT — plain UPDATE/INSERT is the most conservative SQLite surface, and the single connection makes it raceless.
+
+<a name="Store.WriteBatch"></a>
+### func (\*Store) [WriteBatch](<https://github.com/friendly-business-machines/blkit/blob/main/stores/turso/store.go#L189>)
+
+```go
+func (s *Store) WriteBatch(ops []bl.WriteOp) error
+```
+
+WriteBatch applies the ops in a single transaction, so a task's outputs land together.
 
 Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)

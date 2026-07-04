@@ -69,6 +69,7 @@ nav = [
     "state-stores/mariadb.md",
     "state-stores/nats.md",
     "state-stores/sqlite.md",
+    "state-stores/turso.md",
     "state-stores/bbolt.md",
     "state-stores/badger.md",
     "state-stores/pebble.md",
@@ -88,6 +89,7 @@ nav = [
     "reference/stores-pebble.md",
     "reference/stores-postgres.md",
     "reference/stores-sqlite.md",
+    "reference/stores-turso.md",
   ] },
 ]
 

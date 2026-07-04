@@ -318,8 +318,11 @@ durability, and whether the runs must be shared across more than one machine.
 **Durable, local to one machine — embedded, no server to run:**
 
 - **SQLite** — [sqlite-state-store.spec.md](./sqlite-state-store.spec.md) — a single
-  file, and the only embedded option whose history is queryable with SQL. The most
-  broadly useful embedded default.
+  file, and (with Turso) an embedded option whose history is queryable with SQL. The
+  most broadly useful embedded default.
+- **Turso** — [turso-state-store.spec.md](./turso-state-store.spec.md) — the
+  ground-up rewrite of SQLite in Rust (beta), in-process with a SQLite-compatible
+  file format. For running on the Rust engine.
 - **bbolt** — [bbolt-state-store.spec.md](./bbolt-state-store.spec.md) — a single
   file, tuned for reads. The simplest durable key-value option.
 - **Badger** — [badger-state-store.spec.md](./badger-state-store.spec.md) — a
@@ -355,9 +358,9 @@ store. It checks the whole [write contract](#the-write-contract):
 How the suite is run depends on the backend:
 
 - **In-memory** runs the suite in-process — no setup, part of the normal test run.
-- **Embedded backends** (SQLite, bbolt, Badger, Pebble) run the suite against a
-  store opened in a **temporary directory** that is removed afterwards — no external
-  system, part of the normal test run.
+- **Embedded backends** (SQLite, Turso, bbolt, Badger, Pebble) run the suite against
+  a store opened in a **temporary directory** that is removed afterwards — no
+  external system, part of the normal test run.
 - **NATS** runs the suite against a **real JetStream server embedded in the test
   process** (`nats-server` is importable as a Go library) — the genuine engine,
   part of the normal test run, no container needed.

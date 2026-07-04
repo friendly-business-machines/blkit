@@ -85,6 +85,7 @@ durability, and whether runs must be shared across more than one machine.
 | Backend | Use it for |
 |---|---|
 | [SQLite](sqlite.md) | The most broadly useful embedded default — a single file whose history is queryable with SQL. |
+| [Turso](turso.md) | The ground-up rewrite of SQLite in Rust (beta) — in-process, SQLite-compatible file format. |
 | [bbolt](bbolt.md) | The simplest durable key-value option; a single file tuned for reads. |
 | [Badger](badger.md) | A directory of files tuned for heavy writes. |
 | [Pebble](pebble.md) | A directory of files with balanced read-and-write performance. |
