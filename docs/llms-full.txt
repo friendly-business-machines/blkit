@@ -5563,6 +5563,923 @@ flows — that blkit executes from start to finish.
 
 ---
 
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/overview/ -->
+
+# State Stores
+
+> Where blkit keeps the state of a running process — pick the backend that fits
+> your deployment, from a zero-dependency in-memory store to PostgreSQL, NATS, or
+> an embedded file.
+
+blkit workers are **stateless**: everything they know about a run they load from a
+**state store** and write straight back to it. The state store is the source of
+truth for a [process](../processes/processes.md) instance — the values its tasks
+produce and the execution history of every step — so a run survives a worker
+restart and can be picked up by another worker.
+
+blkit ships one built-in store and a family of pluggable backends. They are
+**interchangeable**: your process code does not change when you swap one for
+another, because every backend implements the same interface and is held to the
+same behaviour by a [shared conformance suite](#conformance).
+
+## What every state store does
+
+For each run of a process, a state store must:
+
+- **Create** a fresh run when it starts — its id and its start values.
+- **Save** changes as the run progresses — the values tasks write and the
+  execution-history entries — so nothing is lost if a worker stops.
+- **Load** the current state for a run, so a worker can see where it got to and
+  carry it on.
+- **Read back** the full history — every value ever written and the whole
+  execution history — for diagnostics and audit.
+
+Two rules hold across every backend:
+
+- **A task's outputs become visible all at once, when it finishes.** While a task
+  runs, its writes are held pending; they appear in the current state together the
+  moment the task completes, and are discarded from the current view if it fails.
+- **Nothing is ever deleted.** Failed attempts stay in the full history — the
+  record is kept for diagnostics and audit — even though they never show up in the
+  current state.
+
+## Choosing a backend
+
+You pick a backend by constructing it and handing it to blkit. The built-in
+in-memory store needs nothing extra:
+
+```go
+var store = bl.NewInMemoryStateStore()
+```
+
+Every other backend lives in its own module, so you only pull in its driver if you
+use it. Import it and construct it — the rest of your code is identical:
+
+```go
+import (
+    "os"
+
+    bl      "github.com/friendly-business-machines/blkit"
+    pgstore "github.com/friendly-business-machines/blkit/stores/postgres"
+)
+
+var store = pgstore.New(pgstore.Config{DSN: os.Getenv("DATABASE_URL")})
+```
+
+## The backends
+
+The backends fall into three families. Which fits depends on whether you need
+durability, and whether runs must be shared across more than one machine.
+
+**Not durable — built into core:**
+
+| Backend | Use it for |
+|---|---|
+| [In-memory](in-memory.md) | Tests, examples, and local runs. Zero dependencies; lost when the program exits. |
+
+**Durable and shared across machines — a server you run separately:**
+
+| Backend | Use it for |
+|---|---|
+| [PostgreSQL](postgres.md) | The default for production: durable, strongly consistent, shareable. |
+| [SQL Server](mssql.md) | Shops standardised on Microsoft SQL Server. |
+| [MySQL](mysql.md) | Shops running MySQL. |
+| [MariaDB](mariadb.md) | Shops running MariaDB — a separate backend from MySQL. |
+| [NATS](nats.md) | When NATS is already your message broker: store state in the same system. |
+
+**Durable but local to one machine — embedded, no server to run:**
+
+| Backend | Use it for |
+|---|---|
+| [SQLite](sqlite.md) | The most broadly useful embedded default — a single file whose history is queryable with SQL. |
+| [bbolt](bbolt.md) | The simplest durable key-value option; a single file tuned for reads. |
+| [Badger](badger.md) | A directory of files tuned for heavy writes. |
+| [Pebble](pebble.md) | A directory of files with balanced read-and-write performance. |
+
+## Conformance
+
+Every backend is verified against a **shared conformance suite** that lives in core,
+so they all behave identically — a value written through any of them is read back
+the same way, and the strong-consistency guarantee is checked for each. The suite
+covers the full behaviour: pending writes stay invisible until a task finishes,
+aborted writes are retained in the full history, the latest committed value wins
+per field, replay ordering is stable, and reads see prior writes after a flush.
+
+How it runs depends on the backend: the in-memory and embedded backends run it
+in-process with no setup; NATS runs it against a real JetStream server embedded in
+the test; and the SQL-server backends run it against a real server whose address
+comes from an environment variable, skipping when it is unset.
+
+## Reference
+
+The `StateStore` interface and the built-in in-memory store are in the core API
+[Reference](../reference/blkit.md); each pluggable backend has its own reference
+page (for example, [PostgreSQL](../reference/stores-postgres.md)).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/in-memory/ -->
+
+# In-memory
+
+> The built-in state store — zero dependencies, not durable — the default for
+> tests, examples, and local single-process runs.
+
+The in-memory store keeps each run's state in ordinary in-memory data structures.
+It is **built into core**, so it needs nothing extra to import, which makes it the
+default choice for tests, examples, and local single-process runs.
+
+```go
+var store = bl.NewInMemoryStateStore()
+```
+
+## What it's good for
+
+- **Tests** — fast, with no setup and nothing to clean up.
+- **Examples and local development** — run a process end to end with no database.
+- **Short-lived, single-process runs** where losing the data when the program
+  exits is acceptable.
+
+Because there is no external storage, saving is immediate — there is nothing to
+send over a network and nothing to wait for.
+
+## What it's not for
+
+- **It is not durable.** Everything is lost when the program exits; an unfinished
+  run cannot be recovered afterwards.
+- **It cannot be shared.** The data lives inside one running program's memory, so
+  it cannot be handed to a worker in another process or on another machine. Asking
+  it for connection details is an error — there is nothing to connect to.
+
+For durable or shared runs, use a backend such as [PostgreSQL](postgres.md) or
+[NATS](nats.md).
+
+## Concurrency
+
+Within a single run, several tasks can run in parallel and write at once. The
+in-memory store is safe to use from those parallel tasks — its data structures are
+guarded so concurrent writes within a run do not corrupt each other.
+
+## Reference
+
+`NewInMemoryStateStore` and the `StateStore` interface it implements are in the
+core API [Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/postgres/ -->
+
+# PostgreSQL
+
+> A durable, strongly consistent, shareable state store backed by PostgreSQL — a
+> good default for production.
+
+The PostgreSQL backend keeps each run's state in a PostgreSQL database. It is
+**durable** (the data survives restarts), **strongly consistent** (a write is
+always visible to the next read), and **shareable** (workers on different machines
+can all reach the same database), which makes it a good default for production.
+
+It lives in its own module, so the database driver it needs is only pulled in by
+applications that use it:
+
+```go
+import (
+    "os"
+
+    bl      "github.com/friendly-business-machines/blkit"
+    pgstore "github.com/friendly-business-machines/blkit/stores/postgres"
+)
+
+var store = pgstore.New(pgstore.Config{DSN: os.Getenv("DATABASE_URL")})
+```
+
+The backend is built on [pgx](https://github.com/jackc/pgx), the actively
+maintained PostgreSQL driver for Go: a whole batch of writes is sent as one
+pipelined round-trip inside a single transaction, and encoded values are stored as
+`JSONB` so the audit history is queryable with SQL down into the values.
+
+## What it's good for
+
+- **Production runs** that must survive restarts and crashes.
+- **Runs shared across many workers**, on one machine or many.
+- **Auditing and reporting** — because the history is ordinary database rows, it
+  can be queried directly with SQL.
+
+## Storage layout
+
+On first use the backend creates three tables (their names carry a configurable
+prefix, `blkit_` by default):
+
+- **`blkit_runs`** — one row per run: its id, process id and version, status, and
+  timestamps.
+- **`blkit_values`** — one row per value a task writes, each with a `pending` /
+  `committed` / `aborted` status. A task finishing flips all of its pending rows to
+  committed in a single statement; a failure flips them to aborted. The current
+  state reads the latest committed row per field; the full history returns every
+  row, with its status.
+- **`blkit_history`** — one row per execution-history entry.
+
+Both event tables carry a timestamp and an auto-increment id, and reads sort on
+`(timestamp, id)`, so the order events arrived in does not matter.
+
+## Configuration
+
+Construct the backend with a connection string (`DSN`) pointing at the PostgreSQL
+server and database. Because the data is in a shared database, the same connection
+details can be handed to workers in other processes or on other machines, so they
+can all work on the same runs.
+
+### Managed and cloud PostgreSQL
+
+This backend speaks to any PostgreSQL-compatible server, so it also works — with no
+code change, just a different `DSN` — against the managed PostgreSQL services on the
+major clouds:
+
+- **AWS** — Amazon RDS for PostgreSQL, and Amazon Aurora PostgreSQL-Compatible Edition.
+- **GCP** — Cloud SQL for PostgreSQL, and AlloyDB for PostgreSQL.
+- **Azure** — Azure Database for PostgreSQL.
+
+There is no separate backend for these — point the `DSN` at the managed endpoint.
+Use a primary (read-write) endpoint; reading from an asynchronous read replica can
+return stale data.
+
+## Concurrency
+
+Different runs are independent rows keyed by different run ids, so many runs — and
+many workers — can share one database without interfering. Parallel tasks within a
+run each write their own rows, and the order is sorted out from the timestamps at
+read time.
+
+## Reference
+
+The backend's API is in the [PostgreSQL reference](../reference/stores-postgres.md);
+the `StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/mssql/ -->
+
+# SQL Server
+
+> A durable, strongly consistent, shareable state store backed by Microsoft SQL
+> Server — for shops standardised on SQL Server.
+
+The SQL Server backend keeps each run's state in a Microsoft SQL Server database.
+Like the [PostgreSQL backend](postgres.md) it is **durable**, **strongly
+consistent**, and **shareable** across workers on different machines. Choose it when
+your organisation is standardised on SQL Server.
+
+It lives in its own module, so its driver is only pulled in by applications that
+use it:
+
+```go
+import (
+    bl         "github.com/friendly-business-machines/blkit"
+    mssqlstore "github.com/friendly-business-machines/blkit/stores/mssql"
+)
+
+var store = mssqlstore.New(mssqlstore.Config{
+    DSN: "sqlserver://user:pass@host:1433?database=blkit",
+})
+```
+
+The backend is built on [go-mssqldb](https://github.com/microsoft/go-mssqldb),
+Microsoft's official Go driver, through the standard `database/sql` package. It uses
+`DATETIMEOFFSET` for timestamps and stores encoded values as JSON-validated
+`NVARCHAR(MAX)`, so the audit history stays queryable with SQL Server's JSON
+functions.
+
+## What it's good for
+
+- **Production runs** that must survive restarts and crashes.
+- **Organisations already running SQL Server**, so state lives in familiar,
+  already-operated infrastructure.
+- **Auditing and reporting** — the history is ordinary rows, queryable with SQL.
+
+## Storage layout
+
+The backend uses the same three tables as the
+[PostgreSQL layout](postgres.md#storage-layout) — `blkit_runs`, `blkit_values`,
+`blkit_history` — with the same columns and behaviour, differing only in dialect:
+`BIGINT IDENTITY` for the arrival-order id, `DATETIMEOFFSET` timestamps, a filtered
+index for the pending lookup, and a `ROW_NUMBER()` window function for the
+latest-committed-per-field read. A batch of writes executes as a single
+transaction, and a task finishing settles all of its pending rows in one statement.
+
+## Configuration
+
+Construct the backend with a connection string (`DSN`) pointing at the SQL Server
+instance and database. Because the data is shared, the same details can be handed to
+workers in other processes or on other machines.
+
+### Managed and cloud SQL Server
+
+This backend speaks to any SQL Server-compatible server, so it also works — with no
+code change, just a different `DSN` — against the managed services:
+
+- **Azure** — Azure SQL Database, Azure SQL Managed Instance, and SQL Server on
+  Azure virtual machines.
+- **AWS** — Amazon RDS for SQL Server.
+- **GCP** — Cloud SQL for SQL Server.
+
+Point the `DSN` at the managed endpoint; use a primary (read-write) endpoint, since
+an asynchronous read replica can return stale data.
+
+## Concurrency
+
+Different runs are independent rows keyed by different run ids, so many runs and
+workers can share one database without interfering. Parallel tasks within a run each
+write their own rows, and the order is sorted out from the timestamps at read time.
+
+## Reference
+
+The backend's API is in the [SQL Server reference](../reference/stores-mssql.md);
+the `StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/mysql/ -->
+
+# MySQL
+
+> A durable, strongly consistent, shareable state store backed by MySQL — for shops
+> running MySQL.
+
+The MySQL backend keeps each run's state in a MySQL database. On a single primary it
+is **durable**, **strongly consistent**, and **shareable** across workers on
+different machines, like the [PostgreSQL backend](postgres.md). Choose it when your
+organisation runs MySQL.
+
+It lives in its own module, so its driver is only pulled in by applications that
+use it:
+
+```go
+import (
+    bl         "github.com/friendly-business-machines/blkit"
+    mysqlstore "github.com/friendly-business-machines/blkit/stores/mysql"
+)
+
+var store = mysqlstore.New(mysqlstore.Config{
+    DSN: "user:pass@tcp(host:3306)/blkit?parseTime=true",
+})
+```
+
+The backend is built on [go-sql-driver/mysql](https://github.com/go-sql-driver/mysql),
+the standard pure-Go MySQL driver, through `database/sql`. It uses transactional
+InnoDB tables, the `utf8mb4` character set, and MySQL 8's native `JSON` column type
+for encoded values, so the audit history stays queryable with SQL.
+
+## What it's good for
+
+- **Production runs** that must survive restarts and crashes.
+- **Organisations already running MySQL**, so state lives in familiar infrastructure.
+- **Auditing and reporting** — the history is ordinary rows, queryable with SQL.
+
+## Storage layout
+
+The backend uses the same three tables as the
+[PostgreSQL layout](postgres.md#storage-layout) — `blkit_runs`, `blkit_values`,
+`blkit_history` — with the same columns and behaviour, differing only in dialect:
+`BIGINT AUTO_INCREMENT` for the arrival-order id, `DATETIME(6)` timestamps stored as
+UTC, a plain composite index for the pending lookup (MySQL has no partial indexes),
+and a `ROW_NUMBER()` window function for the latest-committed-per-field read. A batch
+of writes executes as a single transaction, and a task finishing settles all of its
+pending rows in one statement.
+
+## Configuration
+
+Construct the backend with a connection string (`DSN`) in the driver's format,
+pointing at the MySQL server and database. Because the data is shared, the same
+details can be handed to workers in other processes or on other machines.
+
+### Managed and cloud MySQL
+
+The backend works — with no code change, just a different `DSN` — against the managed
+services:
+
+- **AWS** — Amazon RDS for MySQL, and Amazon Aurora MySQL-Compatible Edition (use the
+  cluster **writer** endpoint).
+- **GCP** — Cloud SQL for MySQL.
+- **Azure** — Azure Database for MySQL.
+
+## Consistency
+
+On a single primary (InnoDB), MySQL is strongly consistent — read-your-writes, no
+stale reads — and that is the recommended setup. A few things to keep in mind in HA
+topologies:
+
+- **Asynchronous read replicas can serve stale data.** Route reads to the primary.
+- **Asynchronous replication with automatic failover can lose acknowledged writes.**
+  Use semi-synchronous replication with the lossless `AFTER_SYNC` wait point.
+- **Group Replication / InnoDB Cluster** defaults to eventual consistency for
+  secondary reads. Set `group_replication_consistency` to `BEFORE` or `AFTER` for
+  strongly consistent reads.
+
+## Concurrency
+
+Different runs are independent rows keyed by different run ids, so many runs and
+workers can share one database without interfering. Parallel tasks within a run each
+write their own rows, and the order is sorted out from the timestamps at read time.
+
+## Reference
+
+The backend's API is in the [MySQL reference](../reference/stores-mysql.md); the
+`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/mariadb/ -->
+
+# MariaDB
+
+> A durable, strongly consistent, shareable state store backed by MariaDB — a
+> separate backend from MySQL, tuned for MariaDB.
+
+The MariaDB backend keeps each run's state in a MariaDB database. On a single primary
+it is **durable**, **strongly consistent**, and **shareable** across workers on
+different machines. Choose it when your organisation runs MariaDB.
+
+MariaDB began as a fork of MySQL and shares its wire protocol, but the two have
+diverged — so this is a **separate backend from [MySQL](mysql.md)**, tuned for
+MariaDB's own features, clustering, and managed services.
+
+It lives in its own module, so its driver is only pulled in by applications that
+use it:
+
+```go
+import (
+    bl           "github.com/friendly-business-machines/blkit"
+    mariadbstore "github.com/friendly-business-machines/blkit/stores/mariadb"
+)
+
+var store = mariadbstore.New(mariadbstore.Config{
+    DSN: "user:pass@tcp(host:3306)/blkit?parseTime=true",
+})
+```
+
+The backend is built on [go-sql-driver/mysql](https://github.com/go-sql-driver/mysql),
+which is MariaDB-aware, through `database/sql`. It uses transactional InnoDB tables
+with `utf8mb4`, MariaDB's `INSERT ... RETURNING` (10.5+) to confirm writes in one
+round-trip, and `LONGTEXT` columns with a `JSON_VALID` constraint for encoded values
+— so it does not depend on a native JSON column type.
+
+## What it's good for
+
+- **Production runs** that must survive restarts and crashes.
+- **Organisations already running MariaDB**, so state lives in familiar
+  infrastructure.
+- **Auditing and reporting** — the history is ordinary rows, queryable with SQL.
+
+## Storage layout
+
+The backend uses the same three tables as the
+[PostgreSQL layout](postgres.md#storage-layout) — `blkit_runs`, `blkit_values`,
+`blkit_history` — with the same columns and behaviour, differing only in dialect:
+`BIGINT AUTO_INCREMENT` for the arrival-order id, `DATETIME(6)` timestamps stored as
+UTC, a plain composite index for the pending lookup, a `ROW_NUMBER()` window function
+for the latest-committed-per-field read, and `INSERT ... RETURNING` on inserts. A
+batch of writes executes as a single transaction, and a task finishing settles all
+of its pending rows in one statement.
+
+## Configuration
+
+Construct the backend with a connection string (`DSN`) in the driver's format,
+pointing at the MariaDB server and database. Because the data is shared, the same
+details can be handed to workers in other processes or on other machines.
+
+### Managed and cloud MariaDB
+
+Managed MariaDB is less widely offered than MySQL, which is one reason it has its own
+backend. The backend works — with no code change, just a different `DSN` — against:
+
+- **AWS** — Amazon RDS for MariaDB.
+- **MariaDB SkySQL** — the vendor's own managed cloud service.
+
+Note the gaps: **Azure's managed MariaDB service has been retired**, and **GCP Cloud
+SQL does not offer MariaDB**. On those clouds MariaDB must be self-managed (for
+example on virtual machines or Kubernetes), and the backend connects to it the same
+way.
+
+## Consistency
+
+On a single primary (InnoDB), MariaDB is strongly consistent — read-your-writes, no
+stale reads — and that is the recommended setup. A few things to keep in mind in HA
+topologies:
+
+- **Asynchronous read replicas can serve stale data.** Route reads to the primary.
+- **Asynchronous replication with automatic failover can lose acknowledged writes.**
+  Use semi-synchronous replication.
+- **Galera Cluster** is virtually synchronous, but a read on another node may not
+  have applied the latest write yet. Set `wsrep_sync_wait` to force causal
+  (read-your-writes) reads.
+
+## Concurrency
+
+Different runs are independent rows keyed by different run ids, so many runs and
+workers can share one database without interfering. Parallel tasks within a run each
+write their own rows, and the order is sorted out from the timestamps at read time.
+
+## Reference
+
+The backend's API is in the [MariaDB reference](../reference/stores-mariadb.md); the
+`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/nats/ -->
+
+# NATS
+
+> A durable, shareable state store backed by NATS JetStream — a natural fit when
+> NATS is already your message broker.
+
+The NATS backend keeps each run's state in **JetStream**, the part of NATS that
+stores data durably. It is **durable** and **shareable** across workers on different
+machines. Its stand-out benefit is **infrastructure reuse**: if you already run NATS
+as blkit's message broker, this backend stores process state in the same system,
+with no extra database to run.
+
+It lives in its own module, so its client is only pulled in by applications that
+use it:
+
+```go
+import (
+    bl        "github.com/friendly-business-machines/blkit"
+    natsstore "github.com/friendly-business-machines/blkit/stores/nats"
+)
+
+var store = natsstore.New(natsstore.Config{
+    URL:    "nats://localhost:4222",
+    Bucket: "blkit-state",
+})
+```
+
+The backend is built on [nats.go](https://github.com/nats-io/nats.go) using its
+current `jetstream` API, against a JetStream key-value bucket. Each write waits for
+the JetStream publish acknowledgement, so a write is quorum-accepted — and already
+durable — by the time the call returns.
+
+## What it's good for
+
+- **Setups that already run NATS** as the message broker — store state in the same
+  system instead of adding a separate database.
+- **Durable runs shared across many workers**, on one machine or many.
+
+## How state is stored
+
+Each run occupies its own branch of the key-value bucket: a metadata entry, one entry
+per value a task writes, and one entry per execution-history entry. A value entry
+starts pending and is settled in place when the task finishes; reads treat any
+still-pending entry as invisible, and the current state folds the latest committed
+entry per field. The full history returns every entry — including pending and aborted
+ones — sorted by timestamp with the JetStream stream sequence as the tiebreak, so
+arrival order at the store does not matter.
+
+## Configuration
+
+Construct the backend with the details for reaching the NATS servers — the URL (or
+URLs), any credentials, and the name of the JetStream bucket to store state in.
+Because NATS is shared, the same details can be handed to workers in other processes
+or on other machines.
+
+## Durability
+
+State is durable when **JetStream is configured to store data on disk** (its normal
+durable configuration); in that setup runs survive a restart. As with the other
+server-based backends, the durability guarantee comes from how the server is
+configured, not from this backend.
+
+## Concurrency
+
+Different runs use different keys, so many runs and workers can share the same NATS
+system without interfering. Parallel tasks within a run each write their own keys,
+and the order is sorted out from the timestamps at read time.
+
+## Reference
+
+The backend's API is in the [NATS reference](../reference/stores-nats.md); the
+`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/sqlite/ -->
+
+# SQLite
+
+> A durable, embedded state store kept in a single SQLite file — the most broadly
+> useful embedded default, and the only one whose history is queryable with SQL.
+
+The SQLite backend keeps each run's state in a SQLite database — a single file on
+local disk. It is **embedded**: there is no separate server to run, just a file the
+program opens directly. Data is **durable** — it survives a restart.
+
+Among the embedded backends it has a unique advantage: the data is stored as
+ordinary SQL rows, so the full history can be **queried directly with SQL** for
+diagnostics and audit — the same benefit [PostgreSQL](postgres.md) offers, without
+running a server.
+
+It lives in its own module, so its driver is only pulled in by applications that
+use it:
+
+```go
+import (
+    bl          "github.com/friendly-business-machines/blkit"
+    sqlitestore "github.com/friendly-business-machines/blkit/stores/sqlite"
+)
+
+var store = sqlitestore.New(sqlitestore.Config{Path: "/var/lib/blkit/state.db"})
+```
+
+The backend is built on the pure-Go [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite)
+driver — chosen over the CGO-based driver so worker binaries can be built with
+`CGO_ENABLED=0` for static, distroless containers. It runs in WAL mode so readers are
+not blocked by writes, funnels writes through a single writer connection, and sets a
+busy timeout so brief contention waits rather than fails.
+
+## What it's good for
+
+- **Single-node deployments** that want durability without running a separate
+  database server.
+- **Queryable audit without a server** — the run history is ordinary SQL rows;
+  inspect it with any SQLite client (`sqlite3 state.db`).
+- **Simple operations** — the whole state is one file to back up or move.
+
+## Storage layout
+
+The backend uses the same three tables as the
+[PostgreSQL layout](postgres.md#storage-layout) — `blkit_runs`, `blkit_values`,
+`blkit_history` — with the same columns and behaviour, differing only in dialect:
+SQLite's rowid for the arrival-order id, `INTEGER` Unix-nanosecond timestamps, `TEXT`
+JSON for encoded values (queryable with SQLite's JSON functions), a partial index for
+the pending lookup, and a `ROW_NUMBER()` window function for the
+latest-committed-per-field read. A batch of writes executes as a single transaction,
+and a task finishing settles all of its pending rows in one statement.
+
+## Configuration
+
+Construct the backend with the **path to the database file**. There is no server
+address and no credentials — the file is opened directly by the program.
+
+## Consistency
+
+SQLite is strongly consistent: a single local file with ACID transactions, where a
+committed write is always visible to the next read. There is no replication, so the
+stale-read concerns that apply to server-based backends in HA setups do not arise.
+
+## What to keep in mind
+
+- **It is local to one machine.** The file lives on that machine's disk, so runs
+  cannot be shared with workers elsewhere. For shared runs, use a server-based
+  backend such as [PostgreSQL](postgres.md) or [NATS](nats.md).
+- **One worker process per file.** SQLite permits one writer at a time; the backend
+  is designed for a single worker process owning the file.
+
+Compared with the other embedded backends ([bbolt](bbolt.md), [Badger](badger.md),
+[Pebble](pebble.md)), the key-value stores are faster at raw writes, but SQLite is
+the only one whose history you can query with SQL. When in doubt among the embedded
+options, SQLite is the most broadly useful default.
+
+## Concurrency
+
+Different runs are independent rows keyed by different run ids, so many runs handled
+by the one worker process do not interfere. Parallel tasks within a run each write
+their own rows; writes are funnelled through the single writer connection, and WAL
+mode keeps reads flowing while that happens.
+
+## Reference
+
+The backend's API is in the [SQLite reference](../reference/stores-sqlite.md); the
+`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/bbolt/ -->
+
+# bbolt
+
+> A durable, embedded state store kept in a single bbolt file — the simplest durable
+> key-value option, tuned for reads.
+
+The bbolt backend keeps each run's state in a bbolt database — a small, pure-Go
+key-value store in a **single file on local disk**. It is **embedded**: there is no
+separate server to run, just a file the program opens directly. Data is **durable** —
+it survives a restart.
+
+It lives in its own module, so its dependency is only pulled in by applications that
+use it:
+
+```go
+import (
+    bl         "github.com/friendly-business-machines/blkit"
+    bboltstore "github.com/friendly-business-machines/blkit/stores/bbolt"
+)
+
+var store = bboltstore.New(bboltstore.Config{Path: "/var/lib/blkit/state.db"})
+```
+
+The backend is built on [go.etcd.io/bbolt](https://github.com/etcd-io/bbolt) — the
+maintained etcd fork of Bolt, pure Go with no CGO. Records are encoded as JSON, so
+the file stays inspectable with the `bbolt` CLI during debugging.
+
+## What it's good for
+
+- **Single-node deployments** that want durability without running a separate
+  database server.
+- **Read-heavy workloads** — bbolt is a B+tree store that is very fast to read from.
+- **Simple operations** — the whole state is one file to back up or move.
+
+## How state is stored
+
+bbolt's nested buckets map naturally onto runs: one top-level bucket holds a
+sub-bucket per run, containing the run's metadata, its value records, its history
+records, and a small index used to settle a task's pending writes. Keys are built
+from a big-endian nanosecond timestamp and a per-bucket sequence number, so bbolt's
+natural key order **is** the replay order — reading a run's history is a single
+in-order cursor walk with no sorting step. A batch of writes is applied in one bbolt
+transaction, atomic and durable when it returns.
+
+## Configuration
+
+Construct the backend with the **path to the database file**. There is no server
+address and no credentials — the file is opened directly by the program.
+
+## What to keep in mind
+
+- **It is local to one machine.** The file lives on that machine's disk, so runs
+  cannot be shared with workers elsewhere. For shared runs, use a server-based
+  backend such as [PostgreSQL](postgres.md) or [NATS](nats.md).
+- **One program at a time** opens the file. bbolt allows a single writer, so it suits
+  one worker process on the machine rather than several sharing the file.
+
+Compared with the other embedded backends ([Badger](badger.md), [Pebble](pebble.md)),
+bbolt is the simplest — a single file and a B+tree that favours fast reads over heavy
+write throughput. If you want SQL-queryable history, use [SQLite](sqlite.md) instead.
+
+## Concurrency
+
+Different runs use different keys within the same file, so many runs handled by the
+one worker process do not interfere. Parallel tasks within a run each write their own
+keys; bbolt serialises writes internally, so concurrent writes within a run are
+applied safely one after another.
+
+## Reference
+
+The backend's API is in the [bbolt reference](../reference/stores-bbolt.md); the
+`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/badger/ -->
+
+# Badger
+
+> A durable, embedded state store kept in a local BadgerDB directory — tuned for
+> heavy write throughput.
+
+The Badger backend keeps each run's state in a BadgerDB store — a pure-Go key-value
+store that lives in **local files on disk**. It is **embedded**: there is no separate
+server to run. Data is **durable** — it survives a restart.
+
+It lives in its own module, so its dependency is only pulled in by applications that
+use it:
+
+```go
+import (
+    bl          "github.com/friendly-business-machines/blkit"
+    badgerstore "github.com/friendly-business-machines/blkit/stores/badger"
+)
+
+var store = badgerstore.New(badgerstore.Config{Path: "/var/lib/blkit/badger"})
+```
+
+The backend is built on [dgraph-io/badger](https://github.com/dgraph-io/badger) —
+pure Go, no CGO. Records are encoded as JSON, and arrival-order numbers come from
+Badger's own durable monotonic counter, so they survive a reopen.
+
+## What it's good for
+
+- **Single-node deployments** that want durability without running a separate
+  database server.
+- **Write-heavy workloads** — Badger is built to take a high rate of writes and
+  handles large values well.
+
+## How state is stored
+
+Badger has a flat keyspace, so runs are separated by key prefixes — one prefix each
+for run metadata, value records, history records, and a pending-write index. Keys
+embed a big-endian nanosecond timestamp and a sequence number, so Badger's
+lexicographic key order **is** the replay order. A batch of writes is applied in a
+single Badger transaction. For write throughput the backend runs with synchronous
+writes off and provides durability at a flush barrier, which calls Badger's `Sync`.
+
+## Configuration
+
+Construct the backend with the **path to a directory** where BadgerDB keeps its
+files. There is no server address and no credentials — the store is opened directly
+by the program.
+
+## What to keep in mind
+
+- **It is local to one machine.** The files live on that machine's disk, so runs
+  cannot be shared with workers elsewhere. For shared runs, use a server-based
+  backend such as [PostgreSQL](postgres.md) or [NATS](nats.md).
+- **One program at a time** opens the store, so it suits one worker process on the
+  machine rather than several sharing the files.
+
+Compared with the other embedded backends: [bbolt](bbolt.md) is a single file tuned
+for reads; Badger and [Pebble](pebble.md) keep a directory of files and take writes
+at a higher rate. If you want SQL-queryable history, use [SQLite](sqlite.md) instead.
+
+## Concurrency
+
+Different runs use different keys within the same store, so many runs handled by the
+one worker process do not interfere. Parallel tasks within a run each write their own
+keys; Badger applies concurrent writes safely.
+
+## Reference
+
+The backend's API is in the [Badger reference](../reference/stores-badger.md); the
+`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/state-stores/pebble/ -->
+
+# Pebble
+
+> A durable, embedded state store kept in a local Pebble directory — strong,
+> balanced read-and-write performance.
+
+The Pebble backend keeps each run's state in a Pebble store — a pure-Go key-value
+store that lives in **local files on disk**. It is **embedded**: there is no separate
+server to run. Data is **durable** — it survives a restart.
+
+It lives in its own module, so its dependency is only pulled in by applications that
+use it:
+
+```go
+import (
+    bl          "github.com/friendly-business-machines/blkit"
+    pebblestore "github.com/friendly-business-machines/blkit/stores/pebble"
+)
+
+var store = pebblestore.New(pebblestore.Config{Path: "/var/lib/blkit/pebble"})
+```
+
+The backend is built on [cockroachdb/pebble](https://github.com/cockroachdb/pebble) —
+the pure-Go LSM store that underpins CockroachDB. Records are encoded as JSON, and
+arrival-order numbers come from an atomic counter seeded at open from the highest
+existing sequence in the store.
+
+## What it's good for
+
+- **Single-node deployments** that want durability without running a separate
+  database server.
+- **Mixed read-and-write workloads** — Pebble is a general-purpose store with strong
+  all-round performance.
+
+## How state is stored
+
+Pebble uses the **same key scheme as the [Badger backend](badger.md#how-state-is-stored)**
+— prefixes for run metadata, value records, history records, and a pending-write
+index, with big-endian nanosecond timestamps and a sequence tiebreak — so its
+lexicographic key order is the replay order. A batch of writes is applied as a single
+Pebble batch. For write throughput batches are applied without syncing, and a flush
+barrier applies an empty synced batch, which makes every previously applied batch
+durable when it returns.
+
+## Configuration
+
+Construct the backend with the **path to a directory** where Pebble keeps its files.
+There is no server address and no credentials — the store is opened directly by the
+program.
+
+## What to keep in mind
+
+- **It is local to one machine.** The files live on that machine's disk, so runs
+  cannot be shared with workers elsewhere. For shared runs, use a server-based
+  backend such as [PostgreSQL](postgres.md) or [NATS](nats.md).
+- **One program at a time** opens the store, so it suits one worker process on the
+  machine rather than several sharing the files.
+
+Compared with the other embedded backends: [bbolt](bbolt.md) is a single file tuned
+for reads; [Badger](badger.md) and Pebble keep a directory of files and take writes
+at a higher rate, with Pebble aiming for balanced read-and-write performance. If you
+want SQL-queryable history, use [SQLite](sqlite.md) instead.
+
+## Concurrency
+
+Different runs use different keys within the same store, so many runs handled by the
+one worker process do not interfere. Parallel tasks within a run each write their own
+keys; Pebble applies concurrent writes safely.
+
+## Reference
+
+The backend's API is in the [Pebble reference](../reference/stores-pebble.md); the
+`StateStore` interface it implements is in the core [Reference](../reference/blkit.md).
+
+---
+
 <!-- Source: https://friendly-business-machines.github.io/blkit/architecture/expressions/ -->
 
 # Expressions
@@ -9406,5 +10323,1144 @@ type YMNumberInput interface {
     // contains filtered or unexported methods
 }
 ```
+
+Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/reference/stores-badger/ -->
+
+<!-- Generated by scripts/generate-docs.sh — DO NOT EDIT. -->
+
+<!-- Code generated by gomarkdoc. DO NOT EDIT -->
+
+# badger
+
+```go
+import "github.com/friendly-business-machines/blkit/stores/badger"
+```
+
+Package badger is the BadgerDB state\-store backend for blkit: a durable, embedded store keeping each run's ProcessState in local files, tuned for write throughput. See specs/stores/badger\-state\-store.spec.md.
+
+## Index
+
+- [type Config](<#Config>)
+- [type Store](<#Store>)
+  - [func New(cfg Config) \*Store](<#New>)
+  - [func (s \*Store) Close() error](<#Store.Close>)
+  - [func (s \*Store) Config() (map\[string\]string, error)](<#Store.Config>)
+  - [func (s \*Store) CurrentVersion(runID string) (\*bl.CurrentVersion, error)](<#Store.CurrentVersion>)
+  - [func (s \*Store) Flush(runID string) error](<#Store.Flush>)
+  - [func (s \*Store) FullHistory(runID string) (\*bl.FullHistory, error)](<#Store.FullHistory>)
+  - [func (s \*Store) Save(meta bl.RunMetadata) error](<#Store.Save>)
+  - [func (s \*Store) WriteBatch(ops \[\]bl.WriteOp) error](<#Store.WriteBatch>)
+
+
+<a name="Config"></a>
+## type [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/badger/store.go#L17-L19>)
+
+Config holds the construction parameters for the Badger backend.
+
+```go
+type Config struct {
+    Path string // directory for Badger's files; required
+}
+```
+
+<a name="Store"></a>
+## type [Store](<https://github.com/friendly-business-machines/blkit/blob/main/stores/badger/store.go#L22-L25>)
+
+Store implements bl.StateStore on a BadgerDB store.
+
+```go
+type Store struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="New"></a>
+### func [New](<https://github.com/friendly-business-machines/blkit/blob/main/stores/badger/store.go#L33>)
+
+```go
+func New(cfg Config) *Store
+```
+
+New opens (creating if needed) the Badger store. Following the blkit constructor convention it panics on an invalid config or an unopenable store. The store runs with SyncWrites off for throughput; Flush provides the durability barrier via DB.Sync.
+
+<a name="Store.Close"></a>
+### func (\*Store) [Close](<https://github.com/friendly-business-machines/blkit/blob/main/stores/badger/store.go#L397>)
+
+```go
+func (s *Store) Close() error
+```
+
+Close releases the sequence lease and closes the store.
+
+<a name="Store.Config"></a>
+### func (\*Store) [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/badger/store.go#L392>)
+
+```go
+func (s *Store) Config() (map[string]string, error)
+```
+
+Config returns an error: a Badger store is local to one process on one machine and cannot be shared.
+
+<a name="Store.CurrentVersion"></a>
+### func (\*Store) [CurrentVersion](<https://github.com/friendly-business-machines/blkit/blob/main/stores/badger/store.go#L271>)
+
+```go
+func (s *Store) CurrentVersion(runID string) (*bl.CurrentVersion, error)
+```
+
+CurrentVersion folds the run's value records into the latest committed value per (task, field); iteration order is replay order. Returns (nil, nil) for an unknown run.
+
+<a name="Store.Flush"></a>
+### func (\*Store) [Flush](<https://github.com/friendly-business-machines/blkit/blob/main/stores/badger/store.go#L236>)
+
+```go
+func (s *Store) Flush(runID string) error
+```
+
+Flush syncs Badger's WAL to disk — the durability barrier that pairs with running SyncWrites off.
+
+<a name="Store.FullHistory"></a>
+### func (\*Store) [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/stores/badger/store.go#L311>)
+
+```go
+func (s *Store) FullHistory(runID string) (*bl.FullHistory, error)
+```
+
+FullHistory iterates the v| and h| prefixes in key (= replay) order. Returns (nil, nil) for an unknown run.
+
+<a name="Store.Save"></a>
+### func (\*Store) [Save](<https://github.com/friendly-business-machines/blkit/blob/main/stores/badger/store.go#L103>)
+
+```go
+func (s *Store) Save(meta bl.RunMetadata) error
+```
+
+Save upserts the run's metadata.
+
+<a name="Store.WriteBatch"></a>
+### func (\*Store) [WriteBatch](<https://github.com/friendly-business-machines/blkit/blob/main/stores/badger/store.go#L118>)
+
+```go
+func (s *Store) WriteBatch(ops []bl.WriteOp) error
+```
+
+WriteBatch applies the ops in a single Badger transaction, so a task's outputs land together.
+
+Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/reference/stores-bbolt/ -->
+
+<!-- Generated by scripts/generate-docs.sh — DO NOT EDIT. -->
+
+<!-- Code generated by gomarkdoc. DO NOT EDIT -->
+
+# bbolt
+
+```go
+import "github.com/friendly-business-machines/blkit/stores/bbolt"
+```
+
+Package bbolt is the bbolt state\-store backend for blkit: a durable, embedded store keeping each run's ProcessState in a single file on local disk. See specs/stores/bbolt\-state\-store.spec.md.
+
+## Index
+
+- [type Config](<#Config>)
+- [type Store](<#Store>)
+  - [func New(cfg Config) \*Store](<#New>)
+  - [func (s \*Store) Close() error](<#Store.Close>)
+  - [func (s \*Store) Config() (map\[string\]string, error)](<#Store.Config>)
+  - [func (s \*Store) CurrentVersion(runID string) (\*bl.CurrentVersion, error)](<#Store.CurrentVersion>)
+  - [func (s \*Store) Flush(runID string) error](<#Store.Flush>)
+  - [func (s \*Store) FullHistory(runID string) (\*bl.FullHistory, error)](<#Store.FullHistory>)
+  - [func (s \*Store) Save(meta bl.RunMetadata) error](<#Store.Save>)
+  - [func (s \*Store) WriteBatch(ops \[\]bl.WriteOp) error](<#Store.WriteBatch>)
+
+
+<a name="Config"></a>
+## type [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/bbolt/store.go#L20-L22>)
+
+Config holds the construction parameters for the bbolt backend.
+
+```go
+type Config struct {
+    Path string // path to the database file; required
+}
+```
+
+<a name="Store"></a>
+## type [Store](<https://github.com/friendly-business-machines/blkit/blob/main/stores/bbolt/store.go#L25-L27>)
+
+Store implements bl.StateStore on a bbolt database file.
+
+```go
+type Store struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="New"></a>
+### func [New](<https://github.com/friendly-business-machines/blkit/blob/main/stores/bbolt/store.go#L42>)
+
+```go
+func New(cfg Config) *Store
+```
+
+New opens (creating if needed) the database file and returns the store. Following the blkit constructor convention it panics on an invalid config or an unopenable file.
+
+<a name="Store.Close"></a>
+### func (\*Store) [Close](<https://github.com/friendly-business-machines/blkit/blob/main/stores/bbolt/store.go#L371>)
+
+```go
+func (s *Store) Close() error
+```
+
+Close closes the database file.
+
+<a name="Store.Config"></a>
+### func (\*Store) [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/bbolt/store.go#L366>)
+
+```go
+func (s *Store) Config() (map[string]string, error)
+```
+
+Config returns an error: a bbolt file is local to one process on one machine and cannot be shared.
+
+<a name="Store.CurrentVersion"></a>
+### func (\*Store) [CurrentVersion](<https://github.com/friendly-business-machines/blkit/blob/main/stores/bbolt/store.go#L269>)
+
+```go
+func (s *Store) CurrentVersion(runID string) (*bl.CurrentVersion, error)
+```
+
+CurrentVersion folds the run's value records into the latest committed value per (task, field). Key order is replay order, so a single in\-order walk suffices. Returns (nil, nil) for an unknown run.
+
+<a name="Store.Flush"></a>
+### func (\*Store) [Flush](<https://github.com/friendly-business-machines/blkit/blob/main/stores/bbolt/store.go#L254>)
+
+```go
+func (s *Store) Flush(runID string) error
+```
+
+Flush is a no\-op: every Update transaction is fsynced on commit.
+
+<a name="Store.FullHistory"></a>
+### func (\*Store) [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/stores/bbolt/store.go#L306>)
+
+```go
+func (s *Store) FullHistory(runID string) (*bl.FullHistory, error)
+```
+
+FullHistory walks both buckets in key (= replay) order. Returns (nil, nil) for an unknown run.
+
+<a name="Store.Save"></a>
+### func (\*Store) [Save](<https://github.com/friendly-business-machines/blkit/blob/main/stores/bbolt/store.go#L120>)
+
+```go
+func (s *Store) Save(meta bl.RunMetadata) error
+```
+
+Save upserts the run's metadata.
+
+<a name="Store.WriteBatch"></a>
+### func (\*Store) [WriteBatch](<https://github.com/friendly-business-machines/blkit/blob/main/stores/bbolt/store.go#L140>)
+
+```go
+func (s *Store) WriteBatch(ops []bl.WriteOp) error
+```
+
+WriteBatch applies the ops in one bbolt Update transaction — atomic, and durable when it returns (bbolt fsyncs on commit), which is why Flush is a no\-op.
+
+Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/reference/stores-mariadb/ -->
+
+<!-- Generated by scripts/generate-docs.sh — DO NOT EDIT. -->
+
+<!-- Code generated by gomarkdoc. DO NOT EDIT -->
+
+# mariadb
+
+```go
+import "github.com/friendly-business-machines/blkit/stores/mariadb"
+```
+
+Package mariadb is the MariaDB state\-store backend for blkit: a durable, shareable store keeping each run's ProcessState in MariaDB. It shares the go\-sql\-driver/mysql driver with the MySQL backend but is tuned for MariaDB's own features — INSERT ... RETURNING (10.5\+) and LONGTEXT with a JSON\_VALID check in place of a native JSON type. See specs/stores/mariadb\-state\-store.spec.md.
+
+## Index
+
+- [type Config](<#Config>)
+- [type Store](<#Store>)
+  - [func New(cfg Config) \*Store](<#New>)
+  - [func (s \*Store) Close() error](<#Store.Close>)
+  - [func (s \*Store) Config() (map\[string\]string, error)](<#Store.Config>)
+  - [func (s \*Store) CurrentVersion(runID string) (\*bl.CurrentVersion, error)](<#Store.CurrentVersion>)
+  - [func (s \*Store) Flush(runID string) error](<#Store.Flush>)
+  - [func (s \*Store) FullHistory(runID string) (\*bl.FullHistory, error)](<#Store.FullHistory>)
+  - [func (s \*Store) Save(meta bl.RunMetadata) error](<#Store.Save>)
+  - [func (s \*Store) WriteBatch(ops \[\]bl.WriteOp) error](<#Store.WriteBatch>)
+
+
+<a name="Config"></a>
+## type [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mariadb/store.go#L22-L25>)
+
+Config holds the construction parameters for the MariaDB backend.
+
+```go
+type Config struct {
+    DSN         string // go-sql-driver DSN, e.g. "user:pass@tcp(host:3306)/blkit"; required
+    TablePrefix string // table-name prefix; defaults to "blkit_"
+}
+```
+
+<a name="Store"></a>
+## type [Store](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mariadb/store.go#L28-L35>)
+
+Store implements bl.StateStore on a MariaDB database.
+
+```go
+type Store struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="New"></a>
+### func [New](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mariadb/store.go#L44>)
+
+```go
+func New(cfg Config) *Store
+```
+
+New parses the DSN (forcing ParseTime and UTC so DATETIME(6) columns round\-trip as UTC time.Time values) and opens the pool lazily. Following the blkit constructor convention it panics on an invalid config.
+
+<a name="Store.Close"></a>
+### func (\*Store) [Close](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mariadb/store.go#L372>)
+
+```go
+func (s *Store) Close() error
+```
+
+Close closes the connection pool.
+
+<a name="Store.Config"></a>
+### func (\*Store) [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mariadb/store.go#L367>)
+
+```go
+func (s *Store) Config() (map[string]string, error)
+```
+
+Config returns the connection details another process needs to reach the same store.
+
+<a name="Store.CurrentVersion"></a>
+### func (\*Store) [CurrentVersion](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mariadb/store.go#L258>)
+
+```go
+func (s *Store) CurrentVersion(runID string) (*bl.CurrentVersion, error)
+```
+
+CurrentVersion returns the latest committed value per (task, field) via a ROW\_NUMBER window (MariaDB 10.2\+). Returns (nil, nil) for an unknown run.
+
+<a name="Store.Flush"></a>
+### func (\*Store) [Flush](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mariadb/store.go#L217>)
+
+```go
+func (s *Store) Flush(runID string) error
+```
+
+Flush is a no\-op beyond confirming the transaction committed: writes are synchronous once WriteBatch returns.
+
+<a name="Store.FullHistory"></a>
+### func (\*Store) [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mariadb/store.go#L298>)
+
+```go
+func (s *Store) FullHistory(runID string) (*bl.FullHistory, error)
+```
+
+FullHistory returns every stored record for the run in replay order (ts, id). Returns (nil, nil) for an unknown run.
+
+<a name="Store.Save"></a>
+### func (\*Store) [Save](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mariadb/store.go#L127>)
+
+```go
+func (s *Store) Save(meta bl.RunMetadata) error
+```
+
+Save upserts the run's metadata.
+
+<a name="Store.WriteBatch"></a>
+### func (\*Store) [WriteBatch](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mariadb/store.go#L157>)
+
+```go
+func (s *Store) WriteBatch(ops []bl.WriteOp) error
+```
+
+WriteBatch applies the ops in a single transaction. Inserts use MariaDB's INSERT ... RETURNING (10.5\+) so the stored row id is confirmed in the same round\-trip.
+
+Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/reference/stores-mssql/ -->
+
+<!-- Generated by scripts/generate-docs.sh — DO NOT EDIT. -->
+
+<!-- Code generated by gomarkdoc. DO NOT EDIT -->
+
+# mssql
+
+```go
+import "github.com/friendly-business-machines/blkit/stores/mssql"
+```
+
+Package mssql is the Microsoft SQL Server state\-store backend for blkit: a durable, strongly consistent, shareable store keeping each run's ProcessState in SQL Server, built on the official microsoft/go\-mssqldb driver via database/sql. See specs/stores/mssql\-state\-store.spec.md.
+
+## Index
+
+- [type Config](<#Config>)
+- [type Store](<#Store>)
+  - [func New(cfg Config) \*Store](<#New>)
+  - [func (s \*Store) Close() error](<#Store.Close>)
+  - [func (s \*Store) Config() (map\[string\]string, error)](<#Store.Config>)
+  - [func (s \*Store) CurrentVersion(runID string) (\*bl.CurrentVersion, error)](<#Store.CurrentVersion>)
+  - [func (s \*Store) Flush(runID string) error](<#Store.Flush>)
+  - [func (s \*Store) FullHistory(runID string) (\*bl.FullHistory, error)](<#Store.FullHistory>)
+  - [func (s \*Store) Save(meta bl.RunMetadata) error](<#Store.Save>)
+  - [func (s \*Store) WriteBatch(ops \[\]bl.WriteOp) error](<#Store.WriteBatch>)
+
+
+<a name="Config"></a>
+## type [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L20-L23>)
+
+Config holds the construction parameters for the SQL Server backend.
+
+```go
+type Config struct {
+    DSN         string // sqlserver:// connection string; required
+    TablePrefix string // table-name prefix; defaults to "blkit_"
+}
+```
+
+<a name="Store"></a>
+## type [Store](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L26-L33>)
+
+Store implements bl.StateStore on a SQL Server database.
+
+```go
+type Store struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="New"></a>
+### func [New](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L42>)
+
+```go
+func New(cfg Config) *Store
+```
+
+New opens the pool (connections are established lazily; the schema is created on first use). Following the blkit constructor convention it panics on an invalid config.
+
+<a name="Store.Close"></a>
+### func (\*Store) [Close](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L368>)
+
+```go
+func (s *Store) Close() error
+```
+
+Close closes the connection pool.
+
+<a name="Store.Config"></a>
+### func (\*Store) [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L363>)
+
+```go
+func (s *Store) Config() (map[string]string, error)
+```
+
+Config returns the connection details another process needs to reach the same store.
+
+<a name="Store.CurrentVersion"></a>
+### func (\*Store) [CurrentVersion](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L254>)
+
+```go
+func (s *Store) CurrentVersion(runID string) (*bl.CurrentVersion, error)
+```
+
+CurrentVersion returns the latest committed value per (task, field) via a ROW\_NUMBER window. Returns (nil, nil) for an unknown run.
+
+<a name="Store.Flush"></a>
+### func (\*Store) [Flush](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L213>)
+
+```go
+func (s *Store) Flush(runID string) error
+```
+
+Flush is a no\-op beyond confirming the transaction committed: writes are synchronous once WriteBatch returns.
+
+<a name="Store.FullHistory"></a>
+### func (\*Store) [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L294>)
+
+```go
+func (s *Store) FullHistory(runID string) (*bl.FullHistory, error)
+```
+
+FullHistory returns every stored record for the run in replay order (ts, id). Returns (nil, nil) for an unknown run.
+
+<a name="Store.Save"></a>
+### func (\*Store) [Save](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L126>)
+
+```go
+func (s *Store) Save(meta bl.RunMetadata) error
+```
+
+Save upserts the run's metadata via MERGE.
+
+<a name="Store.WriteBatch"></a>
+### func (\*Store) [WriteBatch](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L157>)
+
+```go
+func (s *Store) WriteBatch(ops []bl.WriteOp) error
+```
+
+WriteBatch applies the ops in a single transaction, so a task's outputs land together.
+
+Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/reference/stores-mysql/ -->
+
+<!-- Generated by scripts/generate-docs.sh — DO NOT EDIT. -->
+
+<!-- Code generated by gomarkdoc. DO NOT EDIT -->
+
+# mysql
+
+```go
+import "github.com/friendly-business-machines/blkit/stores/mysql"
+```
+
+Package mysql is the MySQL state\-store backend for blkit: a durable, shareable store keeping each run's ProcessState in MySQL, built on the go\-sql\-driver/mysql driver via database/sql. See specs/stores/mysql\-state\-store.spec.md.
+
+## Index
+
+- [type Config](<#Config>)
+- [type Store](<#Store>)
+  - [func New(cfg Config) \*Store](<#New>)
+  - [func (s \*Store) Close() error](<#Store.Close>)
+  - [func (s \*Store) Config() (map\[string\]string, error)](<#Store.Config>)
+  - [func (s \*Store) CurrentVersion(runID string) (\*bl.CurrentVersion, error)](<#Store.CurrentVersion>)
+  - [func (s \*Store) Flush(runID string) error](<#Store.Flush>)
+  - [func (s \*Store) FullHistory(runID string) (\*bl.FullHistory, error)](<#Store.FullHistory>)
+  - [func (s \*Store) Save(meta bl.RunMetadata) error](<#Store.Save>)
+  - [func (s \*Store) WriteBatch(ops \[\]bl.WriteOp) error](<#Store.WriteBatch>)
+
+
+<a name="Config"></a>
+## type [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mysql/store.go#L20-L23>)
+
+Config holds the construction parameters for the MySQL backend.
+
+```go
+type Config struct {
+    DSN         string // go-sql-driver DSN, e.g. "user:pass@tcp(host:3306)/blkit"; required
+    TablePrefix string // table-name prefix; defaults to "blkit_"
+}
+```
+
+<a name="Store"></a>
+## type [Store](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mysql/store.go#L26-L33>)
+
+Store implements bl.StateStore on a MySQL database.
+
+```go
+type Store struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="New"></a>
+### func [New](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mysql/store.go#L42>)
+
+```go
+func New(cfg Config) *Store
+```
+
+New parses the DSN (forcing ParseTime and UTC so DATETIME(6) columns round\-trip as UTC time.Time values) and opens the pool lazily. Following the blkit constructor convention it panics on an invalid config.
+
+<a name="Store.Close"></a>
+### func (\*Store) [Close](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mysql/store.go#L363>)
+
+```go
+func (s *Store) Close() error
+```
+
+Close closes the connection pool.
+
+<a name="Store.Config"></a>
+### func (\*Store) [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mysql/store.go#L358>)
+
+```go
+func (s *Store) Config() (map[string]string, error)
+```
+
+Config returns the connection details another process needs to reach the same store.
+
+<a name="Store.CurrentVersion"></a>
+### func (\*Store) [CurrentVersion](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mysql/store.go#L249>)
+
+```go
+func (s *Store) CurrentVersion(runID string) (*bl.CurrentVersion, error)
+```
+
+CurrentVersion returns the latest committed value per (task, field) via a ROW\_NUMBER window. Returns (nil, nil) for an unknown run.
+
+<a name="Store.Flush"></a>
+### func (\*Store) [Flush](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mysql/store.go#L208>)
+
+```go
+func (s *Store) Flush(runID string) error
+```
+
+Flush is a no\-op beyond confirming the transaction committed: writes are synchronous once WriteBatch returns.
+
+<a name="Store.FullHistory"></a>
+### func (\*Store) [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mysql/store.go#L289>)
+
+```go
+func (s *Store) FullHistory(runID string) (*bl.FullHistory, error)
+```
+
+FullHistory returns every stored record for the run in replay order (ts, id). Returns (nil, nil) for an unknown run.
+
+<a name="Store.Save"></a>
+### func (\*Store) [Save](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mysql/store.go#L123>)
+
+```go
+func (s *Store) Save(meta bl.RunMetadata) error
+```
+
+Save upserts the run's metadata.
+
+<a name="Store.WriteBatch"></a>
+### func (\*Store) [WriteBatch](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mysql/store.go#L152>)
+
+```go
+func (s *Store) WriteBatch(ops []bl.WriteOp) error
+```
+
+WriteBatch applies the ops in a single transaction, so a task's outputs land together.
+
+Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/reference/stores-nats/ -->
+
+<!-- Generated by scripts/generate-docs.sh — DO NOT EDIT. -->
+
+<!-- Code generated by gomarkdoc. DO NOT EDIT -->
+
+# nats
+
+```go
+import "github.com/friendly-business-machines/blkit/stores/nats"
+```
+
+Package nats is the NATS JetStream state\-store backend for blkit: a durable, shareable store keeping each run's ProcessState in a JetStream key\-value bucket — a natural fit when NATS is already the message broker. See specs/stores/nats\-state\-store.spec.md.
+
+## Index
+
+- [type Config](<#Config>)
+- [type Store](<#Store>)
+  - [func New(cfg Config) \*Store](<#New>)
+  - [func (s \*Store) Close() error](<#Store.Close>)
+  - [func (s \*Store) Config() (map\[string\]string, error)](<#Store.Config>)
+  - [func (s \*Store) CurrentVersion(runID string) (\*bl.CurrentVersion, error)](<#Store.CurrentVersion>)
+  - [func (s \*Store) Flush(runID string) error](<#Store.Flush>)
+  - [func (s \*Store) FullHistory(runID string) (\*bl.FullHistory, error)](<#Store.FullHistory>)
+  - [func (s \*Store) Save(meta bl.RunMetadata) error](<#Store.Save>)
+  - [func (s \*Store) WriteBatch(ops \[\]bl.WriteOp) error](<#Store.WriteBatch>)
+
+
+<a name="Config"></a>
+## type [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/nats/store.go#L22-L25>)
+
+Config holds the construction parameters for the NATS backend.
+
+```go
+type Config struct {
+    URL    string // NATS server URL(s); required
+    Bucket string // JetStream key-value bucket name; required
+}
+```
+
+<a name="Store"></a>
+## type [Store](<https://github.com/friendly-business-machines/blkit/blob/main/stores/nats/store.go#L28-L34>)
+
+Store implements bl.StateStore on a JetStream key\-value bucket.
+
+```go
+type Store struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="New"></a>
+### func [New](<https://github.com/friendly-business-machines/blkit/blob/main/stores/nats/store.go#L44>)
+
+```go
+func New(cfg Config) *Store
+```
+
+New connects to NATS and creates (or binds to) the bucket, configured with history depth 1 — old revisions of a flipped entry are not needed; the audit story lives in the records themselves. Following the blkit constructor convention it panics on an invalid config or a failed connect.
+
+<a name="Store.Close"></a>
+### func (\*Store) [Close](<https://github.com/friendly-business-machines/blkit/blob/main/stores/nats/store.go#L367>)
+
+```go
+func (s *Store) Close() error
+```
+
+Close closes the NATS connection.
+
+<a name="Store.Config"></a>
+### func (\*Store) [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/nats/store.go#L362>)
+
+```go
+func (s *Store) Config() (map[string]string, error)
+```
+
+Config returns the connection details another process needs to reach the same store.
+
+<a name="Store.CurrentVersion"></a>
+### func (\*Store) [CurrentVersion](<https://github.com/friendly-business-machines/blkit/blob/main/stores/nats/store.go#L297>)
+
+```go
+func (s *Store) CurrentVersion(runID string) (*bl.CurrentVersion, error)
+```
+
+CurrentVersion folds the run's value records into the latest committed value per (task, field). Returns (nil, nil) for an unknown run.
+
+<a name="Store.Flush"></a>
+### func (\*Store) [Flush](<https://github.com/friendly-business-machines/blkit/blob/main/stores/nats/store.go#L219>)
+
+```go
+func (s *Store) Flush(runID string) error
+```
+
+Flush is a no\-op: every Put has already been acknowledged by JetStream.
+
+<a name="Store.FullHistory"></a>
+### func (\*Store) [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/stores/nats/store.go#L323>)
+
+```go
+func (s *Store) FullHistory(runID string) (*bl.FullHistory, error)
+```
+
+FullHistory reads the run's v. and h. entries and sorts them into replay order (Timestamp, revision). Returns (nil, nil) for an unknown run.
+
+<a name="Store.Save"></a>
+### func (\*Store) [Save](<https://github.com/friendly-business-machines/blkit/blob/main/stores/nats/store.go#L102>)
+
+```go
+func (s *Store) Save(meta bl.RunMetadata) error
+```
+
+Save upserts the run's metadata.
+
+<a name="Store.WriteBatch"></a>
+### func (\*Store) [WriteBatch](<https://github.com/friendly-business-machines/blkit/blob/main/stores/nats/store.go#L120>)
+
+```go
+func (s *Store) WriteBatch(ops []bl.WriteOp) error
+```
+
+WriteBatch applies the ops one by one — the KV store has no cross\-key batching primitive, which the write contract allows. Each Put waits for the JetStream publish acknowledgement, so an accepted write is already quorum\-accepted and durable — which is why Flush is a no\-op.
+
+Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/reference/stores-pebble/ -->
+
+<!-- Generated by scripts/generate-docs.sh — DO NOT EDIT. -->
+
+<!-- Code generated by gomarkdoc. DO NOT EDIT -->
+
+# pebble
+
+```go
+import "github.com/friendly-business-machines/blkit/stores/pebble"
+```
+
+Package pebble is the Pebble state\-store backend for blkit: a durable, embedded store keeping each run's ProcessState in local files, with balanced read\-and\-write performance. It shares the Badger backend's key scheme. See specs/stores/pebble\-state\-store.spec.md.
+
+## Index
+
+- [type Config](<#Config>)
+- [type Store](<#Store>)
+  - [func New(cfg Config) \*Store](<#New>)
+  - [func (s \*Store) Close() error](<#Store.Close>)
+  - [func (s \*Store) Config() (map\[string\]string, error)](<#Store.Config>)
+  - [func (s \*Store) CurrentVersion(runID string) (\*bl.CurrentVersion, error)](<#Store.CurrentVersion>)
+  - [func (s \*Store) Flush(runID string) error](<#Store.Flush>)
+  - [func (s \*Store) FullHistory(runID string) (\*bl.FullHistory, error)](<#Store.FullHistory>)
+  - [func (s \*Store) Save(meta bl.RunMetadata) error](<#Store.Save>)
+  - [func (s \*Store) WriteBatch(ops \[\]bl.WriteOp) error](<#Store.WriteBatch>)
+
+
+<a name="Config"></a>
+## type [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/pebble/store.go#L19-L21>)
+
+Config holds the construction parameters for the Pebble backend.
+
+```go
+type Config struct {
+    Path string // directory for Pebble's files; required
+}
+```
+
+<a name="Store"></a>
+## type [Store](<https://github.com/friendly-business-machines/blkit/blob/main/stores/pebble/store.go#L26-L31>)
+
+Store implements bl.StateStore on a Pebble store. Write batches are serialised by a store\-level mutex so the persisted arrival counter can never regress; reads are lock\-free.
+
+```go
+type Store struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="New"></a>
+### func [New](<https://github.com/friendly-business-machines/blkit/blob/main/stores/pebble/store.go#L40>)
+
+```go
+func New(cfg Config) *Store
+```
+
+New opens (creating if needed) the Pebble store and seeds the arrival counter from its persisted value. Following the blkit constructor convention it panics on an invalid config or an unopenable store.
+
+<a name="Store.Close"></a>
+### func (\*Store) [Close](<https://github.com/friendly-business-machines/blkit/blob/main/stores/pebble/store.go#L416>)
+
+```go
+func (s *Store) Close() error
+```
+
+Close closes the store.
+
+<a name="Store.Config"></a>
+### func (\*Store) [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/pebble/store.go#L411>)
+
+```go
+func (s *Store) Config() (map[string]string, error)
+```
+
+Config returns an error: a Pebble store is local to one process on one machine and cannot be shared.
+
+<a name="Store.CurrentVersion"></a>
+### func (\*Store) [CurrentVersion](<https://github.com/friendly-business-machines/blkit/blob/main/stores/pebble/store.go#L302>)
+
+```go
+func (s *Store) CurrentVersion(runID string) (*bl.CurrentVersion, error)
+```
+
+CurrentVersion folds the run's value records into the latest committed value per (task, field); iteration order is replay order. Returns (nil, nil) for an unknown run.
+
+<a name="Store.Flush"></a>
+### func (\*Store) [Flush](<https://github.com/friendly-business-machines/blkit/blob/main/stores/pebble/store.go#L258>)
+
+```go
+func (s *Store) Flush(runID string) error
+```
+
+Flush applies an empty batch carrying a LogData marker with Sync — the standard Pebble WAL sync barrier: when it returns, every previously applied batch is durable.
+
+<a name="Store.FullHistory"></a>
+### func (\*Store) [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/stores/pebble/store.go#L338>)
+
+```go
+func (s *Store) FullHistory(runID string) (*bl.FullHistory, error)
+```
+
+FullHistory iterates the v| and h| prefixes in key (= replay) order. Returns (nil, nil) for an unknown run.
+
+<a name="Store.Save"></a>
+### func (\*Store) [Save](<https://github.com/friendly-business-machines/blkit/blob/main/stores/pebble/store.go#L119>)
+
+```go
+func (s *Store) Save(meta bl.RunMetadata) error
+```
+
+Save upserts the run's metadata.
+
+<a name="Store.WriteBatch"></a>
+### func (\*Store) [WriteBatch](<https://github.com/friendly-business-machines/blkit/blob/main/stores/pebble/store.go#L134>)
+
+```go
+func (s *Store) WriteBatch(ops []bl.WriteOp) error
+```
+
+WriteBatch applies the ops as one pebble.Batch (atomic on apply), written with NoSync for throughput — Flush provides the durability barrier.
+
+Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/reference/stores-postgres/ -->
+
+<!-- Generated by scripts/generate-docs.sh — DO NOT EDIT. -->
+
+<!-- Code generated by gomarkdoc. DO NOT EDIT -->
+
+# postgres
+
+```go
+import "github.com/friendly-business-machines/blkit/stores/postgres"
+```
+
+Package postgres is the PostgreSQL state\-store backend for blkit: a durable, strongly consistent, shareable store keeping each run's ProcessState in PostgreSQL, built on pgx/v5 with pgx.Batch pipelining. See specs/stores/postgres\-state\-store.spec.md.
+
+## Index
+
+- [type Config](<#Config>)
+- [type Store](<#Store>)
+  - [func New(cfg Config) \*Store](<#New>)
+  - [func (s \*Store) Close() error](<#Store.Close>)
+  - [func (s \*Store) Config() (map\[string\]string, error)](<#Store.Config>)
+  - [func (s \*Store) CurrentVersion(runID string) (\*bl.CurrentVersion, error)](<#Store.CurrentVersion>)
+  - [func (s \*Store) Flush(runID string) error](<#Store.Flush>)
+  - [func (s \*Store) FullHistory(runID string) (\*bl.FullHistory, error)](<#Store.FullHistory>)
+  - [func (s \*Store) Save(meta bl.RunMetadata) error](<#Store.Save>)
+  - [func (s \*Store) WriteBatch(ops \[\]bl.WriteOp) error](<#Store.WriteBatch>)
+
+
+<a name="Config"></a>
+## type [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/postgres/store.go#L21-L24>)
+
+Config holds the construction parameters for the PostgreSQL backend.
+
+```go
+type Config struct {
+    DSN         string // PostgreSQL connection string; required
+    TablePrefix string // table-name prefix; defaults to "blkit_"
+}
+```
+
+<a name="Store"></a>
+## type [Store](<https://github.com/friendly-business-machines/blkit/blob/main/stores/postgres/store.go#L27-L34>)
+
+Store implements bl.StateStore on a PostgreSQL database.
+
+```go
+type Store struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="New"></a>
+### func [New](<https://github.com/friendly-business-machines/blkit/blob/main/stores/postgres/store.go#L45>)
+
+```go
+func New(cfg Config) *Store
+```
+
+New parses the config and creates the connection pool (connections are established lazily; the schema is created on first use). Following the blkit constructor convention it panics on an invalid config.
+
+<a name="Store.Close"></a>
+### func (\*Store) [Close](<https://github.com/friendly-business-machines/blkit/blob/main/stores/postgres/store.go#L356>)
+
+```go
+func (s *Store) Close() error
+```
+
+Close closes the connection pool.
+
+<a name="Store.Config"></a>
+### func (\*Store) [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/postgres/store.go#L351>)
+
+```go
+func (s *Store) Config() (map[string]string, error)
+```
+
+Config returns the connection details another process needs to reach the same store.
+
+<a name="Store.CurrentVersion"></a>
+### func (\*Store) [CurrentVersion](<https://github.com/friendly-business-machines/blkit/blob/main/stores/postgres/store.go#L247>)
+
+```go
+func (s *Store) CurrentVersion(runID string) (*bl.CurrentVersion, error)
+```
+
+CurrentVersion returns the latest committed value per (task, field) plus the run metadata, via DISTINCT ON. Returns (nil, nil) for an unknown run.
+
+<a name="Store.Flush"></a>
+### func (\*Store) [Flush](<https://github.com/friendly-business-machines/blkit/blob/main/stores/postgres/store.go#L208>)
+
+```go
+func (s *Store) Flush(runID string) error
+```
+
+Flush is a no\-op beyond confirming the transaction committed: writes are synchronous once WriteBatch returns.
+
+<a name="Store.FullHistory"></a>
+### func (\*Store) [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/stores/postgres/store.go#L284>)
+
+```go
+func (s *Store) FullHistory(runID string) (*bl.FullHistory, error)
+```
+
+FullHistory returns every stored record for the run in replay order (ts, id). Returns (nil, nil) for an unknown run.
+
+<a name="Store.Save"></a>
+### func (\*Store) [Save](<https://github.com/friendly-business-machines/blkit/blob/main/stores/postgres/store.go#L119>)
+
+```go
+func (s *Store) Save(meta bl.RunMetadata) error
+```
+
+Save upserts the run's metadata.
+
+<a name="Store.WriteBatch"></a>
+### func (\*Store) [WriteBatch](<https://github.com/friendly-business-machines/blkit/blob/main/stores/postgres/store.go#L150>)
+
+```go
+func (s *Store) WriteBatch(ops []bl.WriteOp) error
+```
+
+WriteBatch sends the whole batch as one pipelined round\-trip inside a single transaction via pgx.Batch — exactly the shape the worker's writer pool produces.
+
+Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/reference/stores-sqlite/ -->
+
+<!-- Generated by scripts/generate-docs.sh — DO NOT EDIT. -->
+
+<!-- Code generated by gomarkdoc. DO NOT EDIT -->
+
+# sqlite
+
+```go
+import "github.com/friendly-business-machines/blkit/stores/sqlite"
+```
+
+Package sqlite is the SQLite state\-store backend for blkit: a durable, embedded store keeping each run's ProcessState in a single SQL\-queryable file on local disk, built on the pure\-Go modernc.org/sqlite driver so CGO\_ENABLED=0 static builds keep working. See specs/stores/sqlite\-state\-store.spec.md.
+
+## Index
+
+- [type Config](<#Config>)
+- [type Store](<#Store>)
+  - [func New(cfg Config) \*Store](<#New>)
+  - [func (s \*Store) Close() error](<#Store.Close>)
+  - [func (s \*Store) Config() (map\[string\]string, error)](<#Store.Config>)
+  - [func (s \*Store) CurrentVersion(runID string) (\*bl.CurrentVersion, error)](<#Store.CurrentVersion>)
+  - [func (s \*Store) Flush(runID string) error](<#Store.Flush>)
+  - [func (s \*Store) FullHistory(runID string) (\*bl.FullHistory, error)](<#Store.FullHistory>)
+  - [func (s \*Store) Save(meta bl.RunMetadata) error](<#Store.Save>)
+  - [func (s \*Store) WriteBatch(ops \[\]bl.WriteOp) error](<#Store.WriteBatch>)
+
+
+<a name="Config"></a>
+## type [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/sqlite/store.go#L18-L20>)
+
+Config holds the construction parameters for the SQLite backend.
+
+```go
+type Config struct {
+    Path string // path to the database file; required
+}
+```
+
+<a name="Store"></a>
+## type [Store](<https://github.com/friendly-business-machines/blkit/blob/main/stores/sqlite/store.go#L26-L29>)
+
+Store implements bl.StateStore on a SQLite database file. Writes are funnelled through a single\-connection handle (SQLite permits one writer at a time); reads use a separate pooled handle, and WAL mode keeps them flowing while a write is in progress.
+
+```go
+type Store struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="New"></a>
+### func [New](<https://github.com/friendly-business-machines/blkit/blob/main/stores/sqlite/store.go#L36>)
+
+```go
+func New(cfg Config) *Store
+```
+
+New opens (creating if needed) the database file, applies the PRAGMAs, and creates the schema. Following the blkit constructor convention it panics on an invalid config or an unopenable file.
+
+<a name="Store.Close"></a>
+### func (\*Store) [Close](<https://github.com/friendly-business-machines/blkit/blob/main/stores/sqlite/store.go#L352>)
+
+```go
+func (s *Store) Close() error
+```
+
+Close closes both database handles.
+
+<a name="Store.Config"></a>
+### func (\*Store) [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/sqlite/store.go#L347>)
+
+```go
+func (s *Store) Config() (map[string]string, error)
+```
+
+Config returns an error: a SQLite file is local to one process on one machine and cannot be shared.
+
+<a name="Store.CurrentVersion"></a>
+### func (\*Store) [CurrentVersion](<https://github.com/friendly-business-machines/blkit/blob/main/stores/sqlite/store.go#L238>)
+
+```go
+func (s *Store) CurrentVersion(runID string) (*bl.CurrentVersion, error)
+```
+
+CurrentVersion returns the latest committed value per (task, field) plus the run metadata. Returns (nil, nil) for an unknown run.
+
+<a name="Store.Flush"></a>
+### func (\*Store) [Flush](<https://github.com/friendly-business-machines/blkit/blob/main/stores/sqlite/store.go#L203>)
+
+```go
+func (s *Store) Flush(runID string) error
+```
+
+Flush is a no\-op: the store runs with synchronous(FULL), so every committed transaction is already durable.
+
+<a name="Store.FullHistory"></a>
+### func (\*Store) [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/stores/sqlite/store.go#L278>)
+
+```go
+func (s *Store) FullHistory(runID string) (*bl.FullHistory, error)
+```
+
+FullHistory returns every stored record for the run in replay order (ts, id). Returns (nil, nil) for an unknown run.
+
+<a name="Store.Save"></a>
+### func (\*Store) [Save](<https://github.com/friendly-business-machines/blkit/blob/main/stores/sqlite/store.go#L122>)
+
+```go
+func (s *Store) Save(meta bl.RunMetadata) error
+```
+
+Save upserts the run's metadata.
+
+<a name="Store.WriteBatch"></a>
+### func (\*Store) [WriteBatch](<https://github.com/friendly-business-machines/blkit/blob/main/stores/sqlite/store.go#L148>)
+
+```go
+func (s *Store) WriteBatch(ops []bl.WriteOp) error
+```
+
+WriteBatch applies the ops in a single transaction on the writer connection, so a task's outputs land together.
 
 Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)

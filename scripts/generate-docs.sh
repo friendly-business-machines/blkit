@@ -5,14 +5,15 @@
 #
 # See specs/project/documentation.spec.md ("scripts/generate-docs.sh"). The
 # script runs the godoc-to-Markdown tool (gomarkdoc) over every buildable Go
-# package in the module and writes one Markdown file per package into
+# package in the workspace and writes one Markdown file per package into
 # docs/reference/. The output is committed and consumed by Zensical as ordinary
 # source files; it must not be edited by hand.
 #
-# Today only the `core` package exists (imported as `bl`; documented as
-# blkit.md). As the messagegateway/worker/restserver packages land, they are
-# documented automatically — the package list is discovered with `go list
-# ./...`, so nothing here needs to change.
+# The `core` package (imported as `bl`) is documented as blkit.md. Each
+# state-store backend under stores/<name>/ is its own module and is documented
+# as stores-<name>.md. As the messagegateway/worker/restserver packages land,
+# they are documented automatically too — the package list is discovered from
+# `go list`, so nothing here needs to change.
 #
 # Exits non-zero with a structured message if generation fails.
 
@@ -53,11 +54,31 @@ if ! command -v gomarkdoc >/dev/null 2>&1; then
   PATH="${PATH}:$(go env GOPATH)/bin"
 fi
 
-# Discover every buildable package in the module.
+# Discover every buildable package to document. The core module's packages come
+# from `go list ./...`. The state-store backends under stores/<name>/ are each
+# their OWN Go module (a separate go.mod), so `go list ./...` does not descend
+# into them — but the workspace (go.work) makes each reachable as
+# `go list ./stores/<name>/...`. gomarkdoc accepts the resulting full import
+# paths directly, and the naming logic below flattens e.g.
+# .../stores/postgres into docs/reference/stores-postgres.md.
 packages=()
 while IFS= read -r line; do
   packages+=("$line")
 done < <(go list ./... 2>/dev/null) || fail "go list failed — module does not build"
+
+# Append each state-store backend module, if any are present. Each is discovered
+# and documented independently so a broken backend module fails loudly by name.
+if [ -d "${REPO_ROOT}/stores" ]; then
+  for dir in "${REPO_ROOT}"/stores/*/; do
+    [ -f "${dir}go.mod" ] || continue
+    store="$(basename "$dir")"
+    store_pkgs="$(go list "./stores/${store}/..." 2>/dev/null)" \
+      || fail "go list failed for store module ${store} — module does not build"
+    while IFS= read -r line; do
+      [ -n "$line" ] && packages+=("$line")
+    done <<< "$store_pkgs"
+  done
+fi
 
 [ "${#packages[@]}" -gt 0 ] || fail "no Go packages found to document"
 

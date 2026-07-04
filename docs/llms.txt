@@ -50,9 +50,31 @@
 - [Gateways](https://friendly-business-machines.github.io/blkit/processes/gateways/): Branch and merge the flow of a process — exclusive, parallel, and inclusive routing — using blkit expressions on the outgoing flows.
 - [Processes](https://friendly-business-machines.github.io/blkit/processes/processes/): Assemble tasks and gateways into an executable process graph that runs from a start event through to an end event.
 
+## State Stores
+- [State Stores](https://friendly-business-machines.github.io/blkit/state-stores/overview/): Where blkit keeps the state of a running process — pick the backend that fits your deployment, from a zero-dependency in-memory store to PostgreSQL, NATS, or an embedded file.
+- [In-memory](https://friendly-business-machines.github.io/blkit/state-stores/in-memory/): The built-in state store — zero dependencies, not durable — the default for tests, examples, and local single-process runs.
+- [PostgreSQL](https://friendly-business-machines.github.io/blkit/state-stores/postgres/): A durable, strongly consistent, shareable state store backed by PostgreSQL — a good default for production.
+- [SQL Server](https://friendly-business-machines.github.io/blkit/state-stores/mssql/): A durable, strongly consistent, shareable state store backed by Microsoft SQL Server — for shops standardised on SQL Server.
+- [MySQL](https://friendly-business-machines.github.io/blkit/state-stores/mysql/): A durable, strongly consistent, shareable state store backed by MySQL — for shops running MySQL.
+- [MariaDB](https://friendly-business-machines.github.io/blkit/state-stores/mariadb/): A durable, strongly consistent, shareable state store backed by MariaDB — a separate backend from MySQL, tuned for MariaDB.
+- [NATS](https://friendly-business-machines.github.io/blkit/state-stores/nats/): A durable, shareable state store backed by NATS JetStream — a natural fit when NATS is already your message broker.
+- [SQLite](https://friendly-business-machines.github.io/blkit/state-stores/sqlite/): A durable, embedded state store kept in a single SQLite file — the most broadly useful embedded default, and the only one whose history is queryable with SQL.
+- [bbolt](https://friendly-business-machines.github.io/blkit/state-stores/bbolt/): A durable, embedded state store kept in a single bbolt file — the simplest durable key-value option, tuned for reads.
+- [Badger](https://friendly-business-machines.github.io/blkit/state-stores/badger/): A durable, embedded state store kept in a local BadgerDB directory — tuned for heavy write throughput.
+- [Pebble](https://friendly-business-machines.github.io/blkit/state-stores/pebble/): A durable, embedded state store kept in a local Pebble directory — strong, balanced read-and-write performance.
+
 ## Architecture
 - [Expressions](https://friendly-business-machines.github.io/blkit/architecture/expressions/): blkit's expression language: a FEEL-flavoured language for business logic, built by extending the Expr engine. Where it comes from, and how it compiles and runs.
 - [Worker Pools](https://friendly-business-machines.github.io/blkit/architecture/worker-pools/): How blkit runs processes to completion — pools of workers that pull ready tasks, persist state, and handle retries.
 
 ## Reference
 - [core](https://friendly-business-machines.github.io/blkit/reference/blkit/)
+- [badger](https://friendly-business-machines.github.io/blkit/reference/stores-badger/)
+- [bbolt](https://friendly-business-machines.github.io/blkit/reference/stores-bbolt/)
+- [mariadb](https://friendly-business-machines.github.io/blkit/reference/stores-mariadb/)
+- [mssql](https://friendly-business-machines.github.io/blkit/reference/stores-mssql/)
+- [mysql](https://friendly-business-machines.github.io/blkit/reference/stores-mysql/)
+- [nats](https://friendly-business-machines.github.io/blkit/reference/stores-nats/)
+- [pebble](https://friendly-business-machines.github.io/blkit/reference/stores-pebble/)
+- [postgres](https://friendly-business-machines.github.io/blkit/reference/stores-postgres/)
+- [sqlite](https://friendly-business-machines.github.io/blkit/reference/stores-sqlite/)
