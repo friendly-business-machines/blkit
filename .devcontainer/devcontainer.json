@@ -19,8 +19,14 @@
   "customizations": {
     "vscode": {
       "extensions": [
+        // Claude Code integration.
         "anthropic.claude-code",
-        "golang.go"
+        // Go language support (syntax, gopls, debugging).
+        "golang.go",
+        // Inline hadolint warnings/errors in Dockerfiles as you edit.
+        "exiasr.hadolint",
+        // Docker/container explorer and management UI (build, run, inspect images/containers).
+        "ms-azuretools.vscode-containers"
       ],
       "settings": {
         "terminal.integrated.defaultProfile.linux": "bash"
@@ -44,9 +50,12 @@
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
   ],
 
-  // Reconcile the container's `docker` group GID with the host socket's actual group GID.
-  // The host daemon socket is owned by a `docker` group whose GID varies by host OS.
-  // Matching the GIDs lets the `vscode` user (a member of `docker`) access the socket
-  // without sudo. Runs every container start because the socket is re-exposed by the host daemon.
-  "postStartCommand": "sudo groupmod -g $(stat -c '%g' /var/run/docker.sock) docker"
+  // Reconcile the container's `docker` group GID with the host socket's actual group GID
+  // on every container start (the socket is re-exposed by the host daemon each start, and
+  // its GID varies by host OS). This must live in postStartCommand rather than an image
+  // ENTRYPOINT: VS Code Dev Containers defaults `overrideCommand: true` for Dockerfile
+  // configs, replacing the image's ENTRYPOINT/CMD with its own keep-alive command, so a
+  // baked-in entrypoint never runs. postStartCommand runs regardless (and sudo is passwordless).
+  // The script also handles the root-owned-socket (GID 0) case; see reconcile-docker-gid.sh.
+  "postStartCommand": "sudo /usr/local/bin/reconcile-docker-gid.sh"
 }

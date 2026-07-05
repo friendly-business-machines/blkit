@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "Used by the check-jsonschema pre-commit hook (see .pre-commit-config.yaml) to validate .devcontainer/devcontainer.json. Layers VS Code's customizations.vscode typing on top of the upstream base spec schema. The upstream combined schema (devContainer.schema.json) also pulls in microsoft/vscode's devContainer.vscode.schema.json, but that fragment types 'settings' and 'mcp' via 'vscode://schemas/...' URIs that only VS Code's own editor can resolve, so a generic validator can't use it. 'extensions' (the property we actually rely on for typo-catching) needs no such URI, so it's reproduced here verbatim from microsoft/vscode's schema; 'settings' and 'mcp' are left as plain objects instead of chasing the unresolvable refs.",
+  "allOf": [
+    {
+      "$ref": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.base.schema.json"
+    }
+  ],
+  "properties": {
+    "customizations": {
+      "type": "object",
+      "properties": {
+        "vscode": {
+          "type": "object",
+          "properties": {
+            "extensions": {
+              "type": "array",
+              "description": "An array of extensions that should be installed into the container. A minus '-' in front of the extension id removes it from the list of extensions to be installed.",
+              "items": {
+                "type": "string",
+                "pattern": "^-?([a-z0-9A-Z][a-z0-9A-Z-]*)\\.([a-z0-9A-Z][a-z0-9A-Z-]*)((@(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?)|@prerelease)?$",
+                "errorMessage": "Expected format: '${publisher}.${name}', '-${publisher}.${name}' or '${publisher}.${name}@${version}'. Example: 'ms-dotnettools.csharp'."
+              }
+            },
+            "settings": {
+              "type": "object",
+              "description": "Machine specific settings that should be copied into the container."
+            },
+            "mcp": {
+              "type": "object",
+              "description": "Model Context Protocol server configurations."
+            },
+            "devPort": {
+              "type": "integer",
+              "description": "The port VS Code can use to connect to its backend."
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}
