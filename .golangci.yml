@@ -6,6 +6,12 @@ linters:
   # staticcheck, unused).
   default: standard
 
+  # Additional linters on top of the standard set.
+  enable:
+    # Broad diagnostic/style/performance ruleset (redundant conversions,
+    # simplifiable constructs, likely bugs).
+    - gocritic
+
   # The expression engine is under active construction: comparison/format
   # helpers and struct fields are routinely implemented ahead of being wired
   # up, so `unused` produces noise that does not reflect real problems.

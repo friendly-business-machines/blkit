@@ -111,6 +111,20 @@ repos:
       - id: golangci-lint-fmt
       - id: golangci-lint-full
 
+  # Keep go.mod/go.sum tidy: run `go mod tidy` and fail if it changes either
+  # file, so missing/superfluous requires and stale indirect markers are caught
+  # before commit. Local hook since there's no published pre-commit hook for
+  # this; `go` is on PATH in the devcontainer. Runs whenever Go source or the
+  # module files themselves change.
+  - repo: local
+    hooks:
+      - id: go-mod-tidy
+        name: go mod tidy (verify go.mod/go.sum are current)
+        entry: bash -c 'go mod tidy && git diff --exit-code go.mod go.sum'
+        language: system
+        pass_filenames: false
+        files: '\.go$|^go\.(mod|sum)$'
+
   # ---------------------------------------------------------------------------
   # Documentation site
   # ---------------------------------------------------------------------------
