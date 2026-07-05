@@ -311,6 +311,7 @@ import (
 
     bl "github.com/friendly-business-machines/blkit/core"
     "github.com/friendly-business-machines/blkit/messagegateway"
+    pgstore "github.com/friendly-business-machines/blkit/stores/postgres"
     "github.com/friendly-business-machines/blkit/worker"
 
     // Blank imports load process-defining packages so their bl.NewProcess(...)
@@ -343,10 +344,11 @@ func main() {
     defer gw.Close()
 
     // StateStore is still owned by the worker — the gateway never touches it.
-    stateStore := bl.NewPostgresStateStore(
-        os.Getenv("BLKIT_DB_URL"),
-        "loan_app",
-    )
+    // Backends live in their own modules under stores/ (see
+    // ../../specs/state-stores/overview.spec.md); import the one you use.
+    stateStore := pgstore.New(pgstore.Config{
+        DSN: os.Getenv("BLKIT_DB_URL"),
+    })
 
     err = worker.Run(workerCtx, gw, stateStore, worker.Options{
         WorkerID:        os.Getenv("HOSTNAME"), // unique per worker instance

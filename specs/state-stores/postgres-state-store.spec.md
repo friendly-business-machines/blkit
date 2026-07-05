@@ -159,10 +159,12 @@ replica can return stale data.
 
 This backend is verified against the shared state-store **conformance suite** (see
 [overview.spec.md](./overview.spec.md#testing)). The suite runs against a **real
-PostgreSQL server**: the test reads the server address from the `BLKIT_TEST_POSTGRES_DSN`
-environment variable and skips when it is unset. CI provides the server in a
-container; locally, point the variable at any disposable instance. Each subtest
-uses its own table prefix, so runs are isolated and repeatable, and the tables are
-dropped afterwards.
+PostgreSQL server started on demand**: the test spins up a throwaway PostgreSQL
+container with [testcontainers-go](https://golang.testcontainers.org/) and removes
+it afterwards, so `go test` needs only a working Docker daemon. Setting
+`BLKIT_TEST_POSTGRES_DSN` overrides this and points the suite at an already-running
+server instead; the test skips only when neither a DSN nor a reachable Docker daemon
+is available. Each subtest uses its own table prefix, so runs are isolated and
+repeatable, and the tables are dropped afterwards.
 
 `[@test] ../../stores/postgres/store_test.go`

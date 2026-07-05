@@ -6,12 +6,14 @@ package mssql
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"sync"
 	"time"
 
-	_ "github.com/microsoft/go-mssqldb" // registers the "sqlserver" driver
+	mssql "github.com/microsoft/go-mssqldb" // registers the "sqlserver" driver
 
 	bl "github.com/friendly-business-machines/blkit/core"
 )
@@ -73,6 +75,10 @@ func (s *Store) ensureSchema() error {
 				completed_at     DATETIMEOFFSET(7) NULL,
 				evaluation_count INT NOT NULL DEFAULT 0
 			)`, s.table("runs"), s.table("runs")),
+			// A Bl value encodes to a single JSON value, which may be a bare
+			// scalar (88, "high", true). SQL Server's ISJSON rejects top-level
+			// scalars, so the value is wrapped in an array for the check: this
+			// accepts any single JSON value while still rejecting malformed JSON.
 			fmt.Sprintf(`IF OBJECT_ID(N'%s', N'U') IS NULL
 			CREATE TABLE %s (
 				id           BIGINT IDENTITY(1,1) PRIMARY KEY,
@@ -80,7 +86,7 @@ func (s *Store) ensureSchema() error {
 				task_id      NVARCHAR(255) NOT NULL,
 				execution_id NVARCHAR(255) NOT NULL,
 				field        NVARCHAR(255) NOT NULL,
-				value        NVARCHAR(MAX) NOT NULL CHECK (ISJSON(value) = 1),
+				value        NVARCHAR(MAX) NOT NULL CHECK (ISJSON(N'[' + value + N']') = 1),
 				status       NVARCHAR(16) NOT NULL DEFAULT 'pending',
 				ts           DATETIMEOFFSET(7) NOT NULL
 			)`, s.table("values"), s.table("values")),
@@ -97,7 +103,7 @@ func (s *Store) ensureSchema() error {
 				kind         NVARCHAR(64) NOT NULL,
 				node_id      NVARCHAR(255) NULL,
 				execution_id NVARCHAR(255) NOT NULL,
-				payload      NVARCHAR(MAX) NOT NULL CHECK (ISJSON(payload) = 1),
+				payload      NVARCHAR(MAX) NOT NULL CHECK (ISJSON(N'[' + payload + N']') = 1),
 				ts           DATETIMEOFFSET(7) NOT NULL
 			)`, s.table("history"), s.table("history")),
 			fmt.Sprintf(`IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'%s_replay')
@@ -152,8 +158,14 @@ func (s *Store) Save(meta bl.RunMetadata) error {
 	return err
 }
 
+// maxWriteAttempts caps how many times WriteBatch reruns a transaction that
+// SQL Server picks as a deadlock victim.
+const maxWriteAttempts = 8
+
 // WriteBatch applies the ops in a single transaction, so a task's outputs
-// land together.
+// land together. Concurrent transactions writing the same run can deadlock
+// under SQL Server's locking; the documented remedy is to rerun the victim, so
+// the transaction is retried on deadlock (error 1205) with a small backoff.
 func (s *Store) WriteBatch(ops []bl.WriteOp) error {
 	for _, op := range ops {
 		if err := bl.ValidateWriteOp(op); err != nil {
@@ -163,11 +175,33 @@ func (s *Store) WriteBatch(ops []bl.WriteOp) error {
 	if err := s.ensureSchema(); err != nil {
 		return err
 	}
+	var err error
+	for attempt := 1; ; attempt++ {
+		err = s.writeBatchOnce(ops)
+		if !isDeadlock(err) || attempt == maxWriteAttempts {
+			return err
+		}
+		time.Sleep(time.Duration(attempt) * time.Millisecond)
+	}
+}
+
+// isDeadlock reports whether err is a SQL Server deadlock (error 1205), which
+// is transient and safe to retry.
+func isDeadlock(err error) bool {
+	var e mssql.Error
+	return errors.As(err, &e) && e.Number == 1205
+}
+
+// writeBatchOnce applies the whole batch in one transaction.
+func (s *Store) writeBatchOnce(ops []bl.WriteOp) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.lockRuns(tx, ops); err != nil {
+		return err
+	}
 	for _, op := range ops {
 		switch op.Kind {
 		case bl.OpValueWrite:
@@ -206,6 +240,39 @@ func (s *Store) WriteBatch(ops []bl.WriteOp) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// lockRuns takes an exclusive, transaction-scoped application lock per run
+// touched by the batch, in sorted order. Serialising the writers of a run
+// avoids the lock-ordering deadlock between a batch's value INSERT and its
+// pending-status UPDATE that SQL Server is otherwise prone to; acquiring the
+// locks in a consistent order means the locks themselves cannot deadlock.
+// Different runs still proceed in parallel. The lock resource is namespaced by
+// table prefix so unrelated stores sharing a database do not serialise.
+func (s *Store) lockRuns(tx *sql.Tx, ops []bl.WriteOp) error {
+	seen := map[string]bool{}
+	var runs []string
+	for _, op := range ops {
+		if op.RunID != "" && !seen[op.RunID] {
+			seen[op.RunID] = true
+			runs = append(runs, op.RunID)
+		}
+	}
+	sort.Strings(runs)
+	for _, runID := range runs {
+		var rc int
+		if err := tx.QueryRow(`
+			DECLARE @rc int;
+			EXEC @rc = sp_getapplock @Resource = @p1, @LockMode = 'Exclusive',
+				@LockOwner = 'Transaction', @LockTimeout = 30000;
+			SELECT @rc`, s.prefix+runID).Scan(&rc); err != nil {
+			return err
+		}
+		if rc < 0 {
+			return fmt.Errorf("mssql state store: sp_getapplock(%q) returned %d", runID, rc)
+		}
+	}
+	return nil
 }
 
 // Flush is a no-op beyond confirming the transaction committed: writes are

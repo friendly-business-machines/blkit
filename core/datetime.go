@@ -531,7 +531,7 @@ func calendarUnits(t1, t2 time.Time, years bool) float64 {
 	step := 1
 	full := wholeMonthsBetween(t1, t2)
 	if years {
-		full = full / 12
+		full /= 12
 		step = 12
 	}
 	anchor := addMonthsClamped(t1, ymDur(decimal.NewFromInt(int64(full*step))))

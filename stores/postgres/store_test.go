@@ -7,21 +7,22 @@ import (
 	"testing"
 	"time"
 
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	bl "github.com/friendly-business-machines/blkit/core"
 	pgstore "github.com/friendly-business-machines/blkit/stores/postgres"
 )
 
-// The suite runs against a real PostgreSQL server. Point
-// BLKIT_TEST_POSTGRES_DSN at one (CI runs it in a container); the test skips
-// when the variable is unset. Each subtest gets its own table prefix so runs
-// are isolated and repeatable; the tables are dropped afterwards.
+// The suite runs against a real PostgreSQL server. By default it starts a
+// throwaway container via testcontainers-go; set BLKIT_TEST_POSTGRES_DSN to
+// point it at an already-running server instead. It skips only when neither a
+// DSN nor a reachable Docker daemon is available. Each subtest gets its own
+// table prefix so runs are isolated and repeatable; the tables are dropped
+// afterwards.
 func TestPostgresStateStoreConformance(t *testing.T) {
-	dsn := os.Getenv("BLKIT_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("BLKIT_TEST_POSTGRES_DSN not set; skipping PostgreSQL conformance test")
-	}
+	dsn := postgresDSN(t)
 	var n int
 	bl.RunStateStoreConformance(t, func(t *testing.T) (bl.StateStore, func() bl.StateStore) {
 		n++
@@ -32,6 +33,32 @@ func TestPostgresStateStoreConformance(t *testing.T) {
 		}
 		return open(), open
 	})
+}
+
+// postgresDSN returns a DSN for the conformance suite. It prefers
+// BLKIT_TEST_POSTGRES_DSN; when that is unset it starts a throwaway PostgreSQL
+// container and terminates it when the test ends.
+func postgresDSN(t *testing.T) string {
+	t.Helper()
+	if dsn := os.Getenv("BLKIT_TEST_POSTGRES_DSN"); dsn != "" {
+		return dsn
+	}
+	ctx := context.Background()
+	ctr, err := tcpostgres.Run(ctx, "postgres:16-alpine",
+		tcpostgres.WithDatabase("blkit"),
+		tcpostgres.WithUsername("blkit"),
+		tcpostgres.WithPassword("blkit"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	if err != nil {
+		t.Skipf("start postgres container (set BLKIT_TEST_POSTGRES_DSN to use an existing server): %v", err)
+	}
+	t.Cleanup(func() { _ = ctr.Terminate(context.Background()) })
+	dsn, err := ctr.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatalf("postgres connection string: %v", err)
+	}
+	return dsn
 }
 
 func dropTables(t *testing.T, dsn, prefix string) {

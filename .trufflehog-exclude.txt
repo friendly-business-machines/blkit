@@ -1,0 +1,8 @@
+# Newline-separated regexes of paths TruffleHog should skip (--exclude-paths).
+#
+# go.sum contains only base64-encoded SHA-256 module checksums. Their high
+# entropy trips credential detectors (e.g. the OpenTelemetry checksum matches
+# TruffleHog's GoDaddy pattern), but a real secret can never live here — the Go
+# toolchain generates and verifies the file. Excluding it removes an
+# unavoidable class of false positives without weakening the scan.
+(^|/)go\.sum$

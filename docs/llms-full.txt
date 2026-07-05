@@ -10840,7 +10840,7 @@ Package mssql is the Microsoft SQL Server state\-store backend for blkit: a dura
 
 
 <a name="Config"></a>
-## type [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L20-L23>)
+## type [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L22-L25>)
 
 Config holds the construction parameters for the SQL Server backend.
 
@@ -10852,7 +10852,7 @@ type Config struct {
 ```
 
 <a name="Store"></a>
-## type [Store](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L26-L33>)
+## type [Store](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L28-L35>)
 
 Store implements bl.StateStore on a SQL Server database.
 
@@ -10863,7 +10863,7 @@ type Store struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L42>)
+### func [New](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L44>)
 
 ```go
 func New(cfg Config) *Store
@@ -10872,7 +10872,7 @@ func New(cfg Config) *Store
 New opens the pool (connections are established lazily; the schema is created on first use). Following the blkit constructor convention it panics on an invalid config.
 
 <a name="Store.Close"></a>
-### func (\*Store) [Close](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L368>)
+### func (\*Store) [Close](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L435>)
 
 ```go
 func (s *Store) Close() error
@@ -10881,7 +10881,7 @@ func (s *Store) Close() error
 Close closes the connection pool.
 
 <a name="Store.Config"></a>
-### func (\*Store) [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L363>)
+### func (\*Store) [Config](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L430>)
 
 ```go
 func (s *Store) Config() (map[string]string, error)
@@ -10890,7 +10890,7 @@ func (s *Store) Config() (map[string]string, error)
 Config returns the connection details another process needs to reach the same store.
 
 <a name="Store.CurrentVersion"></a>
-### func (\*Store) [CurrentVersion](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L254>)
+### func (\*Store) [CurrentVersion](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L321>)
 
 ```go
 func (s *Store) CurrentVersion(runID string) (*bl.CurrentVersion, error)
@@ -10899,7 +10899,7 @@ func (s *Store) CurrentVersion(runID string) (*bl.CurrentVersion, error)
 CurrentVersion returns the latest committed value per (task, field) via a ROW\_NUMBER window. Returns (nil, nil) for an unknown run.
 
 <a name="Store.Flush"></a>
-### func (\*Store) [Flush](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L213>)
+### func (\*Store) [Flush](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L280>)
 
 ```go
 func (s *Store) Flush(runID string) error
@@ -10908,7 +10908,7 @@ func (s *Store) Flush(runID string) error
 Flush is a no\-op beyond confirming the transaction committed: writes are synchronous once WriteBatch returns.
 
 <a name="Store.FullHistory"></a>
-### func (\*Store) [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L294>)
+### func (\*Store) [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L361>)
 
 ```go
 func (s *Store) FullHistory(runID string) (*bl.FullHistory, error)
@@ -10917,7 +10917,7 @@ func (s *Store) FullHistory(runID string) (*bl.FullHistory, error)
 FullHistory returns every stored record for the run in replay order (ts, id). Returns (nil, nil) for an unknown run.
 
 <a name="Store.Save"></a>
-### func (\*Store) [Save](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L126>)
+### func (\*Store) [Save](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L132>)
 
 ```go
 func (s *Store) Save(meta bl.RunMetadata) error
@@ -10926,13 +10926,13 @@ func (s *Store) Save(meta bl.RunMetadata) error
 Save upserts the run's metadata via MERGE.
 
 <a name="Store.WriteBatch"></a>
-### func (\*Store) [WriteBatch](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L157>)
+### func (\*Store) [WriteBatch](<https://github.com/friendly-business-machines/blkit/blob/main/stores/mssql/store.go#L169>)
 
 ```go
 func (s *Store) WriteBatch(ops []bl.WriteOp) error
 ```
 
-WriteBatch applies the ops in a single transaction, so a task's outputs land together.
+WriteBatch applies the ops in a single transaction, so a task's outputs land together. Concurrent transactions writing the same run can deadlock under SQL Server's locking; the documented remedy is to rerun the victim, so the transaction is retried on deadlock (error 1205) with a small backoff.
 
 Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)
 

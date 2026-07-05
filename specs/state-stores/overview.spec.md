@@ -365,11 +365,15 @@ How the suite is run depends on the backend:
   process** (`nats-server` is importable as a Go library) — the genuine engine,
   part of the normal test run, no container needed.
 - **SQL server backends** (PostgreSQL, SQL Server, MySQL, MariaDB) run the suite
-  against a **real server**: each test reads the server address from a
-  `BLKIT_TEST_<NAME>_DSN` environment variable and skips when it is unset. CI
-  provides the server in a container; locally, point the variable at any
-  disposable instance. Each subtest uses its own table prefix, so runs are
-  isolated and repeatable.
+  against a **real server started on demand**: the test spins up a throwaway
+  container for the engine with [testcontainers-go](https://golang.testcontainers.org/),
+  runs the suite against it, and removes it afterwards — so `go test` needs only a
+  working Docker daemon, no manual setup. One container is shared across the whole
+  test; each subtest still uses its own table prefix, so runs stay isolated and
+  repeatable. Setting `BLKIT_TEST_<NAME>_DSN` overrides this and points the suite at
+  an already-running instance instead (a managed endpoint, or a container you run
+  yourself). The test skips only when neither a DSN nor a reachable Docker daemon is
+  available.
 
 Because every backend runs the same suite, a value written through any of them is
 read back the same way, and the strong-consistency guarantee is checked for each.

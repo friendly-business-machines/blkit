@@ -37,7 +37,10 @@ repos:
     hooks:
       - id: trufflehog
         name: TruffleHog secret scan
-        entry: trufflehog git file://. --since-commit HEAD --results=verified,unknown,unverified --fail
+        # --exclude-paths skips go.sum, whose module checksums are high-entropy
+        # base64 that trips credential detectors but can never hold a real
+        # secret (see .trufflehog-exclude.txt).
+        entry: trufflehog git file://. --since-commit HEAD --results=verified,unknown,unverified --exclude-paths=.trufflehog-exclude.txt --fail
         language: golang
         pass_filenames: false
 

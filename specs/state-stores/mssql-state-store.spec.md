@@ -50,7 +50,11 @@ Go driver — used through Go's `database/sql` package. SQL Server-specific choi
 - **`DATETIMEOFFSET`** columns for timestamps (time-zone-preserving, sub-microsecond).
 - Encoded `Bl` values are stored in **`NVARCHAR(MAX)` validated with `ISJSON`**, so
   the audit history remains queryable with SQL Server's JSON functions
-  (`JSON_VALUE`, `OPENJSON`).
+  (`JSON_VALUE`, `OPENJSON`). Because a `Bl` value encodes to a single JSON value —
+  which may be a top-level scalar such as `88`, `"high"`, or `true`, and SQL Server's
+  `ISJSON` rejects bare scalars — the value is wrapped in an array for the check
+  (`ISJSON(N'[' + value + N']') = 1`). This accepts any single JSON value (scalar,
+  object, or array) while still rejecting malformed JSON.
 
 ## Storage layout
 
@@ -115,6 +119,12 @@ replica can return stale data.
   interfering.
 - **Parallel tasks within one run** each write their own rows, so their writes do
   not overwrite each other. The order is sorted out from the timestamps at read time.
+  Each `WriteBatch` takes an **exclusive, transaction-scoped application lock on its
+  run** (`sp_getapplock`, one per distinct run in the batch, acquired in sorted
+  order) before writing, so concurrent batches for the same run serialise rather than
+  deadlock on SQL Server's lock ordering — a hazard the other SQL backends do not
+  hit. Different runs still write in parallel. As a safety net, a batch that SQL
+  Server still picks as a deadlock victim (error 1205) is retried.
 
 ---
 
@@ -122,10 +132,12 @@ replica can return stale data.
 
 This backend is verified against the shared state-store **conformance suite** (see
 [overview.spec.md](./overview.spec.md#testing)). The suite runs against a **real
-SQL Server server**: the test reads the server address from the `BLKIT_TEST_MSSQL_DSN`
-environment variable and skips when it is unset. CI provides the server in a
-container; locally, point the variable at any disposable instance. Each subtest
-uses its own table prefix, so runs are isolated and repeatable, and the tables are
-dropped afterwards.
+SQL Server instance started on demand**: the test spins up a throwaway SQL Server
+container with [testcontainers-go](https://golang.testcontainers.org/) and removes
+it afterwards, so `go test` needs only a working Docker daemon. Setting
+`BLKIT_TEST_MSSQL_DSN` overrides this and points the suite at an already-running
+server instead; the test skips only when neither a DSN nor a reachable Docker daemon
+is available. Each subtest uses its own table prefix, so runs are isolated and
+repeatable, and the tables are dropped afterwards.
 
 `[@test] ../../stores/mssql/store_test.go`
