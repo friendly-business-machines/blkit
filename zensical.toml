@@ -84,6 +84,14 @@ nav = [
     "message-brokers/rabbitmq.md",
     "message-brokers/redis.md",
   ] },
+  { "Deployment Patterns" = [
+    "deployment-patterns/overview.md",
+    "deployment-patterns/embedded-library.md",
+    "deployment-patterns/single-node-server.md",
+    "deployment-patterns/distributed-worker-pool.md",
+    "deployment-patterns/dedicated-worker-pools.md",
+    "deployment-patterns/mcp-server.md",
+  ] },
   { "Architecture" = [
     "architecture/expressions.md",
     "architecture/worker-pools.md",

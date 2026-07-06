@@ -74,6 +74,14 @@
 - [RabbitMQ](https://friendly-business-machines.github.io/blkit/message-brokers/rabbitmq/): A self-hosted broker backed by RabbitMQ 3.13+ — quorum queues behind a topic exchange for jobs, RabbitMQ Streams for instance events, heartbeat broadcast for the registry.
 - [Redis](https://friendly-business-machines.github.io/blkit/message-brokers/redis/): A self-hosted broker backed by Redis or Valkey — Streams and consumer groups for the job queue, per-instance streams for events, TTL'd keys for the registry. The lightweight self-host default.
 
+## Deployment Patterns
+- [Overview](https://friendly-business-machines.github.io/blkit/deployment-patterns/overview/): How to assemble blkit into a running application — from a single self-contained binary to a distributed producer-and-worker-fleet — by combining the same four building blocks in different shapes.
+- [Embedded Library](https://friendly-business-machines.github.io/blkit/deployment-patterns/embedded-library/): blkit running entirely in-process — no server, no external infrastructure. The simplest way to execute processes: inside your own application or a CLI, over the built-in in-memory broker.
+- [Single-Node Server](https://friendly-business-machines.github.io/blkit/deployment-patterns/single-node-server/): One binary that serves clients *and* runs processes — a REST or MCP server with an embedded worker. Self-contained, with no separate worker fleet to operate.
+- [Distributed Worker Pool](https://friendly-business-machines.github.io/blkit/deployment-patterns/distributed-worker-pool/): A producer and a separately-scaled worker fleet, talking over a shared external broker. The standard shape for production: submit from one tier, execute on another, scale each independently.
+- [Dedicated Worker Pools](https://friendly-business-machines.github.io/blkit/deployment-patterns/dedicated-worker-pools/): Multiple specialised worker binaries, each running only a subset of your processes, with the broker routing the right work to the right pool.
+- [MCP Server for AI Agents](https://friendly-business-machines.github.io/blkit/deployment-patterns/mcp-server/): Exposing your processes as MCP tools so AI agents can discover, submit, and observe them — over a stdio Model Context Protocol server.
+
 ## Architecture
 - [Expressions](https://friendly-business-machines.github.io/blkit/architecture/expressions/): blkit's expression language: a FEEL-flavoured language for business logic, built by extending the Expr engine. Where it comes from, and how it compiles and runs.
 - [Worker Pools](https://friendly-business-machines.github.io/blkit/architecture/worker-pools/): How blkit runs processes to completion — pools of workers that pull ready tasks, persist state, and handle retries.

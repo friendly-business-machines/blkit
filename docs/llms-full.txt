@@ -7255,6 +7255,308 @@ The `MessageBroker` interface this backend implements is part of the core API
 
 ---
 
+<!-- Source: https://friendly-business-machines.github.io/blkit/deployment-patterns/overview/ -->
+
+# Overview
+
+> How to assemble blkit into a running application — from a single self-contained
+> binary to a distributed producer-and-worker-fleet — by combining the same four
+> building blocks in different shapes.
+
+!!! warning "Status — subsystem in progress"
+    The server and worker packages these patterns describe are still being built.
+    These pages sketch the intended deployment shapes so the section is visible
+    and stable. The authoritative requirements live in the specs under
+    `specs/worker/`, `specs/rest/`, and `specs/mcp/`.
+
+Every blkit deployment is built from the same four pieces. A pattern is just a
+particular way of arranging them across one or more binaries.
+
+- **A producer** — where work comes *from*. A [REST server](single-node-server.md),
+  an [MCP server](mcp-server.md), a CLI, or an admin UI submits process runs and
+  observes their events.
+- **A worker** — where processes actually *run*. A worker fetches jobs, drives
+  each process to completion, and is the only component that touches the state
+  store. See [worker pools](../architecture/worker-pools.md).
+- **A [message broker](../message-brokers/overview.md)** — the channel between
+  producers and workers. In-memory for a single process; an external broker
+  (Redis, NATS, …) across machines.
+- **A [state store](../state-stores/overview.md)** — where each run's state
+  lives, owned exclusively by workers.
+
+## The axes of choice
+
+Picking a pattern comes down to three questions:
+
+- **One binary or many?** Co-locate everything for simplicity, or split the
+  producer from the workers so each scales independently.
+- **Embedded or remote worker?** Both the REST and MCP servers can embed a worker
+  in the same process, or run producer-only and rely on a separate worker fleet.
+- **In-memory or external broker?** The built-in in-memory broker needs no infra
+  but stays within one process; an external broker is what lets separate binaries
+  and machines talk.
+
+## The patterns
+
+Ordered from the simplest, single-process shape to the most distributed. Later
+patterns build on the vocabulary of the earlier ones.
+
+| Pattern | Binaries | Broker | Use it for |
+|---|---|---|---|
+| [Embedded Library](embedded-library.md) | One | In-memory | blkit inside your app or CLI — no server, no external infra. |
+| [Single-Node Server](single-node-server.md) | One | In-memory / local | A self-contained REST or MCP server with an embedded worker. |
+| [Distributed Worker Pool](distributed-worker-pool.md) | Many | External | A producer plus a horizontally-scaled worker fleet over a shared broker. |
+| [Dedicated Worker Pools](dedicated-worker-pools.md) | Many | External | Specialised worker binaries, each running a subset of processes. |
+| [MCP Server for AI Agents](mcp-server.md) | One or many | Any | Exposing processes as MCP tools for AI agents over stdio. |
+
+## Choosing infrastructure
+
+Once you have picked a shape, the [Message Brokers](../message-brokers/overview.md)
+and [State Stores](../state-stores/overview.md) sections cover the backend choices
+that fill in the broker and state-store slots — they are interchangeable, so a
+pattern does not dictate which you use.
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/deployment-patterns/embedded-library/ -->
+
+# Embedded Library
+
+> blkit running entirely in-process — no server, no external infrastructure. The
+> simplest way to execute processes: inside your own application or a CLI, over
+> the built-in in-memory broker.
+
+!!! warning "Placeholder — pattern in progress"
+    The worker package this pattern relies on is still being built. This page is a
+    stub so the section's shape is visible; it will be filled in once the worker
+    package lands. The intended behaviour lives in the spec under `specs/worker/`.
+
+## What this pattern is
+
+In the embedded pattern there is no producer/worker split and no network. Your
+application constructs a [`NewInMemoryMessageBroker()`](../message-brokers/in-memory.md)
+and a [state store](../state-stores/overview.md), runs a worker in a goroutine,
+and submits runs directly through the broker — all in one process. For the very
+simplest cases you can skip the broker entirely and call `process.Evaluate(...)`
+in-line.
+
+## When to use it
+
+- **Unit and integration tests** that exercise real processes without standing up
+  infrastructure.
+- **CLI tools** and batch jobs that run a process and exit.
+- **Single-node applications** embedding business logic with no need to scale
+  workers separately.
+
+## How it's wired
+
+- The built-in [in-memory broker](../message-brokers/in-memory.md) — zero
+  dependencies, single process.
+- A [state store](../state-stores/overview.md) — the in-memory store for
+  throwaway runs, or an embedded durable store (SQLite, bbolt) to survive a
+  restart.
+- A worker loop in a goroutine, sharing the same broker value the producer code
+  submits through.
+
+Nothing here crosses a process boundary, so nothing survives the process exiting
+unless you pick a durable state store. When you outgrow a single process, move to
+the [Single-Node Server](single-node-server.md) or
+[Distributed Worker Pool](distributed-worker-pool.md) patterns — your process code
+does not change.
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/deployment-patterns/single-node-server/ -->
+
+# Single-Node Server
+
+> One binary that serves clients *and* runs processes — a REST or MCP server with
+> an embedded worker. Self-contained, with no separate worker fleet to operate.
+
+!!! warning "Placeholder — pattern in progress"
+    The server and worker packages this pattern relies on are still being built.
+    This page is a stub so the section's shape is visible; it will be filled in
+    once those packages land. The intended behaviour lives in the specs under
+    `specs/rest/`, `specs/mcp/`, and `specs/worker/`.
+
+## What this pattern is
+
+A single binary runs a producer — a [REST server](../architecture/worker-pools.md)
+(`blkit/restserver`) or an [MCP server](mcp-server.md) (`blkit/mcp`) — with an
+**embedded worker** in the same process. The server accepts submissions and streams
+events; the embedded worker consumes them and drives each process to completion.
+Both share one broker and are governed by one lifecycle: cancelling the server's
+context drains the worker too.
+
+## When to use it
+
+- **Small deployments** that want an HTTP (or MCP) API without operating a separate
+  worker tier.
+- **Getting started** — the shortest path from process definitions to a running
+  service.
+- Workloads where producer and worker capacity scale **together**, so co-locating
+  them is simpler than splitting them.
+
+## How it's wired
+
+- A REST or MCP server started with its `Run(...)` entry point and the
+  `EmbeddedWorker` option set, so `worker.Run` spawns inside the same process.
+- A [message broker](../message-brokers/overview.md) — the in-memory broker for a
+  truly self-contained single node, or an external broker if you plan to add more
+  binaries later.
+- A durable [state store](../state-stores/overview.md) so runs survive a restart.
+
+Because the embedded worker registers its processes on the broker at startup, the
+server advertises exactly the processes compiled into the binary. When you need
+producer and worker to scale independently, drop the `EmbeddedWorker` option and
+move the workers into their own [worker pool](distributed-worker-pool.md) — the
+server code barely changes.
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/deployment-patterns/distributed-worker-pool/ -->
+
+# Distributed Worker Pool
+
+> A producer and a separately-scaled worker fleet, talking over a shared external
+> broker. The standard shape for production: submit from one tier, execute on
+> another, scale each independently.
+
+!!! warning "Placeholder — pattern in progress"
+    The server and worker packages this pattern relies on are still being built.
+    This page is a stub so the section's shape is visible; it will be filled in
+    once those packages land. The intended behaviour lives in the specs under
+    `specs/rest/`, `specs/worker/`, and `specs/message-brokers/`.
+
+## What this pattern is
+
+The producer and the workers run as **separate binaries**. A broker-only
+[REST server](../architecture/worker-pools.md) (or MCP server) accepts submissions
+and streams events but runs no processes itself; a pool of standalone
+[workers](../architecture/worker-pools.md) consumes the shared
+[external broker](../message-brokers/overview.md) and executes the work. Any number
+of worker replicas can run — each is an independent consumer of the broker's job
+queue.
+
+## When to use it
+
+- **Production deployments** that need to scale execution capacity independently of
+  the request-serving tier.
+- Workloads where processes are **long-running** or resource-heavy, so workers want
+  their own machines and lifecycle.
+- Systems that need **rolling worker restarts** without dropping in-flight runs —
+  a job whose worker dies is redelivered to another.
+
+## How it's wired
+
+- A producer binary running the REST or MCP server **without** an embedded worker.
+- One or more worker binaries running `worker.Run` against the same broker and a
+  shared [state store](../state-stores/overview.md).
+- An [external message broker](../message-brokers/overview.md) — Redis, NATS,
+  RabbitMQ, or a managed cloud service — as the only channel between the tiers.
+
+Workers are stateless and horizontally scalable: run as many replicas as you need,
+each with a unique worker id (a pod name works well). To split execution across
+specialised fleets, see [Dedicated Worker Pools](dedicated-worker-pools.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/deployment-patterns/dedicated-worker-pools/ -->
+
+# Dedicated Worker Pools
+
+> Multiple specialised worker binaries, each running only a subset of your
+> processes, with the broker routing the right work to the right pool.
+
+!!! warning "Placeholder — pattern in progress"
+    The worker package this pattern relies on is still being built. This page is a
+    stub so the section's shape is visible; it will be filled in once the worker
+    package lands. The intended behaviour lives in the specs under `specs/worker/`
+    and `specs/message-brokers/`.
+
+## What this pattern is
+
+An extension of the [Distributed Worker Pool](distributed-worker-pool.md). A
+worker's capability set is determined entirely by **which process packages are
+compiled into its binary** (via blank imports in `main`). By building several
+worker binaries — each importing a different subset of processes — you create
+distinct fleets, and the broker's **selective consumption** delivers each job only
+to a fleet that can run it. All fleets share one broker and one state store.
+
+## When to use it
+
+- **Resource isolation** — pin GPU-heavy or memory-heavy processes to their own
+  machine pool, away from lightweight ones.
+- **Blast-radius control** — a bad deploy of one process fleet cannot stall the
+  others.
+- **Independent scaling and rollout** — scale and release each process family on
+  its own schedule.
+- **Tenancy or compliance** — run certain processes only on specific,
+  appropriately-governed infrastructure.
+
+## How it's wired
+
+- One `main` package per fleet under `cmd/`, each blank-importing only the process
+  packages that fleet should run.
+- Each binary containerised and deployed as its own group of replicas.
+- A single shared [external broker](../message-brokers/overview.md) whose
+  selective-consumption routing sends each job to a fleet registered for it, and a
+  shared [state store](../state-stores/overview.md).
+
+Because routing follows the binary's registry contents, there is no central router
+to configure — deployment shape *is* the routing. This composes with the
+[Distributed Worker Pool](distributed-worker-pool.md): the producer tier is
+unchanged; only the worker side is partitioned.
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/deployment-patterns/mcp-server/ -->
+
+# MCP Server for AI Agents
+
+> Exposing your processes as MCP tools so AI agents can discover, submit, and
+> observe them — over a stdio Model Context Protocol server.
+
+!!! warning "Placeholder — pattern in progress"
+    The MCP server and worker packages this pattern relies on are still being
+    built. This page is a stub so the section's shape is visible; it will be
+    filled in once those packages land. The intended behaviour lives in the specs
+    under `specs/mcp/` and `specs/worker/`.
+
+## What this pattern is
+
+The MCP server (`blkit/mcp`) presents each process registered on the broker as an
+**MCP tool**, over the stdio transport an AI agent expects. A tool call becomes a
+submit-plus-observe round-trip on the [broker](../message-brokers/overview.md); a
+built-in `describe_process` tool lets an agent inspect a process's input shape and
+documentation before calling it. Like the REST server, it can embed a worker or
+run producer-only against a remote [worker pool](distributed-worker-pool.md).
+
+## When to use it
+
+- Giving **AI agents** a governed, typed way to run business processes instead of
+  ad-hoc code.
+- **Low-code / assistant integrations** where the agent host speaks MCP.
+- Pairing a conversational front end with blkit's validated
+  [data contracts](../decisions/overview.md) so inputs are checked before a run
+  starts.
+
+## How it's wired
+
+- An MCP server started with its `Run(...)` entry point on the stdio transport.
+- Either the `EmbeddedWorker` option for a self-contained
+  [single-node](single-node-server.md) agent tool, or producer-only against a
+  shared broker and a remote [worker pool](distributed-worker-pool.md).
+- A [message broker](../message-brokers/overview.md) and
+  [state store](../state-stores/overview.md) as in the other patterns.
+
+The transport is stdio only; HTTP-based MCP transports are out of scope. For a
+browser- or service-facing HTTP API instead, use the REST server in the
+[Single-Node Server](single-node-server.md) or
+[Distributed Worker Pool](distributed-worker-pool.md) patterns.
+
+---
+
 <!-- Source: https://friendly-business-machines.github.io/blkit/architecture/expressions/ -->
 
 # Expressions
