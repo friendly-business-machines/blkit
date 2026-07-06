@@ -60,7 +60,7 @@ nav = [
     "processes/gateways.md",
     "processes/processes.md",
   ] },
-  { "State Stores" = [
+  { "State-Stores" = [
     "state-stores/overview.md",
     "state-stores/badger.md",
     "state-stores/bbolt.md",
@@ -73,6 +73,16 @@ nav = [
     "state-stores/postgres.md",
     "state-stores/sqlite.md",
     "state-stores/turso.md",
+  ] },
+  { "Message-Brokers" = [
+    "message-brokers/overview.md",
+    "message-brokers/aws-sqs-sns.md",
+    "message-brokers/azure-service-bus.md",
+    "message-brokers/google-pubsub.md",
+    "message-brokers/in-memory.md",
+    "message-brokers/nats.md",
+    "message-brokers/rabbitmq.md",
+    "message-brokers/redis.md",
   ] },
   { "Architecture" = [
     "architecture/expressions.md",

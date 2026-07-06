@@ -50,7 +50,7 @@
 - [Gateways](https://friendly-business-machines.github.io/blkit/processes/gateways/): Branch and merge the flow of a process — exclusive, parallel, and inclusive routing — using blkit expressions on the outgoing flows.
 - [Processes](https://friendly-business-machines.github.io/blkit/processes/processes/): Assemble tasks and gateways into an executable process graph that runs from a start event through to an end event.
 
-## State Stores
+## State-Stores
 - [Overview](https://friendly-business-machines.github.io/blkit/state-stores/overview/): Where blkit keeps the state of a running process — pick the backend that fits your deployment, from a zero-dependency in-memory store to PostgreSQL, NATS, or an embedded file.
 - [Badger](https://friendly-business-machines.github.io/blkit/state-stores/badger/): A durable, embedded state store kept in a local BadgerDB directory — tuned for heavy write throughput.
 - [bbolt](https://friendly-business-machines.github.io/blkit/state-stores/bbolt/): A durable, embedded state store kept in a single bbolt file — the simplest durable key-value option, tuned for reads.
@@ -63,6 +63,16 @@
 - [PostgreSQL](https://friendly-business-machines.github.io/blkit/state-stores/postgres/): A durable, strongly consistent, shareable state store backed by PostgreSQL — a good default for production.
 - [SQLite](https://friendly-business-machines.github.io/blkit/state-stores/sqlite/): A durable, embedded state store kept in a single SQLite file — the most broadly useful embedded default, and the only one whose history is queryable with SQL.
 - [Turso](https://friendly-business-machines.github.io/blkit/state-stores/turso/): A durable, embedded state store kept in a Turso Database file — Turso Database is the ground-up rewrite of SQLite in Rust, in-process and compatible with SQLite's query language and file format. Beta engine.
+
+## Message-Brokers
+- [Overview](https://friendly-business-machines.github.io/blkit/message-brokers/overview/): How blkit's clients and workers talk to each other — pick the backend that fits your deployment, from a zero-dependency in-memory broker to Redis, NATS, RabbitMQ, or a managed cloud service.
+- [AWS SQS/SNS](https://friendly-business-machines.github.io/blkit/message-brokers/aws-sqs-sns/): A cloud-managed broker on AWS — SQS queues per process key for jobs, an SNS topic with filter policies for instance events, and a DynamoDB RegistryStore for the registry, timers, and last-event records.
+- [Azure Service Bus](https://friendly-business-machines.github.io/blkit/message-brokers/azure-service-bus/): A cloud-managed broker on Azure — peek-lock queues for jobs, a filtered topic for instance events, native scheduled messages for timers, and a RegistryStore in Table Storage or Cosmos DB.
+- [Google Pub/Sub](https://friendly-business-machines.github.io/blkit/message-brokers/google-pubsub/): A cloud-managed broker on Google Cloud — a filtered jobs topic, per-subscriber filtered subscriptions with retention and Seek replay for instance events, and a Firestore RegistryStore for the registry and timers.
+- [In-Memory](https://friendly-business-machines.github.io/blkit/message-brokers/in-memory/): The built-in broker that ships in core — Go channels and maps, no external broker required. For tests, local development, and single-binary deployments.
+- [NATS](https://friendly-business-machines.github.io/blkit/message-brokers/nats/): A self-hosted broker backed by NATS with JetStream — subject-filtered pull consumers for the job queue, per-subject streams for events, KV with watch for the registry. A natural fit when NATS is already your state store.
+- [RabbitMQ](https://friendly-business-machines.github.io/blkit/message-brokers/rabbitmq/): A self-hosted broker backed by RabbitMQ 3.13+ — quorum queues behind a topic exchange for jobs, RabbitMQ Streams for instance events, heartbeat broadcast for the registry.
+- [Redis](https://friendly-business-machines.github.io/blkit/message-brokers/redis/): A self-hosted broker backed by Redis or Valkey — Streams and consumer groups for the job queue, per-instance streams for events, TTL'd keys for the registry. The lightweight self-host default.
 
 ## Architecture
 - [Expressions](https://friendly-business-machines.github.io/blkit/architecture/expressions/): blkit's expression language: a FEEL-flavoured language for business logic, built by extending the Expr engine. Where it comes from, and how it compiles and runs.

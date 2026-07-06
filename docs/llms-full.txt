@@ -6585,6 +6585,676 @@ The backend's API is in the [Turso reference](../reference/stores-turso.md); the
 
 ---
 
+<!-- Source: https://friendly-business-machines.github.io/blkit/message-brokers/overview/ -->
+
+# Overview
+
+> How blkit's clients and workers talk to each other — pick the backend that fits
+> your deployment, from a zero-dependency in-memory broker to Redis, NATS,
+> RabbitMQ, or a managed cloud service.
+
+!!! warning "Status — subsystem in progress"
+    The message-broker subsystem is still being built; no external backend is
+    implemented yet. These pages describe the intended design so the section's
+    shape is visible and stable. The authoritative requirements live in the
+    broker specs under `specs/message-brokers/`.
+
+blkit **clients** (MCP servers, web servers, CLI tools, admin UIs) and **workers**
+(the processes that execute [process](../processes/processes.md) definitions) may
+live in different binaries on different machines. The **message broker** is the
+only channel between them.
+
+blkit ships one built-in broker and a family of pluggable backends. They are
+**interchangeable**: your application code does not change when you swap one for
+another, because every backend implements the same `MessageBroker` interface and
+is held to the same behaviour by a [shared conformance suite](#conformance).
+
+## What every broker does
+
+The broker exists **only** for client↔worker communication. It has six duties:
+
+- **Worker registration** — where workers advertise which processes and versions
+  they can execute, kept live by heartbeats and expired by TTL.
+- **Process queue** — the job queue that carries work to workers.
+- **Start requests** — where clients request the start of a process and supply
+  its start input values.
+- **Cancel-type requests** — where clients send cancel and terminate requests.
+- **Input requests and responses** — where clients receive a running process's
+  requests for further input, and respond to them.
+- **Process outcomes** — where clients receive process outcomes.
+
+## What the broker is not
+
+**The broker holds no process state.** The execution history and the
+current/historical state of every run live in the
+[state store](../state-stores/overview.md) — never in the broker. The broker
+carries *messages about* a run; it does not keep a record *of* the run. Workers
+own state-store access exclusively; state queries (admin UIs, audit) go through
+the state store directly.
+
+## Choosing a backend
+
+You pick a backend by constructing it and handing it to blkit. The built-in
+in-memory broker needs nothing extra:
+
+```go
+var broker = bl.NewInMemoryMessageBroker()
+```
+
+Every other backend lives in its own module, so you only pull in its client if you
+use it. Import it and construct it — the rest of your code is identical:
+
+```go
+import (
+    bl          "github.com/friendly-business-machines/blkit/core"
+    redisbroker "github.com/friendly-business-machines/blkit/brokers/redis"
+)
+
+var broker, err = redisbroker.New(redisbroker.Config{Addr: "localhost:6379"})
+```
+
+Either way, `broker` is a `bl.MessageBroker` the rest of blkit uses the same way.
+
+## The backends
+
+The backends fall into three families. Which fits depends on whether you run a
+single binary, host your own server, or lean on a managed cloud service.
+
+**Built into core — not durable, single process:**
+
+| Backend | Use it for |
+|---|---|
+| [In-memory](in-memory.md) | Tests, examples, and single-binary deployments. Zero dependencies; nothing survives a restart. |
+
+**Self-hosted — a server you run:**
+
+| Backend | Use it for |
+|---|---|
+| [Redis](redis.md) | The lightweight self-host default: Redis or Valkey covers every duty natively, including true removal of queued jobs. |
+| [NATS](nats.md) | Cleanest selective consumption via JetStream subjects; a natural fit when NATS is already your state store. |
+| [RabbitMQ](rabbitmq.md) | Classic work-queue semantics with a large enterprise install base. |
+
+**Cloud-managed — a side-store holds the registry, locally testable via emulators:**
+
+| Backend | Use it for |
+|---|---|
+| [Azure Service Bus](azure-service-bus.md) | Peek-lock delivery and native scheduled messages — the best suspend-resume timer story. |
+| [Google Pub/Sub](google-pubsub.md) | Filtered subscriptions and seekable retention on Google Cloud. |
+| [AWS SQS/SNS](aws-sqs-sns.md) | SQS queues for jobs and SNS filtered fan-out for events on AWS. |
+
+The cloud-managed backends have no built-in key-value store, so the worker
+registry, timers, and last-event records live in a pluggable **RegistryStore**
+(DynamoDB, Firestore, or Azure Table Storage / Cosmos DB) that ships with each
+module.
+
+## Conformance
+
+Every backend is verified against a **shared conformance suite** that lives in
+core, so they all behave identically — a job queued through any of them is
+delivered, acknowledged, redelivered, and fanned out the same way. The suite
+covers the full behaviour: durable at-least-once delivery with redelivery when a
+worker dies, selective consumption per registered key, per-instance event fan-out
+with latest-event replay for late subscribers, suspend-resume timers, and
+best-effort cancel of still-queued jobs.
+
+How it runs depends on the backend: the in-memory broker runs it in-process with
+no setup; NATS runs it against a JetStream server embedded in the test; and the
+server-based and cloud backends run it against a real server or emulator started
+with testcontainers-go, skipping when neither a container nor an external endpoint
+is available.
+
+## Reference
+
+The `MessageBroker` interface and the built-in in-memory broker are part of the
+core API [Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/message-brokers/aws-sqs-sns/ -->
+
+# AWS SQS/SNS
+
+> A cloud-managed broker on AWS — SQS queues per process key for jobs, an SNS topic
+> with filter policies for instance events, and a DynamoDB RegistryStore for the
+> registry, timers, and last-event records.
+
+!!! note "Status — implementation pending"
+    The message-broker subsystem is still being built. This page describes the
+    intended design; see `specs/message-brokers/` for the authoritative spec.
+
+The AWS backend implements [MessageBroker](overview.md) against **SQS** (the job
+queue) and **SNS** (instance-event fan-out). SQS's visibility timeout gives
+natural in-flight semantics and `DelaySeconds` covers short timers; SNS filter
+policies route instance events to per-subscriber queues. Neither service retains
+messages for late subscribers or offers a KV store, so the registry, long timers,
+and last-event records live in a pluggable **RegistryStore** backed by DynamoDB.
+
+```go
+import awsbroker "github.com/friendly-business-machines/blkit/brokers/aws-sqs-sns"
+
+var broker, err = awsbroker.New(awsbroker.Config{
+    Region:   "eu-west-2",
+    Registry: dynamoRegistryStore,
+})
+```
+
+## What it's good for
+
+- **Deployments already on AWS** that want a fully managed broker.
+- Teams comfortable pairing SQS/SNS with **DynamoDB** for the registry side-store.
+
+## How it works
+
+- **Job queue** — one **SQS queue per process key**; delivery starts the
+  **visibility timeout** (the in-flight slot), extended for long jobs. Terminal
+  reports issue `DeleteMessage`; a crashed worker's message becomes visible again
+  and is redelivered.
+- **Selective consumption** — workers long-poll only the queues for their
+  registered keys.
+- **Registry — RegistryStore** — **DynamoDB**: one item per worker with a **TTL
+  attribute** for heartbeat expiry, and **DynamoDB Streams** as the change feed.
+- **Per-instance events** — one **SNS topic**; each subscriber gets an SQS queue
+  subscribed with a **filter policy** on the instance id. SNS retains nothing, so
+  every lifecycle publish also upserts a **last-event record** in DynamoDB (TTL
+  default 24h — the retention window) that seeds a late subscriber before it
+  follows live.
+- **Timers** — `DelaySeconds` natively (capped at 15 minutes); longer suspends
+  write a **timer record** to the RegistryStore that a scheduler loop claims when
+  due.
+- **Cancel of queued jobs** — **unsupported natively** (deletion needs a receipt
+  handle), so cancel always takes the message route.
+
+## Configuration
+
+```go
+type Config struct {
+    Region      string                  // e.g. "eu-west-2"
+    Credentials aws.CredentialsProvider // nil = default AWS credential chain
+    QueuePrefix string                  // default "blkit"; isolates deployments sharing an account
+    Registry    bl.RegistryStore        // required; DynamoDB implementation ships with this module
+    Endpoint    string                  // development only; LocalStack endpoint override
+    Cipher      bl.PayloadCipher        // optional end-to-end payload encryption; default nil
+}
+```
+
+Each jobs queue has a redrive policy to a **dead-letter queue** after a
+configurable receive count — the fallback for repeated worker crashes.
+
+## Local testing
+
+The conformance suite starts a **LocalStack** container (SQS + SNS + DynamoDB in
+one image) via testcontainers-go. `BLKIT_TEST_AWS_ENDPOINT` (with ambient
+credentials) points it at a real account or a LocalStack you run yourself.
+LocalStack gaps are tagged and run against a real account in CI when credentials
+are present.
+
+## Reference
+
+The `MessageBroker` interface this backend implements is part of the core API
+[Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/message-brokers/azure-service-bus/ -->
+
+# Azure Service Bus
+
+> A cloud-managed broker on Azure — peek-lock queues for jobs, a filtered topic for
+> instance events, native scheduled messages for timers, and a RegistryStore in
+> Table Storage or Cosmos DB.
+
+!!! note "Status — implementation pending"
+    The message-broker subsystem is still being built. This page describes the
+    intended design; see `specs/message-brokers/` for the authoritative spec.
+
+The Azure Service Bus backend implements [MessageBroker](overview.md) against
+Service Bus queues and topics. Service Bus brings durable queues, peek-lock
+delivery, per-session ordering, and — uniquely among the supported backends —
+**native scheduled messages**, the best suspend-resume timer story. Service Bus
+has no KV store, so the worker registry lives in a pluggable **RegistryStore**,
+typically Azure Table Storage or Cosmos DB.
+
+```go
+import azsbbroker "github.com/friendly-business-machines/blkit/brokers/azure-service-bus"
+
+var broker, err = azsbbroker.New(azsbbroker.Config{
+    Namespace:  "myns.servicebus.windows.net",
+    Credential: cred, // azcore.TokenCredential (Managed Identity in production)
+    Registry:   tableRegistryStore,
+})
+```
+
+## What it's good for
+
+- **Deployments already on Azure** that want a fully managed broker.
+- Workflows with **suspend-resume timers**, which map onto native scheduled
+  messages more cleanly than on any other backend.
+
+## How it works
+
+- **Job queue** — one **queue per process key**; delivery is **peek-lock** with a
+  lock-renewal goroutine for long jobs. Terminal reports `Complete()`; an input
+  wait `Defer()`s the message and records its sequence number so the resume can
+  fetch it later. A crashed worker's lock expires and Service Bus redelivers.
+- **Selective consumption** — workers receive only from their registered keys'
+  queues.
+- **Registry — RegistryStore** — Azure **Table Storage** (default) or Cosmos DB:
+  registrations with TTL columns, a sweeper for expiry, and a Service Bus topic
+  carrying change events as the feed.
+- **Per-instance events** — one **Topic** with a per-subscriber **Subscription**
+  created on demand, SQL-filtered on the instance id and auto-deleted on idle.
+  Because a Subscription only sees messages published after it exists, the latest
+  lifecycle and terminal events are recovered from the RegistryStore's last-event
+  records on subscribe. `DefaultMessageTimeToLive` (default 24h) is the window.
+- **Timers** — native `ScheduledEnqueueTime` on the resume, cancellable by
+  sequence number.
+- **Cancel of queued jobs** — best-effort **only for scheduled (not yet enqueued)
+  messages**; otherwise cancel takes the message route.
+
+## Configuration
+
+```go
+type Config struct {
+    Namespace        string                 // "myns.servicebus.windows.net"
+    ConnectionString string                 // SAS auth; or set Credential
+    Credential       azcore.TokenCredential // Azure AD / Managed Identity (recommended)
+    EntityPrefix     string                 // default "blkit"; isolates deployments sharing a namespace
+    Registry         bl.RegistryStore       // required; Table Storage or Cosmos DB ships with this module
+    UseEmulator      bool                   // development only; permits the emulator's non-TLS endpoint
+    Cipher           bl.PayloadCipher       // optional end-to-end payload encryption; default nil
+}
+```
+
+Jobs that exhaust `MaxDeliveryCount` land in the built-in **dead-letter queue** —
+the fallback for repeated worker crashes.
+
+## Local testing
+
+The conformance suite starts Microsoft's **Service Bus emulator** container plus
+**Azurite** for the Table Storage RegistryStore, via testcontainers-go.
+`BLKIT_TEST_AZURESB_CONNECTION` points it at a real namespace instead. Emulator
+feature gaps are tagged and run against a real namespace in CI when credentials
+are present.
+
+## Reference
+
+The `MessageBroker` interface this backend implements is part of the core API
+[Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/message-brokers/google-pubsub/ -->
+
+# Google Pub/Sub
+
+> A cloud-managed broker on Google Cloud — a filtered jobs topic, per-subscriber
+> filtered subscriptions with retention and Seek replay for instance events, and a
+> Firestore RegistryStore for the registry and timers.
+
+!!! note "Status — implementation pending"
+    The message-broker subsystem is still being built. This page describes the
+    intended design; see `specs/message-brokers/` for the authoritative spec.
+
+The Google Pub/Sub backend implements [MessageBroker](overview.md) against standard
+Cloud Pub/Sub — at-least-once delivery with per-message acknowledgement,
+server-side attribute filters, and seekable topic retention. It is the most
+workaround-heavy of the supported backends (no message deletion, no native delayed
+delivery, quota-bound subscription management), and each workaround is documented
+below. Pub/Sub **Lite** is not supported — a distinct product with
+partitioned-log semantics.
+
+Pub/Sub has no KV store, so the worker registry and timer records live in a
+pluggable **RegistryStore**, typically Firestore.
+
+```go
+import gpsbroker "github.com/friendly-business-machines/blkit/brokers/google-pubsub"
+
+var broker, err = gpsbroker.New(gpsbroker.Config{
+    ProjectID: "my-project",
+    Registry:  firestoreRegistryStore,
+})
+```
+
+## What it's good for
+
+- **Deployments already on Google Cloud** that want a managed broker.
+- Teams comfortable pairing Pub/Sub with **Firestore** for the registry
+  side-store.
+
+## How it works
+
+- **Job queue** — one **jobs Topic** with a pull **Subscription per worker pool**;
+  Pub/Sub holds a message in-flight until acked or the deadline lapses, extended
+  for long jobs. A crashed worker misses the deadline and Pub/Sub redelivers.
+- **Selective consumption** — the subscription carries a server-side **attribute
+  filter** on the process key. Filters are immutable per subscription, so a changed
+  capability set means a replacement subscription.
+- **Registry — RegistryStore** — **Firestore**: one document per worker with a TTL
+  field (swept for expiry), and the `onSnapshot` listener as the change feed.
+- **Per-instance events** — one **events Topic** with message retention (default
+  24h — the window). Each subscriber creates a filtered Subscription and **Seeks**
+  it back to the retention window, which delivers messages published before it
+  existed — the replay path. Subscription creation is quota-bound and takes
+  seconds, so long-lived clients should reuse subscriptions.
+- **Timers** — none natively: a suspend writes a **timer record** to Firestore that
+  a scheduler loop claims when due and publishes as the resume.
+- **Cancel of queued jobs** — **unsupported natively** (no message deletion), so
+  cancel always takes the message route.
+
+## Configuration
+
+```go
+type Config struct {
+    ProjectID    string              // GCP project owning the topics/subscriptions
+    Credentials  *google.Credentials // nil = Application Default Credentials
+    EntityPrefix string              // default "blkit"; isolates deployments sharing a project
+    Registry     bl.RegistryStore    // required; Firestore implementation ships with this module
+    Endpoint     string              // development only; emulator endpoint override
+    Cipher       bl.PayloadCipher    // optional end-to-end payload encryption; default nil
+}
+```
+
+A per-subscription **dead-letter topic** catches messages that exhaust max
+delivery attempts — the fallback for repeated worker crashes.
+
+## Local testing
+
+The conformance suite starts the **gcloud Pub/Sub emulator** and **Firestore
+emulator** containers via testcontainers-go. `BLKIT_TEST_GPUBSUB_PROJECT` (with
+ambient credentials) points it at a real project instead. Emulator gaps are tagged
+and run against a real project in CI when credentials are present.
+
+## Reference
+
+The `MessageBroker` interface this backend implements is part of the core API
+[Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/message-brokers/in-memory/ -->
+
+# In-Memory
+
+> The built-in broker that ships in core — Go channels and maps, no external
+> broker required. For tests, local development, and single-binary deployments.
+
+!!! note "Status — implementation pending"
+    The message-broker subsystem is still being built. This page describes the
+    intended design; see `specs/message-brokers/` for the authoritative spec.
+
+The in-memory broker is the built-in backend that ships in core — Go channels and
+mutex-guarded maps, no external server required. It implements the full
+[MessageBroker](overview.md) surface within a single process.
+
+```go
+var broker = bl.NewInMemoryMessageBroker()
+```
+
+Each call to `NewInMemoryMessageBroker` creates its **own independent broker**
+(matching `NewInMemoryStateStore`); producers and workers that must talk to each
+other share the same broker value. Release resources with an explicit `Close()` —
+it stops the sweeper and timer goroutines and closes all subscriber channels.
+
+## What it's good for
+
+- **Unit tests** that exercise the broker interface without standing up a server.
+- **Single-binary deployments** where the producer code, the worker, and the
+  broker all live in one process.
+- **Local development.**
+
+It is **not** suitable for multi-process deployments — there is no inter-process
+communication, and nothing survives a restart. For that, use one of the
+[external backends](overview.md#the-backends).
+
+## How it works
+
+The job queue is a pending-job slice per process key, guarded by a mutex;
+delivering a job moves it to an in-flight map with a redelivery timer, and a
+lifecycle report settles it. The registry is a map of worker to registrations
+with per-worker deadlines, swept by a background goroutine. Per-instance events
+fan out to a list of buffered channels, with the latest lifecycle event and the
+terminal event kept for replay. Suspend-resume timers use `time.AfterFunc`, and
+cancel of a queued job scans the pending slice under the mutex and removes it
+exactly.
+
+A [payload cipher](overview.md) is honoured even in-process — payloads still
+round-trip through the wire envelope — so the encryption path is exercised by the
+same code as the external backends.
+
+## Reference
+
+The `MessageBroker` interface this backend implements is part of the core API
+[Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/message-brokers/nats/ -->
+
+# NATS
+
+> A self-hosted broker backed by NATS with JetStream — subject-filtered pull
+> consumers for the job queue, per-subject streams for events, KV with watch for
+> the registry. A natural fit when NATS is already your state store.
+
+!!! note "Status — implementation pending"
+    The message-broker subsystem is still being built. This page describes the
+    intended design; see `specs/message-brokers/` for the authoritative spec.
+
+The NATS backend implements [MessageBroker](overview.md) against NATS with
+**JetStream** (plain core NATS lacks the durability the job queue needs).
+JetStream's subject hierarchy gives the cleanest selective consumption of any
+backend, and NATS KV maps directly onto the worker registry. It is a natural fit
+when NATS is already your [state store](../state-stores/nats.md) — one
+infrastructure piece serves both.
+
+```go
+import natsbroker "github.com/friendly-business-machines/blkit/brokers/nats"
+
+var broker, err = natsbroker.New(natsbroker.Config{URL: "nats://localhost:4222"})
+```
+
+## What it's good for
+
+- **Setups that already run NATS** — as the state store, the broker, or both.
+- Deployments that want **native, server-side selective consumption** without any
+  client-side filtering.
+
+## How it works
+
+- **Job queue** — one JetStream **jobs stream**; workers use **durable pull
+  consumers**. Terminal reports `Ack` the message, and a worker that dies stops
+  extending its `AckWait` so JetStream redelivers automatically.
+- **Selective consumption** — pull consumers with **subject filters** on exactly
+  the worker's registered keys. Native, no client-side filtering.
+- **Registry** — a NATS **KV bucket** with per-key TTL, refreshed by heartbeats.
+  `KV.Watch()` delivers snapshot-then-updates natively, and TTL-expired keys
+  surface as heartbeat loss.
+- **Per-instance events** — instance events publish to per-instance subjects in an
+  events stream; subscribers use ordered consumers with `DeliverLastPerSubject` to
+  recover the latest lifecycle and terminal events before following live. Stream
+  `MaxAge` (default 24h) is the retention window.
+- **Timers** — no native delayed publish, so a broker-owned scheduler consumer
+  uses `NakWithDelay` until the fire-time, then publishes the resume.
+- **Cancel of queued jobs** — best-effort: look up the job by subject and delete
+  it by sequence if it has not been delivered.
+
+## Configuration
+
+```go
+type Config struct {
+    URL           string            // e.g. "nats://localhost:4222"
+    Credentials   string            // optional path to a .creds file
+    TLS           *tls.Config       // nil = plaintext (development)
+    SubjectPrefix string            // default "blkit"; isolates deployments sharing a server
+    Cipher        bl.PayloadCipher  // optional end-to-end payload encryption; default nil
+}
+```
+
+## Local testing
+
+The conformance suite runs against a real JetStream server **embedded in the test
+process** (`nats-server` is importable as a Go library) — no container needed,
+same as the NATS state store. `BLKIT_TEST_NATS_URL` points it at an external
+server instead.
+
+## Reference
+
+The `MessageBroker` interface this backend implements is part of the core API
+[Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/message-brokers/rabbitmq/ -->
+
+# RabbitMQ
+
+> A self-hosted broker backed by RabbitMQ 3.13+ — quorum queues behind a topic
+> exchange for jobs, RabbitMQ Streams for instance events, heartbeat broadcast for
+> the registry.
+
+!!! note "Status — implementation pending"
+    The message-broker subsystem is still being built. This page describes the
+    intended design; see `specs/message-brokers/` for the authoritative spec.
+
+The RabbitMQ backend implements [MessageBroker](overview.md) against RabbitMQ
+3.13+. RabbitMQ's work-queue semantics — manual acks, automatic requeue of unacked
+messages, per-consumer prefetch — fit the job queue naturally; the registry and
+delayed delivery use documented patterns because RabbitMQ has no KV store or native
+message scheduling. Chosen for its large enterprise install base.
+
+```go
+import rabbitbroker "github.com/friendly-business-machines/blkit/brokers/rabbitmq"
+
+var broker, err = rabbitbroker.New(rabbitbroker.Config{URL: "amqp://localhost:5672"})
+```
+
+## What it's good for
+
+- **Enterprises already standardised on RabbitMQ.**
+- Deployments that value its **strong redelivery story** — a worker crash requeues
+  every unacked message immediately, with no timeout to wait out.
+
+## How it works
+
+- **Job queue** — one **quorum queue per process key**, fed by a topic exchange.
+  Workers consume with manual ack and bounded prefetch; a worker crash closes its
+  channel and RabbitMQ **requeues every unacked message immediately**.
+- **Selective consumption** — workers consume only the queues for their registered
+  keys, declared idempotently on registration.
+- **Registry — heartbeat broadcast** (no KV): each heartbeat publishes the
+  worker's full registration set on a fanout exchange. Subscribers assemble the
+  snapshot over one heartbeat window and mark a worker lost after ~3 missed
+  intervals.
+- **Per-instance events** — a **RabbitMQ Stream** (retention + offset replay),
+  partitioned by instance id, so a late subscriber replays the latest lifecycle
+  and terminal events before following live. Retention (default 24h) is the
+  window.
+- **Timers** — the **per-message-TTL + dead-letter-exchange** pattern (no plugin
+  required): the resume is published to a holding queue whose dead-letter exchange
+  is the jobs exchange.
+- **Cancel of queued jobs** — **unsupported natively** (AMQP has no selective
+  removal), so cancel always takes the message route.
+
+## Configuration
+
+```go
+type Config struct {
+    URL            string            // e.g. "amqp://user:pass@localhost:5672/"
+    TLS            *tls.Config       // nil = plaintext (development); amqps when set
+    ExchangePrefix string            // default "blkit"; isolates deployments sharing a server
+    Cipher         bl.PayloadCipher  // optional end-to-end payload encryption; default nil
+}
+```
+
+## Local testing
+
+The conformance suite starts a throwaway RabbitMQ container (the management image,
+which includes streams) with testcontainers-go. `BLKIT_TEST_RABBITMQ_URL` points
+it at an already-running instance instead; the test skips only when neither is
+available.
+
+## Reference
+
+The `MessageBroker` interface this backend implements is part of the core API
+[Reference](../reference/blkit.md).
+
+---
+
+<!-- Source: https://friendly-business-machines.github.io/blkit/message-brokers/redis/ -->
+
+# Redis
+
+> A self-hosted broker backed by Redis or Valkey — Streams and consumer groups
+> for the job queue, per-instance streams for events, TTL'd keys for the registry.
+> The lightweight self-host default.
+
+!!! note "Status — implementation pending"
+    The message-broker subsystem is still being built. This page describes the
+    intended design; see `specs/message-brokers/` for the authoritative spec.
+
+The Redis backend implements [MessageBroker](overview.md) against **Redis** or
+**Valkey** — both fully supported, using only commands present in both. Redis
+covers every broker duty natively, including true removal of still-queued jobs,
+with a single lightweight dependency, making it the default self-hosted choice.
+
+```go
+import redisbroker "github.com/friendly-business-machines/blkit/brokers/redis"
+
+var broker, err = redisbroker.New(redisbroker.Config{Addr: "localhost:6379"})
+```
+
+## What it's good for
+
+- **Self-hosted deployments** that want the lightest dependency covering every
+  duty natively.
+- Teams **already running Redis or Valkey** who want to reuse it.
+
+## How it works
+
+- **Job queue** — one **Stream per process key** with a single consumer group.
+  Workers read with `XREADGROUP`; terminal reports `XACK` the entry, and a
+  background `XAUTOCLAIM` loop redelivers entries pending longer than the
+  in-flight timeout.
+- **Selective consumption** — workers read only the streams for their registered
+  keys; `XREADGROUP` accepts multiple streams at once.
+- **Registry** — one hash per worker plus a TTL key refreshed by heartbeats;
+  changes broadcast on a Pub/Sub channel, and a sweeper detects heartbeat loss.
+- **Per-instance events** — a **Stream per instance** (capped with `MAXLEN`), so
+  late subscribers replay the latest lifecycle and terminal events via `XRANGE`
+  before following live. The key gets an `EXPIRE` after the terminal event
+  (default 24h) — the retention window.
+- **Timers** — a sorted set keyed by fire-time, with a mover loop that `XADD`s
+  the resume when due.
+- **Cancel of queued jobs** — best-effort and atomic via a Lua script that
+  removes the job only if it has not yet been delivered.
+
+## Configuration
+
+```go
+type Config struct {
+    Addr      string            // e.g. "localhost:6379"
+    Username  string            // optional (Redis ACLs)
+    Password  string            // optional
+    TLS       *tls.Config       // nil = plaintext (development)
+    KeyPrefix string            // default "blkit"; isolates deployments sharing a server
+    Cipher    bl.PayloadCipher  // optional end-to-end payload encryption; default nil
+}
+```
+
+## Local testing
+
+The conformance suite starts a throwaway Redis (or Valkey) container with
+testcontainers-go, exactly as the SQL state stores do. `BLKIT_TEST_REDIS_URL`
+points it at an already-running instance instead; the test skips only when
+neither is available.
+
+## Reference
+
+The `MessageBroker` interface this backend implements is part of the core API
+[Reference](../reference/blkit.md).
+
+---
+
 <!-- Source: https://friendly-business-machines.github.io/blkit/architecture/expressions/ -->
 
 # Expressions
