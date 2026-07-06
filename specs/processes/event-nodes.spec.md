@@ -128,7 +128,7 @@ expired := Cancel("expired", "Deadline Expired", CancelOpts{
 
 When reached, the runtime records `PROCESS_CANCELLED` in the `ExecutionHistory` with the reason (if set) and any `Outputs` that pass the optional contract.
 
-A synthetic `CancelEvent` step can also be injected by the runtime in response to an external `MessageGateway.Cancel(...)` request — see [../messagegateway/overview.spec.md](../messagegateway/overview.spec.md). The semantics and history record are identical to a graph-driven `CancelEvent`. External Cancel requires the process to opt in via `ProcessOpts.AllowExternalCancel: true`.
+A synthetic `CancelEvent` step can also be injected by the runtime in response to an external `MessageBroker.Cancel(...)` request — see [../message-brokers/overview.spec.md](../message-brokers/overview.spec.md). The semantics and history record are identical to a graph-driven `CancelEvent`. External Cancel requires the process to opt in via `ProcessOpts.AllowExternalCancel: true`.
 
 ---
 
@@ -188,7 +188,7 @@ fraudHalt := Terminate("fraud-halt", "Fraud Detected")
 
 When reached, the runtime records `PROCESS_TERMINATED` in the history with the terminating node's id, then cancels every remaining in-flight task before returning.
 
-A synthetic `TerminateEvent` step can also be injected by the runtime in response to an external `MessageGateway.Terminate(...)` request — see [../messagegateway/overview.spec.md](../messagegateway/overview.spec.md). The semantics and history record are identical to a graph-driven `TerminateEvent`. External Terminate requires the process to opt in via `ProcessOpts.AllowExternalTerminate: true`.
+A synthetic `TerminateEvent` step can also be injected by the runtime in response to an external `MessageBroker.Terminate(...)` request — see [../message-brokers/overview.spec.md](../message-brokers/overview.spec.md). The semantics and history record are identical to a graph-driven `TerminateEvent`. External Terminate requires the process to opt in via `ProcessOpts.AllowExternalTerminate: true`.
 
 ---
 
@@ -248,6 +248,7 @@ If the resolved deadline is in the past, the suspension is recorded but the runt
 Pause events wait without persisting state. The pause node is dispatched as its own goroutine that sleeps for the configured duration; the scheduler loop continues to tick and `Evaluate()` does **not** return. The process status remains `ProcessStatusRunning` throughout. Other ready tasks continue to be dispatched and advance concurrently; only the token at the pause node is held.
 
 Use pause events when:
+
 - The wait is short (seconds to a few minutes).
 - You don't need to free goroutine resources during the wait.
 

@@ -29,10 +29,11 @@ blkit's public API is a single **core package** plus a few optional infrastructu
   - the typed value system and expression engine (`bl.BlNumber`, `bl.BlString`, `bl.BlExpr`, `bl.BlDictionary`, `bl.BlList`, etc.);
   - the decision classes (`bl.DecisionTask`, `bl.DecisionTable`, `bl.DecisionExpression`, `bl.DecisionNativeFunction` — each generic over typed input/output structs; a `bl.DecisionTask` is itself a node, so child decisions compose directly);
   - the process classes (`bl.Process`, `bl.ProcessGraph`, `bl.StartEvent`, `bl.EndEvent`, gateway nodes, tasks);
-  - the data contracts and pluggable state store (`bl.InputContract`, `bl.OutputContract`, `bl.ExecutionContext`, `bl.ExecutionHistory`, `bl.StateStore`).
-- `blkit/messagegateway` — producer-side typed client SDK (`MessageGateway` interface, `RedisMessageGateway`, `NATSMessageGateway`, `InMemoryMessageGateway`) for submitting process runs, delivering messages, and observing events from outside the worker pool.
+  - the data contracts and pluggable state store (`bl.InputContract`, `bl.OutputContract`, `bl.ExecutionContext`, `bl.ExecutionHistory`, `bl.StateStore`);
+  - the `bl.MessageBroker` interface and its built-in in-memory backend, for submitting process runs, delivering messages, and observing events from outside the worker pool.
+- `blkit/brokers/<name>` — one Go module per external message-broker backend (`redis`, `nats`, `rabbitmq`, `azure-service-bus`, `google-pubsub`, `aws-sqs-sns`), each implementing `bl.MessageBroker` with its own client dependency.
 - `blkit/worker` — process-execution worker pool.
-- `blkit/restserver` — HTTP REST server with Server-Sent Events that exposes processes registered on a `MessageGateway`. Optionally embeds a worker in the same binary.
+- `blkit/restserver` — HTTP REST server with Server-Sent Events that exposes processes registered on a `MessageBroker`. Optionally embeds a worker in the same binary.
 - `blkit/mcp` — MCP server integration.
 
 The infrastructure sub-packages are imported separately and depend on `core`. They carry heavy, optional dependencies (Redis, NATS, `net/http`), so importing `core` for the logic layer never pulls them in. Within `core`, the value/expression type system is independently usable — callers can construct typed values, build expression trees, and evaluate them directly without involving decisions or processes.

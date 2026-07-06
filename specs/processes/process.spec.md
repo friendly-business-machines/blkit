@@ -40,16 +40,16 @@ type ProcessOpts struct {
 
     // Producer-side interruption opt-ins. Both default to false.
     //
-    // When AllowExternalCancel is true, MessageGateway.Cancel (see
-    // ../messagegateway/overview.spec.md) accepts external cancel requests for
+    // When AllowExternalCancel is true, MessageBroker.Cancel (see
+    // ../message-brokers/overview.spec.md) accepts external cancel requests for
     // instances of this process. The worker observes the request and injects
     // a synthetic CancelEvent into history (status -> Cancelled).
     //
-    // When AllowExternalTerminate is true, MessageGateway.Terminate similarly
+    // When AllowExternalTerminate is true, MessageBroker.Terminate similarly
     // accepts external terminate requests, injecting a synthetic TerminateEvent
     // (status -> Completed, all branches cancelled).
     //
-    // When false, the corresponding gateway call returns ErrCancelNotAllowed
+    // When false, the corresponding broker call returns ErrCancelNotAllowed
     // / ErrTerminateNotAllowed and the process runs to graph-driven completion
     // only.
     AllowExternalCancel    bool
@@ -196,7 +196,7 @@ func ResetRegistry()
 
 ### Wire-Protocol Implication
 
-Because `Namespace` is part of the broker routing key produced by `MessageGateway.Submit` (see [../messagegateway/overview.spec.md](../messagegateway/overview.spec.md)), the namespace value is part of the operator-visible API contract. Renaming a Go module path, or moving a process file between packages, changes the namespace and is therefore a breaking change for any client enqueuing requests against the old namespace. Authors should treat module paths that contain processes as stable interfaces.
+Because `Namespace` is part of the broker routing key produced by `MessageBroker.Submit` (see [../message-brokers/overview.spec.md](../message-brokers/overview.spec.md)), the namespace value is part of the operator-visible API contract. Renaming a Go module path, or moving a process file between packages, changes the namespace and is therefore a breaking change for any client enqueuing requests against the old namespace. Authors should treat module paths that contain processes as stable interfaces.
 
 ### Edge Cases
 
@@ -350,7 +350,7 @@ result, err := loanApplication.Evaluate(EvaluateOpts{Context: ctx, History: hist
 if err != nil { /* ... */ }
 
 // Caller decides how to handle a Suspended result — persist result.History and
-// re-run Evaluate later when the awaited event arrives, or wire a MessageGateway
+// re-run Evaluate later when the awaited event arrives, or wire a MessageBroker
 // for managed continuation. Direct callers get no library-provided continuation.
 ```
 
@@ -544,7 +544,7 @@ The token rests at the suspending node and is preserved in `result.History` so t
 
 **`RequestInputTask` exception** — when a `RequestInputTask` triggers the suspension, the outbound input-request message is sent **immediately** as part of the task's own dispatch, before the surrounding drain begins. The external responder receives the request promptly even if other parallel tasks are still draining. The task itself remains the suspending node; the drain waits on its sibling tasks, not on the response.
 
-`SUSPENDED` is a non-terminal status. The caller is responsible for arranging resumption — typically by persisting `result.History` and signalling the broker via `MessageGateway.ReenqueueSuspended(...)` so the eventual `JobResume` is delivered to some worker when the wait condition is satisfied. For `RequestInputTask`, the wait is satisfied by a `MessageGateway.RespondToInputRequest(processInstanceID, requestID, payload)` call.
+`SUSPENDED` is a non-terminal status. The caller is responsible for arranging resumption — typically by persisting `result.History` and signalling the broker via `MessageBroker.ReportSuspended(...)` so the eventual `JobResume` is delivered to some worker when the wait condition is satisfied. For `RequestInputTask`, the wait is satisfied by a `MessageBroker.RespondToInputRequest(processInstanceID, requestID, payload)` call.
 
 `Pause*` event nodes do **not** transition the process to `SUSPENDED` — the pause node's goroutine sleeps for the configured duration while the scheduler loop continues to tick and dispatch other ready tasks. The status remains `RUNNING` throughout the pause.
 

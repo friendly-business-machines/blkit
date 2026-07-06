@@ -19,7 +19,7 @@ The NATS backend keeps each run's
 
 Its stand-out benefit is **infrastructure reuse**: if you already run NATS as the
 message broker for blkit (see
-[messagegateway/overview.spec.md](../messagegateway/overview.spec.md)), this backend
+[message-brokers/overview.spec.md](../message-brokers/overview.spec.md)), this backend
 lets you store process state in the same system, with no extra database to run.
 
 It lives in **its own module**, `github.com/friendly-business-machines/blkit/stores/nats`,

@@ -25,7 +25,7 @@ blkit pulls that logic out into a first-class, executable model:
   nodes (decision tables, expressions, and native Go functions) and wire them into a
   single decision task whose connections the Go compiler verifies.
 - **A process layer (in progress)** — execute BPMN-style process graphs with pluggable
-  state, message gateways, and a REST/MCP server frontend; being built next.
+  state, message brokers, and a REST/MCP server frontend; being built next.
 
 It's built for **developers**, **AI agents**, **low-code / no-code tools**, and
 **transpilers** — anything that needs to *generate* and *run* business logic rather than
@@ -71,7 +71,7 @@ the same module.
 | Reference data (static value sources) | ✅ Available |
 | Process execution (BPMN-style graphs) | 🚧 Planned |
 | Data contracts, execution context & state store | 🚧 Planned |
-| Message gateways (Redis, NATS, in-memory, …) | 🚧 Planned |
+| Message brokers (in-memory, Redis/Valkey, NATS, RabbitMQ, …) | 🚧 Planned |
 | REST server with Server-Sent Events | 🚧 Planned |
 | MCP server | 🚧 Planned |
 
@@ -235,16 +235,16 @@ call your own Go functions. A `Process` is a **stateless definition** — execut
 (the `ExecutionContext` of variables and the `ExecutionHistory` of steps taken) is passed
 in and returned out, so one definition can run concurrently for many independent
 executions. Execution is asynchronous, built on goroutines and channels. Surrounding
-support — data contracts, a pluggable state store (`blkit.data`), message gateways
-(`blkit.messagegateway`), and a REST/SSE server (`blkit.restserver`) — lets processes run
-as services.
+support — data contracts, a pluggable state store (`blkit.data`), message brokers
+(a core `MessageBroker` interface plus per-backend `brokers/<name>` modules), and a
+REST/SSE server (`blkit.restserver`) — lets processes run as services.
 
 ## Architecture
 
 > **Target design — not yet implemented.** This section describes how blkit's
 > *planned* process and service layers are intended to fit together. The expression
 > engine ships today; the roles, packages, and interfaces below (workers, message
-> gateways, the REST server, the state store) do not exist in the codebase yet.
+> brokers, the REST server, the state store) do not exist in the codebase yet.
 
 The components above can be embedded directly in a single Go program. To run processes
 *as a service* — many instances, across many machines, surviving restarts — blkit fans
@@ -253,14 +253,15 @@ never directly with one another. This keeps every role stateless and independent
 scalable.
 
 - **Producers (feeders)** — MCP servers, REST/SSE servers, CLI tools, admin UIs. Using
-  the producer-side `MessageGateway` API they *feed* new runs into the system (`Submit`),
+  the producer-side `MessageBroker` API they *feed* new runs into the system (`Submit`),
   respond to a process's request for input, and cancel or terminate. A producer holds no
   execution state: it hands a `StartRequest` to the broker and gets back a
   `ProcessInstanceID`.
-- **Message broker** — Redis/Valkey, NATS, Azure Service Bus, Google Pub/Sub, or an
-  in-memory bus for tests and small deployments. The `MessageGateway` interface wraps it,
-  presenting a producer-side and a worker-side surface over broker-native primitives. The
-  gateway talks only to the broker, never to the state store.
+- **Message broker** — Redis/Valkey, NATS, RabbitMQ, Azure Service Bus, Google Pub/Sub,
+  AWS SQS/SNS, or the in-memory bus built into core for tests and small deployments. The
+  `MessageBroker` interface wraps it, presenting a producer-side and a worker-side surface
+  over broker-native primitives; each external backend is its own `brokers/<name>` module.
+  The broker interface talks only to the broker, never to the state store.
 - **Workers** — each `worker.Run` loop registers its **capability set** (the process
   packages linked into its binary), selectively fetches only the jobs it can run, and
   drives each one to completion locally: evaluating the graph, executing tasks as
@@ -298,8 +299,8 @@ flowchart LR
 
     Broker -->|"FetchJobs"| W1
     Broker -->|"FetchJobs"| W2
-    W1 -->|"Mark* / events"| Broker
-    W2 -->|"Mark* / events"| Broker
+    W1 -->|"Report* / events"| Broker
+    W2 -->|"Report* / events"| Broker
 
     W1 -->|"WriteBatch / Save"| Store
     W2 -->|"WriteBatch / Save"| Store
@@ -346,7 +347,7 @@ flowchart LR
     end
 
     Broker -->|"FetchJobs"| Fetch
-    Exec -->|"Mark* · events · PostError"| Broker
+    Exec -->|"Report* · events · PostError"| Broker
     Heart -->|"Heartbeat"| Broker
 
     Exec -->|"LoadState · Save (boundary)"| Store

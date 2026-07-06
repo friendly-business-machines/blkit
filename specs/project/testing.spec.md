@@ -13,7 +13,7 @@ blkit's test suite is written directly in Go alongside the implementation. The I
 
 The Go standard-library [`testing`](https://pkg.go.dev/testing) package **only** — no third-party test framework. Assertions are plain comparisons that fail via `t.Errorf` / `t.Fatalf` (`if got != want { t.Errorf("got %v, want %v", got, want) }`), tables are driven with `t.Run` subtests, and lifecycle/fixtures use `testing` primitives (`t.Cleanup`, `t.Helper`, `TestMain`). Tests are run with `go test ./...`.
 
-All tests run in-process — no separate test process, no browser runtime, no external services beyond what an individual test fixture deliberately spins up (e.g. an embedded Redis for `RedisMessageGateway` tests).
+All tests run in-process — no separate test process, no browser runtime, no external services beyond what an individual test fixture deliberately spins up. The message-broker backends share a conformance suite that lives in core: the in-memory broker runs it in-process with no setup, NATS runs it against an embedded `nats-server`, Redis/Valkey and RabbitMQ spin up throwaway containers via [testcontainers-go](https://golang.testcontainers.org/), and the cloud brokers (Azure Service Bus, Google Pub/Sub, AWS SQS/SNS) run against their emulators / LocalStack via testcontainers-go — matching how the state-store SQL backends are tested.
 
 ## Test Location
 
@@ -32,7 +32,7 @@ specs/expressions/number.spec.md           → number_test.go (root blkit packag
 specs/decision-tasks/decision-table.spec.md → decisions/decision_table_test.go
 specs/processes/task-nodes.spec.md         → processes/task_test.go (and per-task companions)
 specs/data/state-store.spec.md             → data/state_store_test.go
-specs/messagegateway/overview.spec.md       → messagegateway/gateway_test.go
+specs/message-brokers/overview.spec.md     → core/message_broker_test.go (and brokers/<name>/broker_test.go per backend)
 specs/worker/worker.spec.md                → worker/worker_test.go
 ```
 

@@ -236,7 +236,7 @@ Validation runs only at the process boundaries — internal tasks are not contra
 
 #### Input validation (at submission)
 
-When a process is submitted (via `MessageGateway.Submit`), the input variables are checked against the selected `StartEvent`'s `InputContract`. Because every `StartEvent` has a contract by construction, this validation is unconditional:
+When a process is submitted (via `MessageBroker.Submit`), the input variables are checked against the selected `StartEvent`'s `InputContract`. Submission-time validation runs against the contract carried in the broker registry's `ProcessRegistration` (see [message-brokers/overview.spec.md](../message-brokers/overview.spec.md#operation-flows)), so the submitting client does not import the process package. Because every `StartEvent` has a contract by construction, this validation is unconditional:
 
 1. Every **required** field must be present in the input. If missing, a `DataContractValidationError` is produced.
 2. Every field present in the input must be **declared** in the contract (either required or optional). Undeclared fields produce a `DataContractValidationError`.
@@ -275,6 +275,52 @@ Nested types are validated recursively:
 - `DictionaryContract` — each field is checked for presence (required/optional) and type conformance.
 - `ListContract` — the value must be a `bl.BlList`, and every element is checked against the declared `element_type`.
 - `TableContract` — the value must be a `bl.BlTable`, and each row is checked against the declared fields.
+
+---
+
+## CBOR Encoding
+
+CBOR (RFC 8949) is the canonical wire and storage encoding for `Bl` values —
+used by the [state stores](../state-stores/overview.spec.md) to persist values
+and by the [message brokers](../message-brokers/overview.spec.md#wire-format)
+for every payload, including the contracts themselves. CBOR's semantic tags
+preserve `Bl` types losslessly; JSON, where produced, is a human-readable copy
+only and is never used for deserialization.
+
+### Bl values
+
+| Bl type | CBOR representation |
+|---|---|
+| `bl.BlNumber` | Decimal fraction (tag 4) |
+| `bl.BlString` | Text string |
+| `bl.BlBoolean` | Boolean |
+| `bl.BlNull` | Null |
+| `bl.BlDate` | Tagged map (blkit tag) with year, month, day, offset, timezone |
+| `bl.BlTime` | Tagged map (blkit tag) with hour, minute, second, offset, timezone |
+| `bl.BlDateTime` | Tagged map (blkit tag) with date and time components |
+| `bl.BlYearsMonthsDuration` | Tagged map (blkit tag) with years, months |
+| `bl.BlDaysTimeDuration` | Tagged map (blkit tag) with days, hours, minutes, seconds |
+| `bl.BlList` | Array of `Bl` values |
+| `bl.BlDictionary` | Map of string keys to `Bl` values |
+| `bl.BlTable` | Tagged array (blkit tag) of uniformly-keyed maps |
+| `bl.BlRange` | Tagged map (blkit tag) with start, end, and inclusive flags |
+| `bl.BlCalendar` | Tagged map (blkit tag) with the calendar definition |
+
+`Bl` types with blkit-specific attributes (e.g. `bl.BlDate` with offset and
+timezone) use blkit-defined semantic tags from CBOR's private-use range,
+encoding the full set of attributes as a CBOR map. This ensures lossless
+round-tripping of all `Bl` values regardless of custom attributes.
+
+### Contracts
+
+`InputContract`, `OutputContract`, and the nested contract types are
+themselves CBOR-serializable: a contract encodes as a map of its fields, each
+field carrying its name, required flag, and type — where the type is either a
+`Bl` type-class identifier or a nested contract map. This is what lets a
+`ProcessRegistration` carry its start events' contracts through the message
+broker at worker-registration time, derived from the process definition at
+runtime — no build step or generated artifacts — so producers can validate a
+`Submit` without importing the process package.
 
 ---
 

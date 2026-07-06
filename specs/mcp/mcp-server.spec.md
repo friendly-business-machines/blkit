@@ -1,6 +1,6 @@
 ---
 name: MCP Server
-description: A stdio MCP server that exposes processes registered on a MessageGateway as MCP tools and resources. Each tool call is a Submit + SubscribeToInstance round-trip on the gateway. Optionally embeds a worker in the same binary via EmbeddedWorker.
+description: A stdio MCP server that exposes processes registered on a MessageBroker as MCP tools and resources. Each tool call is a Submit + SubscribeToInstance round-trip on the broker. Optionally embeds a worker in the same binary via EmbeddedWorker.
 targets:
   - ../mcp/server.go
 ---
@@ -9,7 +9,7 @@ targets:
 
 The `blkit.mcpserver` package provides a long-running MCP (Model Context Protocol) server that adapts the broker-held process registry into an MCP-compatible surface. Each process advertised by the broker is registered as an MCP **tool** (so MCP clients can invoke it) and an MCP **resource** (so MCP clients can read its markdown specification).
 
-The MCP server interacts only with a [`MessageGateway`](../messagegateway/overview.spec.md). It does not hold a `StateStore` or any direct queue reference. Each `tools/call` invocation runs `gw.Submit(...)`, then subscribes to the instance via `gw.SubscribeToInstance(...)` and returns the first event whose status reaches `Completed` / `Cancelled` / `Failed` as the tool result.
+The MCP server interacts only with a [`MessageBroker`](../message-brokers/overview.spec.md). It does not hold a `StateStore` or any direct queue reference. Each `tools/call` invocation runs `broker.Submit(...)`, then subscribes to the instance via `broker.SubscribeToInstance(...)` and returns the first event whose status reaches `Completed` / `Cancelled` / `Failed` as the tool result.
 
 The transport is **stdio only**. Streamable HTTP and other MCP transports are out of scope.
 
@@ -25,7 +25,7 @@ package mcpserver
 //
 // If opts.EmbeddedWorker is nil, Run is broker-only and relies on remote
 // workers to consume the broker's job queue.
-func Run(ctx context.Context, gw messagegateway.MessageGateway, opts Options) error
+func Run(ctx context.Context, broker bl.MessageBroker, opts Options) error
 
 type Options struct {
     ServerName    string // required: advertised in the MCP `initialize` response
@@ -34,7 +34,7 @@ type Options struct {
     // Per-process tool description and JSON Schema. Required: the runtime
     // refuses to start with no Schema function, because MCP clients cannot
     // discover an untyped tool surface usefully.
-    Schema func(reg messagegateway.ProcessRegistration) (description string, inputSchema map[string]any, err error)
+    Schema func(reg bl.ProcessRegistration) (description string, inputSchema map[string]any, err error)
 
     // Default StartID for tool calls when the MCP client doesn't specify one.
     StartID string // default "start"
@@ -44,7 +44,7 @@ type Options struct {
     Response func(ctx context.Context, result *EvaluationResult) (any, error)
 
     // Deprecated/no-op in v1: registry updates are pushed via
-    // gw.SubscribeToProcessRegistry(...). Reserved for back-compat with
+    // broker.SubscribeToProcessRegistry(...). Reserved for back-compat with
     // earlier polling designs.
     RegistryPollInterval *time.Duration
 
@@ -73,7 +73,7 @@ type EmbeddedWorkerOpts struct {
 
 `Run` is the long-running blocking entrypoint, analogous to `worker.Run` in [worker.spec.md](../worker/worker.spec.md). The first parameter is named `ctx` (the stdlib `context.Context`) — there is no `ExecutionContext` threaded through the public API.
 
-`Run` blocks until `ctx` is cancelled, stdin returns EOF, or a fatal protocol error occurs. On clean shutdown it returns `nil`; on cancellation it returns `ctx.Err()`. In-flight tool-call handlers receive the same `ctx`, so cancellation propagates into their `gw.SubscribeToInstance(...)` waits.
+`Run` blocks until `ctx` is cancelled, stdin returns EOF, or a fatal protocol error occurs. On clean shutdown it returns `nil`; on cancellation it returns `ctx.Err()`. In-flight tool-call handlers receive the same `ctx`, so cancellation propagates into their `broker.SubscribeToInstance(...)` waits.
 
 ---
 
@@ -81,11 +81,11 @@ type EmbeddedWorkerOpts struct {
 
 When `Run` is called:
 
-1. **Embedded worker (if any)** — if `opts.EmbeddedWorker != nil`, spawn a goroutine that calls `worker.Run(ctx, gw, opts.EmbeddedWorker.StateStore, workerOpts)` with the worker fields translated from `EmbeddedWorkerOpts`. The worker handles its own registration / heartbeat / consume / executor / writer-pool lifecycle. The MCP server doesn't reach into the worker directly. (See [worker.spec.md](../worker/worker.spec.md) for the worker's shape.)
+1. **Embedded worker (if any)** — if `opts.EmbeddedWorker != nil`, spawn a goroutine that calls `worker.Run(ctx, broker, opts.EmbeddedWorker.StateStore, workerOpts)` with the worker fields translated from `EmbeddedWorkerOpts`. The worker handles its own registration / heartbeat / consume / executor / writer-pool lifecycle. The MCP server doesn't reach into the worker directly. (See [worker.spec.md](../worker/worker.spec.md) for the worker's shape.)
 
    If the worker's `RegisterProcesses` call fails, `Run` returns the error without entering the MCP serve loop.
 
-2. **Registry subscription** — call `gw.SubscribeToProcessRegistry(ctx)`. Consume the snapshot phase (a stream of `RegistryUpdateSnapshot` messages terminated by a single `RegistryUpdateSnapshotComplete` sentinel) to build the initial registration set. When the embedded worker is in the same process, its registrations have just been published to the broker, so this snapshot includes them. For remote-only deployments, only externally-running workers' processes appear.
+2. **Registry subscription** — call `broker.SubscribeToProcessRegistry(ctx)`. Consume the snapshot phase (a stream of `RegistryUpdateSnapshot` messages terminated by a single `RegistryUpdateSnapshotComplete` sentinel) to build the initial registration set. When the embedded worker is in the same process, its registrations have just been published to the broker, so this snapshot includes them. For remote-only deployments, only externally-running workers' processes appear.
 
 3. **Tool registration** — for each `ProcessRegistration` in the snapshot:
    - Compute the tool name as `fmt.Sprintf("%s__%s__%s", reg.Namespace, reg.ProcessID, reg.Version)`. Double-underscore separators keep the name unambiguously parseable.
@@ -135,17 +135,17 @@ If the embedded worker fails mid-life (e.g. broker connection lost and unrecover
 For each `tools/call` against a `{namespace}__{id}__{version}` tool:
 
 1. **Process resolution** — `(Namespace, ProcessID, Version)` is bound to the tool's handler closure at registration time; no routing required.
-2. **Input extraction** — `opts.Input(ctx, args)` converts raw MCP tool arguments into the `map[string]any` that `gw.Submit` accepts. The default `Input` returns `args` unchanged.
-3. **Submit** — call `gw.Submit(ctx, StartRequest{Namespace, ProcessID, Version, StartID: opts.StartID, Input: input})`. Synchronous errors:
+2. **Input extraction** — `opts.Input(ctx, args)` converts raw MCP tool arguments into the `map[string]any` that `broker.Submit` accepts. The default `Input` returns `args` unchanged.
+3. **Submit** — call `broker.Submit(ctx, StartRequest{Namespace, ProcessID, Version, StartID: opts.StartID, Input: input})`. Synchronous errors:
    - `ErrUnknownProcess` → MCP tool error (the process registration aged out between snapshot refreshes).
    - `ErrUnknownStartID` → MCP tool error.
    - `DataContractValidationError` → MCP tool error with the validation message.
    - broker-publish errors → MCP tool error.
-4. **Wait for finish** — call `gw.SubscribeToInstance(ctx, instanceID)` and drain until the first `InstanceEventResult` (Completed) / `InstanceEventError` (Failed) / `status_change` to `Cancelled` arrives. This is the convenience pattern that the gateway no longer ships as a built-in `Wait` verb — shared as a tiny helper inside `mcpserver` (and elsewhere).
+4. **Wait for finish** — call `broker.SubscribeToInstance(ctx, instanceID)` and drain until the first `InstanceEventResult` (Completed) / `InstanceEventError` (Failed) / `InstanceEventLifecycle` with `Phase: Cancelled` arrives. This is the convenience pattern that the broker no longer ships as a built-in `Wait` verb — shared as a tiny helper inside `mcpserver` (and elsewhere).
 5. **Response shaping** — `opts.Response(ctx, result)` shapes the MCP tool result. The default returns a `map[string]any` snapshot of `result.Context` keyed by task id.
 6. **Failure mapping** — `result.Status == Failed` → MCP tool error. `Cancelled` → MCP tool error. `Completed` → success.
 
-For interactive flows where the process executes a `RequestInputTask`, the MCP server can stay on the same `SubscribeToInstance` channel and surface `InstanceEventInputRequest` to the MCP client (e.g. via an MCP elicitation when supported), then call `gw.RespondToInputRequest(ctx, instanceID, requestID, payload)` with the client's reply. The v1 path treats `RequestInputTask` as opaque from the MCP client's perspective; this is documented as a future extension.
+For interactive flows where the process executes a `RequestInputTask`, the MCP server can stay on the same `SubscribeToInstance` channel and surface `InstanceEventInputRequest` to the MCP client (e.g. via an MCP elicitation when supported), then call `broker.RespondToInputRequest(ctx, instanceID, requestID, payload)` with the client's reply. The v1 path treats `RequestInputTask` as opaque from the MCP client's perspective; this is documented as a future extension.
 
 ---
 
@@ -156,10 +156,10 @@ For interactive flows where the process executes a `RequestInputTask`, the MCP s
 | `result.Status == ProcessStatusCompleted` | success, `Response` value as content |
 | `result.Status == ProcessStatusFailed` | tool error (`isError: true`) carrying the `NODE_FAILED` / `PROCESS_FAILED` details from `result.History` |
 | `result.Status == ProcessStatusCancelled` | tool error (`isError: true`) carrying the cancel reason |
-| `gw.Submit` returned `ErrUnknownProcess` / `ErrUnknownStartID` | tool error (`isError: true`) |
-| `gw.Submit` returned `DataContractValidationError` | tool error (`isError: true`) carrying the validation message |
-| `gw.Submit` returned a broker-publish error | tool error (`isError: true`) |
-| `gw.SubscribeToInstance` channel closed with `ctx.Err()` (client disconnected) | MCP cancellation, no result |
+| `broker.Submit` returned `ErrUnknownProcess` / `ErrUnknownStartID` | tool error (`isError: true`) |
+| `broker.Submit` returned `DataContractValidationError` | tool error (`isError: true`) carrying the validation message |
+| `broker.Submit` returned a broker-publish error | tool error (`isError: true`) |
+| `broker.SubscribeToInstance` channel closed with `ctx.Err()` (client disconnected) | MCP cancellation, no result |
 | `Input` returned an error | tool error (`isError: true`) |
 | `Schema` returned an error during registration | `Run` fails to start; not surfaced as a per-call error |
 | `describe_process` called with an unknown `(namespace, processId, version)` | tool error (`isError: true`) carrying `UnknownProcessError` |
@@ -171,7 +171,7 @@ For interactive flows where the process executes a `RequestInputTask`, the MCP s
 
 MCP stdio is single-channel; the underlying SDK serializes JSON-RPC reads. The SDK may dispatch multiple in-flight tool-call handlers concurrently, so the runtime is required to be safe under concurrent invocation. This holds because:
 
-- The `MessageGateway` interface is required to be safe for concurrent use, by contract.
+- The `MessageBroker` interface is required to be safe for concurrent use, by contract.
 - `Options` is captured by value at `Run` time and is not mutated.
 - The cached `[]ProcessRegistration` snapshot is read under a mutex during refresh and during tool dispatch.
 
@@ -179,7 +179,7 @@ MCP stdio is single-channel; the underlying SDK serializes JSON-RPC reads. The S
 
 ## Cold Start and Reuse
 
-Construct the `MessageGateway` and (if embedding) the `StateStore` once at process startup and pass them to `Run`. There is no warm-vs-cold distinction — the MCP server is a single long-running process.
+Construct the `MessageBroker` and (if embedding) the `StateStore` once at process startup and pass them to `Run`. There is no warm-vs-cold distinction — the MCP server is a single long-running process.
 
 ---
 
@@ -198,7 +198,7 @@ import (
     "syscall"
 
     bl "github.com/friendly-business-machines/blkit/core"
-    "blkit/messagegateway"
+    redisbroker "github.com/friendly-business-machines/blkit/brokers/redis"
     "blkit/mcpserver"
 
     _ "example.com/processes/lending"
@@ -208,20 +208,20 @@ func main() {
     ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
     defer stop()
 
-    gw, err := messagegateway.NewRedisMessageGateway(messagegateway.RedisOpts{
+    broker, err := redisbroker.New(redisbroker.Config{
         Addr: os.Getenv("BLKIT_REDIS_ADDR"),
     })
     if err != nil {
         log.Fatal(err)
     }
-    defer gw.Close()
+    defer broker.Close()
 
     store := bl.NewPostgresStateStore(os.Getenv("BLKIT_DB_URL"), "lending")
 
-    err = mcpserver.Run(ctx, gw, mcpserver.Options{
+    err = mcpserver.Run(ctx, broker, mcpserver.Options{
         ServerName:    "lending-mcp",
         ServerVersion: "1.0.0",
-        Schema: func(reg messagegateway.ProcessRegistration) (string, map[string]any, error) {
+        Schema: func(reg bl.ProcessRegistration) (string, map[string]any, error) {
             desc := ""
             if reg.Description != nil {
                 desc = *reg.Description
@@ -242,7 +242,7 @@ func main() {
 
 // jsonSchemaFromRegistration is a project-local helper. The MCP runtime does
 // not prescribe how schemas are derived — Schema is the integration point.
-func jsonSchemaFromRegistration(reg messagegateway.ProcessRegistration) map[string]any {
+func jsonSchemaFromRegistration(reg bl.ProcessRegistration) map[string]any {
     // Find the start event matching opts.StartID (defaults to "start") and
     // translate its InputContract into JSON Schema. Implementation omitted.
     return map[string]any{"type": "object", "additionalProperties": true}
@@ -256,15 +256,15 @@ func main() {
     ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
     defer stop()
 
-    gw, err := messagegateway.NewRedisMessageGateway(messagegateway.RedisOpts{
+    broker, err := redisbroker.New(redisbroker.Config{
         Addr: os.Getenv("BLKIT_REDIS_ADDR"),
     })
     if err != nil {
         log.Fatal(err)
     }
-    defer gw.Close()
+    defer broker.Close()
 
-    err = mcpserver.Run(ctx, gw, mcpserver.Options{
+    err = mcpserver.Run(ctx, broker, mcpserver.Options{
         ServerName:    "lending-mcp",
         ServerVersion: "1.0.0",
         Schema:        schemaFromRegistration,
@@ -293,10 +293,10 @@ A client config (e.g. `claude_desktop_config.json`) points at the binary directl
 
 ## Edge Cases
 
-- The broker has no live workers when `Run` starts: the snapshot phase of `gw.SubscribeToProcessRegistry` completes immediately (just the sentinel) and only `describe_process` is registered. As workers come online, `RegistryUpdateAdded` updates arrive and new tools are registered live; MCP clients see them via `notifications/tools/list_changed`.
+- The broker has no live workers when `Run` starts: the snapshot phase of `broker.SubscribeToProcessRegistry` completes immediately (just the sentinel) and only `describe_process` is registered. As workers come online, `RegistryUpdateAdded` updates arrive and new tools are registered live; MCP clients see them via `notifications/tools/list_changed`.
 - An embedded worker fails `RegisterProcesses` at startup: `Run` returns the error without entering the MCP serve loop.
 - `EmbeddedWorker.WorkerID` is empty: `Run` returns a `ValueError` before starting anything.
 - A tool call is in flight when the worker's process registration ages out (`RegistryUpdateHeartbeatLost`): the in-flight subscription continues — the worker still has the instance and is publishing events — but new calls to that tool fail with `ErrUnknownProcess` until the worker re-registers.
-- Multiple subscribers to the same instance: each gets the full event stream by default — see [../messagegateway/overview.spec.md](../messagegateway/overview.spec.md). The MCP server's `SubscribeToInstance` is one such subscriber.
+- Multiple subscribers to the same instance: each gets the full event stream by default — see [../message-brokers/overview.spec.md](../message-brokers/overview.spec.md). The MCP server's `SubscribeToInstance` is one such subscriber.
 - The `describe_process` tool bypasses the evaluation pipeline entirely — `Schema`, `StartID`, `Input`, `Response`, and `EmbeddedWorker` are not consulted.
 - Concurrent tool calls share the cached `ProcessRegistration` map. The map is updated under a mutex by the registry-watcher goroutine.

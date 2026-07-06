@@ -37,7 +37,8 @@ import bl "github.com/friendly-business-machines/blkit/core"
 
 This single import provides the whole logic layer — value types, the expression
 engine, decision models, process classes, and data contracts. The optional
-infrastructure packages (for example `blkit/messagegateway` and
+infrastructure packages (for example a broker module such as
+`github.com/friendly-business-machines/blkit/brokers/redis`, or
 `blkit/restserver`) are imported under their own paths as they become available.
 
 ## Keeping current

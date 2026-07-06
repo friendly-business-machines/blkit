@@ -183,7 +183,7 @@ A `DecisionNativeFunction` does not *resolve* an `Fn` error itself; it **surface
 - **Within a `DecisionTask`** — the error aborts the decision: the task stops (no later node runs) and `DecisionTask.Evaluate` returns the same `Id`-tagged error, so the **whole `DecisionTask` fails**. The `Id` identifies which node failed.
 - **Within a process** — the usual deployment, where a worker runs a `Process` whose graph contains the `DecisionTask`. The failed-task error reaches blkit's process engine, and from there the **process graph** decides what happens:
   - if the `DecisionTask` has an [`ErrorExitPort`](../processes/task-nodes.spec.md) wired (`bl.WithExitPorts(bl.NewErrorExitPort("…"))`, routed via `task.ExitPort(id).To(…)`), flow follows that port to a recovery branch — this is the declarative "catch";
-  - otherwise the error is unhandled and the process instance ends as `ProcessStatusFailed`; how the originating request is then retried, redelivered, or dead-lettered is the worker / message-gateway layer's concern.
+  - otherwise the error is unhandled and the process instance ends as `ProcessStatusFailed`; how the originating request is then retried, redelivered, or dead-lettered is the worker / message-broker layer's concern.
 
 So a fully composed decision has a layered, configured error path — a `DecisionTask` `ErrorExitPort`, then process- and worker-level policy — and no call site to hand-write. A node can also stay off the error path entirely by returning a *normal* output (e.g. a `status` value) that downstream logic branches on, instead of returning an error (the deliberate "no result" pattern).
 

@@ -20,9 +20,12 @@ blkit/
 ├── core/             # package core, imported as `bl` — value types, expression engine,
 │                     #   decision models, process classes, and data contracts in one
 │                     #   package (see specs/expressions/, specs/decision-tasks/, etc.)
-├── messagegateway/    # blkit/messagegateway — MessageGateway interface and Redis/NATS/in-memory implementations
+├── stores/           # One Go module per state-store backend: badger, bbolt, mariadb,
+│                     #   mssql, mysql, nats, pebble, postgres, sqlite, turso
+├── brokers/          # One Go module per message-broker backend: redis, nats, rabbitmq,
+│                     #   azure-service-bus, google-pubsub, aws-sqs-sns
 ├── worker/           # blkit/worker — worker.Run, ProcessTask lifecycle, writer pool
-├── restserver/       # blkit/restserver — HTTP REST + SSE server for the MessageGateway
+├── restserver/       # blkit/restserver — HTTP REST + SSE server for the MessageBroker
 ├── docs/             # Static documentation site source files (Zensical)
 ├── scripts/          # Automation scripts (create-pull-request.sh, create-release.sh, etc.)
 ├── copier/           # Copier project templates
@@ -43,8 +46,8 @@ Test files live alongside source as `*_test.go`.
 The value types, expression engine, decision models, process classes, and data contracts
 all live in the `core/` package — `package core`, imported as `bl` (see
 [specs/expressions/](../expressions/)). The other top-level code entries
-(`blkit/messagegateway`, `blkit/worker`, `blkit/restserver`) are separate sibling packages
-that import `core`.
+(`blkit/worker`, `blkit/restserver`, and the per-backend modules under `stores/` and
+`brokers/`) are separate sibling packages that import `core`.
 
 ## `docs/`
 
