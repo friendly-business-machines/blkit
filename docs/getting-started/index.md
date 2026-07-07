@@ -1,7 +1,7 @@
 # Getting started
 
-> Orientation for new users — what blkit is, when to reach for it, and how to
-> run your first example.
+> Orientation for new users — what blkit is, when to reach for it, how to
+> install it, and how to run your first example.
 
 ## What blkit is
 
@@ -56,14 +56,38 @@ or when you want a visual modelling studio rather than a code library.
 
 ## Installation
 
-Add blkit to your module:
+Add blkit to your module. From within your Go module, run:
 
 ```bash
 go get github.com/friendly-business-machines/blkit
 ```
 
-See the [Installation](../installation/index.md) section for version pinning and
-full options.
+This adds blkit to your `go.mod` and downloads the latest released version.
+
+### Pinning a version
+
+For reproducible builds, pin blkit to a specific release tag:
+
+```bash
+go get github.com/friendly-business-machines/blkit@v1.2.3
+```
+
+Replace `v1.2.3` with the release you want. You can also pin to a branch or a
+commit SHA, though released tags are recommended for production use.
+
+### Importing
+
+The core package is imported as `bl`:
+
+```go
+import bl "github.com/friendly-business-machines/blkit/core"
+```
+
+This single import provides the whole logic layer — value types, the expression
+engine, decision models, process classes, and data contracts. The optional
+infrastructure packages (for example a broker module such as
+`github.com/friendly-business-machines/blkit/brokers/redis`, or
+`blkit/restserver`) are imported under their own paths as they become available.
 
 ## Minimal working example
 

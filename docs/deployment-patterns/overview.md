@@ -13,7 +13,7 @@
 Every blkit deployment is built from the same four pieces. A pattern is just a
 particular way of arranging them across one or more binaries.
 
-- **A producer** — where work comes *from*. A [REST server](single-node-server.md),
+- **A producer** — where work comes *from*. A [REST server](single-node-rest-server.md),
   an [MCP server](mcp-server.md), a CLI, or an admin UI submits process runs and
   observes their events.
 - **A worker** — where processes actually *run*. A worker fetches jobs, drives
@@ -45,7 +45,7 @@ patterns build on the vocabulary of the earlier ones.
 | Pattern | Binaries | Broker | Use it for |
 |---|---|---|---|
 | [Embedded Library](embedded-library.md) | One | In-memory | blkit inside your app or CLI — no server, no external infra. |
-| [Single-Node Server](single-node-server.md) | One | In-memory / local | A self-contained REST or MCP server with an embedded worker. |
+| [Single-Node REST Server](single-node-rest-server.md) | One | In-memory / local | A self-contained REST server with an embedded worker. |
 | [Distributed Worker Pool](distributed-worker-pool.md) | Many | External | A producer plus a horizontally-scaled worker fleet over a shared broker. |
 | [Dedicated Worker Pools](dedicated-worker-pools.md) | Many | External | Specialised worker binaries, each running a subset of processes. |
 | [MCP Server for AI Agents](mcp-server.md) | One or many | Any | Exposing processes as MCP tools for AI agents over stdio. |

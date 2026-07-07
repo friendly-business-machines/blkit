@@ -5,8 +5,7 @@
 
 ## Documentation
 - [Home](https://friendly-business-machines.github.io/blkit/): A Go SDK for expressing and executing business rules and processes in code.
-- [Getting started](https://friendly-business-machines.github.io/blkit/getting-started/): Orientation for new users — what blkit is, when to reach for it, and how to run your first example.
-- [Installation](https://friendly-business-machines.github.io/blkit/installation/): How to add blkit to your Go project and pin it to a known version.
+- [Getting started](https://friendly-business-machines.github.io/blkit/getting-started/): Orientation for new users — what blkit is, when to reach for it, how to install it, and how to run your first example.
 - [Tutorials](https://friendly-business-machines.github.io/blkit/tutorials/): Guided, narrative walkthroughs that build a working artefact step by step.
 - [Templates](https://friendly-business-machines.github.io/blkit/templates/): Ready-to-copy project scaffolds and boilerplate patterns for common use cases.
 
@@ -77,7 +76,7 @@
 ## Deployment Patterns
 - [Overview](https://friendly-business-machines.github.io/blkit/deployment-patterns/overview/): How to assemble blkit into a running application — from a single self-contained binary to a distributed producer-and-worker-fleet — by combining the same four building blocks in different shapes.
 - [Embedded Library](https://friendly-business-machines.github.io/blkit/deployment-patterns/embedded-library/): blkit running entirely in-process — no server, no external infrastructure. The simplest way to execute processes: inside your own application or a CLI, over the built-in in-memory broker.
-- [Single-Node Server](https://friendly-business-machines.github.io/blkit/deployment-patterns/single-node-server/): One binary that serves clients *and* runs processes — a REST or MCP server with an embedded worker. Self-contained, with no separate worker fleet to operate.
+- [Single-Node REST Server](https://friendly-business-machines.github.io/blkit/deployment-patterns/single-node-rest-server/): One binary that serves clients *and* runs processes — a REST server with an embedded worker. Self-contained, with no separate worker fleet to operate.
 - [Distributed Worker Pool](https://friendly-business-machines.github.io/blkit/deployment-patterns/distributed-worker-pool/): A producer and a separately-scaled worker fleet, talking over a shared external broker. The standard shape for production: submit from one tier, execute on another, scale each independently.
 - [Dedicated Worker Pools](https://friendly-business-machines.github.io/blkit/deployment-patterns/dedicated-worker-pools/): Multiple specialised worker binaries, each running only a subset of your processes, with the broker routing the right work to the right pool.
 - [MCP Server for AI Agents](https://friendly-business-machines.github.io/blkit/deployment-patterns/mcp-server/): Exposing your processes as MCP tools so AI agents can discover, submit, and observe them — over a stdio Model Context Protocol server.

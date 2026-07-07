@@ -17,7 +17,6 @@ copyright = "Friendly Business Machines"
 nav = [
   { "Home" = "index.md" },
   { "Getting started" = "getting-started/index.md" },
-  { "Installation" = "installation/index.md" },
   { "Tutorials" = "tutorials/index.md" },
   { "Templates" = "templates/index.md" },
   { "Examples" = [
@@ -87,7 +86,7 @@ nav = [
   { "Deployment Patterns" = [
     "deployment-patterns/overview.md",
     "deployment-patterns/embedded-library.md",
-    "deployment-patterns/single-node-server.md",
+    "deployment-patterns/single-node-rest-server.md",
     "deployment-patterns/distributed-worker-pool.md",
     "deployment-patterns/dedicated-worker-pools.md",
     "deployment-patterns/mcp-server.md",

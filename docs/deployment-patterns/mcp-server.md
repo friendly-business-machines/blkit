@@ -30,13 +30,13 @@ run producer-only against a remote [worker pool](distributed-worker-pool.md).
 ## How it's wired
 
 - An MCP server started with its `Run(...)` entry point on the stdio transport.
-- Either the `EmbeddedWorker` option for a self-contained
-  [single-node](single-node-server.md) agent tool, or producer-only against a
+- Either the `EmbeddedWorker` option for a self-contained single-node agent
+  tool, or producer-only against a
   shared broker and a remote [worker pool](distributed-worker-pool.md).
 - A [message broker](../message-brokers/overview.md) and
   [state store](../state-stores/overview.md) as in the other patterns.
 
 The transport is stdio only; HTTP-based MCP transports are out of scope. For a
 browser- or service-facing HTTP API instead, use the REST server in the
-[Single-Node Server](single-node-server.md) or
+[Single-Node REST Server](single-node-rest-server.md) or
 [Distributed Worker Pool](distributed-worker-pool.md) patterns.

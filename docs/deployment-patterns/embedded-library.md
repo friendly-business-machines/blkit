@@ -38,6 +38,6 @@ in-line.
 
 Nothing here crosses a process boundary, so nothing survives the process exiting
 unless you pick a durable state store. When you outgrow a single process, move to
-the [Single-Node Server](single-node-server.md) or
+the [Single-Node REST Server](single-node-rest-server.md) or
 [Distributed Worker Pool](distributed-worker-pool.md) patterns — your process code
 does not change.

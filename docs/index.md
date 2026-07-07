@@ -13,8 +13,7 @@ conformance implementation of either standard.
 
 | Section | What you'll find |
 |---|---|
-| [Getting started](getting-started/index.md) | What blkit is, when to use it, and a quick orientation. |
-| [Installation](installation/index.md) | Adding blkit to your project and pinning a version. |
+| [Getting started](getting-started/index.md) | What blkit is, when to use it, installing it, and a quick orientation. |
 | [Tutorials](tutorials/index.md) | Guided, narrative walkthroughs of complete use cases. |
 | [Templates](templates/index.md) | Ready-to-copy project scaffolds for common patterns. |
 | [Examples](examples/admission.md) | Focused, self-contained demonstrations of specific features. |

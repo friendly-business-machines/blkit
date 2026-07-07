@@ -24,8 +24,7 @@ conformance implementation of either standard.
 
 | Section | What you'll find |
 |---|---|
-| [Getting started](getting-started/index.md) | What blkit is, when to use it, and a quick orientation. |
-| [Installation](installation/index.md) | Adding blkit to your project and pinning a version. |
+| [Getting started](getting-started/index.md) | What blkit is, when to use it, installing it, and a quick orientation. |
 | [Tutorials](tutorials/index.md) | Guided, narrative walkthroughs of complete use cases. |
 | [Templates](templates/index.md) | Ready-to-copy project scaffolds for common patterns. |
 | [Examples](examples/admission.md) | Focused, self-contained demonstrations of specific features. |
@@ -43,8 +42,8 @@ conformance implementation of either standard.
 
 # Getting started
 
-> Orientation for new users — what blkit is, when to reach for it, and how to
-> run your first example.
+> Orientation for new users — what blkit is, when to reach for it, how to
+> install it, and how to run your first example.
 
 ## What blkit is
 
@@ -99,14 +98,38 @@ or when you want a visual modelling studio rather than a code library.
 
 ## Installation
 
-Add blkit to your module:
+Add blkit to your module. From within your Go module, run:
 
 ```bash
 go get github.com/friendly-business-machines/blkit
 ```
 
-See the [Installation](../installation/index.md) section for version pinning and
-full options.
+This adds blkit to your `go.mod` and downloads the latest released version.
+
+### Pinning a version
+
+For reproducible builds, pin blkit to a specific release tag:
+
+```bash
+go get github.com/friendly-business-machines/blkit@v1.2.3
+```
+
+Replace `v1.2.3` with the release you want. You can also pin to a branch or a
+commit SHA, though released tags are recommended for production use.
+
+### Importing
+
+The core package is imported as `bl`:
+
+```go
+import bl "github.com/friendly-business-machines/blkit/core"
+```
+
+This single import provides the whole logic layer — value types, the expression
+engine, decision models, process classes, and data contracts. The optional
+infrastructure packages (for example a broker module such as
+`github.com/friendly-business-machines/blkit/brokers/redis`, or
+`blkit/restserver`) are imported under their own paths as they become available.
 
 ## Minimal working example
 
@@ -130,59 +153,6 @@ full options.
 - New to the standards blkit draws from? The
   [DMN](https://www.omg.org/dmn/) and [BPMN](https://www.bpmn.org/) overviews
   are a good primer.
-
----
-
-<!-- Source: https://friendly-business-machines.github.io/blkit/installation/ -->
-
-# Installation
-
-> How to add blkit to your Go project and pin it to a known version.
-
-## Requirements
-
-- **Go 1.22 or later** (`go version` to check).
-
-## Add the module
-
-From within your Go module, run:
-
-```bash
-go get github.com/friendly-business-machines/blkit
-```
-
-This adds blkit to your `go.mod` and downloads the latest released version.
-
-## Pinning a version
-
-For reproducible builds, pin blkit to a specific release tag:
-
-```bash
-go get github.com/friendly-business-machines/blkit@v1.2.3
-```
-
-Replace `v1.2.3` with the release you want. You can also pin to a branch or a
-commit SHA, though released tags are recommended for production use.
-
-## Importing
-
-The core package is imported as `bl`:
-
-```go
-import bl "github.com/friendly-business-machines/blkit/core"
-```
-
-This single import provides the whole logic layer — value types, the expression
-engine, decision models, process classes, and data contracts. The optional
-infrastructure packages (for example a broker module such as
-`github.com/friendly-business-machines/blkit/brokers/redis`, or
-`blkit/restserver`) are imported under their own paths as they become available.
-
-## Keeping current
-
-The Getting Started and Installation pages are reviewed with every release. If
-you upgrade across a major version, check the release notes for migration
-guidance.
 
 ---
 
@@ -7272,7 +7242,7 @@ The `MessageBroker` interface this backend implements is part of the core API
 Every blkit deployment is built from the same four pieces. A pattern is just a
 particular way of arranging them across one or more binaries.
 
-- **A producer** — where work comes *from*. A [REST server](single-node-server.md),
+- **A producer** — where work comes *from*. A [REST server](single-node-rest-server.md),
   an [MCP server](mcp-server.md), a CLI, or an admin UI submits process runs and
   observes their events.
 - **A worker** — where processes actually *run*. A worker fetches jobs, drives
@@ -7304,7 +7274,7 @@ patterns build on the vocabulary of the earlier ones.
 | Pattern | Binaries | Broker | Use it for |
 |---|---|---|---|
 | [Embedded Library](embedded-library.md) | One | In-memory | blkit inside your app or CLI — no server, no external infra. |
-| [Single-Node Server](single-node-server.md) | One | In-memory / local | A self-contained REST or MCP server with an embedded worker. |
+| [Single-Node REST Server](single-node-rest-server.md) | One | In-memory / local | A self-contained REST server with an embedded worker. |
 | [Distributed Worker Pool](distributed-worker-pool.md) | Many | External | A producer plus a horizontally-scaled worker fleet over a shared broker. |
 | [Dedicated Worker Pools](dedicated-worker-pools.md) | Many | External | Specialised worker binaries, each running a subset of processes. |
 | [MCP Server for AI Agents](mcp-server.md) | One or many | Any | Exposing processes as MCP tools for AI agents over stdio. |
@@ -7360,37 +7330,39 @@ in-line.
 
 Nothing here crosses a process boundary, so nothing survives the process exiting
 unless you pick a durable state store. When you outgrow a single process, move to
-the [Single-Node Server](single-node-server.md) or
+the [Single-Node REST Server](single-node-rest-server.md) or
 [Distributed Worker Pool](distributed-worker-pool.md) patterns — your process code
 does not change.
 
 ---
 
-<!-- Source: https://friendly-business-machines.github.io/blkit/deployment-patterns/single-node-server/ -->
+<!-- Source: https://friendly-business-machines.github.io/blkit/deployment-patterns/single-node-rest-server/ -->
 
-# Single-Node Server
+# Single-Node REST Server
 
-> One binary that serves clients *and* runs processes — a REST or MCP server with
-> an embedded worker. Self-contained, with no separate worker fleet to operate.
+> One binary that serves clients *and* runs processes — a REST server with an
+> embedded worker. Self-contained, with no separate worker fleet to operate.
 
 !!! warning "Placeholder — pattern in progress"
     The server and worker packages this pattern relies on are still being built.
     This page is a stub so the section's shape is visible; it will be filled in
     once those packages land. The intended behaviour lives in the specs under
-    `specs/rest/`, `specs/mcp/`, and `specs/worker/`.
+    `specs/rest/` and `specs/worker/`.
 
 ## What this pattern is
 
 A single binary runs a producer — a [REST server](../architecture/worker-pools.md)
-(`blkit/restserver`) or an [MCP server](mcp-server.md) (`blkit/mcp`) — with an
-**embedded worker** in the same process. The server accepts submissions and streams
-events; the embedded worker consumes them and drives each process to completion.
-Both share one broker and are governed by one lifecycle: cancelling the server's
-context drains the worker too.
+(`blkit/restserver`) — with an **embedded worker** in the same process. The server
+accepts submissions over HTTP and streams events; the embedded worker consumes them
+and drives each process to completion. Both share one broker and are governed by one
+lifecycle: cancelling the server's context drains the worker too.
+
+For an agent-facing binary that exposes processes as MCP tools instead of an HTTP
+API, see the [MCP Server for AI Agents](mcp-server.md) pattern.
 
 ## When to use it
 
-- **Small deployments** that want an HTTP (or MCP) API without operating a separate
+- **Small deployments** that want an HTTP API without operating a separate
   worker tier.
 - **Getting started** — the shortest path from process definitions to a running
   service.
@@ -7399,7 +7371,7 @@ context drains the worker too.
 
 ## How it's wired
 
-- A REST or MCP server started with its `Run(...)` entry point and the
+- A REST server started with its `Run(...)` entry point and the
   `EmbeddedWorker` option set, so `worker.Run` spawns inside the same process.
 - A [message broker](../message-brokers/overview.md) — the in-memory broker for a
   truly self-contained single node, or an external broker if you plan to add more
@@ -7544,15 +7516,15 @@ run producer-only against a remote [worker pool](distributed-worker-pool.md).
 ## How it's wired
 
 - An MCP server started with its `Run(...)` entry point on the stdio transport.
-- Either the `EmbeddedWorker` option for a self-contained
-  [single-node](single-node-server.md) agent tool, or producer-only against a
+- Either the `EmbeddedWorker` option for a self-contained single-node agent
+  tool, or producer-only against a
   shared broker and a remote [worker pool](distributed-worker-pool.md).
 - A [message broker](../message-brokers/overview.md) and
   [state store](../state-stores/overview.md) as in the other patterns.
 
 The transport is stdio only; HTTP-based MCP transports are out of scope. For a
 browser- or service-facing HTTP API instead, use the REST server in the
-[Single-Node Server](single-node-server.md) or
+[Single-Node REST Server](single-node-rest-server.md) or
 [Distributed Worker Pool](distributed-worker-pool.md) patterns.
 
 ---
