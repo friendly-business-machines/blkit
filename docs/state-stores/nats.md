@@ -4,13 +4,18 @@
 > NATS is already your message broker.
 
 The NATS backend keeps each run's state in **JetStream**, the part of NATS that
-stores data durably. It is **durable** and **shareable** across workers on different
-machines. Its stand-out benefit is **infrastructure reuse**: if you already run NATS
-as blkit's message broker, this backend stores process state in the same system,
-with no extra database to run.
+stores data durably, using a JetStream **key-value bucket**. It is **durable**
+(state survives a restart when JetStream is backed by disk) and **shareable** —
+workers on different machines can all reach the same NATS servers and work on the
+same runs.
 
-It lives in its own module, so its client is only pulled in by applications that
-use it:
+Its stand-out benefit is **infrastructure reuse**. If you already run NATS as
+blkit's [message broker](../message-brokers/nats.md), this backend stores process
+state in the same system, so one dependency covers both the queue and the state —
+no separate database to provision, secure, and operate.
+
+It lives in its own module, so the client it needs is only pulled in by
+applications that use it:
 
 ```go
 import (
@@ -18,52 +23,170 @@ import (
     natsstore "github.com/friendly-business-machines/blkit/stores/nats"
 )
 
-var store = natsstore.New(natsstore.Config{
+// The URL points at the server(s) and the Bucket names the JetStream KV bucket;
+// the same two values handed to workers in other processes or on other machines
+// let them all work on the same runs.
+store := natsstore.New(natsstore.Config{
     URL:    "nats://localhost:4222",
     Bucket: "blkit-state",
 })
+defer store.Close()
 ```
 
-The backend is built on [nats.go](https://github.com/nats-io/nats.go) using its
-current `jetstream` API, against a JetStream key-value bucket. Each write waits for
-the JetStream publish acknowledgement, so a write is quorum-accepted — and already
-durable — by the time the call returns.
+`New` dials NATS and creates (or binds to) the bucket; following the blkit
+constructor convention it panics on an invalid config or a failed connect. The
+backend is built on [nats.go](https://github.com/nats-io/nats.go) using its
+current `jetstream` API — not the legacy `nats.JetStreamContext`. Every write waits
+for the JetStream publish acknowledgement, so a write is quorum-accepted, and
+already durable, by the time the call returns.
 
 ## What it's good for
 
 - **Setups that already run NATS** as the message broker — store state in the same
   system instead of adding a separate database.
 - **Durable runs shared across many workers**, on one machine or many.
+- **Single-binary or edge deployments** — NATS can run embedded inside your Go
+  process, so state has no separate service to operate at all (see below).
 
-## How state is stored
+## Running the server
 
-Each run occupies its own branch of the key-value bucket: a metadata entry, one entry
-per value a task writes, and one entry per execution-history entry. A value entry
-starts pending and is settled in place when the task finishes; reads treat any
-still-pending entry as invisible, and the current state folds the latest committed
-entry per field. The full history returns every entry — including pending and aborted
-ones — sorted by timestamp with the JetStream stream sequence as the tiebreak, so
-arrival order at the store does not matter.
+The backend needs a JetStream-enabled NATS server reachable at `Config.URL`.
+JetStream must be turned on: a bare `nats-server` with no JetStream cannot host a
+key-value bucket. In rough order of operational weight:
+
+- **Embedded in-process** — `github.com/nats-io/nats-server` is an ordinary Go
+  library, so you can start a JetStream server inside your own binary and point the
+  store at it. This is the lightest option: no separate service, no container,
+  nothing to deploy alongside the app. The conformance suite runs exactly this way,
+  embedding a real `nats-server` in the test process. It suits single-binary tools,
+  edge nodes, and tests.
+- **Local companion for development** — run `nats-server -js` from a package
+  manager, or a throwaway container
+  (`docker run -p 4222:4222 nats:latest -js`), and point `URL` at
+  `nats://localhost:4222`. The `-js` flag enables JetStream.
+- **Sidecar or shared container** — in a compose file or Kubernetes pod, run a
+  `nats` container (or a small cluster for HA) next to your workers with JetStream
+  enabled and **file-based storage**, and point `URL` at it. Use a replicated
+  bucket if state must survive a node loss.
+- **Managed service** — the backend speaks plain NATS, so it works unchanged
+  against **Synadia Cloud** and the **NGS** global NATS service. Point `URL` at the
+  managed endpoint and carry credentials in the URL.
+
+If NATS is already your message broker, the simplest choice is to reuse that same
+server for state: one JetStream deployment, two buckets' worth of duty.
+
+## Data model
+
+Everything blkit persists about a run lives under its own branch of the key-value
+bucket. Keys use a `.`-separated hierarchy rooted at the run id, so a single
+`ListKeys` filtered by prefix gathers exactly one run's data:
+
+| Key | Holds |
+|---|---|
+| `{runID}.meta` | The run's metadata record (`RunMetadata`), written by `Save`. |
+| `{runID}.v.{ts}.{n}` | One value a task wrote: `{task_id, execution_id, field, value, status, ts}`. |
+| `{runID}.h.{ts}.{n}` | One execution-history entry: `{kind, node_id, execution_id, payload, ts}`. |
+
+Records are encoded as JSON, sharing the same shape the embedded backends use.
+`{ts}` is the event's timestamp as **fixed-width, zero-padded decimal Unix
+nanoseconds** (20 digits), and `{n}` is a small per-open counter (12 digits) whose
+only job is to keep two same-nanosecond keys distinct. The key's timestamp makes
+keys unique and readable, but it is **not** the authoritative order — see
+[ordering](#ordering-under-parallelism) below.
+
+### Values: pending, then settled in place
+
+blkit never overwrites a field. Each write a task makes is its own KV entry, and the
+current value of a field is *derived* from these entries rather than stored in place:
+
+- **A write** (`ValueWrite`) `Put`s a record with `status: pending` on a **new**
+  `{runID}.v.…` key. While the task runs, its outputs sit as pending entries and are
+  invisible to the current-state read.
+- **Settling** (`StatusFlip`) lists the run's `{runID}.v.…` keys and, for each of the
+  finishing task's pending records, `Put`s the updated record back on the **same
+  key** — a status flip is simply a new revision of that entry. Completing a task
+  flips its records to `committed`; a failure flips them to `aborted`. Aborted
+  records are kept, not deleted, so a failed attempt stays visible in the history
+  next to the committed write that superseded it.
+
+Because KV has no cross-key transaction, the flip is applied one key at a time
+rather than atomically across all of a task's records. This is safe under blkit's
+write contract: a still-pending record is invisible to readers, so a half-applied
+flip never exposes a partially committed task, and a re-delivered flip is idempotent
+(re-writing an already-committed record changes nothing). The bucket is created with
+**history depth 1**, so the superseded pending revision is discarded and the bucket
+stays compact — the audit trail lives in the records themselves, including the
+aborted ones.
+
+### Two reads over the entries
+
+- **Current state** — read the run's `v.` entries and fold the latest `committed`
+  record per `(task_id, field)`. The newest committed write wins; pending and
+  aborted records are skipped.
+- **Full history** — read the `v.` and `h.` entries together and return every one,
+  each carrying its status, sorted into replay order.
+
+### Ordering under parallelism
+
+Every KV entry carries a JetStream **revision (stream sequence)**, assigned by the
+server in the order writes were accepted. Reads sort on `(Timestamp, sequence)`:
+the record's own timestamp first, with the stream sequence as the tiebreak for
+equal timestamps. Parallel tasks within a run each append their own keys
+concurrently; the order those calls happen to reach the server in does not matter,
+because the stored timestamp and sequence — not client insertion order — define
+replay order. This is what keeps the history stable and reproducible across
+backends.
 
 ## Configuration
 
-Construct the backend with the details for reaching the NATS servers — the URL (or
-URLs), any credentials, and the name of the JetStream bucket to store state in.
-Because NATS is shared, the same details can be handed to workers in other processes
-or on other machines.
+```go
+type Config struct {
+    URL    string // NATS server URL(s); required
+    Bucket string // JetStream key-value bucket name; required
+}
+```
 
-## Durability
+- **`URL`** — how to reach the NATS server or cluster, e.g.
+  `nats://localhost:4222` (comma-separate several servers for a cluster).
+  Credentials and TLS are carried in the URL in the usual NATS forms — a
+  `user:pass@` prefix, a token, or a `tls://` scheme — so a managed endpoint needs
+  only its connection string here.
+- **`Bucket`** — the name of the JetStream key-value bucket state is stored in.
+  Give independent blkit deployments different bucket names to keep their runs
+  separate within one NATS system.
 
-State is durable when **JetStream is configured to store data on disk** (its normal
-durable configuration); in that setup runs survive a restart. As with the other
-server-based backends, the durability guarantee comes from how the server is
-configured, not from this backend.
+Because NATS is shared, the same `URL` and `Bucket` handed to workers in other
+processes or on other machines let them all work on the same runs. The bucket is
+created on first use if it does not already exist.
+
+## Consistency
+
+Reads and writes go through JetStream's key-value semantics. A `Put` returns only
+once the write has been acknowledged by the JetStream server (quorum-accepted on a
+replicated bucket), so a committed value is visible to the next read — a worker
+always sees its own prior writes, and those of any other worker whose task finished
+first. Durability follows the same rule as the other server-based backends: state
+survives a restart when JetStream is configured to store data **on disk** (its
+normal durable setup); the guarantee comes from how the server is provisioned, not
+from this backend.
+
+## What to keep in mind
+
+- **Durability is JetStream's job.** Point the store at a JetStream server with
+  file-based (not memory) storage — and a replicated bucket if you need to survive
+  a node loss — if state must outlast a restart.
+- **History grows without bound** — nothing is deleted by design, and aborted
+  records are retained for audit. For long-lived deployments, plan a retention or
+  cleanup policy against the bucket.
+- **One bucket per deployment** when several share a NATS system, or two
+  deployments will list each other's keys.
 
 ## Concurrency
 
-Different runs use different keys, so many runs and workers can share the same NATS
-system without interfering. Parallel tasks within a run each write their own keys,
-and the order is sorted out from the timestamps at read time.
+Different runs use different key branches, so many runs — and many workers — can
+share one NATS system without interfering. Parallel tasks within a single run each
+write their own keys, so their writes never overwrite one another, and the order is
+resolved from the stored timestamp and stream sequence at read time.
 
 ## Reference
 

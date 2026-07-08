@@ -56,8 +56,7 @@ Contains the source files for the blkit documentation site, compiled by [Zensica
 ```
 docs/
 ├── index.md                  # Site home page
-├── getting-started/          # Orientation for new users
-├── installation/             # Installation instructions
+├── getting-started/          # Orientation for new users, incl. installation
 ├── tutorials/                # Guided, narrative walkthroughs
 ├── templates/                # Project scaffolds and boilerplate patterns
 ├── examples/                 # Focused, self-contained code samples

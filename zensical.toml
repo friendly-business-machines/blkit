@@ -97,6 +97,12 @@ nav = [
   ] },
   { "Reference" = [
     "reference/blkit.md",
+    "reference/brokers-aws-sqs-sns.md",
+    "reference/brokers-azure-service-bus.md",
+    "reference/brokers-google-pubsub.md",
+    "reference/brokers-nats.md",
+    "reference/brokers-rabbitmq.md",
+    "reference/brokers-redis.md",
     "reference/stores-badger.md",
     "reference/stores-bbolt.md",
     "reference/stores-mariadb.md",

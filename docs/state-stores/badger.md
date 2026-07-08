@@ -4,10 +4,11 @@
 > heavy write throughput.
 
 The Badger backend keeps each run's state in a BadgerDB store — a pure-Go key-value
-store that lives in **local files on disk**. It is **embedded**: there is no separate
-server to run. Data is **durable** — it survives a restart.
+store that lives in a **directory of files on local disk**. It is **embedded**: there
+is no separate server to run, just a directory the process opens directly. Data is
+**durable** — it survives a restart.
 
-It lives in its own module, so its dependency is only pulled in by applications that
+It lives in its own module, so the dependency is only pulled in by applications that
 use it:
 
 ```go
@@ -16,52 +17,142 @@ import (
     badgerstore "github.com/friendly-business-machines/blkit/stores/badger"
 )
 
-var store = badgerstore.New(badgerstore.Config{Path: "/var/lib/blkit/badger"})
+// New opens (creating if needed) the store and panics if it cannot; the returned
+// *Store is a bl.StateStore the rest of blkit uses like any other backend.
+store := badgerstore.New(badgerstore.Config{Path: "/var/lib/blkit/badger"})
+defer store.Close()
 ```
 
-The backend is built on [dgraph-io/badger](https://github.com/dgraph-io/badger) —
-pure Go, no CGO. Records are encoded as JSON, and arrival-order numbers come from
-Badger's own durable monotonic counter, so they survive a reopen.
+The backend is built on [dgraph-io/badger](https://github.com/dgraph-io/badger) — a
+pure-Go, no-CGO LSM-tree store, which is what makes it write-fast: an LSM absorbs a
+high rate of writes as sequential appends rather than in-place B+tree updates. Records
+are encoded as JSON, and arrival-order numbers come from Badger's own durable monotonic
+counter (`DB.GetSequence`), so they keep advancing across a reopen.
 
 ## What it's good for
 
 - **Single-node deployments** that want durability without running a separate
   database server.
-- **Write-heavy workloads** — Badger is built to take a high rate of writes and
-  handles large values well.
+- **Write-heavy workloads** — Badger's LSM design is built to take a high rate of
+  writes and handles large values well.
 
-## How state is stored
+## No server to run
 
-Badger has a flat keyspace, so runs are separated by key prefixes — one prefix each
-for run metadata, value records, history records, and a pending-write index. Keys
-embed a big-endian nanosecond timestamp and a sequence number, so Badger's
-lexicographic key order **is** the replay order. A batch of writes is applied in a
-single Badger transaction. For write throughput the backend runs with synchronous
-writes off and provides durability at a flush barrier, which calls Badger's `Sync`.
+There is nothing to provision: Badger is not a server, it is a set of files in a
+directory that the process opens. `Config.Path` names that directory, and blkit
+creates it on first use. Two operational notes follow:
+
+- **One process owns the directory.** Badger takes a directory lock on open, so exactly
+  one process at a time may have the store open. This suits one worker process per
+  machine; it is not a way to share state between processes.
+- **Back up the whole directory.** State is spread across the LSM's value log and SST
+  files under `Path`, so a backup is a copy of the entire directory (taken while no
+  process holds it open), not a single file.
+
+## Data model
+
+Badger has a single flat keyspace rather than tables or buckets, so runs and record
+kinds are separated by **key prefixes**. Every key is built so that Badger's
+lexicographic byte order **is** the replay order:
+
+```
+m|{runID}                       →  run metadata record (written by Save)
+v|{runID}|{ts}{seq}             →  {task_id, execution_id, field, value, status}
+h|{runID}|{ts}{seq}             →  {kind, node_id, execution_id, payload}
+p|{runID}|{task_id}|{ts}{seq}   →  the v| key of a pending write (flip index)
+```
+
+The `{ts}{seq}` suffix is 16 fixed-width bytes: the event timestamp as a big-endian
+`uint64` of Unix nanoseconds, then the `GetSequence` counter as a big-endian `uint64`.
+Because the prefix (`v|{runID}|`) groups a run's values together and the suffix is
+fixed-width big-endian, iterating the `v|{runID}|` prefix yields entries already in
+`(timestamp, arrival)` order.
+
+**Every write is a new key, never an overwrite.** blkit does not keep "the current
+value of a field" in a mutable slot; each `ValueWrite` sets a new `v|` key with
+`status: pending`, and a field's current value is derived from these entries at read
+time. The lifecycle lives in the record's `status`:
+
+- **A task's outputs appear all at once.** Each value a running task writes is a
+  `pending` `v|` entry, invisible to current state, and gets a companion `p|` index
+  entry keyed by the run and task id.
+- **Committing a task is one prefix iteration.** A `StatusFlip` iterates the
+  `p|{runID}|{task_id}|` prefix, and for each hit rewrites the referenced `v|` record's
+  status to `committed` (or `aborted` on failure) and deletes the index entry. Only
+  that task's entries are touched. (The index entries are collected first, then
+  mutated, because a Badger transaction does not write while an iterator is open.)
+- **Nothing is deleted.** Aborted entries stay under the `v|` prefix for audit; they
+  simply never satisfy the current-state read.
+
+Two reads sit on top of these entries:
+
+- **Current state** — one iteration of the `v|{runID}|` prefix, folding the latest
+  `committed` entry per `(task_id, field)`.
+- **Full history** — an iteration of the `v|{runID}|` and `h|{runID}|` prefixes, each
+  entry carrying its `status`, so an aborted attempt is visible next to the committed
+  write that superseded it.
+
+**A whole batch is one transaction.** A `WriteBatch` — a task's value writes, its
+status flip, and its history entries — is applied inside one Badger `DB.Update`
+transaction, so a task's outputs land together. For write throughput the store runs
+with **`SyncWrites` off**, and durability is provided at the flush barrier: `Flush`
+calls Badger's `DB.Sync`, which fsyncs the write-ahead log so every batch applied
+before it is durable when it returns.
+
+One subtlety of Badger's counter: it leases sequence numbers in bands (256 at a time),
+so arrival numbers are monotonic but two entries with the same timestamp can be
+assigned numbers from different bands. Full-history reads therefore pass the records
+through blkit's shared `(ts, seq)` replay sort to normalise that, keeping the ordering
+identical to the other backends.
 
 ## Configuration
 
-Construct the backend with the **path to a directory** where BadgerDB keeps its
-files. There is no server address and no credentials — the store is opened directly
-by the program.
+```go
+type Config struct {
+    Path string // directory for Badger's files; required
+}
+```
+
+- **`Path`** — the directory BadgerDB keeps its value log and SST files in. blkit
+  creates it on first open. There is no address and no credentials: the store is opened
+  directly by the process, and the same path reopened later restores the same runs
+  (including the durable arrival counter). Give each independent deployment its own
+  directory.
+
+## Consistency
+
+Badger is strongly consistent: transactions are serialisable, and a committed write is
+visible to the next read within the process. The one thing to be aware of is the
+durability boundary — because the store runs with `SyncWrites` off for throughput, a
+batch is in memory and the WAL but not necessarily fsynced until a `Flush` (or Badger's
+own periodic sync); blkit issues that `Flush` where the write contract requires
+durability. The scope of the guarantee is the local directory: there is no replication
+and no reader on another machine.
 
 ## What to keep in mind
 
-- **It is local to one machine.** The files live on that machine's disk, so runs
-  cannot be shared with workers elsewhere. For shared runs, use a server-based
-  backend such as [PostgreSQL](postgres.md) or [NATS](nats.md).
-- **One program at a time** opens the store, so it suits one worker process on the
-  machine rather than several sharing the files.
+- **It is local to one machine.** The files live on that machine's disk, so runs cannot
+  be shared with workers elsewhere. For shared runs, use a server-based backend such as
+  [PostgreSQL](postgres.md) or [NATS](nats.md).
+- **One process owns the directory** at a time (the directory lock), so Badger suits a
+  single worker process rather than several sharing the path.
+- **History grows without bound** — nothing is deleted by design. Badger reclaims space
+  through LSM compaction and value-log garbage collection over time, but the logical
+  record count only grows, so plan retention or archival for long-lived deployments.
 
-Compared with the other embedded backends: [bbolt](bbolt.md) is a single file tuned
-for reads; Badger and [Pebble](pebble.md) keep a directory of files and take writes
-at a higher rate. If you want SQL-queryable history, use [SQLite](sqlite.md) instead.
+Compared with the other embedded backends: [bbolt](bbolt.md) is a single-file B+tree
+tuned for reads; Badger and [Pebble](pebble.md) keep a directory of LSM files and take
+writes at a higher rate, Badger leaning hardest toward write throughput and large
+values. If you want the history to be queryable with SQL while staying embedded, use
+[SQLite](sqlite.md) instead.
 
 ## Concurrency
 
-Different runs use different keys within the same store, so many runs handled by the
-one worker process do not interfere. Parallel tasks within a run each write their own
-keys; Badger applies concurrent writes safely.
+Different runs use disjoint key prefixes (`…|{runID}|…`) in the same store, so many runs
+handled by the one worker process never collide. Parallel tasks within a run each set
+their own `v|` and `h|` keys; Badger applies concurrent transactions safely, and the
+stored `(ts, seq)` suffix — not the order the transactions happened to commit in —
+fixes the replay order once the shared sort has normalised any band interleaving.
 
 ## Reference
 

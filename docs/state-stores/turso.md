@@ -30,67 +30,186 @@ import (
     tursostore "github.com/friendly-business-machines/blkit/stores/turso"
 )
 
+// New opens (creating if needed) the file; the returned *Store is a bl.StateStore
+// used like any other backend. It panics on an invalid config or an unopenable
+// file rather than returning an error.
 var store = tursostore.New(tursostore.Config{Path: "/var/lib/blkit/state.db"})
 ```
 
 The backend is built on Turso's official Go bindings
 ([turso.tech/database/tursogo](https://pkg.go.dev/turso.tech/database/tursogo)),
-which call the Rust core through purego with a bundled platform library — **no
-CGO at build time**, so `CGO_ENABLED=0` builds keep working. One runtime caveat
-follows: the bundled library is extracted and loaded dynamically, so a container
-image needs a libc-based dynamic loader (for example `distroless/base`); a fully
-static `scratch` image cannot load it.
+registered with `database/sql` as the `"turso"` driver. They call the Rust core
+through [purego](https://github.com/ebitengine/purego) with a bundled platform
+library — **no CGO at build time**, so `CGO_ENABLED=0` builds keep working. One
+runtime caveat follows: the bundled library is extracted to a temporary directory
+and loaded dynamically, so a container image needs a libc-based dynamic loader (for
+example `distroless/base`); a fully static `scratch` or `distroless/static` image
+cannot load it. Because the engine is in beta, the backend serialises **all** access
+through a single connection (`SetMaxOpenConns(1)`), keeping its concurrency surface
+out of play.
 
 ## What it's good for
 
-- **Running blkit state on the Rust engine** — for teams adopting Turso
-  Database, with the same operational shape as the SQLite backend.
+- **Running blkit state on the Rust engine** — for teams adopting Turso Database,
+  with the same operational shape as the SQLite backend.
 - **Single-node deployments** that want durability without running a separate
   database server.
 - **SQLite-compatible file format** — the database file follows SQLite's format,
   keeping the state inspectable with familiar tooling.
 
-## Storage layout
+## No server to run
 
-The backend uses the same three tables as the
-[PostgreSQL layout](postgres.md#storage-layout) — `blkit_runs`, `blkit_values`,
-`blkit_history` — in SQLite's dialect, as in the
-[SQLite backend](sqlite.md#storage-layout): rowid for the arrival-order id,
-`INTEGER` Unix-nanosecond timestamps, and `TEXT` JSON for encoded values. To stay
-well inside the beta engine's supported SQL surface, the backend keeps its SQL
-deliberately conservative: plain composite indexes rather than partial indexes,
-and the latest-committed-per-field read folds in Go over an ordered scan rather
-than using a window function. A batch of writes executes as a single
-transaction, and a task finishing settles all of its pending rows in one
-statement.
+There is nothing to provision: the store is a single file the process opens
+directly. All access is serialised through **one connection**, so the file is meant
+to be owned by a single worker process — do not point two processes at the same
+file. Because the file format is SQLite-compatible, back it up as you would any
+SQLite database. Remember the runtime requirement above: the process needs a
+dynamic loader available to load the bundled Rust library.
+
+## Data model
+
+Turso uses the **same three tables** as the [PostgreSQL](postgres.md#data-model)
+backend, in SQLite's dialect exactly as the [SQLite backend](sqlite.md#data-model)
+does — so the shape and its rationale carry over unchanged. Unlike SQLite, the
+table names carry a **configurable prefix** (`blkit_` by default, see
+[Configuration](#configuration)), so the schema shown here is `blkit_runs`,
+`blkit_values`, and `blkit_history`. The tables are created on first use.
+
+### `blkit_runs` — one row per run
+
+The run's identity and lifecycle: which process it is an instance of, where it has
+got to, and when.
+
+| Column | Type | Purpose |
+|---|---|---|
+| `run_id` | `TEXT PRIMARY KEY` | The run's id — the key every other table joins on. |
+| `process_id` | `TEXT` | The process this run is an instance of. |
+| `process_version` | `TEXT` | The version of that process definition. |
+| `status` | `TEXT` | Lifecycle phase of the run. |
+| `published_at` / `started_at` / `completed_at` | `INTEGER` | Lifecycle timestamps as Unix nanoseconds (nullable until each is reached). |
+| `evaluation_count` | `INTEGER` | How many times the run has been advanced — the optimistic-progress counter. |
+
+The metadata upsert is written as **UPDATE-then-INSERT inside a transaction** rather
+than `ON CONFLICT` — plain UPDATE/INSERT is the most conservative SQLite surface,
+and the single connection makes it raceless.
+
+### `blkit_values` — one row per value a task writes
+
+This is the heart of the model. blkit never overwrites a field; **every write is a
+new row**, and the current value of a field is *derived* from these rows rather
+than stored in place.
+
+| Column | Type | Purpose |
+|---|---|---|
+| `id` | `INTEGER PRIMARY KEY` | SQLite's rowid, supplying the monotonic arrival order — the tie-breaker for two rows with equal timestamps. |
+| `run_id` | `TEXT` | The run this write belongs to. |
+| `task_id` | `TEXT` | The task that produced it. |
+| `execution_id` | `TEXT` | The specific execution attempt of that task (a retried task runs under a new execution id). |
+| `field` | `TEXT` | The field path being written. |
+| `value` | `TEXT` | The encoded value as JSON text, queryable with SQLite's built-in JSON functions. |
+| `status` | `TEXT` | `pending`, `committed`, or `aborted` (see below). |
+| `ts` | `INTEGER` | When the write was made, as Unix nanoseconds. |
+
+Two behaviours defined by the [shared conformance suite](overview.md#conformance)
+are implemented entirely through the `status` column:
+
+- **A task's outputs become visible all at once, when it finishes.** While a task
+  runs, each value it writes lands as a `pending` row and is invisible to the
+  current state. When the task completes, all of its pending rows flip to
+  `committed` in a **single `UPDATE`**; if it fails, they flip to `aborted`. The
+  outputs never appear half-written.
+- **Nothing is ever deleted.** Aborted rows stay in the table for diagnostics and
+  audit — they simply never satisfy the current-state read.
+
+Two reads sit on top of these rows:
+
+- **Current state** — the latest `committed` value per `(task_id, field)`. Where
+  SQLite resolves this with a `ROW_NUMBER()` window, Turso deliberately stays inside
+  the beta engine's well-supported SQL: it scans the committed rows in `(ts, id)`
+  order and **folds in Go**, letting the last write per field win. No window
+  function is used.
+- **Full history** — every row for the run in `(ts, id)` order, each carrying its
+  `status`, so a failed attempt is visible as an aborted write next to the committed
+  one that superseded it.
+
+Two indexes back these reads: a **replay** index on `(run_id, ts, id)` and — again
+staying conservative — a **plain composite** index on `(run_id, task_id, status)`
+for the pending lookup, rather than the partial index the SQLite backend uses.
+
+### `blkit_history` — one row per execution-history entry
+
+The execution history — the record of what the engine did, step by step.
+
+| Column | Type | Purpose |
+|---|---|---|
+| `id` | `INTEGER PRIMARY KEY` | Arrival-order tie-breaker (rowid), as in `blkit_values`. |
+| `run_id` | `TEXT` | The run this entry belongs to. |
+| `kind` | `TEXT` | The kind of history entry. |
+| `node_id` | `TEXT` | The graph node it concerns (nullable). |
+| `execution_id` | `TEXT` | The execution attempt it belongs to. |
+| `payload` | `TEXT` | The entry's detail, as JSON text. |
+| `ts` | `INTEGER` | When it was recorded, as Unix nanoseconds. |
+
+Like the values table it is append-only and read back sorted on `(ts, id)`.
+
+### Ordering under parallelism
+
+Both event tables carry a timestamp **and** an auto-increment id (the rowid), and
+every read sorts on `(ts, id)`. As in SQLite, timestamps are stored as `INTEGER`
+Unix nanoseconds. Parallel tasks within a run each append their own rows, and the
+stored `(ts, id)` pair — not insertion order — defines replay order, which is what
+makes the history stable and reproducible across backends.
+
+A `WriteBatch` executes as a **single transaction**, so a task's outputs land
+together, and the status flip settles all of a task's pending rows in one statement.
 
 ## Configuration
 
-Construct the backend with the **path to the database file**. There is no server
-address and no credentials — the file is opened directly by the program.
+```go
+type Config struct {
+    Path        string // path to the database file; required
+    TablePrefix string // table-name prefix; defaults to "blkit_"
+}
+```
+
+- **`Path`** — the path to the database file, opened directly by the program and
+  created if it does not exist. There is no server address and no credentials.
+- **`TablePrefix`** — the prefix on the three table names (default `blkit_`). Change
+  it to keep more than one independent blkit deployment inside a single file without
+  their tables colliding. It must match `^[a-z_][a-z0-9_]*$`; an invalid prefix
+  panics at construction.
+
+Because the data lives in one local file, it cannot be shared with workers on other
+machines; for shared runs use a server-based backend such as
+[PostgreSQL](postgres.md) or [NATS](nats.md).
 
 ## Consistency
 
 Turso Database is an embedded engine with transactions on a single local file: a
-committed write is always visible to the next read. There is no replication, so
-the stale-read concerns that apply to server-based backends in HA setups do not
-arise.
+committed write is always visible to the next read. There is no replication, so the
+stale-read concerns that apply to server-based backends in HA setups do not arise.
+(The driver's remote-sync features are not used by this backend.)
 
 ## What to keep in mind
 
-- **Beta engine** — see the warning above.
+- **Beta engine** — see the warning above. The [SQLite backend](sqlite.md) is the
+  conservative choice; this one is for the Rust engine.
 - **It is local to one machine.** The file lives on that machine's disk, so runs
   cannot be shared with workers elsewhere. For shared runs, use a server-based
   backend such as [PostgreSQL](postgres.md) or [NATS](nats.md).
 - **One worker process per file**, with all access serialised through a single
   connection.
+- **Container images need a dynamic loader** for the bundled runtime library (see
+  the intro above).
+- **History grows without bound** — nothing is deleted by design. For long-lived
+  deployments, plan a retention or archival policy against the tables directly.
 
 ## Concurrency
 
-Different runs are independent rows keyed by different run ids, so many runs
-handled by the one worker process do not interfere. Parallel tasks within a run
-each write their own rows; all access is funnelled through the single connection
-and applied one statement after another.
+Different runs are independent rows keyed by different run ids, so many runs handled
+by the one worker process do not interfere. Parallel tasks within a run each write
+their own rows; all access is funnelled through the single connection and applied
+one statement after another.
 
 ## Reference
 

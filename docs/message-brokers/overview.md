@@ -4,12 +4,6 @@
 > your deployment, from a zero-dependency in-memory broker to Redis, NATS,
 > RabbitMQ, or a managed cloud service.
 
-!!! warning "Status — subsystem in progress"
-    The message-broker subsystem is still being built; no external backend is
-    implemented yet. These pages describe the intended design so the section's
-    shape is visible and stable. The authoritative requirements live in the
-    broker specs under `specs/message-brokers/`.
-
 blkit **clients** (MCP servers, web servers, CLI tools, admin UIs) and **workers**
 (the processes that execute [process](../processes/processes.md) definitions) may
 live in different binaries on different machines. The **message broker** is the
@@ -116,5 +110,6 @@ is available.
 
 ## Reference
 
-The `MessageBroker` interface and the built-in in-memory broker are part of the
-core API [Reference](../reference/blkit.md).
+The `MessageBroker` interface and the built-in in-memory broker are in the core
+API [Reference](../reference/blkit.md); each pluggable backend has its own
+reference page (for example, [Redis](../reference/brokers-redis.md)).

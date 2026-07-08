@@ -59,9 +59,11 @@ user- or AI-authored logic into a product.
 ## Project status
 
 blkit's **business-friendly expression language** and the **decision layer** built
-on it are available today. blkit currently ships as a single Go package, `core`
-(imported as `bl`); the higher-level process layer is being built and will live in
-the same module.
+on it are available today. Its two pluggable infrastructure layers — the **state
+store** and the **message broker** — are also implemented, each as a `core`
+interface (imported as `bl`) plus conformance-tested backends in their own
+`stores/<name>` and `brokers/<name>` modules. The higher-level process, worker,
+and server layers that drive them are being built next.
 
 | Component | Status |
 |---|---|
@@ -69,9 +71,10 @@ the same module.
 | Decision expressions, tables & native functions | ✅ Available |
 | Decision tasks (typed, compile-checked node graphs) | ✅ Available |
 | Reference data (static value sources) | ✅ Available |
+| State store (in-memory + pluggable backends: Postgres, SQLite, NATS, …) | ✅ Available |
+| Message brokers (in-memory + pluggable backends: Redis/Valkey, NATS, RabbitMQ, cloud) | ✅ Available |
 | Process execution (BPMN-style graphs) | 🚧 Planned |
-| Data contracts, execution context & state store | 🚧 Planned |
-| Message brokers (in-memory, Redis/Valkey, NATS, RabbitMQ, …) | 🚧 Planned |
+| Data contracts & execution context | 🚧 Planned |
 | REST server with Server-Sent Events | 🚧 Planned |
 | MCP server | 🚧 Planned |
 
@@ -241,10 +244,13 @@ REST/SSE server (`blkit.restserver`) — lets processes run as services.
 
 ## Architecture
 
-> **Target design — not yet implemented.** This section describes how blkit's
-> *planned* process and service layers are intended to fit together. The expression
-> engine ships today; the roles, packages, and interfaces below (workers, message
-> brokers, the REST server, the state store) do not exist in the codebase yet.
+> **Target design — partly implemented.** This section describes how blkit's
+> process and service layers are intended to fit together. The expression and
+> decision engines ship today, and the two pluggable infrastructure layers below —
+> the **state store** and the **message broker** (each a core interface plus
+> conformance-tested backends) — are now implemented. The roles that drive them
+> (workers, producers, the REST/MCP servers) and the process-execution layer do
+> not exist in the codebase yet.
 
 The components above can be embedded directly in a single Go program. To run processes
 *as a service* — many instances, across many machines, surviving restarts — blkit fans

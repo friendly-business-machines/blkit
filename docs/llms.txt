@@ -66,12 +66,12 @@
 ## Message-Brokers
 - [Overview](https://friendly-business-machines.github.io/blkit/message-brokers/overview/): How blkit's clients and workers talk to each other — pick the backend that fits your deployment, from a zero-dependency in-memory broker to Redis, NATS, RabbitMQ, or a managed cloud service.
 - [AWS SQS/SNS](https://friendly-business-machines.github.io/blkit/message-brokers/aws-sqs-sns/): A cloud-managed broker on AWS — SQS queues per process key for jobs, an SNS topic with filter policies for instance events, and a DynamoDB RegistryStore for the registry, timers, and last-event records.
-- [Azure Service Bus](https://friendly-business-machines.github.io/blkit/message-brokers/azure-service-bus/): A cloud-managed broker on Azure — peek-lock queues for jobs, a filtered topic for instance events, native scheduled messages for timers, and a RegistryStore in Table Storage or Cosmos DB.
-- [Google Pub/Sub](https://friendly-business-machines.github.io/blkit/message-brokers/google-pubsub/): A cloud-managed broker on Google Cloud — a filtered jobs topic, per-subscriber filtered subscriptions with retention and Seek replay for instance events, and a Firestore RegistryStore for the registry and timers.
-- [In-Memory](https://friendly-business-machines.github.io/blkit/message-brokers/in-memory/): The built-in broker that ships in core — Go channels and maps, no external broker required. For tests, local development, and single-binary deployments.
-- [NATS](https://friendly-business-machines.github.io/blkit/message-brokers/nats/): A self-hosted broker backed by NATS with JetStream — subject-filtered pull consumers for the job queue, per-subject streams for events, KV with watch for the registry. A natural fit when NATS is already your state store.
-- [RabbitMQ](https://friendly-business-machines.github.io/blkit/message-brokers/rabbitmq/): A self-hosted broker backed by RabbitMQ 3.13+ — quorum queues behind a topic exchange for jobs, RabbitMQ Streams for instance events, heartbeat broadcast for the registry.
-- [Redis](https://friendly-business-machines.github.io/blkit/message-brokers/redis/): A self-hosted broker backed by Redis or Valkey — Streams and consumer groups for the job queue, per-instance streams for events, TTL'd keys for the registry. The lightweight self-host default.
+- [Azure Service Bus](https://friendly-business-machines.github.io/blkit/message-brokers/azure-service-bus/): A cloud-managed broker on Azure — peek-lock queues for jobs, one instance-event topic with client-side fan-out, native scheduled messages for timers, and a RegistryStore in Table Storage or Cosmos DB.
+- [Google Pub/Sub](https://friendly-business-machines.github.io/blkit/message-brokers/google-pubsub/): A cloud-managed broker on Google Cloud — a jobs topic with per-key filtered subscriptions, per-subscriber ordered subscriptions with last-event-record replay for instance events, and a Firestore RegistryStore for the registry, timers, and last-event records.
+- [In-Memory](https://friendly-business-machines.github.io/blkit/message-brokers/in-memory/): The built-in broker that ships in core — Go channels and mutex-guarded maps, no external server required. For tests, examples, and single-binary deployments.
+- [NATS](https://friendly-business-machines.github.io/blkit/message-brokers/nats/): A self-hosted broker backed by NATS with JetStream — subject-filtered pull consumers for the job queue, per-subject streams for events, a KV bucket with watch for the registry. A natural fit when NATS is already your state store, and light enough to embed in your own process.
+- [RabbitMQ](https://friendly-business-machines.github.io/blkit/message-brokers/rabbitmq/): A self-hosted broker backed by RabbitMQ 3.13+ — quorum queues behind a topic exchange for jobs, a shared RabbitMQ Stream for instance events, a heartbeat broadcast for the registry. Its redelivery on a crash is immediate.
+- [Redis](https://friendly-business-machines.github.io/blkit/message-brokers/redis/): A self-hosted broker backed by Redis or Valkey — Streams and consumer groups for the job queue, per-instance streams for events, sweeper-expired hashes for the registry. The lightweight self-host default.
 
 ## Deployment Patterns
 - [Overview](https://friendly-business-machines.github.io/blkit/deployment-patterns/overview/): How to assemble blkit into a running application — from a single self-contained binary to a distributed producer-and-worker-fleet — by combining the same four building blocks in different shapes.
@@ -87,6 +87,12 @@
 
 ## Reference
 - [core](https://friendly-business-machines.github.io/blkit/reference/blkit/)
+- [awssqssns](https://friendly-business-machines.github.io/blkit/reference/brokers-aws-sqs-sns/)
+- [azuresb](https://friendly-business-machines.github.io/blkit/reference/brokers-azure-service-bus/)
+- [gpubsub](https://friendly-business-machines.github.io/blkit/reference/brokers-google-pubsub/)
+- [nats](https://friendly-business-machines.github.io/blkit/reference/brokers-nats/)
+- [rabbitmq](https://friendly-business-machines.github.io/blkit/reference/brokers-rabbitmq/)
+- [redis](https://friendly-business-machines.github.io/blkit/reference/brokers-redis/)
 - [badger](https://friendly-business-machines.github.io/blkit/reference/stores-badger/)
 - [bbolt](https://friendly-business-machines.github.io/blkit/reference/stores-bbolt/)
 - [mariadb](https://friendly-business-machines.github.io/blkit/reference/stores-mariadb/)

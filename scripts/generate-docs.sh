@@ -117,29 +117,38 @@ while IFS= read -r pkg; do
   count=$((count + 1))
 done <<< "$core_pkgs"
 
-# State-store backends. Each stores/<name>/ is its OWN Go module, and both
-# go.work and go.work.sum are git-ignored — so they are absent from a fresh CI
-# checkout. Discovering the backends through the workspace (`go list
-# ./stores/<name>/...` from the root) therefore works locally but fails in CI
-# with "directory prefix ... does not contain main module". Instead, document
-# each backend in SINGLE-MODULE mode: run go/gomarkdoc with GOWORK=off from
-# inside the module directory, so resolution depends only on that module's own
-# committed go.mod/go.sum. The repo path is set to /stores/<name> so the
+# Pluggable backend families. Each stores/<name>/ and brokers/<name>/ is its OWN
+# Go module, and both go.work and go.work.sum are git-ignored — so they are
+# absent from a fresh CI checkout. Discovering the backends through the workspace
+# (`go list ./stores/<name>/...` from the root) therefore works locally but fails
+# in CI with "directory prefix ... does not contain main module". Instead,
+# document each backend in SINGLE-MODULE mode: run go/gomarkdoc with GOWORK=off
+# from inside the module directory, so resolution depends only on that module's
+# own committed go.mod/go.sum. The repo path is set to /<family>/<name> so the
 # source-link URLs still point at the module's subdirectory in the repository.
-if [ -d "${REPO_ROOT}/stores" ]; then
-  for dir in "${REPO_ROOT}"/stores/*/; do
+#
+# Each backend module becomes reference/<family>-<name>.md (e.g. a stores module
+# becomes stores-postgres.md, a brokers module becomes brokers-redis.md).
+document_module_family() {
+  local family="$1"   # e.g. stores or brokers
+  [ -d "${REPO_ROOT}/${family}" ] || return 0
+  local dir mod mod_pkgs pkg rel name
+  for dir in "${REPO_ROOT}/${family}"/*/; do
     [ -f "${dir}go.mod" ] || continue
-    store="$(basename "$dir")"
-    store_pkgs="$(cd "$dir" && GOWORK=off go list ./...)" \
-      || fail "go list failed for store module ${store} — module does not build"
+    mod="$(basename "$dir")"
+    mod_pkgs="$(cd "$dir" && GOWORK=off go list ./...)" \
+      || fail "go list failed for ${family} module ${mod} — module does not build"
     while IFS= read -r pkg; do
       [ -n "$pkg" ] || continue
-      rel="${pkg#"$MODULE_PATH"/}"   # e.g. stores/postgres
-      name="${rel//\//-}"            # stores-postgres
+      rel="${pkg#"$MODULE_PATH"/}"   # e.g. stores/postgres or brokers/redis
+      name="${rel//\//-}"            # stores-postgres or brokers-redis
       document_pkg "$pkg" "$name" "$dir" "/${rel}" "off"
       count=$((count + 1))
-    done <<< "$store_pkgs"
+    done <<< "$mod_pkgs"
   done
-fi
+}
+
+document_module_family stores
+document_module_family brokers
 
 echo "generate-docs: wrote reference Markdown for ${count} package(s) to docs/reference/"

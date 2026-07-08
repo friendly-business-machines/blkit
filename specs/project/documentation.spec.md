@@ -32,6 +32,7 @@ The documentation site is organised into the following top-level sections (at mi
 | **Decisions** | User guide to the decision components (decision expressions, tables, native functions, sub-decisions, reference data, decision tasks) |
 | **Processes** | User guide to the process components (tasks, gateways, processes) |
 | **State Stores** | User guide to the pluggable state-store backends — an overview plus one page per backend |
+| **Message Brokers** | User guide to the pluggable message-broker backends — an overview plus one page per backend |
 | **Architecture** | Internal design of blkit's subsystems — one deep-dive chapter per subsystem |
 
 The first six sections in the table are required before the documentation site is considered minimally complete. **Expressions**, **Decisions**, **Processes**, **State Stores**, and **Architecture** are additional sections that grow as the corresponding capabilities are documented: the four user-guide sections (Expressions, Decisions, Processes, State Stores) describe how to *use* each component, while the Architecture section describes how each is *built*.
@@ -132,7 +133,7 @@ The Reference section contains the Go API reference, generated from `//` godoc c
 
 Generated Markdown is committed to `docs/reference/` and consumed by Zensical as ordinary source files. The generation step runs in CI on every release.
 
-The section covers **every** buildable package in the workspace, not only the `core` module. Because each state-store backend under `stores/<name>/` is its own Go module (see the State Stores Section below), `go list ./...` on its own does not reach them; `scripts/generate-docs.sh` additionally discovers each store module through the workspace and documents it. The `core` package is written as `reference/blkit.md`; each backend module as `reference/stores-<name>.md` (e.g. `reference/stores-postgres.md`). All of these pages are wired into the Reference nav group.
+The section covers **every** buildable package in the workspace, not only the `core` module. Because each state-store backend under `stores/<name>/` and each message-broker backend under `brokers/<name>/` is its own Go module (see the State Stores and Message Brokers Sections below), `go list ./...` on its own does not reach them; `scripts/generate-docs.sh` additionally discovers each backend module through the workspace and documents it. The `core` package is written as `reference/blkit.md`; each state-store module as `reference/stores-<name>.md` (e.g. `reference/stores-postgres.md`) and each broker module as `reference/brokers-<name>.md` (e.g. `reference/brokers-redis.md`). All of these pages are wired into the Reference nav group.
 
 ## Expressions Section
 
@@ -161,6 +162,16 @@ It opens with an orientation **overview** page (what a state store is, what ever
 Pages: `overview.md`, `in-memory.md`, `postgres.md`, `mssql.md`, `mysql.md`, `mariadb.md`, `nats.md`, `sqlite.md`, `bbolt.md`, `badger.md`, `pebble.md`.
 
 The in-memory backend is built into core, so its API appears in `reference/blkit.md`; every other backend is a separate module with its own `reference/stores-<name>.md` page (see the Reference Section above).
+
+## Message Brokers Section
+
+The Message Brokers section is the user guide to blkit's pluggable message-broker backends — the channel over which clients and workers exchange messages (worker registration, the process job queue, start and cancel requests, input requests and responses, and process outcomes). It describes how to *use* and *choose* a backend, not the internal design, and stresses that the broker carries *messages about* a run while the run's state lives in the state store.
+
+It opens with an orientation **overview** page (what a broker does and does not do, how to choose one, and the shared conformance guarantee) and is then organised as one page per backend. Each page's behaviour is defined authoritatively by the matching spec under `specs/message-brokers/`: the overview by `overview.spec.md`, and each backend page by its `<name>-message-broker.spec.md`. The pages are hand-authored user-guide prose, so they omit the specs' status banners, Go interface details, and `[@test]` links; those live in the specs and (for the API surface) in the generated Reference pages, which each backend page links to.
+
+Pages: `overview.md`, `in-memory.md`, `redis.md`, `nats.md`, `rabbitmq.md`, `azure-service-bus.md`, `google-pubsub.md`, `aws-sqs-sns.md`.
+
+The in-memory backend is built into core, so its API appears in `reference/blkit.md`; every other backend is a separate module with its own `reference/brokers-<name>.md` page (see the Reference Section above). The three cloud-managed backends (Azure Service Bus, Google Pub/Sub, AWS SQS/SNS) additionally ship a pluggable `RegistryStore` for the worker registry, timers, and last-event records, documented on the same page.
 
 ## Architecture Section
 
