@@ -8,11 +8,12 @@ targets:
 
 # Message Broker Backends
 
-> **Status:** This spec is a work in progress. No backend is implemented yet.
-> This document defines the `MessageBroker` interface, the shared semantics
-> every backend must honour, and how the backends are laid out in the
-> codebase. Per-backend mappings to broker-native primitives live in the
-> per-broker specs in this directory.
+> **Status:** Implemented. The `MessageBroker` interface, wire format,
+> in-memory backend, and conformance suite live in core; all six external
+> backends are implemented in their own modules. This document defines the
+> interface, the shared semantics every backend must honour, and how the
+> backends are laid out in the codebase. Per-backend mappings to
+> broker-native primitives live in the per-broker specs in this directory.
 
 A **message broker** is how blkit's clients and workers talk to each other.
 Clients (MCP servers, web servers, CLI tools, admin UIs) and workers (the
@@ -138,7 +139,7 @@ interface:
   instance events and the process registry.
 - **Worker-side** — used by `worker.Run` to register the worker's capability
   set, refresh its TTL, fetch jobs, report lifecycle transitions, and post
-  error messages.
+  instance-topic messages (errors, input requests, node completions).
 
 The same implementation satisfies both roles. Whether a given binary uses
 producer-side methods, worker-side methods, or both is determined by which
@@ -295,11 +296,13 @@ type MessageBroker interface {
     ReportRunning(ctx context.Context, instanceID string) error
 
     // The process suspended (Suspend*/Pause* event or RequestInputTask).
-    // Publishes Lifecycle{Phase: Suspended} and re-enqueues: the job
-    // leaves in-flight and a JobResume is delivered when the wait
-    // condition is satisfied (duration elapsed, datetime reached,
-    // RespondToInputRequest delivered).
-    ReportSuspended(ctx context.Context, instanceID string) error
+    // Publishes Lifecycle{Phase: Suspended} and settles the in-flight
+    // job. A non-nil resumeAt schedules a JobResume for that time
+    // (duration/datetime waits — the worker knows the wake time from the
+    // process definition and hands it to the broker here); with a nil
+    // resumeAt the instance waits for an external signal — typically a
+    // RespondToInputRequest, which arrives as its own job.
+    ReportSuspended(ctx context.Context, instanceID string, resumeAt *time.Time) error
 
     // Terminal outcomes. Each publishes the corresponding Lifecycle event
     // (plus the Result / Error event), settles the in-flight job, and
@@ -308,15 +311,23 @@ type MessageBroker interface {
     ReportFailed(ctx context.Context, instanceID string, err InstanceError) error
     ReportCancelled(ctx context.Context, instanceID string) error
 
-    // ===== Worker-side: errors =====
+    // ===== Worker-side: instance topic =====
+    //
+    // Synchronous errors for all three: broker-publish errors.
 
     // Post an error message to the instance's topic. Visible to
     // subscribers as an InstanceEvent of kind Error. Does NOT by itself
     // change the instance's lifecycle — use ReportFailed for a terminal
     // failure.
-    //
-    // Synchronous errors: broker-publish errors.
     PostError(ctx context.Context, instanceID string, err InstanceError) error
+
+    // Publish a RequestInputTask's request for input on the instance's
+    // topic; the requestID is what a client passes back to
+    // RespondToInputRequest.
+    PostInputRequest(ctx context.Context, instanceID string, req InputRequest) error
+
+    // Publish a node-completion event on the instance's topic.
+    PostNodeCompleted(ctx context.Context, instanceID string, nc NodeCompleted) error
 
     // Close releases the broker's resources (connections, goroutines).
     Close() error
@@ -578,7 +589,7 @@ is a **CBOR-encoded envelope**:
 // Envelope is the versioned wire wrapper around every broker message.
 type Envelope struct {
     V              uint8   `cbor:"v"`   // envelope version; currently 1
-    Kind           string  `cbor:"k"`   // e.g. "job.start", "inst.lifecycle", "registry.reg"
+    Kind           string  `cbor:"k"`   // e.g. "job.start", "inst.event", "registry.reg"
     InstanceID     string  `cbor:"i,omitempty"`
     CorrelationKey *string `cbor:"c,omitempty"`
     KeyID          *string `cbor:"kid,omitempty"` // set when Payload is E2E-encrypted
@@ -739,6 +750,11 @@ already has persisted state.
    Broker error → returned synchronously.
 2. Return.
 
+The broker routes the job by the instance's process key, which it tracks in
+its bounded instance-event retention data (set at Submit) — an instance the
+broker no longer holds surfaces asynchronously as `INSTANCE_NOT_FOUND` on the
+instance's topic.
+
 The worker that fetches the resulting job loads the run's state from the
 state store, confirms it is waiting on the given `requestID`, validates the
 payload against the `RequestInputTask`'s `ResponseContract`, and resumes
@@ -830,9 +846,10 @@ The broker holds the job in-flight until the worker calls one of:
   (whether triggered internally or by an external `JobCancel` /
   `JobTerminate`). Settles the job.
 - `ReportFailed(instanceID, err)` — terminal failure. Settles the job.
-- `ReportSuspended(instanceID)` — the process suspended. The job leaves
-  in-flight; a new `JobResume` is delivered when the wait condition is
-  satisfied.
+- `ReportSuspended(instanceID, resumeAt)` — the process suspended. The job
+  leaves in-flight; a non-nil `resumeAt` schedules a `JobResume` for that
+  time, while a nil `resumeAt` leaves the instance waiting for an external
+  signal (a `RespondToInputRequest` arrives as its own job).
 
 If the worker dies before any of these, the broker times out the in-flight
 slot (per-backend configurable; default 5× heartbeat interval) and redelivers
@@ -985,7 +1002,8 @@ The backends fall into three families.
   — classic work-queue semantics with a huge enterprise install base; the
   registry and timers use documented patterns rather than native KV.
 
-**Cloud-managed — with a RegistryStore side-store, locally testable via emulators:**
+**Cloud-managed — with a RegistryStore side-store, locally testable via
+emulators (Azure Service Bus excepted — see its spec):**
 
 - **Azure Service Bus** — [azure-service-bus-message-broker.spec.md](./azure-service-bus-message-broker.spec.md)
   — peek-lock delivery and native scheduled messages (the best timer story);
@@ -1035,8 +1053,14 @@ trade-offs stay comparable across backends.
 
 Every backend is verified against a **shared conformance suite**, so they all
 behave identically. The suite lives in core
-(`core/message_broker_conformance.go`) and each backend module runs it
-against its own broker. It checks the shared semantics above:
+(`core/message_broker_conformance.go`, entry point
+`RunMessageBrokerConformance(t, open, opts)`) and each backend module runs it
+against its own broker. `BrokerConformanceOptions` declares the backend's
+capabilities and timing knobs — `SupportsQueueRemoval`, the configured
+`RegistrationTTL` and `InFlightTimeout` (zero skips the corresponding timing
+subtest), and an optional cipher-configured opener — so per-backend
+differences the spec allows are declared, not guessed. It checks the shared
+semantics above:
 
 - **Registration roundtrip** — register, snapshot, heartbeat, unregister;
   TTL expiry delivers `RegistryUpdateHeartbeatLost`.
@@ -1071,8 +1095,11 @@ How the suite is run depends on the backend:
 - **Redis/Valkey** and **RabbitMQ** spin up a throwaway container with
   [testcontainers-go](https://golang.testcontainers.org/), exactly as the
   SQL state stores do.
-- **Azure Service Bus** runs against Microsoft's Service Bus **emulator**
-  container, plus **Azurite** for the Table Storage RegistryStore.
+- **Azure Service Bus** conformance is **gated on a live endpoint**
+  (`BLKIT_TEST_AZURESB_CONNECTION`) — Microsoft's Service Bus emulator has
+  no runtime entity management and proved unstable under automated
+  conformance (its spec documents an opt-in emulator route). The
+  **Azurite**-backed Table Storage RegistryStore is always tested locally.
 - **Google Pub/Sub** runs against the gcloud **Pub/Sub emulator** container,
   plus the **Firestore emulator** for the RegistryStore.
 - **AWS SQS/SNS** runs against **LocalStack** (SQS + SNS + DynamoDB in one

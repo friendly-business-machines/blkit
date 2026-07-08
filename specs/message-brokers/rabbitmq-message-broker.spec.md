@@ -7,7 +7,7 @@ targets:
 
 # RabbitMQ Message Broker
 
-> **Status:** This spec is a work in progress. Implementation pending.
+> **Status:** Implemented.
 
 The RabbitMQ backend implements [MessageBroker](overview.spec.md) against
 RabbitMQ 3.13+. RabbitMQ's work-queue semantics (manual acks, automatic
@@ -27,40 +27,58 @@ broker, err := rabbitbroker.New(rabbitbroker.Config{URL: "amqp://localhost:5672"
 The nine standard questions (see
 [overview.spec.md § Desired properties](overview.spec.md#desired-properties--admitting-a-future-backend)):
 
-1. **Queue + ack + redelivery** — one **quorum queue per `ProcessKey`**, fed
-   by a topic exchange (`<prefix>.jobs`) with routing keys
-   `<ns>.<proc>.<ver>`. Workers consume with manual ack and a bounded
-   prefetch. Terminal lifecycle reports and `ReportSuspended` issue
-   `basic.ack`. A worker crash closes its channel and RabbitMQ **requeues
-   every unacked message immediately** — the strongest redelivery story of
-   any backend (no timeout wait).
+1. **Queue + ack + redelivery** — one **quorum queue per `ProcessKey`**
+   (`<prefix>.jobs.<enc>`; each key segment hex-encoded — `/` and `.` are
+   AMQP-significant — with a truncated-SHA-256 fallback for long segments),
+   fed by a topic exchange (`<prefix>.jobs`). Queues are declared
+   idempotently on both `FetchJobs` *and* before every job publish, so a
+   job can never be lost for want of a binding. Workers consume with manual
+   ack and prefetch 16. Terminal lifecycle reports and `ReportSuspended`
+   issue `basic.ack` for every delivery held for the instance. `FetchJobs`
+   owns a dedicated channel closed on ctx-cancel *without* acking, so a
+   worker crash (or fetch shutdown) makes RabbitMQ **requeue every unacked
+   message immediately** — redelivery is channel-close-driven, not
+   timer-driven (`Config.InFlightTimeout` is accepted but unused as a
+   timer). Undecodable payloads (foreign cipher key) are nacked without
+   requeue and surfaced as an Error event with code `DECRYPT_FAILED`.
 2. **Selective consumption** — workers consume only the queues for their
-   registered keys; queues are declared idempotently on registration.
-3. **Registry — heartbeat broadcast** (no KV): each `Heartbeat` (and
-   `RegisterProcesses`) publishes the worker's full envelope-encoded
-   registration set on a fanout exchange (`<prefix>.registry`).
-   `SubscribeToProcessRegistry` binds a private queue to it, assembles the
-   snapshot over one heartbeat window (emitting the snapshot sentinel when
-   the window closes), and marks a worker `RegistryUpdateHeartbeatLost`
-   client-side after ~3 missed intervals. `Unregister` broadcasts an
-   explicit removal. The broker's internal registry cache (used by `Submit`)
-   is fed the same way — which is why Submit's cold-start block (one
-   heartbeat window at worst) matters here.
-4. **Per-instance events / fan-out / replay** — instance events go to a
-   **RabbitMQ Stream** (streams are core since 3.9; retention + offset
-   replay), partitioned by instance id in the message. On subscribe, the
-   backend replays from the retention window to recover the latest lifecycle
-   and terminal events, then follows live; each subscriber reads at its own
-   offset (broadcast). Stream retention (default 24h) is the window.
-   *Trade-off*: plain topic exchanges with per-subscriber auto-delete queues
-   would be simpler but retain nothing — a late subscriber would see no
-   events at all — so streams are required.
+   registered keys.
+3. **Registry — heartbeat broadcast** (no KV): `RegisterProcesses`,
+   `Heartbeat`, and `Unregister` publish the worker's full envelope-encoded
+   registration set (or an explicit removal) on a fanout exchange
+   (`<prefix>.registry`). Every broker handle binds a private exclusive
+   auto-delete queue at construction and maintains a local registry cache;
+   updates carry an origin-handle header so a handle skips its own echoes
+   (its verbs apply to the local cache synchronously). The handle also
+   **re-broadcasts registrations it originated every `RegistrationTTL/4`**
+   while the worker's verb-based deadline has not lapsed, so registrations
+   survive between `Heartbeat` calls; subscribers mark a worker
+   `RegistryUpdateHeartbeatLost` client-side when no broadcast arrives
+   within the TTL (at worst ~2× TTL after the last verb). `Submit` blocks
+   only while the cache is completely empty (cold start); once any
+   registration is visible an unknown key fails fast with
+   `ErrUnknownProcess`.
+4. **Per-instance events / fan-out / replay** — **one shared stream queue**
+   (`<prefix>.inst-events`, `x-queue-type: stream`, `x-max-age` =
+   `EventRetention`, default 1h) for *all* instances, with the instance id
+   (and routing key) in cleartext headers, filtered client-side. On
+   subscribe, the backend publishes a unique **marker** message, consumes
+   from `x-stream-offset: first`, collapses everything before its marker
+   into the latest lifecycle + terminal events (or `INSTANCE_NOT_FOUND`),
+   then follows live; each subscriber reads at its own offset (broadcast).
+   *Trade-off*: plain topic exchanges with per-subscriber auto-delete
+   queues would be simpler but retain nothing — a late subscriber would see
+   no events at all — so a stream is required. Instance→key/correlation
+   resolution uses a handle-local map fed from Submit, delivered jobs, and
+   observed events, with a marker-bounded stream replay as fallback.
 5. **Delayed delivery** — the **per-message-TTL + dead-letter-exchange**
    pattern (no plugin dependency): the `JobResume` is published with an
-   expiration to a holding queue whose dead-letter exchange is the jobs
-   exchange; when the TTL fires the message dead-letters into the instance's
-   job queue. The delayed-message-exchange plugin is a documented
-   alternative for deployments that already run it.
+   expiration to a holding queue (`<prefix>.delay.q`) whose dead-letter
+   exchange is the jobs exchange, preserving the original routing key.
+   Head-of-line caveat: per-message TTL only dead-letters from the queue
+   head, so a long delay ahead postpones shorter ones behind it. The
+   delayed-message-exchange plugin is a documented alternative for
+   deployments that already run it.
 6. **Cancel of queued jobs** — **unsupported natively**: AMQP has no
    selective removal from a queue. `Cancel` always takes the `JobCancel`
    route (the opt-in check therefore applies to every cancel of an
@@ -74,10 +92,14 @@ The nine standard questions (see
    func New(cfg Config) (*Broker, error)
 
    type Config struct {
-       URL            string            // e.g. "amqp://user:pass@localhost:5672/"
+       URL            string            // e.g. "amqp://user:pass@localhost:5672/"; rewritten to amqps:// when TLS is set
        TLS            *tls.Config       // nil = plaintext
        ExchangePrefix string            // default "blkit"; isolates deployments sharing a server
        Cipher         bl.PayloadCipher  // optional end-to-end payload encryption; default nil
+
+       RegistrationTTL time.Duration // default 90s; heartbeat-broadcast loss window
+       InFlightTimeout time.Duration // accepted for interface symmetry; redelivery is channel-close-driven
+       EventRetention  time.Duration // default 1h; stream x-max-age
    }
    ```
 

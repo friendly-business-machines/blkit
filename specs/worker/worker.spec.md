@@ -149,7 +149,7 @@ In each case:
 
    If the executor crashes (panic that escapes the recover handler, OS kill, network partition) before any of these verbs is called, the broker times out the in-flight slot after a per-impl timeout (default `5 × HeartbeatInterval`) and redelivers the job to another worker.
 
-6. **Continuation on suspension** — for `Evaluate` returning `Status: SUSPENDED`, the outcome verb is `broker.ReportSuspended(workerCtx, instanceID)`. The eventual `JobResume` (delivered when the wait condition is satisfied — duration elapsed, `RespondToInputRequest` arrived) will be picked up by some worker (this one or another).
+6. **Continuation on suspension** — for `Evaluate` returning `Status: SUSPENDED`, the outcome verb is `broker.ReportSuspended(workerCtx, instanceID, resumeAt)`, where `resumeAt` is the wake time the executor computed from the suspending node (Suspend*/Pause* duration or datetime) or nil when the instance waits on external input. The eventual `JobResume` (scheduled by the broker for `resumeAt`; a `RespondToInputRequest` arrives as its own job) will be picked up by some worker (this one or another).
 
 `Evaluate` is idempotent with respect to its input state: repeated calls with the same or a more recent history advance only from positions the history shows are genuinely ready, and produce no new work on already-completed or already-suspended state.
 
@@ -163,7 +163,7 @@ A [`RequestInputTask`](../processes/task-nodes.spec.md#requestinputtask) with `W
 
 1. On entering the task, the executor arms a per-instance pause timer for `PauseDuration` and parks the goroutine on an in-memory wait channel keyed by `(instanceID, requestID)`.
 2. If a `JobRespondToInput` for the matching `requestID` arrives before the timer fires: the channel delivers the payload, the pause timer is cancelled, and evaluation resumes inline. The executor signals job outcome via `broker.ReportCompleted` / `broker.ReportFailed` / `broker.ReportSuspended` once `Evaluate` returns.
-3. If the timer fires before a response arrives: the executor cancels the in-memory wait, appends a `SUSPENSION_RECORDED` step to `ExecutionHistory` for this node, flushes the writer pool, calls `store.Save(processInstanceID, history)`, lets `Evaluate` return with status `ProcessStatusSuspended`, and calls `broker.ReportSuspended(workerCtx, instanceID)`. The token's position does not change — only the wait substrate is swapped from in-memory to persisted.
+3. If the timer fires before a response arrives: the executor cancels the in-memory wait, appends a `SUSPENSION_RECORDED` step to `ExecutionHistory` for this node, flushes the writer pool, calls `store.Save(processInstanceID, history)`, lets `Evaluate` return with status `ProcessStatusSuspended`, and calls `broker.ReportSuspended(workerCtx, instanceID, nil)` — nil because the instance now waits on the external response. The token's position does not change — only the wait substrate is swapped from in-memory to persisted.
 4. The eventual `JobRespondToInput` is then handled by the standard fetch path: a worker (this one or another) picks the job up, loads state, writes the payload into the context, and resumes evaluation past the task.
 
 A `RequestInputTask` running under `RequestInputSuspend` immediately calls `broker.ReportSuspended` after the executor records the request — it never holds the response in-memory; any worker can serve the eventual `JobRespondToInput`. A `RequestInputTask` under `RequestInputPause` holds in-memory only and never converts; if the worker dies while paused, the broker's in-flight timeout redelivers the originating `JobStart` / `JobResume` to another worker, which re-enters the task and re-arms the pause.
@@ -450,7 +450,7 @@ Operational notes:
 - `MaxWriters <= 0`, `MaxBatchSize <= 0`, `WriterChannelBuffer <= 0`, `MaxBatchWait < 0`, or `IdleTimeout < 0` produce a `ValueError`.
 - An unknown `WritePolicy` value produces a `ValueError`.
 - If the writer channel fills (producers outpace writers because the backend is slow or unreachable), producer behaviour follows `WritePolicy`.
-- A process that suspends calls `broker.ReportSuspended(workerCtx, instanceID)`. The eventual `JobResume` may be picked up by any worker subscribed to the same broker.
+- A process that suspends calls `broker.ReportSuspended(workerCtx, instanceID, resumeAt)`. The eventual `JobResume` may be picked up by any worker subscribed to the same broker.
 - When `Evaluate` returns no ready tasks but the process has not completed (e.g. a join still waiting on parallel branches), the executor waits for those in-flight tasks rather than calling an outcome verb.
 - A panic inside an executor goroutine is recovered; the executor calls `broker.ReportFailed` and the fetch loop continues. A panic in the fetch loop terminates `worker.Run`.
 - If the executor crashes before calling any outcome verb, the broker times out the in-flight slot (default `5 × HeartbeatInterval`) and redelivers the job to another worker.

@@ -7,7 +7,7 @@ targets:
 
 # AWS SQS/SNS Message Broker
 
-> **Status:** This spec is a work in progress. Implementation pending.
+> **Status:** Implemented.
 
 The AWS backend implements [MessageBroker](overview.spec.md) against **SQS**
 (the job queue) and **SNS** (instance-event fan-out). SQS's visibility
@@ -32,30 +32,48 @@ broker, err := awsbroker.New(awsbroker.Config{
 The nine standard questions (see
 [overview.spec.md § Desired properties](overview.spec.md#desired-properties--admitting-a-future-backend)):
 
-1. **Queue + ack + redelivery** — one **SQS queue per `ProcessKey`**
-   (`<prefix>-jobs-<ns>-<proc>-<ver>`). Delivery starts the **visibility
-   timeout** (the in-flight slot); a lease goroutine calls
-   `ChangeMessageVisibility` for long jobs. Terminal lifecycle reports and
-   `ReportSuspended` issue `DeleteMessage`. A crashed worker's message
-   becomes visible again and is redelivered; a redrive policy moves
-   repeatedly-failed messages to a DLQ (see notes). FIFO queues with
-   `MessageGroupId = instanceID` are the opt-in per-instance-ordering
-   variant.
+1. **Queue + ack + redelivery** — one standard **SQS queue per
+   `ProcessKey`** (`<prefix>-jobs-<slug>-<sha256/8>`, created idempotently;
+   key parts are slugged + hashed since queue names are limited to 80
+   safe characters). Delivery starts the **visibility timeout** (=
+   `InFlightTimeout` rounded up to whole seconds — the in-flight slot); a
+   lease goroutine calls `ChangeMessageVisibility` every half-timeout.
+   Terminal lifecycle reports and `ReportSuspended` issue `DeleteMessage`.
+   A crashed worker's message becomes visible again and is redelivered. A
+   DLQ redrive policy and an opt-in FIFO jobs-queue variant
+   (`MessageGroupId = instanceID` per-instance ordering) are documented
+   but not yet implemented.
 2. **Selective consumption** — workers long-poll only the queues for their
    registered keys.
-3. **Registry — RegistryStore** — **DynamoDB** implements the core
-   `RegistryStore` interface: one item per worker with a **TTL attribute**
-   for heartbeat expiry, and **DynamoDB Streams** as the `Watch` change
-   feed (TTL deletions surface there as `RegistryUpdateHeartbeatLost`).
-4. **Per-instance events / fan-out / replay** — one **SNS topic**
-   (`<prefix>-inst-events`); each subscriber gets an auto-created SQS queue
-   subscribed with a **filter policy** on the `instanceID` message
-   attribute, deleted on unsubscribe. **SNS retains nothing** — a late
-   subscriber would see no prior events — so every lifecycle publish also
-   upserts a **last-event record** in the RegistryStore; on subscribe, the
-   backend delivers the latest lifecycle / terminal event from that record
-   first, then follows the queue live. Last-event records expire via
-   DynamoDB TTL (default 24h — the retention window).
+3. **Registry — RegistryStore** — `DynamoRegistryStore` implements the core
+   `RegistryStore` interface on one DynamoDB table (`worker#` / `timer#` /
+   `inst#` key prefixes): one item per worker with envelope-encoded
+   registrations and a **deadline attribute**; `Touch`/`Delete` use
+   conditional writes so absent or expired workers yield `ErrUnknownWorker`.
+   Expiry is **client-side** (deadline + sweeper — DynamoDB's native TTL
+   deletion lags by minutes to hours and is set only as belt-and-braces
+   cleanup), and `Watch` is a **~200ms polling diff loop** rather than
+   DynamoDB Streams (disappeared-with-lapsed-deadline → `HeartbeatLost`;
+   deleted-before-deadline → `Removed`). The store takes its own `Cipher`
+   config (matching the broker's) since registrations are envelope-encoded
+   at the store. `Submit` resolves from a direct consistent-read
+   `Snapshot()` per call, so there is no cold-start snapshot wait.
+4. **Per-instance events / fan-out / replay** — one **FIFO SNS topic**
+   (`<prefix>-inst-events.fifo`); each subscriber gets an auto-created
+   **FIFO** SQS queue subscribed with a **filter policy** on the
+   `instanceID` message attribute (raw delivery), deleted on unsubscribe.
+   FIFO (`MessageGroupId = instanceID`,
+   `MessageDeduplicationId = instanceID-seq`) is required because standard
+   SNS→SQS delivery is unordered and could let the terminal `Result`
+   overtake the `Completed` lifecycle event. Events carry `seq`/`final`
+   attributes (seq from an atomic DynamoDB counter) for replay dedupe and
+   close-once. **SNS retains nothing** — a late subscriber would see no
+   prior events — so every lifecycle publish also upserts a **last-event
+   record** (process key, correlation key, latest lifecycle + terminal
+   envelopes, finished flag) via the module's exported `InstanceEventStore`
+   interface, which `DynamoRegistryStore` implements; on subscribe, the
+   backend delivers the record's events first, then follows the queue live,
+   deduping by seq. Records expire after `EventRetention` (default 1h).
 5. **Delayed delivery** — SQS `DelaySeconds` natively, but capped at **15
    minutes**; longer suspends write a **timer record to the RegistryStore**
    and a broker-owned scheduler loop claims due timers atomically and sends
@@ -74,9 +92,13 @@ The nine standard questions (see
        Region      string             // e.g. "eu-west-2"
        Credentials aws.CredentialsProvider // nil = default AWS credential chain
        QueuePrefix string             // default "blkit"; isolates deployments sharing an account
-       Registry    bl.RegistryStore   // required; DynamoDB implementation ships with this module
+       Registry    bl.RegistryStore   // required; must also implement this module's InstanceEventStore (DynamoRegistryStore does)
        Endpoint    string             // development only; LocalStack endpoint override
        Cipher      bl.PayloadCipher   // optional end-to-end payload encryption; default nil
+
+       RegistrationTTL time.Duration // default 90s
+       InFlightTimeout time.Duration // default 150s; SQS visibility timeout, whole seconds
+       EventRetention  time.Duration // default 1h; last-event record lifetime
    }
    ```
 
@@ -89,9 +111,9 @@ The nine standard questions (see
 
 ## Notes
 
-- **Dead-lettering**: each jobs queue has a redrive policy to a DLQ after
-  `maxReceiveCount` (default 10) — the fallback for repeated worker crashes.
-  `ReportFailed` is the normal failure path.
+- **Dead-lettering**: a redrive policy to a DLQ after `maxReceiveCount`
+  (default 10) is the intended fallback for repeated worker crashes;
+  `ReportFailed` is the normal failure path. Not yet implemented.
 - All payloads are [CBOR envelopes](overview.spec.md#wire-format)
   (base64-encoded where the transport requires text bodies); SNS/SQS message
   attributes carry the cleartext routing metadata.

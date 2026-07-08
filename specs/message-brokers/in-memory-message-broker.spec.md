@@ -7,7 +7,7 @@ targets:
 
 # In-Memory Message Broker
 
-> **Status:** This spec is a work in progress. Implementation pending.
+> **Status:** Implemented.
 
 The in-memory broker is the built-in backend that ships in core — Go channels
 and mutex-guarded maps, no external broker required. It implements the full
@@ -63,8 +63,11 @@ The nine standard questions (see
 
    ```go
    NewInMemoryMessageBroker(
-       bl.WithEventBufferSize(64),         // per-subscriber buffer; default 64
-       bl.WithPayloadCipher(cipher),       // default nil
+       bl.WithEventBufferSize(64),          // per-subscriber buffer; default 64
+       bl.WithPayloadCipher(cipher),        // default nil
+       bl.WithRegistrationTTL(90*time.Second),   // default 90s (3× heartbeat)
+       bl.WithInFlightTimeout(150*time.Second),  // default 150s (5× heartbeat)
+       bl.WithEventRetention(time.Hour),         // default 1h
    )
    ```
 

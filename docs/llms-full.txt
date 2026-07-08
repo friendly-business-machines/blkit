@@ -8006,6 +8006,11 @@ import "github.com/friendly-business-machines/blkit/core"
 
 ## Index
 
+- [Constants](<#constants>)
+- [Variables](<#variables>)
+- [func EncodeEnvelope(kind, instanceID string, correlationKey \*string, body any, cipher PayloadCipher) (\[\]byte, error)](<#EncodeEnvelope>)
+- [func NewProcessInstanceID() string](<#NewProcessInstanceID>)
+- [func RunMessageBrokerConformance(t \*testing.T, open func(t \*testing.T) MessageBroker, opts BrokerConformanceOptions)](<#RunMessageBrokerConformance>)
 - [func RunStateStoreConformance(t \*testing.T, open func(t \*testing.T) (store StateStore, reopen func() StateStore))](<#RunStateStoreConformance>)
 - [func SortHistoryRecords(recs \[\]HistoryRecord)](<#SortHistoryRecords>)
 - [func SortValueRecords(recs \[\]ValueRecord)](<#SortValueRecords>)
@@ -8177,16 +8182,23 @@ import "github.com/friendly-business-machines/blkit/core"
   - [func (BlYearsMonthsDuration) Type() Type](<#BlYearsMonthsDuration.Type>)
   - [func (d BlYearsMonthsDuration) Years() int](<#BlYearsMonthsDuration.Years>)
 - [type BooleanInput](<#BooleanInput>)
+- [type BrokerConformanceOptions](<#BrokerConformanceOptions>)
 - [type CalendarOption](<#CalendarOption>)
   - [func WithValidity(r BlRange) CalendarOption](<#WithValidity>)
 - [type CalendarRangeError](<#CalendarRangeError>)
   - [func (e \*CalendarRangeError) Error() string](<#CalendarRangeError.Error>)
+- [type CancelJob](<#CancelJob>)
+- [type CancelRequest](<#CancelRequest>)
+  - [func (r CancelRequest) Key() ProcessKey](<#CancelRequest.Key>)
 - [type Col](<#Col>)
 - [type Cols](<#Cols>)
 - [type Column](<#Column>)
 - [type CurrentVersion](<#CurrentVersion>)
 - [type DHMSNumberInput](<#DHMSNumberInput>)
 - [type DTDurationInput](<#DTDurationInput>)
+- [type DataContractValidationError](<#DataContractValidationError>)
+  - [func (e \*DataContractValidationError) Error() string](<#DataContractValidationError.Error>)
+  - [func (e \*DataContractValidationError) Unwrap() error](<#DataContractValidationError.Unwrap>)
 - [type DateComponents](<#DateComponents>)
   - [func ToDateComponentsAsNaive(t time.Time) DateComponents](<#ToDateComponentsAsNaive>)
 - [type DateInput](<#DateInput>)
@@ -8239,8 +8251,15 @@ import "github.com/friendly-business-machines/blkit/core"
   - [func (d \*DecisionTask\[TaskIn, TaskOut\]) Outputs() \[\]Field](<#DecisionTask[TaskIn, TaskOut].Outputs>)
   - [func (d \*DecisionTask\[TaskIn, TaskOut\]) ToMarkdown() string](<#DecisionTask[TaskIn, TaskOut].ToMarkdown>)
 - [type DecisionTaskConfig](<#DecisionTaskConfig>)
+- [type EndEventInfo](<#EndEventInfo>)
 - [type Entries](<#Entries>)
+- [type Envelope](<#Envelope>)
+  - [func DecodeEnvelope(data \[\]byte, cipher PayloadCipher) (\*Envelope, error)](<#DecodeEnvelope>)
+  - [func (e \*Envelope) DecodePayload(into any) error](<#Envelope.DecodePayload>)
+- [type EvaluationResult](<#EvaluationResult>)
 - [type Field](<#Field>)
+  - [func OptionalField(name string, t Type) Field](<#OptionalField>)
+  - [func RequiredField(name string, t Type) Field](<#RequiredField>)
 - [type FullHistory](<#FullHistory>)
 - [type Handle](<#Handle>)
   - [func NewHandle\[T BlValue\](value T) Handle\[T\]](<#NewHandle>)
@@ -8252,6 +8271,33 @@ import "github.com/friendly-business-machines/blkit/core"
   - [func WithICalExpansionWindow(r BlRange) ICalOption](<#WithICalExpansionWindow>)
   - [func WithICalStrict(strict bool) ICalOption](<#WithICalStrict>)
   - [func WithICalValidity(r BlRange) ICalOption](<#WithICalValidity>)
+- [type InMemoryBrokerOption](<#InMemoryBrokerOption>)
+  - [func WithEventBufferSize(n int) InMemoryBrokerOption](<#WithEventBufferSize>)
+  - [func WithEventRetention(d time.Duration) InMemoryBrokerOption](<#WithEventRetention>)
+  - [func WithInFlightTimeout(d time.Duration) InMemoryBrokerOption](<#WithInFlightTimeout>)
+  - [func WithPayloadCipher(cipher PayloadCipher) InMemoryBrokerOption](<#WithPayloadCipher>)
+  - [func WithRegistrationTTL(d time.Duration) InMemoryBrokerOption](<#WithRegistrationTTL>)
+- [type InMemoryMessageBroker](<#InMemoryMessageBroker>)
+  - [func NewInMemoryMessageBroker(opts ...InMemoryBrokerOption) \*InMemoryMessageBroker](<#NewInMemoryMessageBroker>)
+  - [func (b \*InMemoryMessageBroker) Cancel(ctx context.Context, req CancelRequest) error](<#InMemoryMessageBroker.Cancel>)
+  - [func (b \*InMemoryMessageBroker) Close() error](<#InMemoryMessageBroker.Close>)
+  - [func (b \*InMemoryMessageBroker) FetchJobs(ctx context.Context, keys \[\]ProcessKey) (\<\-chan Job, error)](<#InMemoryMessageBroker.FetchJobs>)
+  - [func (b \*InMemoryMessageBroker) Heartbeat(ctx context.Context, workerID string) error](<#InMemoryMessageBroker.Heartbeat>)
+  - [func (b \*InMemoryMessageBroker) PostError(ctx context.Context, instanceID string, instErr InstanceError) error](<#InMemoryMessageBroker.PostError>)
+  - [func (b \*InMemoryMessageBroker) PostInputRequest(ctx context.Context, instanceID string, req InputRequest) error](<#InMemoryMessageBroker.PostInputRequest>)
+  - [func (b \*InMemoryMessageBroker) PostNodeCompleted(ctx context.Context, instanceID string, nc NodeCompleted) error](<#InMemoryMessageBroker.PostNodeCompleted>)
+  - [func (b \*InMemoryMessageBroker) RegisterProcesses(ctx context.Context, workerID string, regs \[\]ProcessRegistration) error](<#InMemoryMessageBroker.RegisterProcesses>)
+  - [func (b \*InMemoryMessageBroker) ReportCancelled(ctx context.Context, instanceID string) error](<#InMemoryMessageBroker.ReportCancelled>)
+  - [func (b \*InMemoryMessageBroker) ReportCompleted(ctx context.Context, instanceID string, result EvaluationResult) error](<#InMemoryMessageBroker.ReportCompleted>)
+  - [func (b \*InMemoryMessageBroker) ReportFailed(ctx context.Context, instanceID string, instErr InstanceError) error](<#InMemoryMessageBroker.ReportFailed>)
+  - [func (b \*InMemoryMessageBroker) ReportRunning(ctx context.Context, instanceID string) error](<#InMemoryMessageBroker.ReportRunning>)
+  - [func (b \*InMemoryMessageBroker) ReportSuspended(ctx context.Context, instanceID string, resumeAt \*time.Time) error](<#InMemoryMessageBroker.ReportSuspended>)
+  - [func (b \*InMemoryMessageBroker) RespondToInputRequest(ctx context.Context, instanceID, requestID string, payload map\[string\]any) error](<#InMemoryMessageBroker.RespondToInputRequest>)
+  - [func (b \*InMemoryMessageBroker) Submit(ctx context.Context, req StartRequest) (string, error)](<#InMemoryMessageBroker.Submit>)
+  - [func (b \*InMemoryMessageBroker) SubscribeToInstance(ctx context.Context, instanceID string) (\<\-chan InstanceEvent, error)](<#InMemoryMessageBroker.SubscribeToInstance>)
+  - [func (b \*InMemoryMessageBroker) SubscribeToProcessRegistry(ctx context.Context) (\<\-chan RegistryUpdate, error)](<#InMemoryMessageBroker.SubscribeToProcessRegistry>)
+  - [func (b \*InMemoryMessageBroker) Terminate(ctx context.Context, req TerminateRequest) error](<#InMemoryMessageBroker.Terminate>)
+  - [func (b \*InMemoryMessageBroker) Unregister(ctx context.Context, workerID string) error](<#InMemoryMessageBroker.Unregister>)
 - [type InMemoryStateStore](<#InMemoryStateStore>)
   - [func NewInMemoryStateStore() \*InMemoryStateStore](<#NewInMemoryStateStore>)
   - [func (s \*InMemoryStateStore) Close() error](<#InMemoryStateStore.Close>)
@@ -8261,11 +8307,35 @@ import "github.com/friendly-business-machines/blkit/core"
   - [func (s \*InMemoryStateStore) FullHistory(runID string) (\*FullHistory, error)](<#InMemoryStateStore.FullHistory>)
   - [func (s \*InMemoryStateStore) Save(meta RunMetadata) error](<#InMemoryStateStore.Save>)
   - [func (s \*InMemoryStateStore) WriteBatch(ops \[\]WriteOp) error](<#InMemoryStateStore.WriteBatch>)
+- [type InputContract](<#InputContract>)
+  - [func NewInputContract(fields ...Field) (\*InputContract, error)](<#NewInputContract>)
+  - [func (c \*InputContract) Validate(input map\[string\]any) error](<#InputContract.Validate>)
+- [type InputRequest](<#InputRequest>)
+- [type InstanceError](<#InstanceError>)
+- [type InstanceEvent](<#InstanceEvent>)
+- [type InstanceEventKind](<#InstanceEventKind>)
+- [type Job](<#Job>)
+  - [func (j Job) InstanceID() string](<#Job.InstanceID>)
+- [type JobKind](<#JobKind>)
+- [type LifecycleChange](<#LifecycleChange>)
+- [type MessageBroker](<#MessageBroker>)
 - [type NoEnv](<#NoEnv>)
+- [type NodeCompleted](<#NodeCompleted>)
 - [type NumberInput](<#NumberInput>)
+- [type OutputContract](<#OutputContract>)
+  - [func NewOutputContract(fields ...Field) (\*OutputContract, error)](<#NewOutputContract>)
+  - [func (c \*OutputContract) Validate(output map\[string\]any) error](<#OutputContract.Validate>)
 - [type ParseError](<#ParseError>)
   - [func (e \*ParseError) Error() string](<#ParseError.Error>)
   - [func (e \*ParseError) Unwrap() error](<#ParseError.Unwrap>)
+- [type PayloadCipher](<#PayloadCipher>)
+  - [func NewAESGCMPayloadCipher(keyID string, key \[\]byte) (PayloadCipher, error)](<#NewAESGCMPayloadCipher>)
+- [type ProcessKey](<#ProcessKey>)
+- [type ProcessRegistration](<#ProcessRegistration>)
+  - [func (r ProcessRegistration) Key() ProcessKey](<#ProcessRegistration.Key>)
+- [type ProcessStatus](<#ProcessStatus>)
+  - [func (s ProcessStatus) Finished() bool](<#ProcessStatus.Finished>)
+  - [func (s ProcessStatus) String() string](<#ProcessStatus.String>)
 - [type ReferenceData](<#ReferenceData>)
   - [func NewReferenceData\[T BlValue\](config ReferenceDataConfig\[T\]) \*ReferenceData\[T\]](<#NewReferenceData>)
   - [func (r \*ReferenceData\[T\]) GetDescription() string](<#ReferenceData[T].GetDescription>)
@@ -8278,6 +8348,11 @@ import "github.com/friendly-business-machines/blkit/core"
 - [type RegexError](<#RegexError>)
   - [func (e \*RegexError) Error() string](<#RegexError.Error>)
   - [func (e \*RegexError) Unwrap() error](<#RegexError.Unwrap>)
+- [type RegistryStore](<#RegistryStore>)
+- [type RegistryUpdate](<#RegistryUpdate>)
+- [type RegistryUpdateKind](<#RegistryUpdateKind>)
+- [type RespondToInputJob](<#RespondToInputJob>)
+- [type ResumeJob](<#ResumeJob>)
 - [type RetryConfig](<#RetryConfig>)
   - [func NewRetryConfig(opts RetryOpts) \*RetryConfig](<#NewRetryConfig>)
 - [type RetryOpts](<#RetryOpts>)
@@ -8288,9 +8363,16 @@ import "github.com/friendly-business-machines/blkit/core"
 - [type SchemaError](<#SchemaError>)
   - [func (e \*SchemaError) Error() string](<#SchemaError.Error>)
   - [func (e \*SchemaError) Unwrap() error](<#SchemaError.Unwrap>)
+- [type StartEventInfo](<#StartEventInfo>)
+- [type StartJob](<#StartJob>)
+- [type StartRequest](<#StartRequest>)
+  - [func (r StartRequest) Key() ProcessKey](<#StartRequest.Key>)
 - [type StateStore](<#StateStore>)
 - [type StatusFlip](<#StatusFlip>)
 - [type StringInput](<#StringInput>)
+- [type TerminateJob](<#TerminateJob>)
+- [type TerminateRequest](<#TerminateRequest>)
+  - [func (r TerminateRequest) Key() ProcessKey](<#TerminateRequest.Key>)
 - [type TimeComponents](<#TimeComponents>)
   - [func ToTimeComponentsAsNaive(t time.Time) TimeComponents](<#ToTimeComponentsAsNaive>)
 - [type TimeInput](<#TimeInput>)
@@ -8298,6 +8380,10 @@ import "github.com/friendly-business-machines/blkit/core"
 - [type TypeError](<#TypeError>)
   - [func (e \*TypeError) Error() string](<#TypeError.Error>)
 - [type UDF](<#UDF>)
+- [type UnknownEnvelopeVersionError](<#UnknownEnvelopeVersionError>)
+  - [func (e \*UnknownEnvelopeVersionError) Error() string](<#UnknownEnvelopeVersionError.Error>)
+- [type UnknownKeyIDError](<#UnknownKeyIDError>)
+  - [func (e \*UnknownKeyIDError) Error() string](<#UnknownKeyIDError.Error>)
 - [type ValueRecord](<#ValueRecord>)
 - [type ValueStatus](<#ValueStatus>)
   - [func ParseValueStatus(s string) (ValueStatus, error)](<#ParseValueStatus>)
@@ -8308,6 +8394,87 @@ import "github.com/friendly-business-machines/blkit/core"
 - [type YMDurationInput](<#YMDurationInput>)
 - [type YMNumberInput](<#YMNumberInput>)
 
+
+## Constants
+
+<a name="ErrCodeInstanceNotFound"></a>Asynchronous error codes, delivered as InstanceEvents of kind Error.
+
+```go
+const (
+    ErrCodeInstanceNotFound    = "INSTANCE_NOT_FOUND"
+    ErrCodeNotWaiting          = "NOT_WAITING"
+    ErrCodeAlreadyFinished     = "ALREADY_FINISHED"
+    ErrCodeAlreadyInterrupting = "ALREADY_INTERRUPTING"
+    ErrCodeTaskFailed          = "TASK_FAILED"
+    ErrCodeProcessFailed       = "PROCESS_FAILED"
+    ErrCodeBackpressureDrop    = "BACKPRESSURE_DROP"
+)
+```
+
+<a name="KindJobStart"></a>Envelope kinds. The kind names the payload's body type.
+
+```go
+const (
+    KindJobStart          = "job.start"       // StartJob
+    KindJobRespondToInput = "job.respond"     // RespondToInputJob
+    KindJobCancel         = "job.cancel"      // CancelJob
+    KindJobTerminate      = "job.terminate"   // TerminateJob
+    KindJobResume         = "job.resume"      // ResumeJob
+    KindInstanceEvent     = "inst.event"      // InstanceEvent
+    KindRegistration      = "registry.reg"    // ProcessRegistration
+    KindRegistryUpdate    = "registry.update" // RegistryUpdate
+)
+```
+
+<a name="EnvelopeVersion"></a>EnvelopeVersion is the current envelope version. Backends reject envelopes with a version they do not understand.
+
+```go
+const EnvelopeVersion = 1
+```
+
+## Variables
+
+<a name="ErrUnknownProcess"></a>Synchronous broker errors (specs/message\-brokers/overview.spec.md § Error model). There are no ErrAlready\* errors: detecting a finished instance would need a broker\-held status record, and the broker holds none — already\-finished instances surface asynchronously as ALREADY\_FINISHED.
+
+```go
+var (
+    ErrUnknownProcess      = errors.New("message broker: unknown process")
+    ErrUnknownStartID      = errors.New("message broker: unknown start id")
+    ErrCancelNotAllowed    = errors.New("message broker: process does not allow external cancel")
+    ErrTerminateNotAllowed = errors.New("message broker: process does not allow external terminate")
+    ErrUnknownWorker       = errors.New("message broker: unknown worker")
+    ErrBrokerClosed        = errors.New("message broker: closed")
+)
+```
+
+<a name="EncodeEnvelope"></a>
+## func [EncodeEnvelope](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker_wire.go#L80>)
+
+```go
+func EncodeEnvelope(kind, instanceID string, correlationKey *string, body any, cipher PayloadCipher) ([]byte, error)
+```
+
+EncodeEnvelope encodes body as the CBOR payload of a version\-1 envelope and returns the CBOR encoding of the whole envelope. With a non\-nil cipher the payload is encrypted and the envelope carries the cipher's key id and the nonce.
+
+<a name="NewProcessInstanceID"></a>
+## func [NewProcessInstanceID](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L460>)
+
+```go
+func NewProcessInstanceID() string
+```
+
+NewProcessInstanceID generates a UUIDv7 process instance id: time\-ordered, globally unique, generated broker\-side at Submit.
+
+<a name="RunMessageBrokerConformance"></a>
+## func [RunMessageBrokerConformance](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker_conformance.go#L44>)
+
+```go
+func RunMessageBrokerConformance(t *testing.T, open func(t *testing.T) MessageBroker, opts BrokerConformanceOptions)
+```
+
+RunMessageBrokerConformance runs the shared message\-broker conformance suite against a backend. Every backend module calls it from its own tests, so all backends are held to the identical client↔worker semantics (specs/message\-brokers/overview.spec.md § Testing).
+
+open is called once per subtest and must return a fresh broker on empty underlying infrastructure (or an isolating prefix), configured with the TTL/timeout values declared in opts.
 
 <a name="RunStateStoreConformance"></a>
 ## func [RunStateStoreConformance](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store_conformance.go#L21>)
@@ -9911,6 +10078,35 @@ type BooleanInput interface {
 }
 ```
 
+<a name="BrokerConformanceOptions"></a>
+## type [BrokerConformanceOptions](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker_conformance.go#L14-L34>)
+
+BrokerConformanceOptions tells the conformance suite what the opened broker was configured with and which optional capabilities it has, so per\-backend differences the overview spec allows (queue removal, timing knobs) are declared rather than guessed.
+
+```go
+type BrokerConformanceOptions struct {
+    // SupportsQueueRemoval: Cancel of a still-queued JobStart removes it
+    // from the queue (Redis, NATS, in-memory). Backends without selective
+    // removal (RabbitMQ, the cloud brokers) route every cancel as a
+    // JobCancel and skip the queue-removal subtest.
+    SupportsQueueRemoval bool
+
+    // RegistrationTTL is the registration TTL the opened broker uses. Keep
+    // it short (~150ms) so the heartbeat-loss subtest is fast; zero skips
+    // that subtest.
+    RegistrationTTL time.Duration
+
+    // InFlightTimeout is the in-flight redelivery timeout the opened broker
+    // uses. Keep it short (~300ms) so the redelivery subtest is fast; zero
+    // skips that subtest.
+    InFlightTimeout time.Duration
+
+    // OpenWithCipher, when non-nil, returns a broker configured with a
+    // PayloadCipher; the suite re-runs a full round trip through it.
+    OpenWithCipher func(t *testing.T) MessageBroker
+}
+```
+
 <a name="CalendarOption"></a>
 ## type [CalendarOption](<https://github.com/friendly-business-machines/blkit/blob/main/core/calendar.go#L91>)
 
@@ -9948,6 +10144,43 @@ func (e *CalendarRangeError) Error() string
 ```
 
 
+
+<a name="CancelJob"></a>
+## type [CancelJob](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L358-L361>)
+
+CancelJob asks the worker holding the instance to cancel it.
+
+```go
+type CancelJob struct {
+    InstanceID string  `cbor:"instanceId"`
+    Reason     *string `cbor:"reason,omitempty"`
+}
+```
+
+<a name="CancelRequest"></a>
+## type [CancelRequest](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L190-L197>)
+
+CancelRequest asks to cancel a run. The process key is needed so the broker can check AllowExternalCancel in the registry snapshot.
+
+```go
+type CancelRequest struct {
+    Namespace string
+    ProcessID string
+    Version   string
+
+    InstanceID string
+    Reason     *string
+}
+```
+
+<a name="CancelRequest.Key"></a>
+### func (CancelRequest) [Key](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L200>)
+
+```go
+func (r CancelRequest) Key() ProcessKey
+```
+
+Key returns the request's process key.
 
 <a name="Col"></a>
 ## type [Col](<https://github.com/friendly-business-machines/blkit/blob/main/core/table.go#L64-L67>)
@@ -10016,6 +10249,36 @@ type DTDurationInput interface {
     // contains filtered or unexported methods
 }
 ```
+
+<a name="DataContractValidationError"></a>
+## type [DataContractValidationError](<https://github.com/friendly-business-machines/blkit/blob/main/core/data_contract.go#L101-L104>)
+
+DataContractValidationError reports a value that does not conform to a contract — a missing required field, an undeclared field, or a type mismatch (specs/data/data\-contract.spec.md § Validation).
+
+```go
+type DataContractValidationError struct {
+    Path string // dotted path to the offending field; empty for value-level errors
+    Err  error
+}
+```
+
+<a name="DataContractValidationError.Error"></a>
+### func (\*DataContractValidationError) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/data_contract.go#L106>)
+
+```go
+func (e *DataContractValidationError) Error() string
+```
+
+
+
+<a name="DataContractValidationError.Unwrap"></a>
+### func (\*DataContractValidationError) [Unwrap](<https://github.com/friendly-business-machines/blkit/blob/main/core/data_contract.go#L113>)
+
+```go
+func (e *DataContractValidationError) Unwrap() error
+```
+
+
 
 <a name="DateComponents"></a>
 ## type [DateComponents](<https://github.com/friendly-business-machines/blkit/blob/main/core/date.go#L47-L51>)
@@ -10555,6 +10818,19 @@ type DecisionTaskConfig struct {
 }
 ```
 
+<a name="EndEventInfo"></a>
+## type [EndEventInfo](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L265-L269>)
+
+EndEventInfo describes one EndEvent on a registered process.
+
+```go
+type EndEventInfo struct {
+    Id       string          `cbor:"id"`
+    Name     string          `cbor:"name,omitempty"`
+    Contract *OutputContract `cbor:"contract,omitempty"`
+}
+```
+
 <a name="Entries"></a>
 ## type [Entries](<https://github.com/friendly-business-machines/blkit/blob/main/core/decision_expression.go#L16>)
 
@@ -10562,6 +10838,53 @@ Entries maps each output name to the raw\-string source expression that produces
 
 ```go
 type Entries map[string]string
+```
+
+<a name="Envelope"></a>
+## type [Envelope](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker_wire.go#L36-L44>)
+
+Envelope is the versioned wire wrapper around every broker message.
+
+```go
+type Envelope struct {
+    V              uint8   `cbor:"v"`
+    Kind           string  `cbor:"k"`
+    InstanceID     string  `cbor:"i,omitempty"`
+    CorrelationKey *string `cbor:"c,omitempty"`
+    KeyID          *string `cbor:"kid,omitempty"` // set when Payload is E2E-encrypted
+    Nonce          []byte  `cbor:"n,omitempty"`   // set when Payload is E2E-encrypted
+    Payload        []byte  `cbor:"p"`             // CBOR-encoded body (ciphertext when encrypted)
+}
+```
+
+<a name="DecodeEnvelope"></a>
+### func [DecodeEnvelope](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker_wire.go#L113>)
+
+```go
+func DecodeEnvelope(data []byte, cipher PayloadCipher) (*Envelope, error)
+```
+
+DecodeEnvelope decodes an envelope, rejecting unknown versions, and — when the payload is encrypted — decrypts it with the supplied cipher. A nil cipher on an encrypted envelope, or a key id the cipher cannot resolve, is an error; the payload is never processed.
+
+<a name="Envelope.DecodePayload"></a>
+### func (\*Envelope) [DecodePayload](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker_wire.go#L138>)
+
+```go
+func (e *Envelope) DecodePayload(into any) error
+```
+
+DecodePayload decodes the (decrypted) envelope payload into the kind's body type.
+
+<a name="EvaluationResult"></a>
+## type [EvaluationResult](<https://github.com/friendly-business-machines/blkit/blob/main/core/process_status.go#L48-L51>)
+
+EvaluationResult is the outcome of a process evaluation, delivered to clients in the terminal Result instance event. The full shape (execution context, history, steps — see specs/processes/process.spec.md) arrives with the process layer; today it carries the fields clients consume from outcome events.
+
+```go
+type EvaluationResult struct {
+    Status  ProcessStatus  `cbor:"status"`
+    Context map[string]any `cbor:"context,omitempty"` // output variables visible at the end event
+}
 ```
 
 <a name="Field"></a>
@@ -10579,6 +10902,24 @@ type Field struct {
     Element []Type   // for TypeList
 }
 ```
+
+<a name="OptionalField"></a>
+### func [OptionalField](<https://github.com/friendly-business-machines/blkit/blob/main/core/data_contract.go#L59>)
+
+```go
+func OptionalField(name string, t Type) Field
+```
+
+OptionalField declares an optional contract field of the given type.
+
+<a name="RequiredField"></a>
+### func [RequiredField](<https://github.com/friendly-business-machines/blkit/blob/main/core/data_contract.go#L54>)
+
+```go
+func RequiredField(name string, t Type) Field
+```
+
+RequiredField declares a mandatory contract field of the given type.
 
 <a name="FullHistory"></a>
 ## type [FullHistory](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L149-L153>)
@@ -10712,6 +11053,251 @@ func WithICalValidity(r BlRange) ICalOption
 
 WithICalValidity sets the imported calendar's validity bounds.
 
+<a name="InMemoryBrokerOption"></a>
+## type [InMemoryBrokerOption](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L42>)
+
+InMemoryBrokerOption configures NewInMemoryMessageBroker.
+
+```go
+type InMemoryBrokerOption func(*inMemoryBrokerConfig)
+```
+
+<a name="WithEventBufferSize"></a>
+### func [WithEventBufferSize](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L46>)
+
+```go
+func WithEventBufferSize(n int) InMemoryBrokerOption
+```
+
+WithEventBufferSize sets the per\-subscriber event buffer (default 64). A full buffer drops events and synthesizes BACKPRESSURE\_DROP on recovery.
+
+<a name="WithEventRetention"></a>
+### func [WithEventRetention](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L72>)
+
+```go
+func WithEventRetention(d time.Duration) InMemoryBrokerOption
+```
+
+WithEventRetention sets how long after an instance finishes its latest lifecycle and terminal events stay replayable to late subscribers (default 1h).
+
+<a name="WithInFlightTimeout"></a>
+### func [WithInFlightTimeout](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L65>)
+
+```go
+func WithInFlightTimeout(d time.Duration) InMemoryBrokerOption
+```
+
+WithInFlightTimeout sets how long a delivered job may stay unsettled before it is redelivered (default 150s — 5× the default heartbeat interval).
+
+<a name="WithPayloadCipher"></a>
+### func [WithPayloadCipher](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L53>)
+
+```go
+func WithPayloadCipher(cipher PayloadCipher) InMemoryBrokerOption
+```
+
+WithPayloadCipher sets an end\-to\-end payload cipher (default nil). Payloads still round\-trip through the CBOR envelope in\-process, so the encryption path is exercised by the same code as the external backends.
+
+<a name="WithRegistrationTTL"></a>
+### func [WithRegistrationTTL](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L59>)
+
+```go
+func WithRegistrationTTL(d time.Duration) InMemoryBrokerOption
+```
+
+WithRegistrationTTL sets how long registrations outlive their last heartbeat (default 90s — 3× the default 30s heartbeat interval).
+
+<a name="InMemoryMessageBroker"></a>
+## type [InMemoryMessageBroker](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L16-L31>)
+
+InMemoryMessageBroker is the built\-in single\-process MessageBroker backend — Go channels and mutex\-guarded maps, no external broker (specs/message\-brokers/in\-memory\-message\-broker.spec.md). Each call to NewInMemoryMessageBroker creates its own independent broker; producers and workers that must talk to each other share the same broker value. Not suitable for multi\-process deployments: nothing crosses the process boundary and nothing survives a restart.
+
+```go
+type InMemoryMessageBroker struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="NewInMemoryMessageBroker"></a>
+### func [NewInMemoryMessageBroker](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L78>)
+
+```go
+func NewInMemoryMessageBroker(opts ...InMemoryBrokerOption) *InMemoryMessageBroker
+```
+
+NewInMemoryMessageBroker returns a new, empty in\-memory broker. Release its goroutines with Close.
+
+<a name="InMemoryMessageBroker.Cancel"></a>
+### func (\*InMemoryMessageBroker) [Cancel](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L270>)
+
+```go
+func (b *InMemoryMessageBroker) Cancel(ctx context.Context, req CancelRequest) error
+```
+
+Cancel removes a still\-queued JobStart exactly (publishing the terminal Cancelled event itself), or publishes a JobCancel when a worker already holds the instance — which requires AllowExternalCancel.
+
+<a name="InMemoryMessageBroker.Close"></a>
+### func (\*InMemoryMessageBroker) [Close](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L134>)
+
+```go
+func (b *InMemoryMessageBroker) Close() error
+```
+
+Close stops the sweeper and all timers, closes every subscriber and fetch channel, and fails subsequent calls with ErrBrokerClosed. Idempotent.
+
+<a name="InMemoryMessageBroker.FetchJobs"></a>
+### func (\*InMemoryMessageBroker) [FetchJobs](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L530>)
+
+```go
+func (b *InMemoryMessageBroker) FetchJobs(ctx context.Context, keys []ProcessKey) (<-chan Job, error)
+```
+
+FetchJobs yields jobs for the given keys. Delivery moves a job in\-flight with a redelivery timer; the Report\* verbs settle it.
+
+<a name="InMemoryMessageBroker.Heartbeat"></a>
+### func (\*InMemoryMessageBroker) [Heartbeat](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L484>)
+
+```go
+func (b *InMemoryMessageBroker) Heartbeat(ctx context.Context, workerID string) error
+```
+
+Heartbeat refreshes the worker's registration TTL.
+
+<a name="InMemoryMessageBroker.PostError"></a>
+### func (\*InMemoryMessageBroker) [PostError](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L753>)
+
+```go
+func (b *InMemoryMessageBroker) PostError(ctx context.Context, instanceID string, instErr InstanceError) error
+```
+
+PostError publishes a non\-terminal error event.
+
+<a name="InMemoryMessageBroker.PostInputRequest"></a>
+### func (\*InMemoryMessageBroker) [PostInputRequest](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L760>)
+
+```go
+func (b *InMemoryMessageBroker) PostInputRequest(ctx context.Context, instanceID string, req InputRequest) error
+```
+
+PostInputRequest publishes a RequestInputTask's request for input.
+
+<a name="InMemoryMessageBroker.PostNodeCompleted"></a>
+### func (\*InMemoryMessageBroker) [PostNodeCompleted](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L767>)
+
+```go
+func (b *InMemoryMessageBroker) PostNodeCompleted(ctx context.Context, instanceID string, nc NodeCompleted) error
+```
+
+PostNodeCompleted publishes a node\-completion event.
+
+<a name="InMemoryMessageBroker.RegisterProcesses"></a>
+### func (\*InMemoryMessageBroker) [RegisterProcesses](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L444>)
+
+```go
+func (b *InMemoryMessageBroker) RegisterProcesses(ctx context.Context, workerID string, regs []ProcessRegistration) error
+```
+
+RegisterProcesses replaces the worker's registration set and stamps registry metadata (RegisteredAt is preserved per key across re\-registration).
+
+<a name="InMemoryMessageBroker.ReportCancelled"></a>
+### func (\*InMemoryMessageBroker) [ReportCancelled](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L746>)
+
+```go
+func (b *InMemoryMessageBroker) ReportCancelled(ctx context.Context, instanceID string) error
+```
+
+ReportCancelled publishes the Cancelled lifecycle event, settles the job, and closes subscriber channels.
+
+<a name="InMemoryMessageBroker.ReportCompleted"></a>
+### func (\*InMemoryMessageBroker) [ReportCompleted](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L724>)
+
+```go
+func (b *InMemoryMessageBroker) ReportCompleted(ctx context.Context, instanceID string, result EvaluationResult) error
+```
+
+ReportCompleted publishes the Completed lifecycle event and the Result event, settles the job, and closes subscriber channels.
+
+<a name="InMemoryMessageBroker.ReportFailed"></a>
+### func (\*InMemoryMessageBroker) [ReportFailed](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L735>)
+
+```go
+func (b *InMemoryMessageBroker) ReportFailed(ctx context.Context, instanceID string, instErr InstanceError) error
+```
+
+ReportFailed publishes the Failed lifecycle event and the Error event, settles the job, and closes subscriber channels.
+
+<a name="InMemoryMessageBroker.ReportRunning"></a>
+### func (\*InMemoryMessageBroker) [ReportRunning](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L681>)
+
+```go
+func (b *InMemoryMessageBroker) ReportRunning(ctx context.Context, instanceID string) error
+```
+
+ReportRunning publishes the Running lifecycle event. Does not settle the in\-flight job.
+
+<a name="InMemoryMessageBroker.ReportSuspended"></a>
+### func (\*InMemoryMessageBroker) [ReportSuspended](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L692>)
+
+```go
+func (b *InMemoryMessageBroker) ReportSuspended(ctx context.Context, instanceID string, resumeAt *time.Time) error
+```
+
+ReportSuspended publishes the Suspended lifecycle event, settles the in\-flight job, and — given a resumeAt — schedules the JobResume.
+
+<a name="InMemoryMessageBroker.RespondToInputRequest"></a>
+### func (\*InMemoryMessageBroker) [RespondToInputRequest](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L324>)
+
+```go
+func (b *InMemoryMessageBroker) RespondToInputRequest(ctx context.Context, instanceID, requestID string, payload map[string]any) error
+```
+
+RespondToInputRequest queues a JobRespondToInput for the instance's process key. An instance the broker no longer knows surfaces asynchronously as INSTANCE\_NOT\_FOUND on the instance's topic, per the error model.
+
+<a name="InMemoryMessageBroker.Submit"></a>
+### func (\*InMemoryMessageBroker) [Submit](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L212>)
+
+```go
+func (b *InMemoryMessageBroker) Submit(ctx context.Context, req StartRequest) (string, error)
+```
+
+Submit validates the request against the live registry, queues a JobStart, and publishes the Pending lifecycle event. The in\-memory registry is always current, so there is no cold\-start snapshot wait: an unadvertised process is genuinely unknown.
+
+<a name="InMemoryMessageBroker.SubscribeToInstance"></a>
+### func (\*InMemoryMessageBroker) [SubscribeToInstance](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L356>)
+
+```go
+func (b *InMemoryMessageBroker) SubscribeToInstance(ctx context.Context, instanceID string) (<-chan InstanceEvent, error)
+```
+
+SubscribeToInstance delivers the instance's events. Late subscribers first get the latest lifecycle event (and the terminal event if finished within retention); an instance with no visible events gets INSTANCE\_NOT\_FOUND as its first event.
+
+<a name="InMemoryMessageBroker.SubscribeToProcessRegistry"></a>
+### func (\*InMemoryMessageBroker) [SubscribeToProcessRegistry](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L407>)
+
+```go
+func (b *InMemoryMessageBroker) SubscribeToProcessRegistry(ctx context.Context) (<-chan RegistryUpdate, error)
+```
+
+SubscribeToProcessRegistry delivers the registry snapshot, the snapshot sentinel, then incremental updates until ctx is cancelled.
+
+<a name="InMemoryMessageBroker.Terminate"></a>
+### func (\*InMemoryMessageBroker) [Terminate](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L298>)
+
+```go
+func (b *InMemoryMessageBroker) Terminate(ctx context.Context, req TerminateRequest) error
+```
+
+Terminate publishes a JobTerminate. Requires AllowExternalTerminate.
+
+<a name="InMemoryMessageBroker.Unregister"></a>
+### func (\*InMemoryMessageBroker) [Unregister](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_message_broker.go#L506>)
+
+```go
+func (b *InMemoryMessageBroker) Unregister(ctx context.Context, workerID string) error
+```
+
+Unregister removes the worker's registrations immediately.
+
 <a name="InMemoryStateStore"></a>
 ## type [InMemoryStateStore](<https://github.com/friendly-business-machines/blkit/blob/main/core/in_memory_state_store.go#L12-L15>)
 
@@ -10795,6 +11381,278 @@ func (s *InMemoryStateStore) WriteBatch(ops []WriteOp) error
 
 WriteBatch applies the ops synchronously under the store lock, so the batch is atomic with respect to readers.
 
+<a name="InputContract"></a>
+## type [InputContract](<https://github.com/friendly-business-machines/blkit/blob/main/core/data_contract.go#L21-L23>)
+
+InputContract describes inbound data: attached to a StartEvent (validated at submission) and to a DecisionTask (validated at evaluation entry). Validation is closed — undeclared fields are rejected.
+
+```go
+type InputContract struct {
+    Fields BlSchema `cbor:"fields"`
+}
+```
+
+<a name="NewInputContract"></a>
+### func [NewInputContract](<https://github.com/friendly-business-machines/blkit/blob/main/core/data_contract.go#L35>)
+
+```go
+func NewInputContract(fields ...Field) (*InputContract, error)
+```
+
+NewInputContract builds an InputContract from the supplied fields, validating well\-formedness (non\-empty unique names, known types, coherent nesting).
+
+<a name="InputContract.Validate"></a>
+### func (\*InputContract) [Validate](<https://github.com/friendly-business-machines/blkit/blob/main/core/data_contract.go#L66>)
+
+```go
+func (c *InputContract) Validate(input map[string]any) error
+```
+
+Validate checks input variables against the contract: every required field present, no undeclared fields, every value conforming to its declared type. Returns a \*DataContractValidationError on mismatch.
+
+<a name="InputRequest"></a>
+## type [InputRequest](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L412-L416>)
+
+InputRequest is a RequestInputTask's request for input, surfaced to clients; RequestID is what a client passes back to RespondToInputRequest.
+
+```go
+type InputRequest struct {
+    NodeID    string         `cbor:"nodeId"`
+    RequestID string         `cbor:"requestId"`
+    Payload   map[string]any `cbor:"payload,omitempty"` // form schema, prompt text, current case state, ...
+}
+```
+
+<a name="InstanceError"></a>
+## type [InstanceError](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L427-L430>)
+
+InstanceError is an asynchronous error on the instance topic. Code is one of the ErrCode\* constants.
+
+```go
+type InstanceError struct {
+    Code    string `cbor:"code"`
+    Message string `cbor:"message,omitempty"`
+}
+```
+
+<a name="InstanceEvent"></a>
+## type [InstanceEvent](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L380-L391>)
+
+InstanceEvent is what SubscribeToInstance delivers: a tagged union covering lifecycle transitions, input requests, node completions, errors, and final results. Exactly one kind\-specific payload is set.
+
+```go
+type InstanceEvent struct {
+    InstanceID     string            `cbor:"instanceId"`
+    CorrelationKey *string           `cbor:"correlationKey,omitempty"` // mirrored from StartRequest if set
+    Kind           InstanceEventKind `cbor:"kind"`
+    OccurredAt     time.Time         `cbor:"occurredAt"`
+
+    Lifecycle     *LifecycleChange  `cbor:"lifecycle,omitempty"`
+    InputRequest  *InputRequest     `cbor:"inputRequest,omitempty"`
+    NodeCompleted *NodeCompleted    `cbor:"nodeCompleted,omitempty"`
+    Error         *InstanceError    `cbor:"error,omitempty"`
+    Result        *EvaluationResult `cbor:"result,omitempty"` // emitted as the channel closes
+}
+```
+
+<a name="InstanceEventKind"></a>
+## type [InstanceEventKind](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L394>)
+
+InstanceEventKind identifies an InstanceEvent's payload.
+
+```go
+type InstanceEventKind int
+```
+
+<a name="InstanceEventLifecycle"></a>
+
+```go
+const (
+    InstanceEventLifecycle InstanceEventKind = iota
+    InstanceEventInputRequest
+    InstanceEventNodeCompleted
+    InstanceEventError
+    InstanceEventResult
+)
+```
+
+<a name="Job"></a>
+## type [Job](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L302-L311>)
+
+Job is a tagged union of broker\-published work items the worker dispatches to executors. Exactly one kind\-specific payload is set.
+
+```go
+type Job struct {
+    Kind JobKind    `cbor:"kind"`
+    Key  ProcessKey `cbor:"key"` // routing key
+
+    Start          *StartJob          `cbor:"start,omitempty"`
+    RespondToInput *RespondToInputJob `cbor:"respondToInput,omitempty"`
+    Cancel         *CancelJob         `cbor:"cancel,omitempty"`
+    Terminate      *TerminateJob      `cbor:"terminate,omitempty"`
+    Resume         *ResumeJob         `cbor:"resume,omitempty"`
+}
+```
+
+<a name="Job.InstanceID"></a>
+### func (Job) [InstanceID](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L314>)
+
+```go
+func (j Job) InstanceID() string
+```
+
+InstanceID returns the process instance the job targets.
+
+<a name="JobKind"></a>
+## type [JobKind](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L332>)
+
+JobKind identifies a Job's payload.
+
+```go
+type JobKind int
+```
+
+<a name="JobStart"></a>
+
+```go
+const (
+    JobStart JobKind = iota
+    JobRespondToInput
+    JobCancel
+    JobTerminate
+    JobResume
+)
+```
+
+<a name="LifecycleChange"></a>
+## type [LifecycleChange](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L406-L408>)
+
+LifecycleChange reports a lifecycle transition. The instance's current phase is its latest lifecycle event.
+
+```go
+type LifecycleChange struct {
+    Phase ProcessStatus `cbor:"phase"`
+}
+```
+
+<a name="MessageBroker"></a>
+## type [MessageBroker](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L21-L142>)
+
+MessageBroker is how blkit's clients and workers talk to each other (specs/message\-brokers/overview.spec.md). It presents a producer\-side API (Submit, Cancel, Terminate, RespondToInputRequest, SubscribeToInstance, SubscribeToProcessRegistry) and a worker\-side API (RegisterProcesses, Heartbeat, Unregister, FetchJobs, the Report\* lifecycle verbs, and the Post\* instance\-topic verbs). The same implementation satisfies both roles.
+
+The broker holds no process state: execution history and current/historical state live only in the state store. Lifecycle events on the instance topic — not any broker\-held record — are how clients tell where an instance is.
+
+```go
+type MessageBroker interface {
+
+    // Submit a new process run. The broker resolves the process from its
+    // registry snapshot, resolves StartID, validates Input against the
+    // registration's InputContract, generates the instance id, publishes a
+    // JobStart and a Pending lifecycle event, and returns the id. If the
+    // registry snapshot has not arrived yet (cold start), Submit blocks
+    // until it does, bounded by ctx.
+    //
+    // Synchronous errors: ErrUnknownProcess, ErrUnknownStartID,
+    // *DataContractValidationError, broker-publish errors.
+    Submit(ctx context.Context, req StartRequest) (instanceID string, err error)
+
+    // Cancel is fire-and-forget. If the JobStart is still findable in the
+    // queue it is removed (no opt-in required) and the broker itself
+    // publishes the terminal Cancelled lifecycle event; otherwise a
+    // JobCancel is published, which requires AllowExternalCancel on the
+    // registration (else ErrCancelNotAllowed). Whether the instance is
+    // already finished is not checked here — a worker that receives a
+    // JobCancel for a finished instance posts ALREADY_FINISHED.
+    //
+    // Other synchronous errors: ErrUnknownProcess, broker-publish errors.
+    Cancel(ctx context.Context, req CancelRequest) error
+
+    // Terminate is fire-and-forget: publish a JobTerminate for a worker to
+    // honor. Requires AllowExternalTerminate on the registration.
+    //
+    // Synchronous errors: ErrUnknownProcess, ErrTerminateNotAllowed,
+    // broker-publish errors.
+    Terminate(ctx context.Context, req TerminateRequest) error
+
+    // RespondToInputRequest delivers input to a process waiting on a
+    // RequestInputTask, keyed by the requestID emitted on the instance's
+    // topic when the task fired. Whether the instance exists or is waiting
+    // on the given requestID is not checked at the broker — those errors
+    // flow back as InstanceEvents of kind Error.
+    RespondToInputRequest(ctx context.Context, instanceID, requestID string, payload map[string]any) error
+
+    // SubscribeToInstance subscribes to events for a single process
+    // instance. The channel closes when the instance enters a finished
+    // status or ctx is cancelled. A late subscriber first receives the
+    // instance's latest lifecycle event — and the terminal event, if the
+    // instance already finished within the backend's retention window.
+    SubscribeToInstance(ctx context.Context, instanceID string) (<-chan InstanceEvent, error)
+
+    // SubscribeToProcessRegistry subscribes to the process registry. The
+    // first messages are a full snapshot (one RegistryUpdateSnapshot per
+    // live registration, then RegistryUpdateSnapshotComplete); subsequent
+    // messages are incremental changes. Closes only on ctx cancellation.
+    SubscribeToProcessRegistry(ctx context.Context) (<-chan RegistryUpdate, error)
+
+    // RegisterProcesses registers this worker's capability set — which
+    // processes and versions it can execute, including start-event input
+    // contracts so producers can validate Submits. Each call replaces any
+    // prior registration set for the same workerID. Idempotent.
+    RegisterProcesses(ctx context.Context, workerID string, regs []ProcessRegistration) error
+
+    // Heartbeat refreshes the TTL on this worker's registrations.
+    //
+    // Synchronous errors: ErrUnknownWorker, broker-publish errors.
+    Heartbeat(ctx context.Context, workerID string) error
+
+    // Unregister removes this worker's registrations on graceful shutdown.
+    //
+    // Synchronous errors: ErrUnknownWorker, broker-publish errors.
+    Unregister(ctx context.Context, workerID string) error
+
+    // FetchJobs returns a channel of jobs targeted at processes in keys.
+    // The broker keeps a delivered job in-flight until the worker calls a
+    // terminal Report* verb or ReportSuspended for the instance; a worker
+    // that dies loses the job to redelivery after the in-flight timeout.
+    // Closes when ctx is cancelled.
+    FetchJobs(ctx context.Context, keys []ProcessKey) (<-chan Job, error)
+
+    // ReportRunning is the first verb a worker calls after fetching a
+    // JobStart or JobResume. Does NOT settle the in-flight job.
+    ReportRunning(ctx context.Context, instanceID string) error
+
+    // ReportSuspended: the process suspended. Publishes the Suspended
+    // lifecycle event and settles the in-flight job. A non-nil resumeAt
+    // schedules a JobResume for that time (Suspend*/Pause* waits); with a
+    // nil resumeAt the instance waits for an external signal — typically a
+    // RespondToInputRequest, which arrives as its own job.
+    ReportSuspended(ctx context.Context, instanceID string, resumeAt *time.Time) error
+
+    // Terminal outcomes. Each publishes the corresponding lifecycle event
+    // (plus the Result / Error event), settles the in-flight job, and
+    // closes SubscribeToInstance channels after the final event delivers.
+    ReportCompleted(ctx context.Context, instanceID string, result EvaluationResult) error
+    ReportFailed(ctx context.Context, instanceID string, instErr InstanceError) error
+    ReportCancelled(ctx context.Context, instanceID string) error
+
+    // PostError surfaces a non-terminal error to subscribers. The
+    // lifecycle does not change — use ReportFailed for a terminal failure.
+    PostError(ctx context.Context, instanceID string, instErr InstanceError) error
+
+    // PostInputRequest publishes a RequestInputTask's request for input on
+    // the instance's topic; the requestID is what a client passes back to
+    // RespondToInputRequest.
+    PostInputRequest(ctx context.Context, instanceID string, req InputRequest) error
+
+    // PostNodeCompleted publishes a node-completion event on the
+    // instance's topic.
+    PostNodeCompleted(ctx context.Context, instanceID string, nc NodeCompleted) error
+
+    // Close releases the broker's resources (connections, goroutines).
+    Close() error
+}
+```
+
 <a name="NoEnv"></a>
 ## type [NoEnv](<https://github.com/friendly-business-machines/blkit/blob/main/core/engine.go#L102>)
 
@@ -10802,6 +11660,19 @@ NoEnv is the env type for variable\-free expressions (\`1 \+ 1\`, \`date("2025\-
 
 ```go
 type NoEnv = struct{}
+```
+
+<a name="NodeCompleted"></a>
+## type [NodeCompleted](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L419-L423>)
+
+NodeCompleted reports one node finishing during evaluation.
+
+```go
+type NodeCompleted struct {
+    NodeID   string         `cbor:"nodeId"`
+    NodeKind string         `cbor:"nodeKind"` // "Task", "DecisionTask", "EndEvent", ...
+    Outputs  map[string]any `cbor:"outputs,omitempty"`
+}
 ```
 
 <a name="NumberInput"></a>
@@ -10814,6 +11685,35 @@ type NumberInput interface {
     // contains filtered or unexported methods
 }
 ```
+
+<a name="OutputContract"></a>
+## type [OutputContract](<https://github.com/friendly-business-machines/blkit/blob/main/core/data_contract.go#L28-L30>)
+
+OutputContract describes outbound data: attached to an EndEvent (validated at completion) and to a DecisionTask (validated at evaluation exit). Validation is permissive — undeclared fields are accepted.
+
+```go
+type OutputContract struct {
+    Fields BlSchema `cbor:"fields"`
+}
+```
+
+<a name="NewOutputContract"></a>
+### func [NewOutputContract](<https://github.com/friendly-business-machines/blkit/blob/main/core/data_contract.go#L45>)
+
+```go
+func NewOutputContract(fields ...Field) (*OutputContract, error)
+```
+
+NewOutputContract builds an OutputContract from the supplied fields, validating well\-formedness.
+
+<a name="OutputContract.Validate"></a>
+### func (\*OutputContract) [Validate](<https://github.com/friendly-business-machines/blkit/blob/main/core/data_contract.go#L72>)
+
+```go
+func (c *OutputContract) Validate(output map[string]any) error
+```
+
+Validate checks output variables against the contract: every required field present and type\-conforming; undeclared fields are not rejected.
 
 <a name="ParseError"></a>
 ## type [ParseError](<https://github.com/friendly-business-machines/blkit/blob/main/core/errors.go#L7-L10>)
@@ -10841,6 +11741,125 @@ func (e *ParseError) Error() string
 
 ```go
 func (e *ParseError) Unwrap() error
+```
+
+
+
+<a name="PayloadCipher"></a>
+## type [PayloadCipher](<https://github.com/friendly-business-machines/blkit/blob/main/core/payload_cipher.go#L14-L20>)
+
+PayloadCipher encrypts envelope payloads end\-to\-end: producers and workers hold the cipher; the broker only ever sees ciphertext. Routing metadata stays cleartext so the broker can route what it cannot read (specs/message\-brokers/overview.spec.md § Transport security).
+
+```go
+type PayloadCipher interface {
+    // KeyID identifies the key in use; it rides in the envelope so the
+    // receiving side can select the right key (and keys can rotate).
+    KeyID() string
+    Encrypt(plaintext []byte) (ciphertext, nonce []byte, err error)
+    Decrypt(keyID string, nonce, ciphertext []byte) ([]byte, error)
+}
+```
+
+<a name="NewAESGCMPayloadCipher"></a>
+### func [NewAESGCMPayloadCipher](<https://github.com/friendly-business-machines/blkit/blob/main/core/payload_cipher.go#L39>)
+
+```go
+func NewAESGCMPayloadCipher(keyID string, key []byte) (PayloadCipher, error)
+```
+
+NewAESGCMPayloadCipher returns a PayloadCipher using AES\-256\-GCM. key must be exactly 32 bytes; keys are distributed out\-of\-band by the application.
+
+<a name="ProcessKey"></a>
+## type [ProcessKey](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L272-L276>)
+
+ProcessKey identifies one process version — the broker's routing key.
+
+```go
+type ProcessKey struct {
+    Namespace string `cbor:"namespace"`
+    ProcessID string `cbor:"processId"`
+    Version   string `cbor:"version"`
+}
+```
+
+<a name="ProcessRegistration"></a>
+## type [ProcessRegistration](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L226-L250>)
+
+ProcessRegistration is one worker's advertisement that it can execute one process version. The contracts are runtime\-derived from the process definition and travel through the broker in the wire format, so producers never import the process packages.
+
+```go
+type ProcessRegistration struct {
+    Namespace   string  `cbor:"namespace"`
+    ProcessID   string  `cbor:"processId"`
+    Version     string  `cbor:"version"`
+    Name        *string `cbor:"name,omitempty"`
+    Description *string `cbor:"description,omitempty"`
+
+    // Boundary surface — what producers need to construct and validate a
+    // Submit.
+    StartEvents []StartEventInfo `cbor:"startEvents,omitempty"`
+    EndEvents   []EndEventInfo   `cbor:"endEvents,omitempty"`
+
+    // Operation hints — what an MCP / web UI can offer for this process.
+    AllowExternalCancel    bool `cbor:"allowExternalCancel,omitempty"`
+    AllowExternalTerminate bool `cbor:"allowExternalTerminate,omitempty"`
+
+    // Markdown is pre-rendered documentation for tools like the MCP
+    // describe_process built-in.
+    Markdown string `cbor:"markdown,omitempty"`
+
+    // For observability.
+    WorkerID      string    `cbor:"workerId,omitempty"`      // set by the worker on RegisterProcesses
+    RegisteredAt  time.Time `cbor:"registeredAt,omitempty"`  // set by the broker on first RegisterProcesses
+    LastHeartbeat time.Time `cbor:"lastHeartbeat,omitempty"` // set by the broker on each Heartbeat / Register
+}
+```
+
+<a name="ProcessRegistration.Key"></a>
+### func (ProcessRegistration) [Key](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L253>)
+
+```go
+func (r ProcessRegistration) Key() ProcessKey
+```
+
+Key returns the registration's process key.
+
+<a name="ProcessStatus"></a>
+## type [ProcessStatus](<https://github.com/friendly-business-machines/blkit/blob/main/core/process_status.go#L7>)
+
+ProcessStatus is the lifecycle phase of one process run. The full process layer (specs/processes/process.spec.md) is not implemented yet; the message broker (specs/message\-brokers/overview.spec.md) carries these phases in its lifecycle events today.
+
+```go
+type ProcessStatus int
+```
+
+<a name="ProcessStatusPending"></a>
+
+```go
+const (
+    ProcessStatusPending   ProcessStatus = iota // submitted but not yet started
+    ProcessStatusRunning                        // at least one task is in progress or pending
+    ProcessStatusSuspended                      // paused waiting for an external event; resumable via re-evaluation
+    ProcessStatusCompleted                      // reached an EndEvent or TerminateEvent
+    ProcessStatusCancelled                      // reached a CancelEvent — clean abort, distinct from Completed and Failed
+    ProcessStatusFailed                         // an unrecoverable error occurred
+)
+```
+
+<a name="ProcessStatus.Finished"></a>
+### func (ProcessStatus) [Finished](<https://github.com/friendly-business-machines/blkit/blob/main/core/process_status.go#L39>)
+
+```go
+func (s ProcessStatus) Finished() bool
+```
+
+Finished reports whether the status is terminal (Completed, Cancelled, or Failed).
+
+<a name="ProcessStatus.String"></a>
+### func (ProcessStatus) [String](<https://github.com/friendly-business-machines/blkit/blob/main/core/process_status.go#L18>)
+
+```go
+func (s ProcessStatus) String() string
 ```
 
 
@@ -10974,6 +11993,91 @@ func (e *RegexError) Unwrap() error
 
 
 
+<a name="RegistryStore"></a>
+## type [RegistryStore](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L444-L456>)
+
+RegistryStore is the side\-store used by backends whose broker has no native KV facility (Azure Service Bus, Google Pub/Sub, AWS SQS/SNS). It holds ONLY broker\-coordination data — never process state:
+
+- the worker registry: live ProcessRegistrations with TTL expiry and a change feed
+- timer records: durable "deliver a JobResume at time T" entries, for backends without native delayed delivery
+- last\-event records, for backends whose event fabric cannot deliver messages published before a subscriber attached
+
+```go
+type RegistryStore interface {
+    PutRegistrations(ctx context.Context, workerID string, regs []ProcessRegistration, ttl time.Duration) error
+    Touch(ctx context.Context, workerID string, ttl time.Duration) error // heartbeat; ErrUnknownWorker if absent
+    Delete(ctx context.Context, workerID string) error                   // unregister; ErrUnknownWorker if absent
+    Snapshot(ctx context.Context) ([]ProcessRegistration, error)
+    Watch(ctx context.Context) (<-chan RegistryUpdate, error)
+
+    PutTimer(ctx context.Context, instanceID string, fireAt time.Time) error
+    DueTimers(ctx context.Context, now time.Time) ([]string, error) // instanceIDs; claimed atomically
+    DeleteTimer(ctx context.Context, instanceID string) error
+
+    Close() error
+}
+```
+
+<a name="RegistryUpdate"></a>
+## type [RegistryUpdate](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L279-L282>)
+
+RegistryUpdate is one message on the SubscribeToProcessRegistry channel.
+
+```go
+type RegistryUpdate struct {
+    Kind         RegistryUpdateKind   `cbor:"kind"`
+    Registration *ProcessRegistration `cbor:"registration,omitempty"` // nil only for RegistryUpdateSnapshotComplete
+}
+```
+
+<a name="RegistryUpdateKind"></a>
+## type [RegistryUpdateKind](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L285>)
+
+RegistryUpdateKind identifies what a RegistryUpdate reports.
+
+```go
+type RegistryUpdateKind int
+```
+
+<a name="RegistryUpdateSnapshot"></a>
+
+```go
+const (
+    // RegistryUpdateSnapshot entries open every subscription — one per
+    // currently-live registration — followed by a single
+    // RegistryUpdateSnapshotComplete sentinel with a nil Registration.
+    RegistryUpdateSnapshot RegistryUpdateKind = iota
+    RegistryUpdateSnapshotComplete
+    RegistryUpdateAdded         // a worker freshly registered this process
+    RegistryUpdateRemoved       // a worker called Unregister
+    RegistryUpdateHeartbeatLost // TTL expired without a Heartbeat
+)
+```
+
+<a name="RespondToInputJob"></a>
+## type [RespondToInputJob](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L351-L355>)
+
+RespondToInputJob delivers a client's response to a RequestInputTask.
+
+```go
+type RespondToInputJob struct {
+    InstanceID string         `cbor:"instanceId"`
+    RequestID  string         `cbor:"requestId"`
+    Payload    map[string]any `cbor:"payload,omitempty"`
+}
+```
+
+<a name="ResumeJob"></a>
+## type [ResumeJob](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L371-L373>)
+
+ResumeJob re\-evaluates a suspended instance whose wait condition was satisfied.
+
+```go
+type ResumeJob struct {
+    InstanceID string `cbor:"instanceId"`
+}
+```
+
 <a name="RetryConfig"></a>
 ## type [RetryConfig](<https://github.com/friendly-business-machines/blkit/blob/main/core/retry.go#L11-L16>)
 
@@ -11086,6 +12190,61 @@ func (e *SchemaError) Unwrap() error
 
 
 
+<a name="StartEventInfo"></a>
+## type [StartEventInfo](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L258-L262>)
+
+StartEventInfo describes one StartEvent on a registered process.
+
+```go
+type StartEventInfo struct {
+    Id            string         `cbor:"id"`
+    Name          string         `cbor:"name,omitempty"`
+    InputContract *InputContract `cbor:"inputContract,omitempty"`
+}
+```
+
+<a name="StartJob"></a>
+## type [StartJob](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L343-L348>)
+
+StartJob starts a new run.
+
+```go
+type StartJob struct {
+    InstanceID     string         `cbor:"instanceId"` // broker-generated UUID
+    StartID        string         `cbor:"startId"`
+    Input          map[string]any `cbor:"input,omitempty"`
+    CorrelationKey *string        `cbor:"correlationKey,omitempty"`
+}
+```
+
+<a name="StartRequest"></a>
+## type [StartRequest](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L171-L181>)
+
+StartRequest asks for a new run of a registered process.
+
+```go
+type StartRequest struct {
+    Namespace string         // package import path of the registered process
+    ProcessID string         // the registered process's Id
+    Version   string         // the registered process's Version
+    StartID   string         // which StartEvent to use as the entrypoint
+    Input     map[string]any // input variables; validated against the registry-carried InputContract
+
+    // CorrelationKey is an optional client-side key recorded in every
+    // InstanceEvent emitted for this instance.
+    CorrelationKey *string
+}
+```
+
+<a name="StartRequest.Key"></a>
+### func (StartRequest) [Key](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L184>)
+
+```go
+func (r StartRequest) Key() ProcessKey
+```
+
+Key returns the request's process key.
+
 <a name="StateStore"></a>
 ## type [StateStore](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L160-L186>)
 
@@ -11146,6 +12305,43 @@ type StringInput interface {
     // contains filtered or unexported methods
 }
 ```
+
+<a name="TerminateJob"></a>
+## type [TerminateJob](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L364-L367>)
+
+TerminateJob asks the worker holding the instance to hard\-stop it.
+
+```go
+type TerminateJob struct {
+    InstanceID string  `cbor:"instanceId"`
+    Reason     *string `cbor:"reason,omitempty"`
+}
+```
+
+<a name="TerminateRequest"></a>
+## type [TerminateRequest](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L206-L213>)
+
+TerminateRequest asks to hard\-stop a run. The process key is needed so the broker can check AllowExternalTerminate in the registry snapshot.
+
+```go
+type TerminateRequest struct {
+    Namespace string
+    ProcessID string
+    Version   string
+
+    InstanceID string
+    Reason     *string
+}
+```
+
+<a name="TerminateRequest.Key"></a>
+### func (TerminateRequest) [Key](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker.go#L216>)
+
+```go
+func (r TerminateRequest) Key() ProcessKey
+```
+
+Key returns the request's process key.
 
 <a name="TimeComponents"></a>
 ## type [TimeComponents](<https://github.com/friendly-business-machines/blkit/blob/main/core/time.go#L57-L62>)
@@ -11246,6 +12442,46 @@ type UDF interface {
     // contains filtered or unexported methods
 }
 ```
+
+<a name="UnknownEnvelopeVersionError"></a>
+## type [UnknownEnvelopeVersionError](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker_wire.go#L48-L50>)
+
+UnknownEnvelopeVersionError reports an envelope whose version this build does not understand.
+
+```go
+type UnknownEnvelopeVersionError struct {
+    V uint8
+}
+```
+
+<a name="UnknownEnvelopeVersionError.Error"></a>
+### func (\*UnknownEnvelopeVersionError) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/message_broker_wire.go#L52>)
+
+```go
+func (e *UnknownEnvelopeVersionError) Error() string
+```
+
+
+
+<a name="UnknownKeyIDError"></a>
+## type [UnknownKeyIDError](<https://github.com/friendly-business-machines/blkit/blob/main/core/payload_cipher.go#L24-L26>)
+
+ErrUnknownKeyID is wrapped by Decrypt when an envelope names a key the cipher does not hold. The receiver never processes such a payload.
+
+```go
+type UnknownKeyIDError struct {
+    KeyID string
+}
+```
+
+<a name="UnknownKeyIDError.Error"></a>
+### func (\*UnknownKeyIDError) [Error](<https://github.com/friendly-business-machines/blkit/blob/main/core/payload_cipher.go#L28>)
+
+```go
+func (e *UnknownKeyIDError) Error() string
+```
+
+
 
 <a name="ValueRecord"></a>
 ## type [ValueRecord](<https://github.com/friendly-business-machines/blkit/blob/main/core/state_store.go#L105-L113>)

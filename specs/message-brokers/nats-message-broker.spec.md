@@ -7,7 +7,7 @@ targets:
 
 # NATS Message Broker
 
-> **Status:** This spec is a work in progress. Implementation pending.
+> **Status:** Implemented.
 
 The NATS backend implements [MessageBroker](overview.spec.md) against NATS
 with **JetStream** (plain core NATS lacks the durability the job queue
@@ -30,32 +30,49 @@ The nine standard questions (see
 
 1. **Queue + ack + redelivery** — one JetStream **jobs stream** capturing
    `<prefix>.jobs.>`, published to subjects
-   `<prefix>.jobs.<ns>.<proc>.<ver>`. Workers use **durable pull
-   consumers**. Terminal lifecycle reports and `ReportSuspended` `Ack` the
-   message; a worker that dies stops extending its `AckWait` and JetStream
-   redelivers automatically.
+   `<prefix>.jobs.<ns>.<proc>.<ver>.<instanceID>` (key parts are
+   subject-encoded — namespaces contain `/` and `.`). The stream uses
+   **Limits retention with explicit `DeleteMsg` on settle** — not
+   WorkQueue (which forbids overlapping consumer filters) and not Interest
+   (which drops jobs published before any worker fetches). Workers use
+   **durable pull consumers** (durable name derived from the sorted filter
+   set, so same-key fetchers compete on one consumer) with
+   `AckWait = InFlightTimeout`. Terminal lifecycle reports and
+   `ReportSuspended` `Ack` **and delete** the message; a worker that dies
+   stops extending its `AckWait` and JetStream redelivers automatically.
 2. **Selective consumption** — pull consumers with **subject filters** on
    exactly the worker's registered keys. Native, no client-side filtering.
-3. **Registry** — a NATS **KV bucket** with per-key TTL, one entry per
-   worker, refreshed by `Heartbeat`. `KV.Watch()` natively delivers
-   snapshot-then-updates — a direct mapping onto
-   `SubscribeToProcessRegistry`; TTL-expired keys surface as
-   `RegistryUpdateHeartbeatLost`.
+3. **Registry** — a NATS **KV bucket**, one envelope-encoded entry per
+   worker carrying the stamped registrations, a deadline, and a generation
+   counter (so heartbeat refreshes don't spam watchers). Expiry is
+   **sweeper-driven, not KV TTL** — age-based expiry produces no reliable
+   watch events — and the sweeper tombstones with the old registrations and
+   a reason before deleting, so watchers can distinguish `Removed`
+   (Unregister) from `HeartbeatLost` (sweeper). `KV.Watch()` delivers
+   snapshot-then-updates onto `SubscribeToProcessRegistry`. `Submit` reads
+   the bucket directly (immediately consistent), so there is no cold-start
+   snapshot wait.
 4. **Per-instance events / fan-out / replay** — instance events publish to
-   `<prefix>.inst.<id>.<eventKind>` in an events stream. Subscribers use
-   ordered consumers with `DeliverLastPerSubject` to recover the latest
-   lifecycle event (and terminal event) before following live — the
-   latest-event replay requirement, natively. Stream `MaxAge` (default 24h)
-   is the retention window. Each subscriber gets its own consumer
-   (broadcast).
-5. **Delayed delivery** — no native delayed publish. `ReportSuspended` for a
-   duration/datetime wait `Ack`s the job and records the wake-up as a
-   message on a **timers subject** consumed by a broker-owned scheduler
-   consumer that uses `NakWithDelay` until the fire-time is reached, then
-   publishes the `JobResume` to the instance's job subject.
-6. **Cancel of queued jobs** — best-effort: look up the instance's
-   `JobStart` by subject (`GetLastMsg`), and `DeleteMsg` by sequence if it
-   has not been delivered. Otherwise fall through to the `JobCancel` route.
+   per-kind subjects `<prefix>.inst.<id>.lifecycle` / `.terminal` /
+   `.inputreq` / `.node` / `.err` in an events stream. Late subscribers
+   replay via `GetLastMsgForSubject` (latest lifecycle + terminal only),
+   then follow live from the next stream sequence with an ordered consumer
+   — no gap, no duplicate. Stream `MaxAge` (default 1h, the
+   `EventRetention` knob) is the retention window. Each subscriber gets its
+   own consumer (broadcast). A small `<prefix>-instmeta` KV bucket holds
+   per-instance routing key + correlation key + finish time, for
+   `RespondToInputRequest` routing, correlation-key mirroring, and
+   retention sweeping.
+5. **Delayed delivery** — no native delayed publish. `ReportSuspended` with
+   a `resumeAt` currently schedules the `JobResume` with an **in-process
+   timer**; a broker restart before the fire-time loses the pending resume.
+   Durable timers (the NakWithDelay timers-subject pattern) are pending.
+6. **Cancel of queued jobs** — best-effort: the instance id is the job
+   subject's last token, so look up the `JobStart` with
+   `GetLastMsgForSubject`, kind-check it, verify it is undelivered (local
+   in-flight map + consumer delivered floors), and `DeleteMsg` by sequence;
+   the broker then publishes the terminal Cancelled event itself.
+   Otherwise fall through to the `JobCancel` route.
 7. **TLS** — `Config.TLS *tls.Config`; nil means plaintext (development).
    NATS credentials files and NKeys are supported via `Credentials`.
 8. **Config + constructor** —
@@ -66,9 +83,13 @@ The nine standard questions (see
    type Config struct {
        URL           string            // e.g. "nats://localhost:4222"
        Credentials   string            // optional path to a .creds file
-       TLS           *tls.Config      // nil = plaintext
+       TLS           *tls.Config       // nil = plaintext
        SubjectPrefix string            // default "blkit"; isolates deployments sharing a server
        Cipher        bl.PayloadCipher  // optional end-to-end payload encryption; default nil
+
+       RegistrationTTL time.Duration   // default 90s (3× heartbeat interval)
+       InFlightTimeout time.Duration   // default 150s; maps to consumer AckWait
+       EventRetention  time.Duration   // default 1h; maps to events-stream MaxAge
    }
    ```
 
