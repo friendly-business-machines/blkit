@@ -84,6 +84,12 @@ got to, and when.
 | `published_at` / `started_at` / `completed_at` | `DATETIMEOFFSET(7)` | Lifecycle timestamps (nullable until each is reached). |
 | `evaluation_count` | `INT` | How many times the run has been advanced — the optimistic-progress counter. |
 
+**Example row**, for a run of an `order-approval` process that has finished:
+
+| run_id | process_id | process_version | status | published_at | started_at | completed_at | evaluation_count |
+|---|---|---|---|---|---|---|---|
+| `run_8f2c1a90` | `order-approval` | `v1` | `completed` | `2026-07-08 09:11:59.9000000 +00:00` | `2026-07-08 09:12:00.0000000 +00:00` | `2026-07-08 09:12:00.8200000 +00:00` | `3` |
+
 The row is upserted with a `MERGE` statement, so saving a run's metadata inserts it
 the first time and updates it thereafter.
 
@@ -109,6 +115,20 @@ in. Because a blkit value encodes to a single JSON value — which may be a top-
 scalar such as `88`, `"high"`, or `true`, and SQL Server's `ISJSON` rejects bare
 scalars — the value is wrapped in an array for the check (`ISJSON(N'[' + value + N']')`).
 That accepts any single JSON value while still rejecting malformed JSON.
+
+**Example rows**, continuing the same run — `check-inventory` succeeded on its
+first attempt, but `approve-order` failed once (`exec_b1`) and committed on retry
+(`exec_b2`):
+
+| id | run_id | task_id | execution_id | field | value | status | ts |
+|---|---|---|---|---|---|---|---|
+| `1` | `run_8f2c1a90` | `check-inventory` | `exec_a1` | `in_stock` | `true` | `committed` | `2026-07-08 09:12:00.3400000 +00:00` |
+| `2` | `run_8f2c1a90` | `approve-order` | `exec_b1` | `approved` | `true` | `aborted` | `2026-07-08 09:12:00.6100000 +00:00` |
+| `3` | `run_8f2c1a90` | `approve-order` | `exec_b2` | `approved` | `true` | `committed` | `2026-07-08 09:12:00.7800000 +00:00` |
+
+Row 2 is the failed attempt's write — it stays in the table but never satisfies a
+current-state read. The current state for this run is therefore `in_stock: true`
+and `approved: true`, resolved from rows 1 and 3 only.
 
 Two behaviours are implemented entirely through the `status` column:
 
@@ -146,6 +166,19 @@ The execution history — the record of what the engine did, step by step.
 | `execution_id` | `NVARCHAR(255)` | The execution attempt it belongs to. |
 | `payload` | `NVARCHAR(MAX)` | The entry's detail, as JSON-validated text. |
 | `ts` | `DATETIMEOFFSET(7)` | When it was recorded. |
+
+**Example rows**, for the same run:
+
+| id | run_id | kind | node_id | execution_id | payload | ts |
+|---|---|---|---|---|---|---|
+| `1` | `run_8f2c1a90` | `task_started` | `check-inventory` | `exec_a1` | `{}` | `2026-07-08 09:12:00.1200000 +00:00` |
+| `2` | `run_8f2c1a90` | `task_completed` | `check-inventory` | `exec_a1` | `{}` | `2026-07-08 09:12:00.4100000 +00:00` |
+| `3` | `run_8f2c1a90` | `task_failed` | `approve-order` | `exec_b1` | `{"error": "validation timeout"}` | `2026-07-08 09:12:00.6400000 +00:00` |
+| `4` | `run_8f2c1a90` | `task_completed` | `approve-order` | `exec_b2` | `{}` | `2026-07-08 09:12:00.8200000 +00:00` |
+
+Unlike the current-state read over `blkit_values`, this table keeps row 3's failed
+attempt visible right alongside the retry that superseded it — nothing here is
+ever discarded.
 
 Like the values table it is append-only and read back sorted on `(ts, id)`.
 

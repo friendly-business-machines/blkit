@@ -47,6 +47,38 @@ backends persist, only in memory:
 | history | An **append-only slice** of execution-history records. |
 | seq | A per-run counter stamped onto each appended record as the arrival-order tiebreak. |
 
+**Example**, for a run of an `order-approval` process, after `check-inventory`
+succeeded on its first attempt and `approve-order` failed once (`exec_b1`) before
+committing on retry (`exec_b2`) — the same scenario shown on the SQL backends'
+pages, here as the in-memory record itself:
+
+```go
+runs["run_8f2c1a90"] = &inMemoryRun{
+    metadata: RunMetadata{
+        ProcessID: "order-approval", ProcessVersion: "v1", Status: "completed",
+        StartedAt: t0, CompletedAt: t6, EvaluationCount: 3,
+    },
+    values: []valueRecord{
+        {TaskID: "check-inventory", ExecutionID: "exec_a1", Field: "in_stock", Value: true, Status: "committed", Ts: t1, Seq: 1},
+        {TaskID: "approve-order", ExecutionID: "exec_b1", Field: "approved", Value: true, Status: "aborted", Ts: t2, Seq: 2},
+        {TaskID: "approve-order", ExecutionID: "exec_b2", Field: "approved", Value: true, Status: "committed", Ts: t3, Seq: 3},
+    },
+    history: []historyRecord{
+        {Kind: "task_started", NodeID: "check-inventory", ExecutionID: "exec_a1", Ts: t0a, Seq: 4},
+        {Kind: "task_completed", NodeID: "check-inventory", ExecutionID: "exec_a1", Ts: t0b, Seq: 5},
+        {Kind: "task_failed", NodeID: "approve-order", ExecutionID: "exec_b1", Payload: `{"error":"validation timeout"}`, Ts: t0c, Seq: 6},
+        {Kind: "task_completed", NodeID: "approve-order", ExecutionID: "exec_b2", Ts: t6, Seq: 7},
+    },
+    seq: 7,
+}
+```
+
+The second `values` entry is the failed attempt — it stays in the slice but its
+`aborted` status means the current-state read skips it, folding down to
+`in_stock: true` and `approved: true` from entries 1 and 3. The failed attempt
+still shows up in `history` (and in a full-history read of `values`) alongside the
+retry that superseded it.
+
 As with every backend, blkit never overwrites a field — each write is a new entry,
 and the current value of a field is derived from the entries rather than stored in
 place:

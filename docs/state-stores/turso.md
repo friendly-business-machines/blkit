@@ -89,6 +89,14 @@ got to, and when.
 | `published_at` / `started_at` / `completed_at` | `INTEGER` | Lifecycle timestamps as Unix nanoseconds (nullable until each is reached). |
 | `evaluation_count` | `INTEGER` | How many times the run has been advanced — the optimistic-progress counter. |
 
+**Example row**, for a run of an `order-approval` process that has finished (the
+`INTEGER` columns are Unix nanoseconds; the comment shows the same instant as a
+timestamp for readability):
+
+| run_id | process_id | process_version | status | published_at | started_at | completed_at | evaluation_count |
+|---|---|---|---|---|---|---|---|
+| `run_8f2c1a90` | `order-approval` | `v1` | `completed` | `1783501919900000000` (`09:11:59.900`) | `1783501920000000000` (`09:12:00.000`) | `1783501920820000000` (`09:12:00.820`) | `3` |
+
 The metadata upsert is written as **UPDATE-then-INSERT inside a transaction** rather
 than `ON CONFLICT` — plain UPDATE/INSERT is the most conservative SQLite surface,
 and the single connection makes it raceless.
@@ -109,6 +117,20 @@ than stored in place.
 | `value` | `TEXT` | The encoded value as JSON text, queryable with SQLite's built-in JSON functions. |
 | `status` | `TEXT` | `pending`, `committed`, or `aborted` (see below). |
 | `ts` | `INTEGER` | When the write was made, as Unix nanoseconds. |
+
+**Example rows**, continuing the same run — `check-inventory` succeeded on its
+first attempt, but `approve-order` failed once (`exec_b1`) and committed on retry
+(`exec_b2`):
+
+| id | run_id | task_id | execution_id | field | value | status | ts |
+|---|---|---|---|---|---|---|---|
+| `1` | `run_8f2c1a90` | `check-inventory` | `exec_a1` | `in_stock` | `true` | `committed` | `1783501920340000000` (`09:12:00.340`) |
+| `2` | `run_8f2c1a90` | `approve-order` | `exec_b1` | `approved` | `true` | `aborted` | `1783501920610000000` (`09:12:00.610`) |
+| `3` | `run_8f2c1a90` | `approve-order` | `exec_b2` | `approved` | `true` | `committed` | `1783501920780000000` (`09:12:00.780`) |
+
+Row 2 is the failed attempt's write — it stays in the table but never satisfies a
+current-state read. The current state for this run is therefore `in_stock: true`
+and `approved: true`, resolved from rows 1 and 3 only.
 
 Two behaviours defined by the [shared conformance suite](overview.md#conformance)
 are implemented entirely through the `status` column:
@@ -149,6 +171,19 @@ The execution history — the record of what the engine did, step by step.
 | `execution_id` | `TEXT` | The execution attempt it belongs to. |
 | `payload` | `TEXT` | The entry's detail, as JSON text. |
 | `ts` | `INTEGER` | When it was recorded, as Unix nanoseconds. |
+
+**Example rows**, for the same run:
+
+| id | run_id | kind | node_id | execution_id | payload | ts |
+|---|---|---|---|---|---|---|
+| `1` | `run_8f2c1a90` | `task_started` | `check-inventory` | `exec_a1` | `{}` | `1783501920120000000` (`09:12:00.120`) |
+| `2` | `run_8f2c1a90` | `task_completed` | `check-inventory` | `exec_a1` | `{}` | `1783501920410000000` (`09:12:00.410`) |
+| `3` | `run_8f2c1a90` | `task_failed` | `approve-order` | `exec_b1` | `{"error": "validation timeout"}` | `1783501920640000000` (`09:12:00.640`) |
+| `4` | `run_8f2c1a90` | `task_completed` | `approve-order` | `exec_b2` | `{}` | `1783501920820000000` (`09:12:00.820`) |
+
+Unlike the current-state read over `blkit_values`, this table keeps row 3's failed
+attempt visible right alongside the retry that superseded it — nothing here is
+ever discarded.
 
 Like the values table it is append-only and read back sorted on `(ts, id)`.
 

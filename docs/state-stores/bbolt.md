@@ -75,6 +75,36 @@ fixed-width big-endian, bbolt's natural byte order over the keys **is** the repl
 order `(timestamp, arrival)`. Reading a run's history is therefore a single in-order
 cursor walk with no sort step.
 
+**Example**, for a run of an `order-approval` process where `check-inventory`
+succeeded on its first attempt and `approve-order` failed once (`exec_b1`) before
+committing on retry (`exec_b2`) — shown with each 16-byte key decoded to
+`<timestamp>.<seq>` for readability:
+
+```
+runs
+└── run_8f2c1a90
+    ├── meta                                →  {"process_id":"order-approval","process_version":"v1","status":"completed", …}
+    ├── values
+    │   ├── 1783501920340000000.1           →  {"task_id":"check-inventory","execution_id":"exec_a1","field":"in_stock","value":true,"status":"committed"}
+    │   ├── 1783501920610000000.2           →  {"task_id":"approve-order","execution_id":"exec_b1","field":"approved","value":true,"status":"aborted"}
+    │   └── 1783501920780000000.3           →  {"task_id":"approve-order","execution_id":"exec_b2","field":"approved","value":true,"status":"committed"}
+    ├── history
+    │   ├── 1783501920120000000.4           →  {"kind":"task_started","node_id":"check-inventory","execution_id":"exec_a1"}
+    │   ├── 1783501920410000000.5           →  {"kind":"task_completed","node_id":"check-inventory","execution_id":"exec_a1"}
+    │   ├── 1783501920640000000.6           →  {"kind":"task_failed","node_id":"approve-order","execution_id":"exec_b1","payload":{"error":"validation timeout"}}
+    │   └── 1783501920820000000.7           →  {"kind":"task_completed","node_id":"approve-order","execution_id":"exec_b2"}
+    └── pending                             (empty — both tasks have already settled)
+```
+
+The second `values` entry is the failed attempt's write. It stays in the bucket, but
+its `aborted` status means the current-state read skips it, folding down to
+`in_stock: true` and `approved: true` from the first and third entries; a full
+history read returns all three `values` entries plus the four `history` entries,
+with the failed attempt visible next to the retry that superseded it. While
+`approve-order`'s first attempt was still pending, the `pending` bucket briefly held
+an index row keyed by `approve-order` pointing at its `values` entry; `StatusFlip`
+deleted that row as part of settling the attempt to `aborted`.
+
 **Every write is a new entry, never an overwrite.** blkit does not store "the current
 value of a field" in place. Each `ValueWrite` appends a new `values` entry with
 `status: pending`, and the field's current value is *derived* from these entries at

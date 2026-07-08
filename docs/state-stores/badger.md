@@ -68,6 +68,34 @@ Because the prefix (`v|{runID}|`) groups a run's values together and the suffix 
 fixed-width big-endian, iterating the `v|{runID}|` prefix yields entries already in
 `(timestamp, arrival)` order.
 
+**Example keys**, for a run of an `order-approval` process where `check-inventory`
+succeeded on its first attempt and `approve-order` failed once (`exec_b1`) before
+committing on retry (`exec_b2`) — shown with the `{ts}{seq}` suffix decoded to
+`<timestamp>.<seq>` for readability (on disk it is 16 raw big-endian bytes, not this
+delimited text):
+
+```
+m|run_8f2c1a90                                     →  {"process_id":"order-approval","process_version":"v1","status":"completed", …}
+
+v|run_8f2c1a90|1783501920340000000.1               →  {"task_id":"check-inventory","execution_id":"exec_a1","field":"in_stock","value":true,"status":"committed"}
+v|run_8f2c1a90|1783501920610000000.2               →  {"task_id":"approve-order","execution_id":"exec_b1","field":"approved","value":true,"status":"aborted"}
+v|run_8f2c1a90|1783501920780000000.3               →  {"task_id":"approve-order","execution_id":"exec_b2","field":"approved","value":true,"status":"committed"}
+
+h|run_8f2c1a90|1783501920120000000.4               →  {"kind":"task_started","node_id":"check-inventory","execution_id":"exec_a1"}
+h|run_8f2c1a90|1783501920410000000.5               →  {"kind":"task_completed","node_id":"check-inventory","execution_id":"exec_a1"}
+h|run_8f2c1a90|1783501920640000000.6               →  {"kind":"task_failed","node_id":"approve-order","execution_id":"exec_b1","payload":{"error":"validation timeout"}}
+h|run_8f2c1a90|1783501920820000000.7               →  {"kind":"task_completed","node_id":"approve-order","execution_id":"exec_b2"}
+```
+
+The second `v|` entry is the failed attempt's write. It stays under the `v|` prefix,
+but its `aborted` status means the current-state read skips it, folding down to
+`in_stock: true` and `approved: true` from the first and third entries; a full
+history read returns all three, plus the `h|` entries, with the failed attempt
+visible next to the retry that superseded it. While `approve-order`'s pending write
+existed (between `exec_b1` starting and being flipped to `aborted`), a companion
+`p|run_8f2c1a90|approve-order|1783501920610000000.2` index entry pointed back at it;
+`StatusFlip` deleted that index entry as part of settling the attempt.
+
 **Every write is a new key, never an overwrite.** blkit does not keep "the current
 value of a field" in a mutable slot; each `ValueWrite` sets a new `v|` key with
 `status: pending`, and a field's current value is derived from these entries at read

@@ -69,6 +69,28 @@ The `{ts}{seq}` suffix is 16 fixed-width bytes: the event timestamp as a big-end
 record shapes, the pending→committed/aborted lifecycle in each value record's `status`,
 and the two reads are identical to Badger:
 
+**Example keys** — the same `order-approval` run scenario as the
+[Badger example](badger.md#data-model) produces exactly the same keys and values
+here, since the layout is identical:
+
+```
+m|run_8f2c1a90                                     →  {"process_id":"order-approval","process_version":"v1","status":"completed", …}
+
+v|run_8f2c1a90|1783501920340000000.1               →  {"task_id":"check-inventory","execution_id":"exec_a1","field":"in_stock","value":true,"status":"committed"}
+v|run_8f2c1a90|1783501920610000000.2               →  {"task_id":"approve-order","execution_id":"exec_b1","field":"approved","value":true,"status":"aborted"}
+v|run_8f2c1a90|1783501920780000000.3               →  {"task_id":"approve-order","execution_id":"exec_b2","field":"approved","value":true,"status":"committed"}
+
+h|run_8f2c1a90|1783501920120000000.4               →  {"kind":"task_started","node_id":"check-inventory","execution_id":"exec_a1"}
+h|run_8f2c1a90|1783501920410000000.5               →  {"kind":"task_completed","node_id":"check-inventory","execution_id":"exec_a1"}
+h|run_8f2c1a90|1783501920640000000.6               →  {"kind":"task_failed","node_id":"approve-order","execution_id":"exec_b1","payload":{"error":"validation timeout"}}
+h|run_8f2c1a90|1783501920820000000.7               →  {"kind":"task_completed","node_id":"approve-order","execution_id":"exec_b2"}
+```
+
+Unlike Badger, Pebble's arrival counter is a single strictly-monotonic atomic rather
+than leased bands, so under concurrent load its `.1`, `.2`, `.3`, … suffixes can
+never arrive out of order the way Badger's occasionally can — no re-sort is needed
+to normalise them at read time.
+
 - **Every write is a new key.** Each `ValueWrite` sets a `v|` key with `status:
   pending` plus a companion `p|` index entry; a field's current value is derived, never
   overwritten.

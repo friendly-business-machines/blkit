@@ -57,6 +57,12 @@ got to, and when.
 | `published_at` / `started_at` / `completed_at` | `TIMESTAMPTZ` | Lifecycle timestamps (nullable until each is reached). |
 | `evaluation_count` | `INTEGER` | How many times the run has been advanced — the optimistic-progress counter. |
 
+**Example row**, for a run of an `order-approval` process that has finished:
+
+| run_id | process_id | process_version | status | published_at | started_at | completed_at | evaluation_count |
+|---|---|---|---|---|---|---|---|
+| `run_8f2c1a90` | `order-approval` | `v1` | `completed` | `2026-07-08 09:11:59.900+00` | `2026-07-08 09:12:00.000+00` | `2026-07-08 09:12:00.820+00` | `3` |
+
 ### `blkit_values` — one row per value a task writes
 
 This is the heart of the model. blkit never overwrites a field; **every write is a
@@ -73,6 +79,20 @@ than stored in place.
 | `value` | `JSONB` | The encoded value — `JSONB`, so audit queries can reach inside it. |
 | `status` | `TEXT` | `pending`, `committed`, or `aborted` (see below). |
 | `ts` | `TIMESTAMPTZ` | When the write was made. |
+
+**Example rows**, continuing the same run — `check-inventory` succeeded on its
+first attempt, but `approve-order` failed once (`exec_b1`) and committed on retry
+(`exec_b2`):
+
+| id | run_id | task_id | execution_id | field | value | status | ts |
+|---|---|---|---|---|---|---|---|
+| `1` | `run_8f2c1a90` | `check-inventory` | `exec_a1` | `in_stock` | `true` | `committed` | `2026-07-08 09:12:00.340+00` |
+| `2` | `run_8f2c1a90` | `approve-order` | `exec_b1` | `approved` | `true` | `aborted` | `2026-07-08 09:12:00.610+00` |
+| `3` | `run_8f2c1a90` | `approve-order` | `exec_b2` | `approved` | `true` | `committed` | `2026-07-08 09:12:00.780+00` |
+
+Row 2 is the failed attempt's write — it stays in the table but never satisfies a
+current-state read. The current state for this run is therefore `in_stock: true`
+and `approved: true`, resolved from rows 1 and 3 only.
 
 Two behaviours defined by the [shared conformance suite](overview.md#conformance)
 are implemented entirely through the `status` column:
@@ -110,6 +130,19 @@ The execution history — the record of what the engine did, step by step.
 | `execution_id` | `TEXT` | The execution attempt it belongs to. |
 | `payload` | `JSONB` | The entry's detail. |
 | `ts` | `TIMESTAMPTZ` | When it was recorded. |
+
+**Example rows**, for the same run:
+
+| id | run_id | kind | node_id | execution_id | payload | ts |
+|---|---|---|---|---|---|---|
+| `1` | `run_8f2c1a90` | `task_started` | `check-inventory` | `exec_a1` | `{}` | `2026-07-08 09:12:00.120+00` |
+| `2` | `run_8f2c1a90` | `task_completed` | `check-inventory` | `exec_a1` | `{}` | `2026-07-08 09:12:00.410+00` |
+| `3` | `run_8f2c1a90` | `task_failed` | `approve-order` | `exec_b1` | `{"error": "validation timeout"}` | `2026-07-08 09:12:00.640+00` |
+| `4` | `run_8f2c1a90` | `task_completed` | `approve-order` | `exec_b2` | `{}` | `2026-07-08 09:12:00.820+00` |
+
+Unlike the current-state read over `blkit_values`, this table keeps row 3's failed
+attempt visible right alongside the retry that superseded it — nothing here is
+ever discarded.
 
 Like the values table it is append-only and read back sorted on `(ts, id)`.
 

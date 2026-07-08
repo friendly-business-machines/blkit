@@ -94,6 +94,34 @@ only job is to keep two same-nanosecond keys distinct. The key's timestamp makes
 keys unique and readable, but it is **not** the authoritative order — see
 [ordering](#ordering-under-parallelism) below.
 
+**Example keys**, for a run of an `order-approval` process where `check-inventory`
+succeeded on its first attempt and `approve-order` failed once (`exec_b1`) before
+committing on retry (`exec_b2`) — shown as they read once both tasks have settled,
+with `{ts}.{n}` abbreviated for readability (the real keys zero-pad `{ts}` to 20
+digits and `{n}` to 12):
+
+```
+run_8f2c1a90.meta                         →  {"process_id":"order-approval","process_version":"v1","status":"completed", …}
+
+run_8f2c1a90.v.1783501920340000000.1      →  {"task_id":"check-inventory","execution_id":"exec_a1","field":"in_stock","value":true,"status":"committed", …}
+run_8f2c1a90.v.1783501920610000000.2      →  {"task_id":"approve-order","execution_id":"exec_b1","field":"approved","value":true,"status":"aborted", …}
+run_8f2c1a90.v.1783501920780000000.3      →  {"task_id":"approve-order","execution_id":"exec_b2","field":"approved","value":true,"status":"committed", …}
+
+run_8f2c1a90.h.1783501920120000000.4      →  {"kind":"task_started","node_id":"check-inventory","execution_id":"exec_a1", …}
+run_8f2c1a90.h.1783501920410000000.5      →  {"kind":"task_completed","node_id":"check-inventory","execution_id":"exec_a1", …}
+run_8f2c1a90.h.1783501920640000000.6      →  {"kind":"task_failed","node_id":"approve-order","execution_id":"exec_b1","payload":{"error":"validation timeout"}, …}
+run_8f2c1a90.h.1783501920820000000.7      →  {"kind":"task_completed","node_id":"approve-order","execution_id":"exec_b2", …}
+```
+
+The `run_8f2c1a90.v.…2` key is `approve-order`'s failed attempt. Unlike the SQL
+backends, its aborted status is not a new entry — it is a **second revision of the
+same key** (see below): the key was first `Put` with `status: pending` when
+`exec_b1` wrote `approved`, then `Put` again on that identical key with
+`status: aborted` once the attempt failed. The retry (`exec_b2`) is a genuinely new
+`ValueWrite`, so it gets its own new key (`…3`). A current-state read folds these
+down to `in_stock: true` and `approved: true`, skipping the aborted key; a
+full-history read returns all three `v.` entries plus the four `h.` entries.
+
 ### Values: pending, then settled in place
 
 blkit never overwrites a field. Each write a task makes is its own KV entry, and the
