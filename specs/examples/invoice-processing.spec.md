@@ -1,8 +1,9 @@
 ---
 name: Example — Invoice Processing Workflow
 description: An accounts payable team processes incoming supplier invoices through three concurrent validation checks, GL code assignment, and amount-based approval routing before scheduling payment
-targets:
-  - ../../docs/examples/invoice-processing.md
+status: implemented
+code:
+  - docs/examples/invoice-processing.md
 ---
 
 # Example: Invoice Processing Workflow

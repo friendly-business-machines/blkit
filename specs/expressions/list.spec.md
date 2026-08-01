@@ -1,8 +1,9 @@
 ---
 name: bl.BlList
 description: The list type in the blkit expression language — an ordered, immutable, heterogeneous collection. Covers list literals, indexing/filter/projection, the list built-in library (incl. blkit extensions), and the Go layer (bl.BlList + expr registrations).
-targets:
-  - ../../core/list.go
+status: implemented
+code:
+  - core/list.go
 ---
 
 # bl.BlList — the `list` type
@@ -105,7 +106,7 @@ distinct(orders.region)                                  // → ["NA","EU"]   (u
 sum(for o in orders return o.amount * o.quantity)        // → 575       (per-row arithmetic first, then sum)
 ```
 
-`[@test] ../../core/list_test.go`
+Verified by [`list_test.go`](../../core/list_test.go).
 
 ---
 
@@ -150,7 +151,7 @@ Lists have no arithmetic operators (`+`/`-`/etc.) and no ordering operators (`<`
 projection](#literals-indexing-filter-projection) — they're lowered by the engine per the hub
 (see [bl-expr.spec.md](bl-expr.spec.md)).
 
-`[@test] ../../core/list_test.go`
+Verified by [`list_test.go`](../../core/list_test.go).
 
 ---
 
@@ -300,7 +301,7 @@ is the largest value not exceeding `end` (for ascending) / not less than `end` (
 **Non-numeric arguments** → `bl.TypeError`. The function is integer-friendly but not
 integer-only — any `bl.BlNumber` is acceptable.
 
-`[@test] ../../core/list_test.go`
+Verified by [`list_test.go`](../../core/list_test.go).
 
 ### Aggregation
 
@@ -389,7 +390,7 @@ sort(["m", "s", "xl"], ["s", "m", "l"])      // → ["s", "m", "xl"]  ("xl" unli
 This **diverges from DMN FEEL**, whose `sort(list, precedes)` takes a comparator function;
 blkit's `sort` does not accept a comparator.
 
-`[@test] ../../core/list_test.go`
+Verified by [`list_test.go`](../../core/list_test.go).
 
 ---
 
@@ -597,7 +598,7 @@ func listOptions() []expr.Option {
 
 Native Go slices wrap to `bl.BlList` via the engine's input bridge.
 
-`[@test] ../../core/list_test.go`
+Verified by [`list_test.go`](../../core/list_test.go).
 
 ---
 

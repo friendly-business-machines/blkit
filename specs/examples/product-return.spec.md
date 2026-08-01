@@ -1,8 +1,9 @@
 ---
 name: product-return
 description: Business process specification for handling a customer's request to return a purchased product and determining the appropriate refund or replacement outcome.
-targets:
-  - ../../docs/examples/product-return.md
+status: implemented
+code:
+  - docs/examples/product-return.md
 ---
 
 # Product Return and Refund
@@ -31,7 +32,7 @@ The process has two time boundaries:
 | Return Reason | Reason selected from the standard reason list |
 | Preferred Resolution | Refund, replacement, or store credit |
 
-**Standard return reasons**
+### Standard return reasons
 
 | Reason Code | Description |
 |---|---|

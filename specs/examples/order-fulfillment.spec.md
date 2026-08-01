@@ -1,8 +1,9 @@
 ---
 name: Example — Order Fulfillment Process
 description: An e-commerce platform handles an order from customer placement through stock reservation, payment, picking, dispatch, and delivery confirmation — with explicit handling for out-of-stock and payment failure scenarios
-targets:
-  - ../../docs/examples/order-fulfillment.md
+status: implemented
+code:
+  - docs/examples/order-fulfillment.md
 ---
 
 # Example: Order Fulfillment Process

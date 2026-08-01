@@ -1,16 +1,13 @@
 ---
 name: SqliteStateStore
 description: A durable, embedded state-store backend that keeps each run's ProcessState in a single SQLite file on local disk — its own module built on the pure-Go modernc.org/sqlite driver, so audit stays queryable with SQL and static builds keep working
-targets:
-  - ../../stores/sqlite/store.go
+status: implemented
+code:
+  - stores/sqlite/
+implements: specs/state-stores/overview.spec.md
 ---
 
 # SqliteStateStore
-
-> **Status:** Work in progress. See
-> [overview.spec.md](./overview.spec.md) for how backends are laid out, and
-> [process-state.spec.md](../processes/process-state.spec.md) for what a
-> `ProcessState` is.
 
 The SQLite backend keeps each run's
 [ProcessState](../processes/process-state.spec.md) in a **SQLite** database — a
@@ -145,4 +142,4 @@ opened in a **temporary directory** that is removed when the test finishes, so i
 needs no external system and runs as part of the module's normal `go test` run.
 Reopening the store mid-suite verifies the data survives a close/open cycle.
 
-`[@test] ../../stores/sqlite/store_test.go`
+Verified by [`store_test.go`](../../stores/sqlite/store_test.go).

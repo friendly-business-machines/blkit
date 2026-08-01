@@ -1,16 +1,13 @@
 ---
 name: InMemoryStateStore
 description: The built-in state-store backend that keeps a ProcessState in memory — zero dependencies, not durable, the default for tests and local runs
-targets:
-  - ../../core/in_memory_state_store.go
+status: implemented
+code:
+  - core/in_memory_state_store.go
+implements: specs/state-stores/overview.spec.md
 ---
 
 # InMemoryStateStore
-
-> **Status:** Work in progress. See
-> [overview.spec.md](./overview.spec.md) for how backends are laid out, and
-> [process-state.spec.md](../processes/process-state.spec.md) for what a
-> `ProcessState` is.
 
 The `InMemoryStateStore` keeps each run's [ProcessState](../processes/process-state.spec.md)
 in memory. It is **built into the core** blkit module and needs no extra
@@ -94,4 +91,4 @@ This backend is verified against the shared state-store **conformance suite** (s
 the suite runs in-process as part of the module's normal `go test` run — no setup and
 nothing to clean up.
 
-`[@test] ../../core/in_memory_state_store_test.go`
+Verified by [`in_memory_state_store_test.go`](../../core/in_memory_state_store_test.go).

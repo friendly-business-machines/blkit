@@ -1,12 +1,7 @@
 ---
 name: Project Directory Structure
 description: Repository directory layout — Go implementation, docs, scripts, and copier templates
-targets:
-  - ../**/*.go
-  - ../docs/**
-  - ../scripts/**
-  - ../copier/**
-  - ../.pre-commit-config.yaml
+status: implemented
 ---
 
 # Project Directory Structure

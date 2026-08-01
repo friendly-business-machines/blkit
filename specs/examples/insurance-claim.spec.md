@@ -1,8 +1,9 @@
 ---
 name: insurance-claim
 description: Business process specification for assessing a motor insurance claim, scoring damage severity, and determining the settlement amount.
-targets:
-  - ../../docs/examples/insurance-claim.md
+status: implemented
+code:
+  - docs/examples/insurance-claim.md
 ---
 
 # Insurance Claim Assessment
@@ -49,7 +50,7 @@ A claim is eligible for assessment only if all of the following are true.
 | 3 | Incident date is on or before policy end date | Claim rejected: incident after cover expiry |
 | 4 | Damage categories include at least one item covered by the selected cover type | Claim rejected: damage not covered |
 
-**Cover type coverage matrix**
+### Cover type coverage matrix
 
 | Damage Category | Third-Party Only | Third-Party Fire & Theft | Comprehensive |
 |---|---|---|---|
@@ -77,7 +78,7 @@ Each reported damage category carries a base score. The total score is the sum o
 | Own vehicle weather damage | 15 |
 | Own vehicle vandalism | 20 |
 
-**Severity bands**
+### Severity bands
 
 | Score Range | Severity Band |
 |---|---|
@@ -96,7 +97,7 @@ The settlement amount is calculated as follows.
 2. Subtract the policy excess from the gross settlement.
 3. If the result is negative, the settlement amount is £0 (the damage cost is below the excess).
 
-**Severity band percentages**
+### Severity band percentages
 
 | Severity Band | Percentage of Market Value |
 |---|---|
@@ -105,7 +106,7 @@ The settlement amount is calculated as follows.
 | Significant | 65% |
 | Total loss | 100% |
 
-**Senior assessor referral**
+### Senior assessor referral
 
 If the calculated settlement amount (after deducting the excess) exceeds £25,000, the claim is flagged for senior assessor review before any offer is issued. The offer is withheld until the senior assessor approves, adjusts, or declines it.
 

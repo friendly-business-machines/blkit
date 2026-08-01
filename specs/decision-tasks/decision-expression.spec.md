@@ -1,8 +1,9 @@
 ---
 name: DecisionExpression
 description: A generic decision construct defining decision logic as named text-expression entries over concrete Go input (I) and output (O) structs. Each entry binds an output field to a bl-expression; entries may reference declared inputs and sibling outputs by name, with automatic by-name dependency sorting. Evaluate(inputs I) returns O, type-checked at Go compile time.
-targets:
-  - ../../core/decision_expression.go
+status: implemented
+code:
+  - core/decision_expression.go
 ---
 
 # DecisionExpression
@@ -282,7 +283,7 @@ Output:
 | with_shipping  | gross + 5    |
 ```
 
-`[@test] ../../core/decision_expression_test.go`
+Verified by [`decision_expression_test.go`](../../core/decision_expression_test.go).
 
 ---
 

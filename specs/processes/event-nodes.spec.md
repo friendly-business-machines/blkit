@@ -1,8 +1,9 @@
 ---
 name: Event Nodes
 description: Lifecycle and event node types — StartEvent, EndEvent, CancelEvent, ErrorEvent, TerminateEvent, SuspendForDuration, SuspendUntilDatetime, PauseForDuration. Timer-based only; external input is handled by the RequestInputTask task node.
-targets:
-  - ../processes/event_nodes.go
+status: agreed
+code:
+  - core/event_nodes.go
 ---
 
 # Event Nodes

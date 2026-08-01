@@ -1,11 +1,12 @@
 ---
 name: Task Nodes
 description: Task types for business processes — NativeFunctionTask, DecisionTask, SubProcessTask, TriggerProcessTask, RequestInputTask
-targets:
-  - ../processes/task.go
-  - ../processes/subprocess_task.go
-  - ../processes/trigger_process_task.go
-  - ../processes/request_input_task.go
+status: agreed
+code:
+  - core/task.go
+  - core/subprocess_task.go
+  - core/trigger_process_task.go
+  - core/request_input_task.go
 ---
 
 # Task Nodes

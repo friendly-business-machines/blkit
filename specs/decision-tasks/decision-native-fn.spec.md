@@ -1,8 +1,9 @@
 ---
 name: DecisionNativeFunction
 description: A generic DecisionNode[I, O] whose logic is an arbitrary native Go function func(I) (O, error) over concrete input/output structs of bl.Handle fields. Evaluate hands the function the typed input struct and returns the typed output struct it produces. The escape hatch for a decision's pure computation that is neither a table nor an expression — a bespoke algorithm, calculation, or model, with compile-time-typed inputs and outputs. It runs Fn exactly once, with no retry or concurrent-execution config; fallible I/O belongs in a process-layer native-function task instead.
-targets:
-  - ../../core/decision_native_fn.go
+status: implemented
+code:
+  - core/decision_native_fn.go
 ---
 
 # DecisionNativeFunction

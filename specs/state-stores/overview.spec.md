@@ -1,18 +1,13 @@
 ---
 name: StateStoreBackends
 description: How blkit's pluggable state-store backends are laid out in the codebase — a lean core module plus one module per backend, so an application imports only the backend it uses and pulls in only that backend's dependencies
-targets:
-  - ../../core/state_store.go
-  - ../../core/state_store_conformance.go
+status: implemented
+code:
+  - core/state_store.go
+  - core/state_store_conformance.go
 ---
 
 # State Store Backends
-
-> **Status:** This spec is a work in progress. The exact shape of the state-store
-> interface is being reworked around [ProcessState](../processes/process-state.spec.md).
-> This document is about **how the backends are laid out in the codebase** and how
-> an application picks one — not the interface method details, which live in
-> [state-store.spec.md](../data/state-store.spec.md).
 
 A **state store** is where a [ProcessState](../processes/process-state.spec.md) is
 kept. blkit supports different storage backends — an in-memory one, PostgreSQL,

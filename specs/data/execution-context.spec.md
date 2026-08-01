@@ -1,8 +1,9 @@
 ---
 name: ExecutionContext
 description: The shared variable store for a process execution — an append-only log of transactions, where each transaction is a node's atomic batch of variable assignments, and reads are projections that fold the log into current state
-targets:
-  - ../data/context.go
+status: agreed
+code:
+  - core/execution_context.go
 ---
 
 # ExecutionContext

@@ -1,8 +1,9 @@
 ---
 name: bl.BlDictionary
 description: The dictionary type in the blkit expression language — an unordered key-value map. Covers dictionary literals, path access, the dictionary built-in library (incl. blkit extensions), and the Go layer (bl.BlDictionary + expr registrations).
-targets:
-  - ../../core/dictionary.go
+status: implemented
+code:
+  - core/dictionary.go
 ---
 
 # bl.BlDictionary — the `dictionary` type
@@ -45,7 +46,7 @@ evaluated in source order against the partial scope built up by the entries to i
 (`{a: 2, b: a*2}` → `{a: 2, b: 4}`). After evaluation, the dictionary holds resolved values
 with no remaining expression dependencies; iteration order is not preserved.
 
-`[@test] ../../core/dictionary_test.go`
+Verified by [`dictionary_test.go`](../../core/dictionary_test.go).
 
 ---
 
@@ -93,7 +94,7 @@ Dictionaries have no arithmetic operators (`+`/`-`/etc.), no ordering operators
 Member access is **patcher-lowered** to a call to `getValue(d, key)`. So `d.name` and
 `d["name"]` are both equivalent to `getValue(d, "name")`.
 
-`[@test] ../../core/dictionary_test.go`
+Verified by [`dictionary_test.go`](../../core/dictionary_test.go).
 
 ---
 
@@ -116,7 +117,7 @@ DMN-inspired functions plus blkit extensions (**ext**).
 | `isEmpty(d)` **ext** | `isEmpty({})` | `true` |
 | `dictionaryRemove(d, key)` **ext** | `dictionaryRemove({a:1, b:2}, "a")` | `{b: 2}` |
 
-`[@test] ../../core/dictionary_test.go`
+Verified by [`dictionary_test.go`](../../core/dictionary_test.go).
 
 ---
 
@@ -251,7 +252,7 @@ func dictionaryOptions() []expr.Option {
 }
 ```
 
-`[@test] ../../core/dictionary_test.go`
+Verified by [`dictionary_test.go`](../../core/dictionary_test.go).
 
 ---
 

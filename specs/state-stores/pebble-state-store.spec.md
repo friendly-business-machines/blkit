@@ -1,16 +1,13 @@
 ---
 name: PebbleStateStore
 description: A durable, embedded state-store backend that keeps each run's ProcessState in a local Pebble store — its own module, no external server, strong general-purpose performance
-targets:
-  - ../../stores/pebble/store.go
+status: implemented
+code:
+  - stores/pebble/
+implements: specs/state-stores/overview.spec.md
 ---
 
 # PebbleStateStore
-
-> **Status:** Work in progress. See
-> [overview.spec.md](./overview.spec.md) for how backends are laid out, and
-> [process-state.spec.md](../processes/process-state.spec.md) for what a
-> `ProcessState` is.
 
 The Pebble backend keeps each run's
 [ProcessState](../processes/process-state.spec.md) in a **Pebble** store — a pure-Go
@@ -109,4 +106,4 @@ opened in a **temporary directory** that is removed when the test finishes, so i
 needs no external system and runs as part of the module's normal `go test` run.
 Reopening the store mid-suite verifies the data survives a close/open cycle.
 
-`[@test] ../../stores/pebble/store_test.go`
+Verified by [`store_test.go`](../../stores/pebble/store_test.go).

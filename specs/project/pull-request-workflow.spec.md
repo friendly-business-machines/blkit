@@ -1,12 +1,10 @@
 ---
 name: Pull Request Workflow
 description: Local pre-pull-request script (scripts/create-pull-request.sh), the make pr target, PR_DESCRIPTION.md lifecycle, the /pr Claude Code slash command, and the GitHub Actions pull-request-checks.yml workflow that runs required status checks on every PR
-targets:
-  - ../scripts/create-pull-request.sh
-  - ../Makefile
-  - ../.gitignore
-  - ../.claude/commands/pr.md
-  - ../.github/workflows/pull-request-checks.yml
+status: agreed
+code:
+  - scripts/create-pull-request.sh
+  - .github/workflows/pull-request-checks.yml
 ---
 
 # Pull Request Workflow
@@ -57,7 +55,7 @@ Examples:
 --- BLKIT PR ERROR ---
 STEP:   Branch check
 FAILED: Current branch is 'main'
-DETAIL: 
+DETAIL:
 ACTION: Switch to a feature branch before running make pr.
 ----------------------
 ```
@@ -153,6 +151,7 @@ If the regen check fails, steps 2 and 3 do not run.
 Both jobs (`go`, `docs`) are configured as **required status checks** in the branch protection rules for `main`. A pull request cannot be merged until every job passes.
 
 Branch protection for `main` additionally requires:
+
 - At least one approving review.
 - The branch to be up to date with `main` before merging.
 - No direct pushes (all changes must arrive via pull request).

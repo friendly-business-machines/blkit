@@ -1,16 +1,13 @@
 ---
 name: TursoStateStore
 description: A durable, embedded state-store backend that keeps each run's ProcessState in a Turso Database file on local disk — Turso Database is the ground-up rewrite of SQLite in Rust (beta); its own module, pure-Go driver, no CGO at build time
-targets:
-  - ../../stores/turso/store.go
+status: implemented
+code:
+  - stores/turso/
+implements: specs/state-stores/overview.spec.md
 ---
 
 # TursoStateStore
-
-> **Status:** Work in progress. See
-> [overview.spec.md](./overview.spec.md) for how backends are laid out, and
-> [process-state.spec.md](../processes/process-state.spec.md) for what a
-> `ProcessState` is.
 
 The Turso backend keeps each run's
 [ProcessState](../processes/process-state.spec.md) in a **Turso Database** file on
@@ -151,4 +148,4 @@ temporary directory that is removed when the test finishes — no external
 system, part of the module's normal `go test` run. Reopening the store
 mid-suite verifies the data survives a close/open cycle.
 
-`[@test] ../../stores/turso/store_test.go`
+Verified by [`store_test.go`](../../stores/turso/store_test.go).

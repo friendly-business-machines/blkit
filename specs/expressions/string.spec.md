@@ -1,8 +1,9 @@
 ---
 name: bl.BlString
 description: The string type in the blkit expression language — an immutable Unicode sequence. Covers string literals, the concatenation/comparison operators, the string built-in functions (incl. blkit extensions), the regex dialect, and the Go layer (bl.BlString + expr registrations).
-targets:
-  - ../../core/string.go
+status: implemented
+code:
+  - core/string.go
 ---
 
 # bl.BlString — the `string` type
@@ -67,7 +68,7 @@ stringLength("🎉")             // → 1
 stringLength("🎉a")            // → 2
 ```
 
-`[@test] ../../core/string_test.go`
+Verified by [`string_test.go`](../../core/string_test.go).
 
 ---
 
@@ -116,7 +117,7 @@ built-in if the conversion belongs inside an expression.
 Concatenation is **string-only**; to join a non-string, convert first: `"order-" + string(123) // →
 "order-123"`. Concatenating a non-string directly → `null`.
 
-`[@test] ../../core/string_test.go`
+Verified by [`string_test.go`](../../core/string_test.go).
 
 ---
 
@@ -154,7 +155,7 @@ DMN-inspired functions plus blkit extensions (**ext** — no DMN equivalent). Po
 Concatenation of many parts uses `+` chains or `stringJoin`. `string(from)` (any → string) is the
 conversion built-in (see [§ Go implementation](#go-implementation-expr-extension)).
 
-`[@test] ../../core/string_test.go`
+Verified by [`string_test.go`](../../core/string_test.go).
 
 ---
 
@@ -205,7 +206,7 @@ extract("a1 b22 c333", "[a-z]\\d+")                             // → ["a1", "b
 `contains` is a literal substring test, not a regex — for partial-string regex matching, use
 `extract` (which returns `[]` when nothing matches) or wrap the pattern: `matches(s, ".*pat.*")`.
 
-`[@test] ../../core/string_test.go`
+Verified by [`string_test.go`](../../core/string_test.go).
 
 ---
 
@@ -262,7 +263,7 @@ path. `bl.BlRegex` is also accepted as a target type by
 [calendar.spec.md § calendarDrop](calendar.spec.md#calendardropc-target--calendarkeepc-target) (and the symmetric
 `calendarKeep`), where it dispatches to regex-based name matching against calendar entries.
 
-`[@test] ../../core/string_test.go`
+Verified by [`string_test.go`](../../core/string_test.go).
 
 ---
 
@@ -282,7 +283,7 @@ path. `bl.BlRegex` is also accepted as a target type by
   empty delimiter inside the list → `bl.TypeError`; an empty delimiter list → `[s]` (single
   element, no splitting).
 
-`[@test] ../../core/string_test.go`
+Verified by [`string_test.go`](../../core/string_test.go).
 
 ---
 
@@ -557,7 +558,7 @@ func stringOptions() []expr.Option {
 }
 ```
 
-`[@test] ../../core/string_test.go`
+Verified by [`string_test.go`](../../core/string_test.go).
 
 ---
 

@@ -1,8 +1,9 @@
 ---
 name: Example — Employee Expense Approval
 description: An employee submits a business expense claim; the approval route (automatic, manager review, or finance director review) is determined by the claim amount, expense category, and the employee's seniority; the appropriate review workflow then executes and the employee is notified of the outcome
-targets:
-  - ../../docs/examples/expense-approval.md
+status: implemented
+code:
+  - docs/examples/expense-approval.md
 ---
 
 # Example: Employee Expense Approval

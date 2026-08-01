@@ -1,8 +1,7 @@
 ---
 name: Testing
 description: Test suite philosophy and conventions — Interface Specifications serve as the authoritative checklist for test coverage of the Go implementation
-targets:
-  - ../**/*_test.go
+status: implemented
 ---
 
 # Testing
@@ -80,5 +79,5 @@ When a new Interface Specification is written or an existing one is updated, the
 
 1. Identify every new public method or behaviour described in the spec.
 2. Add corresponding test cases before the implementation is considered complete.
-3. Link the test files back to the spec using `[@test]` links so coverage can be traced.
+3. Link the test files from the spec's Verification section (plain markdown links, per [spec-format.spec.md](spec-format.spec.md)) so coverage can be traced.
 4. Run the full test suite (`go test ./...`) to confirm no regressions.

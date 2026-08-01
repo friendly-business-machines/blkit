@@ -1,16 +1,13 @@
 ---
 name: BboltStateStore
 description: A durable, embedded state-store backend that keeps each run's ProcessState in a single bbolt file on local disk — its own module, no external server
-targets:
-  - ../../stores/bbolt/store.go
+status: implemented
+code:
+  - stores/bbolt/
+implements: specs/state-stores/overview.spec.md
 ---
 
 # BboltStateStore
-
-> **Status:** Work in progress. See
-> [overview.spec.md](./overview.spec.md) for how backends are laid out, and
-> [process-state.spec.md](../processes/process-state.spec.md) for what a
-> `ProcessState` is.
 
 The bbolt backend keeps each run's
 [ProcessState](../processes/process-state.spec.md) in a **bbolt** database — a small,
@@ -126,4 +123,4 @@ opened in a **temporary directory** that is removed when the test finishes, so i
 needs no external system and runs as part of the module's normal `go test` run.
 Reopening the store mid-suite verifies the data survives a close/open cycle.
 
-`[@test] ../../stores/bbolt/store_test.go`
+Verified by [`store_test.go`](../../stores/bbolt/store_test.go).

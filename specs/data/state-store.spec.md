@@ -1,11 +1,19 @@
 ---
 name: StateStore
 description: Pluggable execution state store — the authoritative source of execution context, execution history, and run status for process instances, with per-transaction durability via a write-through event log
-targets:
-  - ../data/state_store.go
+status: superseded
+code:
+  - core/state_store.go
+superseded-by: specs/state-stores/overview.spec.md
 ---
 
 # StateStore
+
+*Superseded: the backend interface, write contract, and per-backend layouts now live in
+[specs/state-stores/](../state-stores/overview.spec.md), built around
+[ProcessState](../processes/process-state.spec.md). This document reflects the earlier
+ExecutionContext/ExecutionHistory model and is retained only until the worker and
+process specs are migrated.*
 
 A `StateStore` is the **authoritative state store** for process execution and an **audit trail** of every step taken. Workers are stateless — they reconstruct all needed state from the StateStore each time they pick up a process. The StateStore determines **where** this state is stored.
 
@@ -109,7 +117,7 @@ type NewExecutionStateOpts struct {
 - **`Flush`** is the durability barrier — callers use it when they need a guarantee that prior writes for the instance have landed.
 - **`config()`** returns a dictionary of connection details needed to reconstruct a connection to this state store from another process. Used to forward connection details to worker binaries running on other hosts. `InMemoryStateStore.config()` raises `ValueError` since in-memory state cannot be shared.
 
-### Dual Role
+## Dual Role
 
 The StateStore serves two purposes:
 
@@ -308,7 +316,7 @@ The `StateStore` interface allows custom implementations — for example, stream
 
 ## Edge Cases
 
-- The state store implementation is independent of the `MessageGateway` choice. Any combination is valid (e.g. `PostgresStateStore` with `RedisMessageGateway`).
+- The state store implementation is independent of the `MessageBroker` choice. Any combination is valid (e.g. `PostgresStateStore` with the Redis message broker).
 - `SQLiteStateStore`, `RocksDBStateStore`, `BadgerDBStateStore`, and `LocalFSStateStore` create their database / directory at the specified path if it does not exist. If the path is not writable, store creation fails with an I/O error.
 - `PostgresStateStore` and `AzureSQLStateStore` require a reachable database server. Behaviour on unreachability is governed by the worker's `WritePolicy` (see [../worker/worker.spec.md](../worker/worker.spec.md#write-policy)).
 - `PostgresStateStore` and `AzureSQLStateStore` create the schema and tables if they do not exist. If the user lacks `CREATE` privileges, store creation fails with a permissions error.

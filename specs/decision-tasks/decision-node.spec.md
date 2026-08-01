@@ -1,8 +1,9 @@
 ---
 name: DecisionNode
 description: The generic interface every decision node satisfies — identity (Id, Name, Description), a typed input struct I and output struct O whose fields are bl.Handle values, and a typed Evaluate(in I) (O, error). Nodes declare their contracts as concrete Go structs reflected to []Field; a DecisionTask wires them into a compile-checked netlist by connecting their In/Out handle surfaces. A DecisionTask is itself a DecisionNode.
-targets:
-  - ../../core/decision_node.go
+status: implemented
+code:
+  - core/decision_node.go
 ---
 
 # DecisionNode

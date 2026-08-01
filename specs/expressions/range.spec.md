@@ -1,8 +1,9 @@
 ---
 name: bl.BlRange
 description: The range (interval) type in the blkit expression language. Covers interval literals and boundary semantics, membership, the interval-algebra built-ins, and the Go layer (bl.BlRange + expr registrations).
-targets:
-  - ../../core/range.go
+status: implemented
+code:
+  - core/range.go
 ---
 
 # bl.BlRange — the `range` type
@@ -45,7 +46,7 @@ Ranges work over any comparable type — numbers, strings (code-point order), an
 (null..0)      // "negative"
 ```
 
-`[@test] ../../core/range_test.go`
+Verified by [`range_test.go`](../../core/range_test.go).
 
 ---
 
@@ -94,7 +95,7 @@ with a `null` endpoint → `bl.TypeError`.
 `in` has an equivalent function form, `includes(r, x)`, documented under
 [§ Interval algebra](#interval-algebra-built-ins).
 
-`[@test] ../../core/range_test.go`
+Verified by [`range_test.go`](../../core/range_test.go).
 
 ---
 
@@ -109,7 +110,7 @@ Components are read with the dot operator ([bl-expr.spec.md](bl-expr.spec.md#acc
 | `.startIncluded` | `[1..10].startIncluded` | `true` |
 | `.endIncluded` | `[1..10).endIncluded` | `false` |
 
-`[@test] ../../core/range_test.go`
+Verified by [`range_test.go`](../../core/range_test.go).
 
 ---
 
@@ -142,7 +143,7 @@ returns `true` for an empty range (that's its purpose).
 | `coincides(a, b)` | `coincides([1..5], [1..5])` | `true` (identical intervals; self-inverse) |
 | `isEmpty(r)` **ext** | `isEmpty((3..3))` | `true` (no values in the range) |
 
-`[@test] ../../core/range_test.go`
+Verified by [`range_test.go`](../../core/range_test.go).
 
 ---
 
@@ -172,7 +173,7 @@ The distinction matters: `null` (missing data) and an empty range (a well-define
 happens to contain nothing) are different concepts. `isEmpty(null)` → `null` (input was
 missing); `isEmpty([5..3])` → `true` (input was an empty range).
 
-`[@test] ../../core/range_test.go`
+Verified by [`range_test.go`](../../core/range_test.go).
 
 ---
 
@@ -336,7 +337,7 @@ func rangeOptions() []expr.Option {
 }
 ```
 
-`[@test] ../../core/range_test.go`
+Verified by [`range_test.go`](../../core/range_test.go).
 
 ---
 

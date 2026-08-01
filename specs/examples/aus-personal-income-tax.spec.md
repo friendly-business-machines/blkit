@@ -1,8 +1,9 @@
 ---
 name: Example — Australian Personal Income Tax Calculator
 description: A tax agent calculates an Australian individual's annual income tax liability for the 2024–25 financial year, starting from assessable-income aggregation (salary, interest, franked and unfranked dividends with imputation gross-up, net rental, business income, foreign income, trust distributions, and net capital gains after the 50% individual CGT discount) less allowable deductions, then applying progressive bracket tax, Medicare Levy with low-income reduction, Medicare Levy Surcharge, Low Income Tax Offset, Seniors & Pensioners Tax Offset, Foreign Income Tax Offset, HELP/HECS compulsory repayment, and reconciling against PAYG withheld and refundable franking credits, across resident, foreign-resident, and working-holiday-maker residency statuses
-targets:
-  - ../../docs/examples/aus-personal-income-tax.md
+status: implemented
+code:
+  - docs/examples/aus-personal-income-tax.md
 ---
 
 # Example: Australian Personal Income Tax Calculator
@@ -387,7 +388,7 @@ A single, 45-year-old Australian resident with no private hospital cover, no HEL
 
 A 40-year-old single Australian resident with private hospital cover and no HELP debt has the following position for FY 2024–25.
 
-**Income sources**
+#### Income sources
 
 | Source | Amount entering assessable income |
 |---|---|
@@ -401,7 +402,7 @@ A 40-year-old single Australian resident with private hospital cover and no HELP
 
 > Assessable income = $110,000 + $800 + $300 + $4,000 − $2,500 + $1,500 + $7,000 = **$121,100**
 
-**Deductions**
+#### Deductions
 
 | Category | Amount |
 |---|---|
@@ -413,11 +414,11 @@ A 40-year-old single Australian resident with private hospital cover and no HELP
 
 > Allowable deductions = $1,200 + $600 + $300 + $250 + $5,000 = **$7,350**
 
-**Taxable income**
+#### Taxable income
 
 > $121,100 − $7,350 = **$113,750**
 
-**Downstream — feeding the tax calculation**
+#### Downstream — feeding the tax calculation
 
 Assume PAYG tax withheld for the year was $28,500.
 

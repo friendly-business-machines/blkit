@@ -1,8 +1,9 @@
 ---
 name: ExecutionHistory
 description: The structure of execution history for a process instance — a flat chronological record of execution steps with node-grouped rendering for inspection
-targets:
-  - ../data/execution_history.go
+status: agreed
+code:
+  - core/execution_history.go
 ---
 
 # ExecutionHistory

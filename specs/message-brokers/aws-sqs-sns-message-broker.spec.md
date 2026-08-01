@@ -1,13 +1,13 @@
 ---
 name: AWSSQSSNSMessageBroker
 description: AWS SQS/SNS message-broker backend — SQS queues per process key for jobs, an SNS topic with filter policies fanning out to per-subscriber queues for instance events, and a RegistryStore (DynamoDB) for the registry, timers, and last-event records. Its own module under brokers/aws-sqs-sns.
-targets:
-  - ../../brokers/aws-sqs-sns/broker.go
+status: implemented
+code:
+  - brokers/aws-sqs-sns/
+implements: specs/message-brokers/overview.spec.md
 ---
 
 # AWS SQS/SNS Message Broker
-
-> **Status:** Implemented.
 
 The AWS backend implements [MessageBroker](overview.spec.md) against **SQS**
 (the job queue) and **SNS** (instance-event fan-out). SQS's visibility

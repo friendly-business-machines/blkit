@@ -1,8 +1,9 @@
 ---
 name: REST Server
 description: An HTTP REST server that exposes processes registered on a MessageBroker via REST endpoints, with Server-Sent Events for per-instance event streaming. Optionally embeds a worker in the same binary via EmbeddedWorker.
-targets:
-  - ../rest/server.go
+status: agreed
+code:
+  - restserver/server.go
 ---
 
 # REST Server

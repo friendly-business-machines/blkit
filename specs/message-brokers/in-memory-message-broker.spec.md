@@ -1,13 +1,13 @@
 ---
 name: InMemoryMessageBroker
 description: The built-in single-process message-broker backend — Go channels and maps, no external dependencies. Part of core; for tests, local development, and single-binary deployments.
-targets:
-  - ../../core/in_memory_message_broker.go
+status: implemented
+code:
+  - core/in_memory_message_broker.go
+implements: specs/message-brokers/overview.spec.md
 ---
 
 # In-Memory Message Broker
-
-> **Status:** Implemented.
 
 The in-memory broker is the built-in backend that ships in core — Go channels
 and mutex-guarded maps, no external broker required. It implements the full

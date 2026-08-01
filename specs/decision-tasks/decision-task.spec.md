@@ -1,8 +1,9 @@
 ---
 name: DecisionTask
 description: A reusable decision task — a graph of generic DecisionNode[I,O]s wired into a compile-checked netlist over a typed TaskIn/TaskOut, that is itself a ProcessNode (and itself a DecisionNode). Built from a DecisionTaskConfig (identity + task-level fields) plus a task.Graph(...) of bl.Edge connections; the node set and reference data are derived from the edges. The constructor topologically sorts the edges, rejects cycles, and panics on invalid definitions. Cloned for reuse across processes.
-targets:
-  - ../../core/decision_task.go
+status: implemented
+code:
+  - core/decision_task.go
 ---
 
 # DecisionTask

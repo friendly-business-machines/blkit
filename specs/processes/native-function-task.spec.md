@@ -1,8 +1,9 @@
 ---
 name: NativeFunctionTask
 description: A Go-function-backed task node, generic over a caller-supplied outputs struct; declared together with its function body and reused across processes via Clone
-targets:
-  - ../processes/native-function-task.go
+status: agreed
+code:
+  - core/native_function_task.go
 ---
 
 # NativeFunctionTask

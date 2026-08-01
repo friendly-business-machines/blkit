@@ -1,16 +1,13 @@
 ---
 name: NatsStateStore
 description: A durable, shareable state-store backend that keeps each run's ProcessState in NATS JetStream — its own module; a natural fit when NATS is already the message broker
-targets:
-  - ../../stores/nats/store.go
+status: implemented
+code:
+  - stores/nats/
+implements: specs/state-stores/overview.spec.md
 ---
 
 # NatsStateStore
-
-> **Status:** Work in progress. See
-> [overview.spec.md](./overview.spec.md) for how backends are laid out, and
-> [process-state.spec.md](../processes/process-state.spec.md) for what a
-> `ProcessState` is.
 
 The NATS backend keeps each run's
 [ProcessState](../processes/process-state.spec.md) in **NATS** — specifically in
@@ -127,4 +124,4 @@ NATS server with JetStream enabled, embedded in the test process** (`nats-server
 is importable as a Go library) — the genuine engine, with no external system or
 container needed. Each subtest gets its own server, store directory, and bucket.
 
-`[@test] ../../stores/nats/store_test.go`
+Verified by [`store_test.go`](../../stores/nats/store_test.go).

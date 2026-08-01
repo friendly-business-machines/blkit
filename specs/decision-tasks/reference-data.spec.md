@@ -1,8 +1,9 @@
 ---
 name: ReferenceData
 description: A static value source generic over T BlValue — carries identity (Id, Name, Description) and a single constant value, exposed as a wireable .Value handle. Connected into a DecisionTask graph with bl.Edge like any node output; the task derives it from the edges. It computes nothing and is never evaluated.
-targets:
-  - ../../core/reference_data.go
+status: implemented
+code:
+  - core/reference_data.go
 ---
 
 # ReferenceData

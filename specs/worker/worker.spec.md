@@ -1,8 +1,9 @@
 ---
 name: Worker
 description: A blocking goroutine loop that fetches jobs from a MessageBroker and runs each process to completion locally against a StateStore. Also handles broker-held registry lifecycle (register on startup, heartbeat, unregister on shutdown).
-targets:
-  - ../worker/worker.go
+status: agreed
+code:
+  - worker/worker.go
 ---
 
 # Worker

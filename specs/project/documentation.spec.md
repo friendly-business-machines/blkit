@@ -1,15 +1,12 @@
 ---
 name: Documentation
 description: Documentation site structure, toolchain, and authoring conventions — compiled from Markdown using Zensical and hosted on GitHub Pages, including auto-generated Go API reference and llms.txt discovery files
-targets:
-  - ../docs/**/*.md
-  - ../docs/**/*.yml
-  - ../docs/**/*.yaml
-  - ../docs/llms.txt
-  - ../docs/llms-full.txt
-  - ../scripts/generate-docs.sh
-  - ../scripts/generate-llms.sh
-  - ../.github/workflows/docs*.yml
+status: implemented
+code:
+  - docs/
+  - scripts/generate-docs.sh
+  - scripts/generate-llms.sh
+  - .github/workflows/docs.yml
 ---
 
 # Documentation
@@ -157,7 +154,7 @@ Pages: `tasks.md`, `gateways.md`, `processes.md`.
 
 The State Stores section is the user guide to blkit's pluggable state-store backends — where a process instance's state (the values its tasks produce and its execution history) is kept. It describes how to *use* and *choose* a backend, not the internal design.
 
-It opens with an orientation **overview** page (what a state store is, what every backend does, how to choose one, and the shared conformance guarantee) and is then organised as one page per backend. Each page's behaviour is defined authoritatively by the matching spec under `specs/state-stores/`: the overview by `overview.spec.md`, and each backend page by its `<name>-state-store.spec.md`. The pages are hand-authored user-guide prose, so they omit the specs' status banners, Go interface details, and `[@test]` links; those live in the specs and (for the API surface) in the generated Reference pages, which each backend page links to.
+It opens with an orientation **overview** page (what a state store is, what every backend does, how to choose one, and the shared conformance guarantee) and is then organised as one page per backend. Each page's behaviour is defined authoritatively by the matching spec under `specs/state-stores/`: the overview by `overview.spec.md`, and each backend page by its `<name>-state-store.spec.md`. The pages are hand-authored user-guide prose, so they omit the specs' status metadata, Go interface details, and test links; those live in the specs and (for the API surface) in the generated Reference pages, which each backend page links to.
 
 Pages: `overview.md`, `in-memory.md`, `postgres.md`, `mssql.md`, `mysql.md`, `mariadb.md`, `nats.md`, `sqlite.md`, `bbolt.md`, `badger.md`, `pebble.md`.
 
@@ -167,7 +164,7 @@ The in-memory backend is built into core, so its API appears in `reference/blkit
 
 The Message Brokers section is the user guide to blkit's pluggable message-broker backends — the channel over which clients and workers exchange messages (worker registration, the process job queue, start and cancel requests, input requests and responses, and process outcomes). It describes how to *use* and *choose* a backend, not the internal design, and stresses that the broker carries *messages about* a run while the run's state lives in the state store.
 
-It opens with an orientation **overview** page (what a broker does and does not do, how to choose one, and the shared conformance guarantee) and is then organised as one page per backend. Each page's behaviour is defined authoritatively by the matching spec under `specs/message-brokers/`: the overview by `overview.spec.md`, and each backend page by its `<name>-message-broker.spec.md`. The pages are hand-authored user-guide prose, so they omit the specs' status banners, Go interface details, and `[@test]` links; those live in the specs and (for the API surface) in the generated Reference pages, which each backend page links to.
+It opens with an orientation **overview** page (what a broker does and does not do, how to choose one, and the shared conformance guarantee) and is then organised as one page per backend. Each page's behaviour is defined authoritatively by the matching spec under `specs/message-brokers/`: the overview by `overview.spec.md`, and each backend page by its `<name>-message-broker.spec.md`. The pages are hand-authored user-guide prose, so they omit the specs' status metadata, Go interface details, and test links; those live in the specs and (for the API surface) in the generated Reference pages, which each backend page links to.
 
 Pages: `overview.md`, `in-memory.md`, `redis.md`, `nats.md`, `rabbitmq.md`, `azure-service-bus.md`, `google-pubsub.md`, `aws-sqs-sns.md`.
 

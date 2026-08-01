@@ -1,13 +1,13 @@
 ---
 name: NATSMessageBroker
 description: NATS + JetStream message-broker backend — subject-filtered pull consumers for the job queue, per-subject streams for instance events, KV with watch for the registry. Its own module under brokers/nats.
-targets:
-  - ../../brokers/nats/broker.go
+status: implemented
+code:
+  - brokers/nats/
+implements: specs/message-brokers/overview.spec.md
 ---
 
 # NATS Message Broker
-
-> **Status:** Implemented.
 
 The NATS backend implements [MessageBroker](overview.spec.md) against NATS
 with **JetStream** (plain core NATS lacks the durability the job queue

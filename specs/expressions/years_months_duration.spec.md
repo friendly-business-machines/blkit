@@ -1,8 +1,9 @@
 ---
 name: bl.BlYearsMonthsDuration
 description: The years-and-months duration type in the blkit expression language (ISO 8601 PnYnM). Covers construction, component access, the arithmetic/comparison operators, the duration built-ins, and the Go layer (bl.BlYearsMonthsDuration + expr registrations).
-targets:
-  - ../../core/years_months_duration.go
+status: implemented
+code:
+  - core/years_months_duration.go
 ---
 
 # bl.BlYearsMonthsDuration — the years-and-months `duration`
@@ -73,7 +74,7 @@ mixed `(date, datetime)` call is a type error; convert one operand explicitly vi
 or `date(dt)` first. See [datetime.spec.md § Business-day arithmetic & difference](datetime.spec.md#business-day-arithmetic--difference-ext)
 for the registered overloads.
 
-`[@test] ../../core/years_months_duration_test.go`
+Verified by [`years_months_duration_test.go`](../../core/years_months_duration_test.go).
 
 ---
 
@@ -209,7 +210,7 @@ Component access is **patcher-lowered** to function calls (`durationYears(d)`,
 `durationMonths(d)`, `durationTotalMonths(d)`, `durationTotalYears(d)`); see
 [bl-expr.spec.md § Patchers](bl-expr.spec.md#patchers-patchgo).
 
-`[@test] ../../core/years_months_duration_test.go`
+Verified by [`years_months_duration_test.go`](../../core/years_months_duration_test.go).
 
 ---
 
@@ -234,7 +235,7 @@ rounding. `ymDuration("P1Y") / 7` yields a duration whose `totalMonths` is exact
 `bl.BlNumber` with arbitrary precision); the canonical string form puts the resulting fraction on
 the smallest designator used (here, months).
 
-`[@test] ../../core/years_months_duration_test.go`
+Verified by [`years_months_duration_test.go`](../../core/years_months_duration_test.go).
 
 ---
 
@@ -285,7 +286,7 @@ roundDown(ymDuration("P1Y11M"), ymDuration("P1Y"))     // → ymDuration("P1Y") 
 A non-positive `step` (zero or negative) → `bl.TypeError`; rounding to a "nearest zero-sized
 multiple" or "nearest negative multiple" has no sensible meaning.
 
-`[@test] ../../core/years_months_duration_test.go`
+Verified by [`years_months_duration_test.go`](../../core/years_months_duration_test.go).
 
 ---
 
@@ -574,7 +575,7 @@ The date / datetime `+` / `-` overloads that consume a years-months duration liv
 [date](date.spec.md) and [datetime](datetime.spec.md) spokes (those spokes own one operand of
 the pair); applying a years-months duration to a `time` → `bl.TypeError`.
 
-`[@test] ../../core/years_months_duration_test.go`
+Verified by [`years_months_duration_test.go`](../../core/years_months_duration_test.go).
 
 ---
 

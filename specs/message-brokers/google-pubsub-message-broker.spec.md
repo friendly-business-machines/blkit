@@ -1,13 +1,13 @@
 ---
 name: GooglePubSubMessageBroker
 description: Google Cloud Pub/Sub message-broker backend — a jobs topic with per-key filtered subscriptions, per-subscriber ordered subscriptions with last-event-record replay for instance events, and a RegistryStore (Firestore) for the registry, timers, and last-event records. Its own module under brokers/google-pubsub.
-targets:
-  - ../../brokers/google-pubsub/broker.go
+status: implemented
+code:
+  - brokers/google-pubsub/
+implements: specs/message-brokers/overview.spec.md
 ---
 
 # Google Pub/Sub Message Broker
-
-> **Status:** Implemented.
 
 The Google Pub/Sub backend implements [MessageBroker](overview.spec.md)
 against standard Cloud Pub/Sub. Pub/Sub provides at-least-once delivery with

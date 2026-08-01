@@ -1,8 +1,9 @@
 ---
 name: bl.BlSchema
 description: Unified shape declaration for Bl* values — named fields, optionality, and arbitrary nesting. A standalone runtime value-validation utility (ValidateInput / ValidateOutput) for data contracts at process boundaries; intended to replace the InputContract / OutputContract / DictionaryContract / ListContract / TableContract family. Expressions declare their variables with concrete Go env structs, not BlSchema — see bl-expr.spec.md.
-targets:
-  - ../../core/schema.go
+status: implemented
+code:
+  - core/schema.go
 ---
 
 # bl.BlSchema
@@ -161,7 +162,7 @@ Failures produce a `bl.SchemaError` carrying a path to the offending node
 (`applicant.address.postalCode: expected bl.BlString, got bl.BlNumber`) so a single error message
 locates the problem in a deeply nested value.
 
-`[@test] ../../core/schema_test.go`
+Verified by [`schema_test.go`](../../core/schema_test.go).
 
 ## Relationship to expressions
 
@@ -207,4 +208,4 @@ named aliases at their boundary.
 - `Element` order is irrelevant — it is a set of allowed `bl.Type`s, not a sequence.
   Duplicate entries are a well-formedness error (see § Construction).
 
-`[@test] ../../core/schema_test.go`
+Verified by [`schema_test.go`](../../core/schema_test.go).

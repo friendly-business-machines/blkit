@@ -1,16 +1,13 @@
 ---
 name: BadgerStateStore
 description: A durable, embedded state-store backend that keeps each run's ProcessState in a local BadgerDB store — its own module, no external server, tuned for write throughput
-targets:
-  - ../../stores/badger/store.go
+status: implemented
+code:
+  - stores/badger/
+implements: specs/state-stores/overview.spec.md
 ---
 
 # BadgerStateStore
-
-> **Status:** Work in progress. See
-> [overview.spec.md](./overview.spec.md) for how backends are laid out, and
-> [process-state.spec.md](../processes/process-state.spec.md) for what a
-> `ProcessState` is.
 
 The Badger backend keeps each run's
 [ProcessState](../processes/process-state.spec.md) in a **BadgerDB** store — a
@@ -120,4 +117,4 @@ opened in a **temporary directory** that is removed when the test finishes, so i
 needs no external system and runs as part of the module's normal `go test` run.
 Reopening the store mid-suite verifies the data survives a close/open cycle.
 
-`[@test] ../../stores/badger/store_test.go`
+Verified by [`store_test.go`](../../stores/badger/store_test.go).

@@ -1,8 +1,11 @@
 ---
 name: blkit Overview
 description: Project-wide conventions, Go naming conventions, Interface Specification format, fluent API design, and async execution model
-targets:
-  - ../**/*.go
+status: implemented
+code:
+  - core/
+  - brokers/
+  - stores/
 ---
 
 # blkit Overview

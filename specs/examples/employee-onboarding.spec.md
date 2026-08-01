@@ -1,8 +1,9 @@
 ---
 name: employee-onboarding
 description: Business process specification for coordinating the parallel setup tasks required when a new employee joins the organisation.
-targets:
-  - ../../docs/examples/employee-onboarding.md
+status: implemented
+code:
+  - docs/examples/employee-onboarding.md
 ---
 
 # Employee Onboarding

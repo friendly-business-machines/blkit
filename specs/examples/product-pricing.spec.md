@@ -1,8 +1,9 @@
 ---
 name: Example — SaaS Subscription Pricing Engine
 description: A SaaS company calculates the final per-seat price and total monthly charge for a subscription based on plan, billing cycle, seat count (volume discount), customer loyalty tier, and an optional promotional code — with four compounding discount factors
-targets:
-  - ../../docs/examples/product-pricing.md
+status: implemented
+code:
+  - docs/examples/product-pricing.md
 ---
 
 # Example: SaaS Subscription Pricing Engine

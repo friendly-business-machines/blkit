@@ -1,16 +1,13 @@
 ---
 name: MysqlStateStore
 description: A durable, strongly consistent state-store backend that keeps each run's ProcessState in MySQL — its own module built on the go-sql-driver/mysql driver
-targets:
-  - ../../stores/mysql/store.go
+status: implemented
+code:
+  - stores/mysql/
+implements: specs/state-stores/overview.spec.md
 ---
 
 # MysqlStateStore
-
-> **Status:** Work in progress. See
-> [overview.spec.md](./overview.spec.md) for how backends are laid out, and
-> [process-state.spec.md](../processes/process-state.spec.md) for what a
-> `ProcessState` is.
 
 The MySQL backend keeps each run's
 [ProcessState](../processes/process-state.spec.md) in a **MySQL** database. Like the
@@ -144,4 +141,4 @@ skips only when neither a DSN nor a reachable Docker daemon is available. Each
 subtest uses its own table prefix, so runs are isolated and repeatable, and the
 tables are dropped afterwards.
 
-`[@test] ../../stores/mysql/store_test.go`
+Verified by [`store_test.go`](../../stores/mysql/store_test.go).

@@ -1,8 +1,9 @@
 ---
 name: Example — Shipping Rate Calculator
 description: An e-commerce platform calculates the total shipping charge for a parcel using billable weight (actual vs volumetric), destination zone base rates, a speed-tier multiplier, and a flat fuel surcharge
-targets:
-  - ../../docs/examples/shipping-rate.md
+status: implemented
+code:
+  - docs/examples/shipping-rate.md
 ---
 
 # Example: Shipping Rate Calculator

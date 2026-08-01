@@ -1,13 +1,13 @@
 ---
 name: RabbitMQMessageBroker
 description: RabbitMQ message-broker backend — quorum queues behind a topic exchange for jobs, RabbitMQ Streams for instance events, heartbeat-broadcast for the registry. Its own module under brokers/rabbitmq.
-targets:
-  - ../../brokers/rabbitmq/broker.go
+status: implemented
+code:
+  - brokers/rabbitmq/
+implements: specs/message-brokers/overview.spec.md
 ---
 
 # RabbitMQ Message Broker
-
-> **Status:** Implemented.
 
 The RabbitMQ backend implements [MessageBroker](overview.spec.md) against
 RabbitMQ 3.13+. RabbitMQ's work-queue semantics (manual acks, automatic

@@ -1,8 +1,9 @@
 ---
 name: bl.BlExpr
 description: The blkit expression language — a string-based expression syntax (based on DMN FEEL) parsed and evaluated into Bl* values. This is the hub spec covering the engine API, operators, control flow, unary tests, lexical rules, semantics, and the Go layer that extends expr-lang/expr; each data type's literals, functions, and Go implementation are detailed in its own spoke spec.
-targets:
-  - ../../core/engine.go
+status: implemented
+code:
+  - core/engine.go
 ---
 
 # The blkit expression language
@@ -81,7 +82,7 @@ var sum, _ = bl.ExprNoEnv(`1 + 1`)
 var two, _ = sum.Evaluate(bl.NoEnv{}) // the bl.BlNumber 2
 ```
 
-`[@test] ../../core/engine_test.go`
+Verified by [`engine_test.go`](../../core/engine_test.go).
 
 ---
 
@@ -115,7 +116,7 @@ Every value belongs to one of the following types. Each has a literal or constru
   `table(...)` / `tableFromDicts(...)`; `bl.BlCalendar` ([calendar.spec.md](calendar.spec.md)) is
   host-built only. All three are produced by a constructor or host code and referenced as variables.
 
-`[@test] ../../core/engine_test.go`
+Verified by [`engine_test.go`](../../core/engine_test.go).
 
 ### Numbers
 
@@ -176,7 +177,7 @@ Variables are supplied at evaluation time via the `input` map and, when an expre
 with a `bl.BlSchema`, are type-checked at parse time. A reference to a name that is neither in scope
 nor declared is a parse error (see [§ Errors and null](#errors-and-null)).
 
-`[@test] ../../core/engine_test.go`
+Verified by [`engine_test.go`](../../core/engine_test.go).
 
 ### Name resolution: `isDefined`
 
@@ -205,7 +206,7 @@ by the time a normal impl runs, a missing dictionary key has already collapsed t
 undeclared name) and `isDefined(d.key)` to a key-presence probe on the dictionary `d`. The impls are
 registered in `engine.go` alongside the other engine-level options.
 
-`[@test] ../../core/typetest_test.go`
+Verified by [`typetest_test.go`](../../core/typetest_test.go).
 
 ---
 
@@ -229,7 +230,7 @@ dtDuration("P1D") + dtDuration("PT12H")      // → dtDuration("P1DT12H")
 
 `null` propagates: `null + 1 // → null`. Division by zero yields `null`.
 
-`[@test] ../../core/engine_test.go`
+Verified by [`engine_test.go`](../../core/engine_test.go).
 
 ---
 
@@ -248,7 +249,7 @@ date("2025-01-01") < date("2025-06-01")   // → true
 5 between 1 and 10                 // → true
 ```
 
-`[@test] ../../core/engine_test.go`
+Verified by [`engine_test.go`](../../core/engine_test.go).
 
 ---
 
@@ -270,7 +271,7 @@ true and null                     // → null
 null or false                     // → null
 ```
 
-`[@test] ../../core/boolean_test.go`
+Verified by [`boolean_test.go`](../../core/boolean_test.go).
 
 ---
 
@@ -294,7 +295,7 @@ contains("foobar", "oob")         // → true
 substring("foobar", 3, 2)         // → "ob"
 ```
 
-`[@test] ../../core/string_test.go`
+Verified by [`string_test.go`](../../core/string_test.go).
 
 ---
 
@@ -322,7 +323,7 @@ else if score >= 650 then "silver"
 else "bronze"
 ```
 
-`[@test] ../../core/engine_test.go`
+Verified by [`engine_test.go`](../../core/engine_test.go).
 
 ---
 
@@ -347,7 +348,7 @@ Ranges work over numbers and ordered temporal values:
 [date("2025-01-01")..date("2025-12-31")]
 ```
 
-`[@test] ../../core/range_test.go`
+Verified by [`range_test.go`](../../core/range_test.go).
 
 ---
 
@@ -389,7 +390,7 @@ inside that value is a parse error. Use `seq(start, end)` (or parenthesise:
 {a: 5:10}                    // bl.ParseError — bare `:` in a dict value position
 ```
 
-`[@test] ../../core/list_test.go`
+Verified by [`list_test.go`](../../core/list_test.go).
 
 ---
 
@@ -414,7 +415,7 @@ cross-temporal-kind rules. The left operand for calendar membership must be a `b
 `bl.BlDateTime`; a range left operand → `bl.TypeError` (use the explicit
 `overlaps(c, r)` / `entriesIn(c, r)` for range-on-calendar queries).
 
-`[@test] ../../core/list_test.go`
+Verified by [`list_test.go`](../../core/list_test.go).
 
 ---
 
@@ -626,7 +627,7 @@ constructor exists so the unary-test grammar
 plain-expression syntax — those forms only parse in unary-test mode. `Source()`
 returns the original (un-normalised) string the caller supplied.
 
-`[@test] ../../core/unarytest_test.go`
+Verified by [`unarytest_test.go`](../../core/unarytest_test.go).
 
 ---
 
@@ -669,7 +670,7 @@ Accessing a field on a list of dictionaries projects that field across every ele
 
 List operations are covered by the [list.spec.md § Built-in functions](list.spec.md#built-in-functions).
 
-`[@test] ../../core/list_test.go`
+Verified by [`list_test.go`](../../core/list_test.go).
 
 ---
 
@@ -709,7 +710,7 @@ for i in 1..10 return if i <= 2 then 1 else partial[-1] + partial[-2]
 
 Each loop result is a `bl.BlList`.
 
-`[@test] ../../core/comprehensions_test.go`
+Verified by [`comprehensions_test.go`](../../core/comprehensions_test.go).
 
 ---
 
@@ -736,7 +737,7 @@ some x in [1, 2], y in [3, 4] satisfies x + y > 5     // → true   (2 + 4 > 5)
 every x in [1, 2], y in [3, 4] satisfies x + y >= 4   // → true   (every pair has sum ≥ 4)
 ```
 
-`[@test] ../../core/comprehensions_test.go`
+Verified by [`comprehensions_test.go`](../../core/comprehensions_test.go).
 
 ---
 
@@ -770,7 +771,7 @@ applicant.address.postcode         // navigate input variables
 See [dictionary.spec.md](dictionary.spec.md). Dictionary manipulation uses the
 [dictionary.spec.md § Built-in functions](dictionary.spec.md#built-in-functions).
 
-`[@test] ../../core/dictionary_test.go`
+Verified by [`dictionary_test.go`](../../core/dictionary_test.go).
 
 ---
 
@@ -804,7 +805,7 @@ ymDuration("P1Y6M").months           // → 6
 Available components follow the relevant `Bl*` type spec (e.g. [date.spec.md](date.spec.md),
 [range.spec.md](range.spec.md)).
 
-`[@test] ../../core/engine_test.go`
+Verified by [`engine_test.go`](../../core/engine_test.go).
 
 ---
 
@@ -860,7 +861,7 @@ already disallows I/O, host calls, and arbitrary recursion at the VM layer. The 
 above are stated for clarity at the language-spec level so callers understand the surface
 they're getting, not to add engine work.
 
-`[@test] ../../core/func_test.go`
+Verified by [`func_test.go`](../../core/func_test.go).
 
 ---
 
@@ -880,7 +881,7 @@ myTable instance of table              // → true
 ukHolidays instance of calendar        // → true
 ```
 
-`[@test] ../../core/typetest_test.go`
+Verified by [`typetest_test.go`](../../core/typetest_test.go).
 
 ---
 
@@ -937,7 +938,7 @@ a or b and c          // → a or (b and c)
 1 + 2:5 * 2           // → [3, 4, 5, 6, 7, 8, 9, 10]   (: between additive and multiplicative)
 ```
 
-`[@test] ../../core/engine_test.go`
+Verified by [`engine_test.go`](../../core/engine_test.go).
 
 ---
 
@@ -950,10 +951,10 @@ a or b and c          // → a or (b and c)
 - **Division by zero** → `null`.
 - **Parse / type-check errors** — malformed syntax, an unknown variable (when a `bl.BlSchema` is given),
   or a static type mismatch — are returned by `bl.Expr` as a `bl.ParseError`.
-  `[@test] ../../core/engine_test.go`
+  Verified by [`engine_test.go`](../../core/engine_test.go).
 - **Evaluation errors** — a type mismatch only detectable with concrete inputs (e.g. comparing
   incompatible types) — are returned by `Evaluate` as a `bl.TypeError`.
-  `[@test] ../../core/engine_test.go`
+  Verified by [`engine_test.go`](../../core/engine_test.go).
 
 The full error-type catalogue (all defined in `errors.go` / `schema.go` — see
 [§ Engine internals](#engine-internals-go)):
@@ -990,7 +991,7 @@ call sites read `bl.Expr(...)`, `bl.Number(...)`, etc.
 | `errors.go` | `ParseError`, `TypeError`, `RegexError`, `CalendarRangeError` (`SchemaError` lives in `schema.go`). |
 | `patch.go` | The `ast.Visitor` patcher(s) for FEEL-only syntax. |
 | `<type>.go` | One per value type (`number.go`, `string.go`, `date.go`, …): the `Bl*` value type, its exported host API, its unexported `…Options()` registrations, and its backing impl funcs. |
-| `*_test.go` | Tests — the `[@test]` targets throughout these specs. |
+| `*_test.go` | Tests — the files the test links throughout these specs point at. |
 
 ### Visibility & naming conventions
 
@@ -1309,7 +1310,7 @@ type CalendarRangeError struct { /* date, bounds */ }// business-day iteration p
 type SchemaError struct { Path string; Err error }   // from bl.BlSchema validation (schema.go)
 ```
 
-`[@test] ../../core/engine_test.go`
+Verified by [`engine_test.go`](../../core/engine_test.go).
 
 ---
 
@@ -1384,4 +1385,4 @@ behaviour, and the rationale.
   `bl.ExprNoEnv` and evaluate it against `bl.NoEnv{}`.
 - A list index out of range returns `null`; a missing dictionary key returns `null`.
 
-`[@test] ../../core/engine_test.go`
+Verified by [`engine_test.go`](../../core/engine_test.go).

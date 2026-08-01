@@ -1,8 +1,9 @@
 ---
 name: Gateway Nodes
 description: Gateway types (ParallelGateway, ExclusiveGateway, InclusiveGateway, JoinGateway) and their constructors (And, Xor, Or, Join). Conditional gateways (Xor, Or) route on typed branch conditions compiled against a Go env struct via bl.Expr[E]; each branch carries its own target node.
-targets:
-  - ../processes/gateway_nodes.go
+status: agreed
+code:
+  - core/gateway_nodes.go
 ---
 
 # Gateway Nodes

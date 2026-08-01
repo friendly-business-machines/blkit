@@ -1,13 +1,10 @@
 ---
 name: Release Workflow
 description: Release script (scripts/create-release.sh), the make release target, RELEASE_NOTES.md lifecycle, the publish-on-release CI workflow, and the /release Claude Code slash command
-targets:
-  - ../scripts/create-release.sh
-  - ../Makefile
-  - ../VERSION
-  - ../.gitignore
-  - ../.claude/commands/release.md
-  - ../.github/workflows/publish.yml
+status: agreed
+code:
+  - scripts/create-release.sh
+  - .github/workflows/publish.yml
 ---
 
 # Release Workflow

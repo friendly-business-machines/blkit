@@ -1,13 +1,13 @@
 ---
 name: RedisMessageBroker
 description: Redis/Valkey message-broker backend — Streams + consumer groups for the job queue, per-instance streams for events, sweeper-expired worker hashes + a Pub/Sub feed for the registry. Its own module under brokers/redis.
-targets:
-  - ../../brokers/redis/broker.go
+status: implemented
+code:
+  - brokers/redis/
+implements: specs/message-brokers/overview.spec.md
 ---
 
 # Redis Message Broker
-
-> **Status:** Implemented.
 
 The Redis backend implements [MessageBroker](overview.spec.md) against Redis
 or **Valkey** (both fully supported — only commands present in both are

@@ -1,8 +1,9 @@
 ---
 name: bl.BlDate
 description: The date type in the blkit expression language — a calendar date with optional offset/timezone, including business-day and calendar-aware arithmetic. Covers date literals, component access, the (large) date built-in library incl. blkit extensions, and the Go layer (bl.BlDate + expr registrations).
-targets:
-  - ../../core/date.go
+status: implemented
+code:
+  - core/date.go
 ---
 
 # bl.BlDate — the `date` type
@@ -40,7 +41,7 @@ today()                          // current date (local zone)
 Only the extended form is parsed; supplying both offset and timezone, or an invalid month/day, →
 `bl.TypeError`/`bl.ParseError`.
 
-`[@test] ../../core/date_test.go`
+Verified by [`date_test.go`](../../core/date_test.go).
 
 ---
 
@@ -55,7 +56,7 @@ date("2025-03-28+05:30").offset    // → dtDuration("PT5H30M")  (ext; null if n
 date("2025-03-28[Europe/London]").timezone // → "Europe/London" (ext; null if none)
 ```
 
-`[@test] ../../core/date_test.go`
+Verified by [`date_test.go`](../../core/date_test.go).
 
 ---
 
@@ -127,7 +128,7 @@ IANA-zone DST transition the projected midnights can be 23 or 25 hours apart in 
 24-hour window; see [days_time_duration.spec.md § Construction](days_time_duration.spec.md#construction)
 for worked examples on the equivalent `dtDurationBetween` form.
 
-`[@test] ../../core/date_test.go`
+Verified by [`date_test.go`](../../core/date_test.go).
 
 ---
 
@@ -416,7 +417,7 @@ Iterating business-day functions raise `bl.CalendarRangeError` past the calendar
 bounds only when `strictCalendarRange: true` is supplied (see
 [datetime.spec.md § Calendar-range strictness](datetime.spec.md#calendar-range-strictness)).
 
-`[@test] ../../core/date_test.go`
+Verified by [`date_test.go`](../../core/date_test.go).
 
 ---
 

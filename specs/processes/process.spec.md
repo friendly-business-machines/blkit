@@ -1,8 +1,9 @@
 ---
 name: Process
 description: The central class for defining and executing a business process — created via bl.NewProcess() with a graph of node chains, evaluated via Evaluate() using token-flow semantics
-targets:
-  - ../processes/process.go
+status: agreed
+code:
+  - core/process.go
 ---
 
 # Process

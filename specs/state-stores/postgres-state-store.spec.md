@@ -1,16 +1,13 @@
 ---
 name: PostgresStateStore
 description: A durable state-store backend that keeps each run's ProcessState in PostgreSQL — its own module, so only applications that use it pull in the database driver
-targets:
-  - ../../stores/postgres/store.go
+status: implemented
+code:
+  - stores/postgres/
+implements: specs/state-stores/overview.spec.md
 ---
 
 # PostgresStateStore
-
-> **Status:** Work in progress. See
-> [overview.spec.md](./overview.spec.md) for how backends are laid out, and
-> [process-state.spec.md](../processes/process-state.spec.md) for what a
-> `ProcessState` is.
 
 The PostgreSQL backend keeps each run's
 [ProcessState](../processes/process-state.spec.md) in a PostgreSQL database. It is
@@ -167,4 +164,4 @@ server instead; the test skips only when neither a DSN nor a reachable Docker da
 is available. Each subtest uses its own table prefix, so runs are isolated and
 repeatable, and the tables are dropped afterwards.
 
-`[@test] ../../stores/postgres/store_test.go`
+Verified by [`store_test.go`](../../stores/postgres/store_test.go).

@@ -1,8 +1,9 @@
 ---
 name: bl.BlUDF
 description: Named, host-defined user functions compiled from expression strings. Func[P, R] defines a typed UDF (parameter struct P, return type R) by calling expr.Compile once on the body and registering it via expr.Function; passing it to bl.Expr makes it callable by name from other expressions with compile-time-checked arguments and return type. UDFs compose — a UDF body may call other UDFs.
-targets:
-  - ../../core/udf.go
+status: implemented
+code:
+  - core/udf.go
 ---
 
 # bl.BlUDF — named user-defined functions
@@ -58,7 +59,7 @@ var also, _ = addTax.Call(TaxParams{Amount: base}) // the bl.BlNumber 120
 
 The same UDFs can be supplied to a [`DecisionExpression`](../decision-tasks/decision-expression.spec.md) via `Config.Funcs`, so its entries may call them by name.
 
-`[@test] ../../core/udf_test.go`
+Verified by [`udf_test.go`](../../core/udf_test.go).
 
 ## Parameters and the call mapping
 

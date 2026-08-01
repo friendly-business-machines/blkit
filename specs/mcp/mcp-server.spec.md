@@ -1,8 +1,9 @@
 ---
 name: MCP Server
 description: A stdio MCP server that exposes processes registered on a MessageBroker as MCP tools and resources. Each tool call is a Submit + SubscribeToInstance round-trip on the broker. Optionally embeds a worker in the same binary via EmbeddedWorker.
-targets:
-  - ../mcp/server.go
+status: agreed
+code:
+  - mcp/server.go
 ---
 
 # MCP Server

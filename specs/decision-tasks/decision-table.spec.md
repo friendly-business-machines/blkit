@@ -1,8 +1,9 @@
 ---
 name: DecisionTable
 description: A generic DecisionNode[I, O] that defines decision logic as input columns, output columns, and rules whose cells are text expressions (unary tests for inputs, expressions for outputs) over a concrete Go input struct I, producing a concrete output struct O. Cells compile against the bl expression language at construction; Evaluate(in I) returns O, type-checked at Go compile time.
-targets:
-  - ../../core/decision_table.go
+status: implemented
+code:
+  - core/decision_table.go
 ---
 
 # DecisionTable
@@ -506,7 +507,7 @@ Output:
 | 2 | >= 25 | -     | █ | "medium" |                          |
 ```
 
-`[@test] ../../core/decision_table_test.go`
+Verified by [`decision_table_test.go`](../../core/decision_table_test.go).
 
 ---
 

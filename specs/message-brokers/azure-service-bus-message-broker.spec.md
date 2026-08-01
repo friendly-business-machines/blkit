@@ -1,15 +1,13 @@
 ---
 name: AzureServiceBusMessageBroker
 description: Azure Service Bus message-broker backend — peek-lock queues for jobs, a per-handle pump subscription on one events topic, native scheduled messages for timers, and a RegistryStore (Table Storage / Cosmos DB) for the registry and last-event records. Its own module under brokers/azure-service-bus.
-targets:
-  - ../../brokers/azure-service-bus/broker.go
+status: implemented
+code:
+  - brokers/azure-service-bus/
+implements: specs/message-brokers/overview.spec.md
 ---
 
 # Azure Service Bus Message Broker
-
-> **Status:** Implemented. The conformance suite requires a live Service Bus
-> endpoint (see § Local testing) — it has not yet had a green run against a
-> real namespace; the RegistryStore is covered locally against Azurite.
 
 The Azure Service Bus backend implements [MessageBroker](overview.spec.md)
 against Service Bus queues and topics. Service Bus brings durable queues,

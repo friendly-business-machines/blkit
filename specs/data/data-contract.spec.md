@@ -1,19 +1,12 @@
 ---
 name: Input/Output Contracts
 description: Typed input and output contracts (InputContract, OutputContract) — declare allowed and required data attributes and their types for process start/end events and decision model inputs/outputs, with DictionaryContract, ListContract, and TableContract for nested structured types
-targets:
-  - ../../core/data_contract.go
+status: implemented
+code:
+  - core/data_contract.go
 ---
 
 # Input and Output Contracts
-
-> **Status:** The boundary-validation subset of this spec is implemented in
-> core (`core/data_contract.go`): `InputContract` / `OutputContract` wrap a
-> `BlSchema`, `RequiredField` / `OptionalField` take a `bl.Type`, nested
-> shapes are declared via `Field.Fields` / `Field.Element`, and contracts are
-> CBOR-serializable so they travel through the message-broker registry. The
-> richer construction DSL below (`DictionaryContract` / `ListContract` /
-> `TableContract` wrappers) lands with the process layer.
 
 `InputContract` and `OutputContract` are typed contracts — sets of named, typed fields that declare what data a component expects or produces.
 

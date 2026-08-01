@@ -1,8 +1,9 @@
 ---
 name: bl.BlBoolean
 description: The boolean type in the blkit expression language — true/false with three-valued (null-propagating) logic. Covers boolean literals, the and/or/not operators, the boolean built-ins, and the Go layer (bl.BlBoolean + expr registrations).
-targets:
-  - ../../core/boolean.go
+status: implemented
+code:
+  - core/boolean.go
 ---
 
 # bl.BlBoolean — the `boolean` type
@@ -35,7 +36,7 @@ reserved as boolean literals, a variable named `True`, `TRUE`, etc. is **not** a
 input keys that collide with a boolean literal in any casing produce a `bl.ParseError` at
 expression compile time.
 
-`[@test] ../../core/boolean_test.go`
+Verified by [`boolean_test.go`](../../core/boolean_test.go).
 
 ---
 
@@ -120,7 +121,7 @@ overload of a Go boolean operator — see
 Short-circuits: `false and X → false` (X never evaluated), `true or X → true`. `not(null) → null`.
 Equality with `null` yields `false`, never `null` (see [null.spec.md](null.spec.md)).
 
-`[@test] ../../core/boolean_test.go`
+Verified by [`boolean_test.go`](../../core/boolean_test.go).
 
 ---
 
@@ -135,7 +136,7 @@ Related null-handling helpers live alongside the type they introspect:
 [bl-expr.spec.md](bl-expr.spec.md)) and [`getOrElse`](null.spec.md#built-in-functions) (null
 fallback, in [null.spec.md](null.spec.md)).
 
-`[@test] ../../core/boolean_test.go`
+Verified by [`boolean_test.go`](../../core/boolean_test.go).
 
 ---
 
@@ -273,7 +274,7 @@ func booleanOptions() []expr.Option {
 
 Native Go `bool` inputs wrap to `bl.BlBoolean` via the engine's input bridge.
 
-`[@test] ../../core/boolean_test.go`
+Verified by [`boolean_test.go`](../../core/boolean_test.go).
 
 ---
 

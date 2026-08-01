@@ -1,8 +1,9 @@
 ---
 name: customer-discount
 description: Business process specification for identifying all applicable discounts for a customer order and selecting the most beneficial one.
-targets:
-  - ../../docs/examples/customer-discount.md
+status: implemented
+code:
+  - docs/examples/customer-discount.md
 ---
 
 # Customer Discount Eligibility
@@ -66,11 +67,11 @@ All rules are evaluated against every order. Every rule that is satisfied produc
 
 The final order total is calculated as:
 
-**Order Total = Order Subtotal × (1 − Applied Discount %)**
+> Order Total = Order Subtotal × (1 − Applied Discount %)
 
 The discount amount shown on the invoice is:
 
-**Discount Amount = Order Subtotal × Applied Discount %**
+> Discount Amount = Order Subtotal × Applied Discount %
 
 ---
 
@@ -99,6 +100,7 @@ The discount amount shown on the invoice is:
 **Order**: Silver customer, account age 24 months, subtotal £600, 30 items, Furniture category, no code, October.
 
 **Rule evaluation**:
+
 - R1 (Loyalty Silver): account age 24 ≥ 12 and tier is Silver → **5% matched**
 - R2 (Loyalty Gold): tier is not Gold → not matched
 - R5 (Bulk small): item count 30 ≥ 10 but 30 is not < 25 → not matched

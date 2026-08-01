@@ -1,8 +1,9 @@
 ---
 name: Example — Course Admission
 description: A university admissions office determines whether an undergraduate application is admitted, waitlisted, or declined, and what maximum first-term credit load and advising track apply — based on aptitude score, grade average, absence ratio, and enrolment status
-targets:
-  - ../../docs/examples/admission.md
+status: implemented
+code:
+  - docs/examples/admission.md
 ---
 
 # Example: Course Admission

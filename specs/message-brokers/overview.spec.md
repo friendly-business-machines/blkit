@@ -1,19 +1,13 @@
 ---
 name: MessageBrokerBackends
 description: How blkit's pluggable message-broker backends are laid out — the MessageBroker interface and in-memory backend in core, one module per external broker — and the shared client↔worker communication semantics every backend implements
-targets:
-  - ../../core/message_broker.go
-  - ../../core/message_broker_conformance.go
+status: implemented
+code:
+  - core/message_broker.go
+  - core/message_broker_conformance.go
 ---
 
 # Message Broker Backends
-
-> **Status:** Implemented. The `MessageBroker` interface, wire format,
-> in-memory backend, and conformance suite live in core; all six external
-> backends are implemented in their own modules. This document defines the
-> interface, the shared semantics every backend must honour, and how the
-> backends are laid out in the codebase. Per-backend mappings to
-> broker-native primitives live in the per-broker specs in this directory.
 
 A **message broker** is how blkit's clients and workers talk to each other.
 Clients (MCP servers, web servers, CLI tools, admin UIs) and workers (the
