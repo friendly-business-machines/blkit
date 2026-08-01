@@ -1,7 +1,7 @@
 {
   // Friendly label shown in VS Code UI (Dev Containers: Reopen in Container, etc.).
   // This is display-only and does not affect build/runtime behavior.
-  "name": "blkit (Ubuntu 24.04 LTS)",
+  "name": "blkit (Ubuntu 26.04 LTS)",
 
   // Build configuration for the container image used by VS Code.
   // VS Code runs `docker build` with these settings when creating/rebuilding.
@@ -49,6 +49,16 @@
   "mounts": [
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
   ],
+
+  // Runs on the HOST before the container starts, on every start. Dev Containers
+  // forwards the host's keyboxd socket (where public keys live) but only pipes the
+  // socket — it never launches the daemon, which the host starts on demand. If the
+  // host keyboxd is cold the forward returns EOF, gpg silently falls back to an
+  // empty container-local keybox, and commit signing fails with "No secret key".
+  // Launching it here guarantees a live target. See the GnuPG notes in Dockerfile.
+  // Failure is swallowed deliberately: a non-zero initializeCommand aborts container
+  // start, and contributors without GnuPG installed must still be able to attach.
+  "initializeCommand": "gpgconf --launch keyboxd || exit 0",
 
   // Reconcile the container's `docker` group GID with the host socket's actual group GID
   // on every container start (the socket is re-exposed by the host daemon each start, and

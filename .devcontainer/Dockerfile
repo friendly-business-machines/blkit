@@ -3,10 +3,10 @@
 # See AGENTS.md for details.
 
 # Base image:
-# - Ubuntu 24.04 LTS (Noble Numbat) was released on 25Apr2024.
-# - Standard LTS support runs through April 2029.
-# - Base image size is approx 117mb
-FROM ubuntu:24.04
+# - Ubuntu 26.04 LTS (Resolute Raccoon) was released in Apr2026.
+# - Standard LTS support runs through April 2031.
+# - Base image size is approx 40mb
+FROM ubuntu:26.04
 
 # Use bash with pipefail for all RUN instructions. Without this, a `curl | sh`
 # style pipe only reports the exit code of the last command, so a failed
@@ -15,7 +15,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Build args for the default non-root dev user.
 # - Microsoft Dev Container base images commonly use `vscode` with UID/GID 1000.
-# - UID/GID 1001 is used instead of the more common 1000 because Ubuntu 24.04's
+# - UID/GID 1001 is used instead of the more common 1000 because Ubuntu 26.04's
 #   base image already ships a built-in `ubuntu` user/group at UID/GID 1000.
 ARG USERNAME=vscode
 ARG USER_UID=1001
@@ -46,28 +46,28 @@ ARG USER_GID=${USER_UID}
 # - golang: Go compiler/toolchain (`go`).
 #
 # Package versions are pinned to what's currently available in the Ubuntu
-# 24.04 archive (per apt-cache madison) for reproducible builds. Ubuntu's
+# 26.04 archive (per apt-cache madison) for reproducible builds. Ubuntu's
 # archive only keeps the latest point release per package, so a pinned
 # version here will eventually be superseded by a security update and need
 # bumping to the new version — that's an accepted maintenance cost of pinning.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates=20260601~24.04.1 \
-        curl=8.5.0-2ubuntu10.10 \
-        fish=3.7.0-1 \
-        git=1:2.43.0-1ubuntu7.3 \
-        gh=2.45.0-1ubuntu0.3 \
-        gnupg=2.4.4-2ubuntu17.4 \
-        golang=2:1.22~2build1 \
-        jq=1.7.1-3ubuntu0.24.04.2 \
-        less=590-2ubuntu2.1 \
-        libatomic1=14.2.0-4ubuntu2~24.04.1 \
-        make=4.3-4.1build2 \
-        nano=7.2-2ubuntu0.2 \
-        pass=1.7.4-6 \
-        pinentry-tty=1.2.1-3ubuntu5 \
-        sudo=1.9.15p5-3ubuntu5.24.04.2 \
-        wget=1.21.4-1ubuntu4.1 \
+        ca-certificates=20260601~26.04.1 \
+        curl=8.18.0-1ubuntu2.3 \
+        fish=4.2.1-3.2 \
+        git=1:2.53.0-1ubuntu1 \
+        gh=2.46.0-4 \
+        gnupg=2.4.8-4ubuntu3 \
+        golang=2:1.26~1 \
+        jq=1.8.1-4ubuntu2 \
+        less=668-1build1 \
+        libatomic1=16-20260322-1ubuntu1 \
+        make=4.4.1-3 \
+        nano=8.7.1-1ubuntu0.1 \
+        pass=1.7.4-8 \
+        pinentry-tty=1.3.2-3ubuntu1 \
+        sudo=1.9.17p2-1ubuntu3 \
+        wget=1.25.0-2ubuntu4.3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI (Docker-outside-of-Docker / DooD).
@@ -89,8 +89,8 @@ https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
        | tee /etc/apt/sources.list.d/docker.list > /dev/null \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        docker-ce-cli=5:29.6.1-1~ubuntu.24.04~noble \
-        docker-buildx-plugin=0.35.0-1~ubuntu.24.04~noble \
+        docker-ce-cli=5:29.6.1-1~ubuntu.26.04~resolute \
+        docker-buildx-plugin=0.35.0-1~ubuntu.26.04~resolute \
     && rm -rf /var/lib/apt/lists/*
 
 # Install hadolint (Dockerfile linter, run via .pre-commit-config.yaml).
@@ -122,19 +122,38 @@ WORKDIR /
 #   without sudo. Its GID is reconciled with the host socket's GID at container start
 #   via postStartCommand in devcontainer.json (see reconcile-docker-gid.sh).
 #
-# GnuPG keyboxd is deliberately left disabled for the dev user (empty
-# ~/.gnupg/common.conf). Ubuntu 24.04 ships GnuPG 2.4.4, whose keyboxd is not
-# wire-compatible with a newer host keyboxd: hosts on GnuPG 2.4.5+ (e.g. 2.4.8
-# on Windows/macOS) store public keys in keyboxd, and when VS Code Dev
-# Containers forwards that keyboxd socket, a 2.4.4 client reads *zero* keys back
-# from it — so `git` finds no public key for the signing key and commit signing
-# fails with "No secret key". With keyboxd off, GnuPG uses a classic pubring and
-# stays on the robust, version-tolerant path: VS Code forwards the gpg-agent
-# (private-key operations, incl. pinentry, stay on the host) and copies the
-# developer's public keys into pubring.gpg. common.conf has no negation
-# directive — keyboxd is simply inactive unless `use-keyboxd` is present, so a
-# comment-only file keeps it off. This is generic: it works for any developer's
-# own host keys, nothing is hardcoded.
+# GnuPG is left at its defaults so VS Code Dev Containers' credential forwarding
+# works as shipped: it forwards both the host gpg-agent (private-key operations,
+# incl. pinentry, stay on the host) and the host keyboxd socket, which is where
+# public keys live. No key material is created in the image.
+#
+# The relay only pipes those sockets — it never launches the host daemons. That
+# matters for keyboxd, which the host starts on demand: if nothing has used gpg
+# on the host since boot, no keyboxd is listening. On Windows hosts there are no
+# Unix domain sockets, so S.keyboxd is an Assuan socket-emulation file holding a
+# localhost port and nonce; when the daemon is cold that file is stale and the
+# forward answers "can't connect to the keyboxd: End of file". gpg then falls
+# back to spawning a container-local keyboxd against an empty store, and commit
+# signing fails with "No secret key" — the confusing part being that gpg
+# *recovers* into a broken state rather than erroring. Host gpg never shows this
+# because it relaunches keyboxd automatically on a stale nonce file; the relay
+# has no such recovery.
+#
+# devcontainer.json's initializeCommand runs `gpgconf --launch keyboxd` on the
+# host before each start to guarantee a live target. If signing breaks anyway,
+# `ls -l ~/.gnupg/S.keyboxd` in the container says which case you are in: mode
+# srwxr-xr-x is the forwarded relay socket (healthy), srwx------ means the local
+# fallback won and the keyring will be empty. Ownertrust is a second tell — it
+# is written straight to trustdb.gpg and needs no keyboxd, so a signing key
+# showing [ultimate] while absent from `gpg --list-keys` is this exact failure.
+#
+# Disabling keyboxd via ~/.gnupg/common.conf is not an option: Dev Containers
+# rewrites that file at attach time, so a build-time setting never survives.
+#
+# Keep the container's GnuPG no older than the host's as a precaution against
+# protocol skew across the forwarded sockets; bump the base image rather than
+# pinning an older gnupg.
+#
 # GPG_TTY is set for both shells: bash reads ~/.bashrc, fish reads
 # ~/.config/fish/config.fish (fish ignores .bashrc and has no `export` keyword —
 # `set -x` exports, and command substitution is `(tty)` with no leading `$`).
@@ -150,22 +169,11 @@ RUN groupadd --gid ${USER_GID} ${USERNAME} \
     && echo 'set -x GPG_TTY (tty)' >> /home/${USERNAME}/.config/fish/config.fish \
     && chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.config \
     && install -d -m 700 -o ${USERNAME} -g ${USERNAME} /home/${USERNAME}/.gnupg \
-    && printf '# keyboxd intentionally disabled - see Dockerfile rationale above\n' \
-        > /home/${USERNAME}/.gnupg/common.conf \
-    && chown ${USERNAME}:${USERNAME} /home/${USERNAME}/.gnupg/common.conf \
-    && chmod 600 /home/${USERNAME}/.gnupg/common.conf \
     && echo ${USERNAME} ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/${USERNAME} \
     && chmod 0440 /etc/sudoers.d/${USERNAME}
 
 # Default runtime user for VS Code terminals/tasks inside the container.
 USER ${USERNAME}
-
-# Install Tessl CLI.
-# ADD downloads the install script.
-# --chown sets ownership to the non-root user; --chmod=+x marks it executable.
-ADD --chown=${USERNAME}:${USERNAME} --chmod=+x https://get.tessl.io /tmp/install-tessl.sh
-RUN /tmp/install-tessl.sh \
-    && rm /tmp/install-tessl.sh
 
 # Install uv — the Python package/tool manager used for all Python tooling in
 # this repo (we standardise on uv rather than pip). The official installer
