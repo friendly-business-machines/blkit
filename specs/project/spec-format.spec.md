@@ -113,6 +113,7 @@ structure fits their content.
 | Behaviour | ✅ normative | ✅ | divergences only |
 | Edge Cases | ✅ | ✅ | ✅ |
 | Verification | ✅ conformance suite | ✅ | how the suite runs |
+| Deployment & Operations | — | runnable artifacts only | — |
 
 ### Purpose
 
@@ -160,6 +161,16 @@ conformance-suite participation, and (for backends) how the suite runs — embed
 temporary directory, testcontainers, or a `BLKIT_TEST_*_DSN` override. Test links
 are plain markdown links: `Verified by [date_test.go](../../core/date_test.go).`
 Granular links may also sit inline next to the specific requirement they verify.
+
+### Deployment & Operations
+
+Optional, and only for module specs whose module ships as a **runnable artifact**
+(a worker, MCP server, or REST server) rather than a library. Non-normative
+operator-facing guidance: packaging the binary into a deployable artifact (e.g. a
+container image), deployment configuration, and operational notes (scaling,
+graceful-shutdown windows, health checks). Caller-facing construction and handoff
+stays in API Contract § Wiring — this section addresses the operator, not the
+caller.
 
 ## Authoring rules
 
