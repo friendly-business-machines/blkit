@@ -8,14 +8,49 @@ code:
 
 # Process
 
-A `Process` defines a business process — a directed graph of `ProcessNode`s (tasks, gateways, events) connected by sequence flows. The design is inspired by BPMN but blkit does not implement the BPMN specification. Processes are created via `bl.NewProcess()`, which accepts process metadata and a `graph` list of node chain expressions. The blkit registry caches each Process instance (populated by `bl.NewProcess()`); long-running workers look it up by `(Namespace, Id, Version)` and call `Evaluate()` on it. Callers can also invoke `Evaluate()` directly to run a process without a worker.
+## Purpose
+
+A `Process` defines a business process — a directed graph of `ProcessNode`s (tasks, gateways, events) connected by sequence flows. Processes are created via `bl.NewProcess()`, which accepts process metadata and a `graph` list of node chain expressions. The blkit registry caches each Process instance (populated by `bl.NewProcess()`); long-running workers look it up by `(Namespace, Id, Version)` and call `Evaluate()` on it. Callers can also invoke `Evaluate()` directly to run a process without a worker.
+
+Long-running execution — fetching jobs from a broker and evaluating registered processes — is the worker's job; see [../worker/worker.spec.md](../worker/worker.spec.md).
+
+## Design
+
+### Structure
+
+- **Registration is a side-effect of construction.** `bl.NewProcess()` registers the returned `*Process` in a package-level `blkit` registry keyed by `(Namespace, Id, Version)`. Importing a package that defines processes is therefore sufficient to make those processes runnable in any worker binary that links the package — no explicit registration call is required, so process definitions cannot drift out of sync with a separate registration step.
+- **Namespace is derived, not declared.** `Namespace` is set automatically by `bl.NewProcess()` from the Go package import path of the caller and cannot be supplied — there is no `Namespace` field in `ProcessOpts`. This prevents `(Id, Version)` collisions across packages without any coordination, and ties a process's identity to where its code lives.
+- **The namespace is operator-visible API.** Because `Namespace` is part of the broker routing key produced by `MessageBroker.Submit` (see [../message-brokers/overview.spec.md](../message-brokers/overview.spec.md)), renaming a Go module path, or moving a process file between packages, changes the namespace and is therefore a breaking change for any client enqueuing requests against the old namespace. Authors should treat module paths that contain processes as stable interfaces.
+- **Fresh-start vs. resume lives in the StateStore factory, not `Evaluate()`.** `Evaluate()` always takes a `Context` + `History` pair; `store.NewExecutionState(...)` builds fresh state and `store.LoadExecutionState(...)` reconstructs it from the durable event log. `Evaluate()` only walks the graph.
+- **Token positions are reconstructed from history, not stored.** When resuming, `Evaluate()` derives the current token positions from the `ExecutionHistory` rather than persisting them separately — the event log is the single source of truth, and idempotent resumption falls out by construction.
+- **`Evaluate()` mutates nothing it is given.** It does not mutate the process object, and it deep-copies the input `ExecutionHistory` rather than modifying it. A registered Process instance is therefore reusable and safe across concurrent evaluations of different process instances sharing the same worker.
+- **Retry orchestration is a runtime concern.** The long-running worker retries failed processes; `Evaluate()` itself never retries. Each retry is a fresh execution of the same process with the same input — a new `ProcessInstanceId`.
+
+### Standards
+
+- **BPMN-inspired, not a BPMN implementation.** The design — tasks, gateways, and events connected by sequence flows, walked with token-flow semantics — is inspired by BPMN, but blkit does not implement the BPMN specification.
+
+### Errors & Failure Model
+
+- **Definition errors surface at construction.** Structural problems — empty graph, missing or empty `id`/`version`, no reachable `StartEvent`, a `StartEvent` with no path to a terminating event, duplicate ids, cycles without a conditional exit, a node reused across processes — produce a `ProcessDefinitionError` from `bl.NewProcess()`, before anything runs.
+- **A task failure without an error boundary fails the process.** The scheduler cancels all in-flight task goroutines and aborts their pending transactions; the history records `NODE_FAILED` for the task and `PROCESS_FAILED` for the process.
+- **Cancellation propagates via `context.Context`.** Every task goroutine receives a context derived from the scheduler's parent context; task implementations are expected to honour its cancellation.
+- **Two timeout scopes.** `MaxRunTime` limits a single execution attempt (`ProcessTimeoutError`, measured from when execution begins); `MaxCompletionTime` limits the entire lifecycle from submission to completion, including queueing and retries (`ProcessCompletionTimeoutError`, measured from when the instance is first queued).
+
+### Non-Goals
+
+- **No concurrency limit or backpressure.** The graph topology decides what becomes ready; the scheduler dispatches everything ready immediately, each task as its own goroutine. There is no per-branch walker and no explicit parallelism primitive.
+- **No library-provided continuation for direct callers.** A caller invoking `Evaluate()` directly must handle a `SUSPENDED` result itself — persist `result.History` and re-run `Evaluate()` later, or wire a `MessageBroker` for managed continuation.
+- **`Evaluate()` does not enforce `Retry`.** If set, it is ignored by `Evaluate()` — retries are a runtime-level concern.
+
+## API Contract
 
 ```go
 type Process struct {
     // Read-only attributes (set by bl.NewProcess())
     Id                 string
     Version            string
-    Namespace          string                     // auto-derived from the Go package import path of the bl.NewProcess() caller; see "Registry"
+    Namespace          string                     // auto-derived from the Go package import path of the bl.NewProcess() caller; see "Registration & Namespace Derivation"
     Name               *string
     Description        string
     Graph              ProcessGraph               // processed, structured graph (built by bl.NewProcess())
@@ -112,25 +147,11 @@ type RetryOpts struct {
     RetryDelay         time.Duration
     ExponentialBackoff bool
 }
-```
 
----
 
-## Graph Construction
-
-The `graph` parameter to `bl.NewProcess()` receives a list of node chain expressions. Each chain is built from event nodes, gateway nodes, and task nodes connected via `.To()`:
-
-- **Event nodes** — see [event-nodes.spec.md](event-nodes.spec.md) for `Start`, `End`, `Cancel`, `Error`, `Terminate`, and the `Suspend*` / `Pause*` variants.
-- **Gateway nodes** — see [gateway-nodes.spec.md](gateway-nodes.spec.md) for `And`, `Xor`, `Or`, `Join`, and `GatewayConditions`.
-- **Task nodes** — see [task-nodes.spec.md](task-nodes.spec.md).
-
-`bl.NewProcess()` walks the chains, builds the graph, validates structure (connectivity, at least one reachable terminating event from each `StartEvent`, cycle exits, duplicate ids), and stores the result as a `ProcessGraph` on `Process.Graph`.
-
-### ProcessGraph and SequenceFlow
-
-`ProcessGraph` is the processed, structured representation of a process graph. It is built by `bl.NewProcess()` from the raw `Graph` list and stored as `Process.Graph`.
-
-```go
+// ProcessGraph is the processed, structured representation of a process graph.
+// It is built by bl.NewProcess() from the raw Graph list and stored as
+// Process.Graph.
 type ProcessGraph struct {
     Nodes      map[string]ProcessNode // id -> node (all nodes including gateways)
     StartNodes []*StartEvent          // discovered start events
@@ -143,46 +164,15 @@ type SequenceFlow struct {
     Target    ProcessNode
     Condition BlExpr // nil on unconditional edges
 }
-```
 
-`bl.NewProcess()` takes the raw `[]ProcessNode`, walks all edges from the nodes in the list to discover every reachable node and edge, categorizes nodes by type, and validates the graph structure (connectivity, terminating-event reachability, cycle exits, duplicate ids). The result is stored on `Process.Graph`.
-
-`StartNodes` and `EndNodes` are typed conveniences for the most common boundary lookups. The full set of terminating event nodes (including `CancelEvent`, `ErrorEvent`, `TerminateEvent`) is reachable via `Nodes`.
-
-### `.To()` Chaining
-
-Every `ProcessNode` exposes a `.To()` method. Calling `node.To(target)` records a sequence flow (directed edge) from `node` to `target` and returns `target`, enabling chaining inside the `Graph` list.
-
-```go
+// Every ProcessNode exposes .To(). Calling node.To(target) records a sequence
+// flow (directed edge) from node to target and returns target, enabling
+// chaining inside the Graph list.
 func (n ProcessNode) To(target ProcessNode) ProcessNode
-```
 
-Nodes and edges are free-standing during graph construction — they are not associated with any process until `bl.NewProcess()` processes the `Graph` list. A node can only belong to one process; if a node already associated with one process appears in another process's `Graph` list, `bl.NewProcess()` produces a `ProcessDefinitionError`.
 
----
+// Registry helpers
 
-## Registry
-
-`bl.NewProcess()` registers the returned `*Process` in a package-level `blkit` registry keyed by `(Namespace, Id, Version)`. The registry is the single source of truth used by the worker to resolve fetched `Job`s to a `*Process` — see [../worker/worker.spec.md](../worker/worker.spec.md#the-process-registry). Importing a package that defines processes is therefore sufficient to make those processes runnable in any worker binary that links the package; no explicit registration call is required.
-
-### Namespace Derivation
-
-`Namespace` is set automatically by `bl.NewProcess()` and cannot be supplied by the caller — there is no `Namespace` field in `ProcessOpts`. The value is the Go package import path of the file that called `bl.NewProcess()`.
-
-The derivation uses `runtime.Caller(1)` to obtain the program counter of the caller, then `runtime.FuncForPC(pc).Name()` to retrieve the fully-qualified function name (formatted as `<package-import-path>.<function-name>`), then strips the trailing function/method segment to recover the package path.
-
-Examples:
-
-| `bl.NewProcess()` call site | Derived `Namespace` |
-|---|---|
-| `var X = bl.NewProcess(...)` in `example.com/area/lendingflows/v1/loan.go` | `"example.com/area/lendingflows/v1"` |
-| Inside an `init()` in `example.com/area/lendingflows/v1` | `"example.com/area/lendingflows/v1"` |
-| Inside `main.main()` of a `package main` binary | `"main"` |
-| Inside a `_test.go` file in package `lendingflows_test` | `"example.com/area/lendingflows/v1_test"` |
-
-### Registry Helpers
-
-```go
 // Resolve a process from the registry. Returns false if no such (Namespace, Id, Version) is registered.
 func LookupProcess(namespace, id, version string) (*Process, bool)
 
@@ -195,22 +185,9 @@ func AllProcesses() []*Process
 func ResetRegistry()
 ```
 
-### Wire-Protocol Implication
+### Wiring
 
-Because `Namespace` is part of the broker routing key produced by `MessageBroker.Submit` (see [../message-brokers/overview.spec.md](../message-brokers/overview.spec.md)), the namespace value is part of the operator-visible API contract. Renaming a Go module path, or moving a process file between packages, changes the namespace and is therefore a breaking change for any client enqueuing requests against the old namespace. Authors should treat module paths that contain processes as stable interfaces.
-
-### Edge Cases
-
-- `bl.NewProcess()` called twice with the same `(Namespace, Id, Version)` panics. Within a single Go package this means two `NewProcess` calls with the same `Id` and `Version` collide as before; across packages, the differing namespace prevents collision automatically.
-- A process defined in package `main` produces `Namespace = "main"`. Multiple `package main` binaries that each define a process with the same `Id` and `Version` will not collide at runtime (different binaries), but two `NewProcess` calls with the same `Id` and `Version` inside one `package main` will.
-- Tests in a `_test`-suffixed package (e.g. `lendingflows_test`) produce a namespace ending in `_test`. Tests in the same package as the code under test share the package's namespace.
-- Tests that intentionally register the same `(Namespace, Id, Version)` more than once must call `blkit.ResetRegistry()` between calls.
-- Vendored or forked deployments where the module import path changes will produce a different namespace for the same process source. This is intentional — the namespace tracks where the code lives, not what it does.
-- Inlining: the derivation depends on the call frame for `bl.NewProcess()` being present on the stack. `NewProcess` is large enough that the Go compiler will not inline it; if the implementation is later refactored such that inlining becomes possible, a `//go:noinline` directive should be added to preserve the derivation.
-
----
-
-## Example
+The registry is the single source of truth used by the worker to resolve fetched `Job`s to a `*Process` — see [../worker/worker.spec.md](../worker/worker.spec.md#the-process-registry). A direct caller instead constructs a `StateStore`, obtains execution state from it, and hands that state to `Evaluate()`:
 
 ```go
 // Tasks (declared package-scope alongside their function bodies; see
@@ -355,9 +332,40 @@ if err != nil { /* ... */ }
 // for managed continuation. Direct callers get no library-provided continuation.
 ```
 
----
+## Behaviour
 
-## Multiple Start and End Nodes
+### Graph Construction
+
+The `graph` parameter to `bl.NewProcess()` receives a list of node chain expressions. Each chain is built from event nodes, gateway nodes, and task nodes connected via `.To()`:
+
+- **Event nodes** — see [event-nodes.spec.md](event-nodes.spec.md) for `Start`, `End`, `Cancel`, `Error`, `Terminate`, and the `Suspend*` / `Pause*` variants.
+- **Gateway nodes** — see [gateway-nodes.spec.md](gateway-nodes.spec.md) for `And`, `Xor`, `Or`, `Join`, and `GatewayConditions`.
+- **Task nodes** — see [task-nodes.spec.md](task-nodes.spec.md).
+
+Calling `node.To(target)` records a sequence flow (directed edge) from `node` to `target` and returns `target`, enabling chaining inside the `Graph` list. Nodes and edges are free-standing during graph construction — they are not associated with any process until `bl.NewProcess()` processes the `Graph` list. A node can only belong to one process; if a node already associated with one process appears in another process's `Graph` list, `bl.NewProcess()` produces a `ProcessDefinitionError`.
+
+`bl.NewProcess()` takes the raw `[]ProcessNode`, walks all edges from the nodes in the list to discover every reachable node and edge, categorizes nodes by type, and validates the graph structure (connectivity, at least one reachable terminating event from each `StartEvent`, cycle exits, duplicate ids). The result is stored as a `ProcessGraph` on `Process.Graph`.
+
+`StartNodes` and `EndNodes` are typed conveniences for the most common boundary lookups. The full set of terminating event nodes (including `CancelEvent`, `ErrorEvent`, `TerminateEvent`) is reachable via `Nodes`.
+
+### Registration & Namespace Derivation
+
+`bl.NewProcess()` registers the returned `*Process` in a package-level `blkit` registry keyed by `(Namespace, Id, Version)`. The registry is the single source of truth used by the worker to resolve fetched `Job`s to a `*Process` — see [../worker/worker.spec.md](../worker/worker.spec.md#the-process-registry). Importing a package that defines processes is therefore sufficient to make those processes runnable in any worker binary that links the package; no explicit registration call is required.
+
+`Namespace` is set automatically by `bl.NewProcess()` and cannot be supplied by the caller — there is no `Namespace` field in `ProcessOpts`. The value is the Go package import path of the file that called `bl.NewProcess()`.
+
+The derivation uses `runtime.Caller(1)` to obtain the program counter of the caller, then `runtime.FuncForPC(pc).Name()` to retrieve the fully-qualified function name (formatted as `<package-import-path>.<function-name>`), then strips the trailing function/method segment to recover the package path.
+
+Examples:
+
+| `bl.NewProcess()` call site | Derived `Namespace` |
+|---|---|
+| `var X = bl.NewProcess(...)` in `example.com/area/lendingflows/v1/loan.go` | `"example.com/area/lendingflows/v1"` |
+| Inside an `init()` in `example.com/area/lendingflows/v1` | `"example.com/area/lendingflows/v1"` |
+| Inside `main.main()` of a `package main` binary | `"main"` |
+| Inside a `_test.go` file in package `lendingflows_test` | `"example.com/area/lendingflows/v1_test"` |
+
+### Multiple Start and End Nodes
 
 A process can define multiple entrypoints and exit points. Each start and terminating event has a unique `id`. The `StartId` passed to `store.NewExecutionState(...)` selects which entrypoint the resulting Context/History will begin from. Execution terminates when a token reaches any `EndEvent`, `CancelEvent`, `ErrorEvent`, or `TerminateEvent` (see [event-nodes.spec.md](event-nodes.spec.md)).
 
@@ -457,13 +465,11 @@ ctxRe, histRe, _ := store.NewExecutionState(loanDecision, NewExecutionStateOpts{
 result, err = loanDecision.Evaluate(EvaluateOpts{Context: ctxRe, History: histRe})
 ```
 
----
-
-## Evaluation
+### Evaluation
 
 The `Process` class provides `Evaluate()` — the graph-walking algorithm. A registered Process instance is reusable; `Evaluate()` is called with different execution state each time and does not mutate the process object.
 
-### Input
+#### Input
 
 `Evaluate()` always takes a `Context` + `History` pair via `EvaluateOpts`. Both must be obtained from a `StateStore`:
 
@@ -476,7 +482,7 @@ In either case, the returned Context and History are wired to the store's writer
 result, err := process.Evaluate(EvaluateOpts{Context: ctx, History: hist})
 ```
 
-### Execution
+#### Execution
 
 `Evaluate()` runs a single scheduler goroutine that ticks the process forward. Each tick:
 
@@ -529,7 +535,7 @@ Every task goroutine the scheduler dispatches receives a `context.Context` deriv
 
 - An `ErrorEvent`, `CancelEvent`, or `TerminateEvent` is reached.
 - A task fails and no error boundary event catches it (Error Handling above).
-- `MaxRunTime` or `MaxCompletionTime` expires (see the timing semantics on [`ProcessOpts`](#process)).
+- `MaxRunTime` or `MaxCompletionTime` expires (see the timing semantics on `ProcessOpts` in [API Contract](#api-contract)).
 
 Task implementations are expected to honour `context.Context` cancellation. `NativeFunctionTask.Fn` and any external I/O performed by a task body should be wrapped in `ctx.Done()`-aware patterns; long-running CPU work should periodically check `ctx.Err()`. When a cancelled task goroutine returns, the scheduler calls `ctx.Abort(nodeID)` to discard its Pending transactions and records `NODE_FAILED` (or `NODE_CANCELLED` if cancellation was the explicit cause) for that node.
 
@@ -551,7 +557,7 @@ The token rests at the suspending node and is preserved in `result.History` so t
 
 When evaluation is invoked with no `Suspend*` nodes in the graph, `SUSPENDED` cannot be reached — the process always runs to `COMPLETED`, `CANCELLED`, or `FAILED`.
 
-### How Evaluate() Builds the History
+#### How Evaluate() Builds the History
 
 `Evaluate()` does not modify the `ExecutionHistory` object passed to it. Instead, it creates a deep copy and applies the new steps to the copy via `Record()`. The copy — with all new steps integrated — is returned as `result.History`. The original history object remains unchanged, which matters when multiple concurrent evaluations of different process instances share the same worker and may overlap in time.
 
@@ -559,7 +565,7 @@ When the input History is freshly built via `store.NewExecutionState(...)`, it b
 
 For a detailed description of `Record()` and the `ExecutionHistory` structure, see [execution-history.spec.md](../data/execution-history.spec.md).
 
-### Token Position Reconstruction
+#### Token Position Reconstruction
 
 When resuming from existing execution state, `Evaluate()` derives the current token positions from the execution history rather than storing them explicitly:
 
@@ -568,13 +574,11 @@ When resuming from existing execution state, `Evaluate()` derives the current to
 - **Implicit merges** (task with multiple incoming edges, no explicit gateway): ANY incoming edge with a fresh token triggers the node.
 - **Loopbacks**: handled naturally — a gateway resolving to a backward path creates a fresh token on that edge, because the gateway resolution is more recent than the target node's last execution.
 
-### Idempotent Resumption
+#### Idempotent Resumption
 
 `Evaluate()` is idempotent with respect to its input state: calling it again with the same `Context` and `History` for an already-completed or already-suspended process produces no new work. On resumption, `Evaluate()` reads the history, identifies what is genuinely ready (e.g. a parallel join only fires when all branches have completed), and advances only from there. This matters when a suspended process is re-enqueued and may be picked up more than once before its awaited event arrives.
 
----
-
-## Retry
+### Retry
 
 If `Retry` is set on a Process, the runtime automatically retries the process when it fails (`PROCESS_FAILED`). Each retry is a fresh execution of the same process with the same input — a new `ProcessInstanceId`. Retry orchestration is the responsibility of the runtime (the long-running worker), not `Evaluate` itself.
 
@@ -586,8 +590,6 @@ If `Retry` is set on a Process, the runtime automatically retries the process wh
 At least one of `MaxRetries` or `RetryFor` must be set. A `RetryConfig` with both as `nil` produces a `ProcessDefinitionError` (no limit would mean infinite retries).
 
 When both are set, whichever limit is reached first stops retrying. For example, `MaxRetries=5, RetryFor=Duration("1h")` means: retry up to 5 times, but stop if 1 hour has passed since the first failure, whichever comes first.
-
-### Examples
 
 ```go
 // Retry up to 3 times with default 30s delay
@@ -618,13 +620,11 @@ reportGen := bl.NewProcess("report-gen", "1.0", ProcessOpts{
 })
 ```
 
----
+### Markdown Rendering
 
-## Markdown Rendering
+`ToMarkdown()` returns a complete markdown document representing the process graph. It traverses the graph from the start node and renders each element, including the full markdown representation of every constituent task. `ToMarkdown()` does not require execution state — it renders the graph structure from the process definition.
 
-`ToMarkdown()` returns a complete markdown document representing the process graph. It traverses the graph from the start node and renders each element, including the full markdown representation of every constituent task.
-
-### Format
+#### Format
 
 - **Title** — the process's name (or id) as a level-1 heading
 - **Description** — the process's description, if set
@@ -636,7 +636,7 @@ reportGen := bl.NewProcess("report-gen", "1.0", ProcessOpts{
   - Join points indicated where branches converge
 - **Tasks** — each task rendered via its own `ToMarkdown()` under a level-2 heading, including its id, name, type, and description. `DecisionTask` sections include the decision-logic markdown inline. `SubProcessTask` sections include a link to the referenced process's markdown document.
 
-### Example
+#### Example
 
 ```go
 fmt.Println(loanApplication.ToMarkdown())
@@ -716,12 +716,10 @@ NativeFunctionTask
 NativeFunctionTask
 ```
 
----
-
 ## Edge Cases
 
 - `bl.NewProcess()` with missing or empty `id` or `version` produces a `ProcessDefinitionError`.
-- `bl.NewProcess()` walks the nodes in the `Graph` list to discover the full graph structure, storing it as a `ProcessGraph` on the `Graph` attribute. Start and terminating nodes are identified by type (`StartEvent`, `EndEvent`, `CancelEvent`, `ErrorEvent`, `TerminateEvent`). If no `StartEvent` is reachable, `bl.NewProcess()` raises `ProcessDefinitionError`. If a `StartEvent` has no path to any terminating event, `bl.NewProcess()` raises `ProcessDefinitionError`.
+- If no `StartEvent` is reachable from the nodes in the `Graph` list, `bl.NewProcess()` produces a `ProcessDefinitionError`. If a `StartEvent` has no path to any terminating event (`EndEvent`, `CancelEvent`, `ErrorEvent`, `TerminateEvent`), `bl.NewProcess()` produces a `ProcessDefinitionError`.
 - The `Graph` list must contain at least one node chain. An empty `Graph` produces a `ProcessDefinitionError`.
 - A process with no `StartEvent` cannot be run; `Evaluate()` returns a `ProcessDefinitionError`.
 - A process may have multiple start nodes. Each is identified by its `id` (set via the first argument to `bl.Start(id, name, contract)`). The `StartId` passed to `store.NewExecutionState(...)` determines which entrypoint is used.
@@ -729,28 +727,29 @@ NativeFunctionTask
 - Duplicate start node ids on the same process produce a `ProcessDefinitionError`.
 - Duplicate end node ids on the same process produce a `ProcessDefinitionError`.
 - A process graph may contain cycles (loopbacks to earlier nodes). A cycle is valid as long as at least one conditional branch leads to a reachable terminating event. A cycle with no conditional exit is detected and returns a `ProcessDefinitionError` before execution begins.
+- A node already associated with one process cannot appear in another process's `Graph` list — `bl.NewProcess()` produces a `ProcessDefinitionError`.
+- `version` is mandatory and must be a non-empty string.
+- Two processes with the same `id` but different `version` values are distinct and can be registered simultaneously.
 - If `MaxRunTime` is set and the elapsed time since execution began exceeds the limit, the engine produces a `ProcessTimeoutError` and the process fails. The timer starts when the engine begins executing the process (status transitions to `RUNNING`), not when the request is enqueued. In-progress tasks may be cancelled (implementation-defined).
 - If `MaxCompletionTime` is set and the elapsed time since the process was first queued exceeds the limit, the worker produces a `ProcessCompletionTimeoutError` and the process fails. This includes any time spent queued, running, waiting for tasks, and retrying. In-progress tasks may be cancelled (implementation-defined).
 - `MaxCompletionTime` and `MaxRunTime` can both be set. `MaxRunTime` limits a single execution attempt; `MaxCompletionTime` limits the entire lifecycle from submission to completion, including retries. If `MaxCompletionTime` is reached during a retry, no further retries are attempted.
+- `MaxRunTime` is enforced by `Evaluate()` — if the elapsed time exceeds the limit, pending tasks are cancelled and the process fails with `ProcessTimeoutError`. `MaxCompletionTime` is also enforced (measured from the start of the `Evaluate()` call). `Retry` is not enforced by `Evaluate()` — if set, it is ignored (retries are a runtime-level concern).
 - A `RetryConfig` with both `MaxRetries` and `RetryFor` set to `nil` produces a `ProcessDefinitionError`.
 - A `RetryConfig` with `MaxRetries=0` is valid but performs no retries (equivalent to no retry config).
 - If `MaxRunTime` is set alongside `Retry`, each retry attempt gets a fresh `MaxRunTime` timer.
 - With `ExponentialBackoff`, if the next computed delay would exceed the remaining `RetryFor` window, the retry is not attempted.
 - A process that fails due to `DataContractValidationError` from a `StartEvent` contract at submission time is not retried — the input is invalid and retrying would produce the same error. Only `PROCESS_FAILED` failures trigger retries. See [data-contract.spec.md](../data/data-contract.spec.md) for boundary-validation semantics.
-- See [gateway-nodes.spec.md](gateway-nodes.spec.md) for edge cases related to gateway constructors and `Join`. See [event-nodes.spec.md](event-nodes.spec.md) for edge cases on event nodes.
-- A node already associated with one process cannot appear in another process's `Graph` list — `bl.NewProcess()` produces a `ProcessDefinitionError`.
-- `version` is mandatory and must be a non-empty string.
-- Two processes with the same `id` but different `version` values are distinct and can be registered simultaneously.
-- `Evaluate()` requires both `Context` and `History`. Providing one without the other (or neither) raises `ValueError`. Both must come from a `StateStore` factory — `bl.NewExecutionState(...)` for a fresh run or `LoadExecutionState(...)` for a resume.
+- `Evaluate()` requires both `Context` and `History`. Providing one without the other (or neither) returns an error. Both must come from a `StateStore` factory — `store.NewExecutionState(...)` for a fresh run or `store.LoadExecutionState(...)` for a resume.
 - `Evaluate()` with a freshly-built History (no prior steps) is an initial evaluation. The `ProcessInstanceId` was generated by the factory; `Input` is recorded as the initial transaction by the factory and is already present on the Context.
-- `Evaluate()` does not mutate the input `ExecutionHistory`. A deep copy is returned in the result.
-- `Evaluate()` runs a single scheduler loop that dispatches ready tasks as goroutines and awaits their completion. It returns when the process completes, suspends waiting for an external event, or fails.
-- Ready tasks are each dispatched as their own goroutine. Concurrency emerges from the scheduler dispatching multiple ready tasks per tick — there is no concurrency limit or backpressure.
 - If a task fails and there is no error boundary event, the process fails. The scheduler cancels every in-flight task goroutine via its `context.Context` (see [Cancellation](#cancellation)); their pending transactions are aborted via `ctx.Abort(nodeID)`.
-- `NativeFunctionTask` tasks invoke the registered `Fn` directly.
-- `SubProcessTask` tasks are evaluated recursively, creating a child `ExecutionHistory` under a separate `ProcessInstanceId`.
-- `MaxRunTime` is enforced by `Evaluate()` — if the elapsed time exceeds the limit, pending tasks are cancelled and the process fails with `ProcessTimeoutError`. `MaxCompletionTime` is also enforced (measured from the start of the `Evaluate()` call). `Retry` is not enforced by `Evaluate()` — if set, it is ignored (retries are a runtime-level concern).
-- Resuming a completed or suspended process by re-calling `Evaluate()` with the same `Context` and `History` produces no new work — `Evaluate()` advances only from positions that the history shows are genuinely ready.
-- `Evaluate()` does not mutate the process object. All mutable state is returned in the `EvaluationResult`. Process instances are safe to reuse across concurrent evaluations of different process instances.
-- `ToMarkdown()` does not require execution state — it renders the graph structure from the process definition.
-- See [../worker/worker.spec.md](../worker/worker.spec.md) for long-running execution.
+- `bl.NewProcess()` called twice with the same `(Namespace, Id, Version)` panics. Within a single Go package this means two `NewProcess` calls with the same `Id` and `Version` collide as before; across packages, the differing namespace prevents collision automatically.
+- A process defined in package `main` produces `Namespace = "main"`. Multiple `package main` binaries that each define a process with the same `Id` and `Version` will not collide at runtime (different binaries), but two `NewProcess` calls with the same `Id` and `Version` inside one `package main` will.
+- Tests in a `_test`-suffixed package (e.g. `lendingflows_test`) produce a namespace ending in `_test`. Tests in the same package as the code under test share the package's namespace.
+- Tests that intentionally register the same `(Namespace, Id, Version)` more than once must call `blkit.ResetRegistry()` between calls.
+- Vendored or forked deployments where the module import path changes will produce a different namespace for the same process source. This is intentional — the namespace tracks where the code lives, not what it does.
+- Inlining: the namespace derivation depends on the call frame for `bl.NewProcess()` being present on the stack. `NewProcess` is large enough that the Go compiler will not inline it; if the implementation is later refactored such that inlining becomes possible, a `//go:noinline` directive should be added to preserve the derivation.
+- See [gateway-nodes.spec.md](gateway-nodes.spec.md) for edge cases related to gateway constructors and `Join`. See [event-nodes.spec.md](event-nodes.spec.md) for edge cases on event nodes.
+
+## Verification
+
+No implementation exists yet (`status: agreed`). The intended verification home is `core/process_test.go`, alongside the intended `code:` location `core/process.go`; test links will be added here when the implementation lands.
