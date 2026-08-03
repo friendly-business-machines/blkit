@@ -8,11 +8,46 @@ code:
 
 # Worker
 
-A worker is a blocking call that registers its capability set with the broker, fetches routed [`Job`](../message-brokers/overview.spec.md)s from a [`MessageBroker`](../message-brokers/overview.spec.md) — selectively, taking only those whose process is registered in the worker's binary — and hands each one to an executor goroutine. Each executor drives its process through its full execution lifecycle: evaluate the process graph and execute ready tasks — streaming `Transaction`s and `ExecutionStep`s to a [`StateStore`](../state-stores/overview.spec.md) via `WriteBatch` as work happens, and publishing `InstanceEvent`s via the broker's lifecycle / error verbs — until the process completes or suspends. The executor then persists the boundary metadata via `Save` and signals job outcome with one of `ReportCompleted` / `ReportCancelled` / `ReportFailed` / `ReportSuspended`. Up to `MaxConcurrent` executors run in parallel; the fetch loop pulls new work as soon as a slot is free. This fetch-and-execute cycle repeats for the life of the worker, stopping only when the `workerCtx` passed to `worker.Run` is cancelled.
+## Purpose
+
+A worker is a blocking call that registers its capability set with the broker, fetches routed [`Job`](../message-brokers/overview.spec.md)s from a [`MessageBroker`](../message-brokers/overview.spec.md) — selectively, taking only those whose process is registered in the worker's binary — and hands each one to an executor goroutine. Each executor drives its process through its full execution lifecycle: evaluate the process graph and execute ready tasks — streaming `Transaction`s and `ExecutionStep`s to a [`StateStore`](../state-stores/overview.spec.md) via `WriteBatch` as work happens, and publishing `InstanceEvent`s via the broker's lifecycle / error verbs — until the process completes or suspends. The executor then persists the boundary metadata via `Save` and signals job outcome with one of `ReportCompleted` / `ReportCancelled` / `ReportFailed` / `ReportSuspended`. Up to `MaxConcurrent` executors run in parallel; the fetch loop pulls new work as soon as a slot is free. This fetch-and-execute cycle repeats for the life of the worker, stopping only when the `workerCtx` passed to `worker.Run` is cancelled or a shutdown signal arrives (see [Graceful shutdown](#graceful-shutdown)).
 
 Once a worker picks up a `Job`, that worker is responsible for the entire process: every task in the process graph runs in goroutines inside this worker, not as separate broker items handed to other workers.
 
-The worker is otherwise stateless — per-instance execution state is reconstructed from the `StateStore` on every pickup.
+The worker retains no process-instance state across pickups — the run's [`ProcessState`](../processes/process-state.spec.md) is reconstructed from the `StateStore` each time a `Job` is picked up.
+
+## Design
+
+### Structure
+
+- **Run-to-completion execution.** A worker that picks up a `Job` owns the entire process lifecycle locally — evaluating the graph, executing tasks, advancing tokens — rather than farming individual tasks back to the broker as separate work items. This keeps all intra-process coordination in one memory space.
+- **Stateless between pickups.** A worker retains no process-instance state across pickups — the run's [`ProcessState`](../processes/process-state.spec.md) (its values and its execution history) is reconstructed from the `StateStore` each time a `Job` is picked up, so any worker can serve any continuation of any process instance. The worker does hold its own long-lived state (identity, process registry, writer pool, broker registration); it is the per-process-instance state that is never carried over.
+- **Four concurrent actors.** A fetch loop, per-job executor goroutines, an elastic writer pool, and a heartbeat goroutine (see [Components](#components)). The fetch loop, writer pool, and heartbeat goroutine are singletons per `worker.Run` invocation; executor goroutines come and go with each `Job`. All four share `workerCtx` for shutdown signalling.
+- **The in-memory registry is the capability set.** Which processes a worker can run is determined entirely by which packages are linked into its binary. To dedicate a fleet of workers to a subset of processes, build a binary that imports only those packages — deployment shape determines routing.
+- **Two write paths to the StateStore.** Per-event payload (`Transaction`s, `ExecutionStep`s) streams through the [writer pool](#writer-pool) via `WriteBatch` so producers never block on durability; boundary metadata is persisted by the executor directly via `Save`, after a `Flush` durability barrier.
+- **Outcome verbs settle the job.** Exactly one of `ReportCompleted` / `ReportCancelled` / `ReportFailed` / `ReportSuspended` settles the in-flight job with the broker — there is no separate Ack/Nack step, so job settlement and lifecycle signalling cannot disagree.
+- **Built-in graceful shutdown, with an opt-out.** There is no `Start` / `Shutdown` API — `worker.Run` blocks for the life of the worker and shuts down gracefully when `workerCtx` is cancelled **or** a shutdown signal (`SIGTERM` / `SIGINT` by default) arrives. Signal handling is on by default so a pure-worker binary needs no signal boilerplate; compositions that own process signals themselves (e.g. `mcpserver.Run` with `EmbeddedWorker`, or a binary coordinating shutdown ordering across several components) set `DisableSignalShutdown` and drive the context instead.
+- **No sharding in the writer pool.** Every event is self-describing via `(Timestamp, CommitNumber)`, so any writer goroutine can write any event and arrival order at the backend does not matter.
+
+### Errors & Failure Model
+
+- **Task failure fails the instance, not the worker.** `Evaluate` records `NODE_FAILED` and, absent an error boundary, returns `FAILED`; the executor persists history and calls `broker.ReportFailed` (see [Error handling](#error-handling)). The fetch loop continues.
+- **Panics are contained per-executor.** A panic inside an executor goroutine is recovered and treated as a terminal failure (`broker.ReportFailed`); only a panic in the fetch loop itself terminates `worker.Run`, which returns the panic as an error.
+- **Crash recovery is the broker's job.** If an executor dies before calling any outcome verb (escaped panic, OS kill, network partition), the broker times out the in-flight slot after a per-impl timeout (default `5 × HeartbeatInterval`) and redelivers the job to another worker.
+- **Heartbeat failure is recoverable.** Heartbeat failures are retried with backoff; if the broker's TTL is at risk of expiring, the worker logs and continues — registry presence is regained on the next successful heartbeat.
+- **Write failure behaviour is configurable.** Backend write failures are governed by the `WritePolicy` option (see [Write policy](#write-policy)).
+- **The drain is bounded only if you bound it.** Once shutdown begins, the worker waits indefinitely for in-flight processes unless `DrainTimeout` is set or a second shutdown signal arrives (see [Graceful shutdown](#graceful-shutdown)). An abandoned drain deliberately reuses the crash-recovery path — no outcome verbs are called, and the broker's in-flight timeout redelivers the abandoned jobs — rather than introducing new broker verbs for partial shutdown.
+
+### Non-Goals
+
+- **`ProcessTask` is not a wire type.** It is the worker's internal record for one evaluation of one instance — never transmitted over the broker and not part of the `MessageBroker` interface. Producers describe work via `StartRequest` / `Job`.
+- **No shared in-memory registry across binaries.** The process registry lives in each worker binary's memory; cross-binary coordination happens only through the broker.
+- **The worker never calls `bl.NewProcess(...)` itself.** In-process registration happens at package init time, via blank imports of process-defining packages from `main`.
+- **Graph-traversal semantics belong to `Evaluate`.** `worker.Run` does not own or modify the `Process` graph — it is read-only during execution; see [process.spec.md](../processes/process.spec.md).
+- **No HTTP surface.** A `worker.Run` loop exposes no health endpoint; liveness is the process being alive.
+- **One `worker.Run` call per binary.** Multiple `worker.Run` calls inside a single OS process are not a design target and their behaviour is unspecified. The capability set is binary-wide, so two calls against the same broker merely compete for identical work — one `Run` with a higher `MaxConcurrent` does the same job. Scale out by running more instances of the binary, on the same machine or across machines; the rare case of consuming from two brokers is served by two binaries.
+
+## API Contract
 
 ```go
 func Run(workerCtx context.Context, broker bl.MessageBroker, store StateStore, opts Options) error {}
@@ -39,20 +74,119 @@ type Options struct {
     IdleTimeout         *time.Duration // when idle writer goroutines exit; nil = 30s
     WriterChannelBuffer *int           // buffered channel capacity; nil = 1024
     WritePolicy         WritePolicy    // behaviour on write failure; default PolicyBuffer
+
+    // Graceful shutdown (see the Graceful shutdown section). By default Run
+    // listens for SIGTERM / SIGINT and treats a signal like workerCtx
+    // cancellation: stop fetching, drain in-flight processes, unregister,
+    // flush, return.
+    DisableSignalShutdown bool           // opt out when the host binary owns signal handling (e.g. embedded in mcpserver.Run)
+    ShutdownSignals       []os.Signal    // signals that trigger graceful shutdown; nil = [SIGTERM, SIGINT]
+    DrainTimeout          *time.Duration // max wait for in-flight processes once shutdown begins; nil = wait indefinitely
+    ForceOnSecondSignal   *bool          // a second signal abandons the drain immediately; nil = true
+    OnShutdownBegin       func()         // optional hook invoked once when shutdown begins — log, flip a readiness probe
 }
+
+type WritePolicy int
+
+const (
+    PolicyBuffer WritePolicy = iota // buffer & retry; halt on bounded-buffer overflow
+    PolicyDrop                      // drop on backend failure (lossy; observability use)
+    PolicyHalt                      // first failure halts the affected process instance
+)
 ```
 
 The first parameter is named `workerCtx` rather than `ctx` to distinguish it from blkit's own `ExecutionContext` — `workerCtx` is a stdlib `context.Context` used purely as a cancellation signal for the worker's lifetime; it has no relationship to the per-process `ExecutionContext` data threaded through `Evaluate`.
 
-`worker.Run` blocks until `workerCtx` is cancelled. It returns `nil` on a clean shutdown, or `context.DeadlineExceeded` / `context.Canceled` if `workerCtx` terminates while executors are still in flight.
+`worker.Run` blocks until `workerCtx` is cancelled or — unless `DisableSignalShutdown` is set — a shutdown signal arrives. It returns `nil` on a clean shutdown; `context.DeadlineExceeded` / `context.Canceled` if `workerCtx` terminates while executors are still in flight; or an error identifying the abandoned instances when the drain is abandoned (`DrainTimeout` expiry or a second signal — see [Graceful shutdown](#graceful-shutdown)).
 
----
+### Wiring
 
-## Components
+A worker binary constructs a `MessageBroker` and a `StateStore` and hands both to `worker.Run`; its capability set is assembled entirely by blank-importing process-defining packages.
 
-A worker process has four concurrent actors. Together they keep work moving from the broker, through evaluation, to durable storage in the [`StateStore`](../state-stores/overview.spec.md).
+#### Example: Worker Binary
 
-- **Fetch loop** — one goroutine, owned by the caller of `worker.Run`. Selectively reads `Job`s from `broker.FetchJobs(...)` (filtered to processes registered in this binary) and hands each to a fresh executor goroutine. Acquires a permit from a process semaphore before each read, so the worker only pulls work it can immediately execute. Stops when `workerCtx` is cancelled. See [Fetch](#fetch) for semaphore details.
+A complete `main.go` for a pure-worker binary. The processes the worker will run are pulled in via blank imports — that is the only mechanism that determines this binary's capability set.
+
+`worker.Run` blocks for the life of the binary and handles graceful shutdown itself: on `SIGTERM` / `SIGINT` it stops fetching new `Job`s, drains in-flight processes, unregisters from the broker, and returns. There is no `Start` / `Shutdown` API — for programmatic control, cancel the `context.Context` you pass in.
+
+```go
+// cmd/worker/main.go
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+
+    redisbroker "github.com/friendly-business-machines/blkit/brokers/redis"
+    bl "github.com/friendly-business-machines/blkit/core"
+    pgstore "github.com/friendly-business-machines/blkit/stores/postgres"
+    "github.com/friendly-business-machines/blkit/worker"
+
+    // Blank imports load process-defining packages so their bl.NewProcess(...)
+    // calls run during package init and write into blkit's in-memory registry.
+    // The worker uses the registry as its capability set.
+    _ "example.com/area/lendingflows/v1"
+    _ "example.com/area/onboarding/v2"
+)
+
+func intPtr(n int) *int { return &n }
+
+func main() {
+    // The MessageBroker is the only way workers and producers can
+    // communicate: Jobs are fetched from it, and lifecycle / outcome events
+    // are reported back through it. Broker backends live in their own
+    // modules under brokers/ (see ../../specs/message-brokers/overview.spec.md);
+    // import the one you use — in this example we are using the Redis-backed
+    // broker.
+    broker, err := redisbroker.New(redisbroker.Config{
+        Addr: os.Getenv("BLKIT_REDIS_ADDR"),
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer broker.Close()
+
+    // Only workers communicate with the StateStore — brokers cannot
+    // communicate with it directly. Store backends live in their own modules
+    // under stores/ (see ../../specs/state-stores/overview.spec.md); import
+    // the one you use.
+    stateStore := pgstore.New(pgstore.Config{
+        DSN: os.Getenv("BLKIT_DB_URL"),
+    })
+    defer stateStore.Close()
+
+    // Run the worker loop: register this binary's processes with the broker,
+    // then fetch matching Jobs and execute each one locally until it
+    // completes or suspends. The call blocks for the life of the binary.
+    // Graceful shutdown is built in: on SIGTERM / SIGINT, Run stops fetching,
+    // drains in-flight processes, unregisters, and returns — no
+    // signal-handling boilerplate is needed here. Set DisableSignalShutdown
+    // to own signal handling in the host binary instead.
+    err = worker.Run(context.Background(), broker, stateStore, worker.Options{
+        WorkerID:        os.Getenv("HOSTNAME"), // must be unique per worker instance
+        MaxConcurrent:   intPtr(16),
+        TaskConcurrency: intPtr(8),
+    })
+    if err != nil {
+        log.Fatalf("worker exited: %v", err)
+    }
+}
+```
+
+For deployments that want the MCP server and the worker in the same binary, use `mcpserver.Run` with the `EmbeddedWorker` option instead of calling `worker.Run` directly — see [../mcp/mcp-server.spec.md](../mcp/mcp-server.spec.md).
+
+From a single Go module you can produce as many different worker binaries as you want, each capable of running a different subset of processes. Add a `main` package per binary under `cmd/`, and have each one blank-import only the process packages that binary should be able to run. The registry contents of each binary determine which `Job`s its workers will pick up off the shared broker.
+
+Each of these binaries can then be containerised and deployed independently, creating distinct pools of workers that each focus on executing their own subset of processes — all consuming from the same broker, with the broker's selective-consumption routing the right work to the right pool. See [Deployment & Operations](#deployment--operations).
+
+## Behaviour
+
+### Components
+
+Each `worker.Run` invocation comprises four concurrent actors. Together they keep work moving from the broker, through evaluation, to durable storage in the [`StateStore`](../state-stores/overview.spec.md).
+
+- **Fetch loop** — one goroutine, owned by the caller of `worker.Run`. Selectively reads `Job`s from `broker.FetchJobs(...)` (filtered to processes registered in this binary) and hands each to a fresh executor goroutine. Acquires a permit from the process semaphore before each read, so the worker only pulls work it can immediately execute. Stops when `workerCtx` is cancelled. See [Fetch](#fetch) for semaphore details.
 
 - **Executor goroutines** — one goroutine per in-flight `Job`, spawned by the fetch loop. Each executor drives its process through its full lifecycle: load state from the StateStore, call `process.Evaluate(...)`, publish events via the broker's `ReportRunning` / `PostError` / lifecycle verbs during/after, persist boundary metadata via `Save`, and signal outcome by calling exactly one of `broker.ReportCompleted` / `broker.ReportCancelled` / `broker.ReportFailed` / `broker.ReportSuspended`. Those four verbs settle the in-flight job — there is no separate Ack/Nack step. Up to `MaxConcurrent` executors run in parallel.
 
@@ -60,11 +194,7 @@ A worker process has four concurrent actors. Together they keep work moving from
 
 - **Heartbeat goroutine** — one goroutine, owned by `worker.Run`. Calls `broker.Heartbeat(workerCtx, opts.WorkerID)` every `HeartbeatInterval` to refresh this worker's TTL on the broker-held registry. Failures are retried with backoff. If heartbeats fail repeatedly such that the broker's TTL is at risk of expiring, the worker logs and continues — losing registry presence is recoverable on the next successful heartbeat.
 
-The fetch loop, writer pool, and heartbeat goroutine are singletons per `worker.Run` invocation; executor goroutines come and go with each `Job`. All four share the worker's `workerCtx` for shutdown signalling.
-
----
-
-## The Process Registry
+### The Process Registry
 
 The blkit module exposes a **process registry** — a package-level variable in the blkit module, keyed by `(Namespace, ProcessID, Version)`. It is populated as a side effect of `bl.NewProcess(...)` calls during package initialization. A worker binary's registry contents are therefore determined by **which packages are linked into the binary** — typically arranged by blank imports in `main`. The registry lives in the worker binary's memory; there is no shared in-memory registry across binaries. The namespace is derived from the calling package's import path, so processes from different packages cannot collide. See [process.spec.md](../processes/process.spec.md) for the full registration rules.
 
@@ -75,9 +205,7 @@ A worker uses its in-memory registry as its **capability set**: the set of proce
 
 The worker also publishes its capability set to the **broker-held registry** so producers (MCP servers, web servers, admin UIs) can discover what's available. See [Registration on startup](#registration-on-startup) below.
 
----
-
-## Registration on startup
+### Registration on startup
 
 When `worker.Run` is called, before the fetch loop starts:
 
@@ -90,9 +218,7 @@ If `RegisterProcesses` fails, `worker.Run` returns the error without starting th
 
 After successful registration, the worker spawns the heartbeat goroutine (described in [Components](#components) above).
 
----
-
-## Fetch
+### Fetch
 
 The fetch loop runs on the caller's goroutine — the one that called `worker.Run`. It is the single place new work enters the worker.
 
@@ -120,11 +246,9 @@ for job := range jobs {
 
 The selective consumption (filtering by `keys`) is done by the broker implementation — the worker passes its capability set, and the broker uses its backend's filtering primitive (Redis: stream-with-consumer-group filtering; NATS: JetStream subject filter; in-memory: filtered channel).
 
-Multiple `worker.Run` calls — whether in the same Go process or across many machines — are supported. Each is an independent consumer of the broker's job stream; serialization between them is whatever the underlying broker provides.
+Multiple workers — multiple instances of a worker binary on one machine, or instances spread across many machines — are supported. Each is an independent consumer of the broker's job stream; serialization between them is whatever the underlying broker provides. A single binary makes exactly one `worker.Run` call (see [Non-Goals](#non-goals)).
 
----
-
-## Execute
+### Execute
 
 For each fetched `Job`, the fetch loop spawns an executor goroutine. The executor uses a **run-to-completion** model: it drives the process through its entire lifecycle locally — evaluating the graph, executing tasks, advancing tokens — until the process completes or suspends. Within the executor, parallel branches in the process graph spawn task goroutines bounded by a per-process task semaphore — `make(chan struct{}, TaskConcurrency)`.
 
@@ -154,11 +278,11 @@ In each case:
 
 `Evaluate` is idempotent with respect to its input state: repeated calls with the same or a more recent history advance only from positions the history shows are genuinely ready, and produce no new work on already-completed or already-suspended state.
 
-### Subprocesses
+#### Subprocesses
 
 When `Evaluate` reaches a subprocess task it runs the subprocess inline by recursing into `Evaluate` on the subprocess definition (in a new goroutine if part of a parallel fanout). Context scoping and history isolation for subprocesses are described in [execution-context.spec.md](../data/execution-context.spec.md#sub-process-scoping).
 
-### RequestInputTask: pause-to-suspend conversion
+#### RequestInputTask: pause-to-suspend conversion
 
 A [`RequestInputTask`](../processes/task-nodes.spec.md#requestinputtask) with `WaitMode == RequestInputPauseThenSuspend` starts as an in-memory pause — the executor holds the evaluation goroutine and waits on an in-process channel for a `JobRespondToInput` to land on this worker — and converts to a durable suspension if `PauseDuration` elapses without a response arriving. The executor implements the conversion as follows:
 
@@ -169,7 +293,7 @@ A [`RequestInputTask`](../processes/task-nodes.spec.md#requestinputtask) with `W
 
 A `RequestInputTask` running under `RequestInputSuspend` immediately calls `broker.ReportSuspended` after the executor records the request — it never holds the response in-memory; any worker can serve the eventual `JobRespondToInput`. A `RequestInputTask` under `RequestInputPause` holds in-memory only and never converts; if the worker dies while paused, the broker's in-flight timeout redelivers the originating `JobStart` / `JobResume` to another worker, which re-enters the task and re-arms the pause.
 
-### Error handling
+#### Error handling
 
 If a task raises an error during execution:
 
@@ -178,9 +302,7 @@ If a task raises an error during execution:
 
 A panic inside an executor goroutine is recovered: the executor calls `broker.ReportFailed` with `Code: "PROCESS_FAILED"` and the fetch loop continues. A panic in the fetch loop itself terminates `worker.Run`, which returns the panic as an error.
 
----
-
-## Process Task
+### Process Task
 
 `ProcessTask` is the worker's internal record for *one evaluation of one instance*. It is created when the worker fetches a `Job` from the broker, advances through the `TaskStatus` lifecycle as the executor runs, and is discarded once a terminal Report* verb or `ReportSuspended` is called. `ProcessTask` is **not** transmitted over the broker and is **not** part of the `MessageBroker` interface — producers describe work via `StartRequest` / `Job`, and the worker maintains `ProcessTask` independently for telemetry, history correlation, and concurrency accounting.
 
@@ -212,14 +334,12 @@ type ProcessTask struct {
 
 `ExecutionID` is the correlation key that ties a `ProcessTask` to its rows in `ExecutionHistory` — see [../data/execution-history.spec.md](../data/execution-history.spec.md). A single `ProcessInstanceID` can have many `ProcessTask`s over its lifetime (initial run + every continuation after suspension); each has a distinct `ExecutionID`.
 
----
+### Graceful shutdown
 
-## Graceful shutdown
-
-When `workerCtx` is cancelled:
+Shutdown begins when `workerCtx` is cancelled or — unless `DisableSignalShutdown` is set — a configured shutdown signal arrives (`ShutdownSignals`; default `SIGTERM` / `SIGINT`), whichever comes first. Both triggers funnel into the same sequence. If `OnShutdownBegin` is set, it is invoked once, before anything else:
 
 1. The fetch loop stops accepting new jobs (the channel from `broker.FetchJobs` closes when the broker honours the ctx).
-2. Wait for in-flight executors to finish (or for `workerCtx` to deadline-exceed).
+2. Wait for in-flight executors to finish. The wait is unbounded unless `DrainTimeout` is set, and ends early if the drain is abandoned (see below).
 3. Call `broker.Unregister(workerCtx, opts.WorkerID)` so the broker's registry stops advertising this worker's processes immediately rather than waiting for the TTL to expire.
 4. Stop the heartbeat goroutine.
 5. Drain the writer pool — see [Lifecycle](#lifecycle) under Writer Pool.
@@ -227,13 +347,20 @@ When `workerCtx` is cancelled:
 
 If `workerCtx` carries a timeout that fires before unregister completes, the registration falls off the broker via TTL expiration — slower but no functional impact.
 
----
+#### Abandoning the drain
 
-## Writer Pool
+The drain is abandoned when `DrainTimeout` expires, when a second shutdown signal arrives while draining (unless `ForceOnSecondSignal` is disabled), or when `workerCtx` deadline-exceeds. Abandoning:
+
+1. Cancels the in-flight executors' `context.Context`s — task bodies observe this the same way they observe `MaxRunTime` cancellation, and their pending transactions are aborted.
+2. Best-effort flushes the writer pool, then continues the shutdown sequence from the unregister step.
+3. Calls **no outcome verb** for the abandoned instances. The broker's in-flight timeout (default `5 × HeartbeatInterval`) later redelivers those jobs to another worker, exactly as if this worker had crashed — deliberate abandonment reuses the crash-recovery path rather than introducing new broker verbs. Because task results not yet durable are lost, the resuming worker may re-execute tasks; abandonment trades duplicate task execution for a bounded exit, which is why it only happens when explicitly configured or forced.
+4. `worker.Run` returns an error identifying the abandoned instances.
+
+### Writer Pool
 
 `ExecutionContext` and `ExecutionHistory` mutations (`ctx.Record`, `ctx.Commit`, `ctx.Abort`, `history.Record`) need to land in the `StateStore` durably without blocking the goroutines that produce them. `worker.Run` spawns an **elastic pool of writer goroutines** that owns this responsibility, sitting between the producers and the `StateStore`.
 
-### Design
+#### Pool design
 
 - **Producers** — the executor goroutine (during `Evaluate`) and any task goroutines it spawns. Each mutation:
   1. Updates the in-memory log (mutex-protected — assigns `CommitNumber`, sets `Timestamp`, appends).
@@ -243,7 +370,7 @@ If `workerCtx` carries a timeout that fires before unregister completes, the reg
 - **Batching** — each worker drains the channel into a batch capped by `MaxBatchSize` and `MaxBatchWait`, then issues a single `StateStore.WriteBatch` call.
 - **No sharding** — every event is self-describing via `(Timestamp, CommitNumber)`, so any writer can write any event and arrival order at the backend does not matter.
 
-### Configuration knobs
+#### Configuration knobs
 
 Set on `worker.Options`. All have sensible defaults; none are required.
 
@@ -256,23 +383,15 @@ Set on `worker.Options`. All have sensible defaults; none are required.
 | `WriterChannelBuffer` | `1024` | Capacity of the buffered channel between producers and writers. |
 | `WritePolicy` | `PolicyBuffer` | Behaviour on write failure (see below). |
 
-### Write policy
+#### Write policy
 
-```go
-type WritePolicy int
-
-const (
-    PolicyBuffer WritePolicy = iota // buffer & retry; halt on bounded-buffer overflow
-    PolicyDrop                      // drop on backend failure (lossy; observability use)
-    PolicyHalt                      // first failure halts the affected process instance
-)
-```
+The `WritePolicy` type and its values are declared in [API Contract](#api-contract).
 
 - `PolicyBuffer` (default) — transient failures are retried with bounded backoff; sustained failures surface via the worker's error channel and eventually halt the affected process instance when the buffer overflows.
 - `PolicyDrop` — failed writes are dropped silently. Suitable for observability sinks where data loss is acceptable.
 - `PolicyHalt` — the first failure for a process instance transitions that instance to `FAILED` synchronously.
 
-### Flush semantics
+#### Flush semantics
 
 `StateStore.Flush(processInstanceID)` is a per-instance durability barrier. The writer pool implements it by enqueueing flush sentinels — one per active worker goroutine — and waiting for all of them to be acknowledged. When `Flush` returns, every `WriteOp` enqueued before the call (for the given instance) has been confirmed durable.
 
@@ -281,7 +400,7 @@ The executor calls `Flush` at:
 - The end of an `Evaluate()` cycle, before persisting boundary metadata via `Save` and calling the outcome verb (Report*). This guarantees that when the outcome verb settles the job, every per-event payload is already durable.
 - After a root-scope `ctx.Commit` / `ctx.Abort`, so the outside world's view of the process is consistent with what's durable.
 
-### Lifecycle
+#### Lifecycle
 
 The writer pool is started lazily on the first `WriteOp` send and is bound to the lifetime of `worker.Run`. On `workerCtx` cancellation:
 
@@ -291,88 +410,28 @@ The writer pool is started lazily on the first `WriteOp` send and is bound to th
 
 If `workerCtx` carries a deadline that fires while writes are still in flight, the pool best-effort flushes what it can and returns; remaining buffered ops are lost.
 
----
+## Edge Cases
 
-## Example: Worker Binary
+- An empty registry is valid: `broker.RegisterProcesses` is called with an empty registration list, `broker.FetchJobs` is called with an empty key set, and the fetch loop idles until `workerCtx` is cancelled.
+- `WorkerID` empty produces an error.
+- `MaxConcurrent <= 0`, `TaskConcurrency <= 0`, `PollInterval <= 0`, or `HeartbeatInterval <= 0` produce an error.
+- `MaxWriters <= 0`, `MaxBatchSize <= 0`, `WriterChannelBuffer <= 0`, `MaxBatchWait < 0`, or `IdleTimeout < 0` produce an error.
+- An unknown `WritePolicy` value produces an error.
+- `DrainTimeout <= 0` produces an error (`nil` means wait indefinitely).
+- Setting `ShutdownSignals`, `ForceOnSecondSignal`, or `OnShutdownBegin` while `DisableSignalShutdown` is true produces an error — the options are contradictory.
+- If the writer channel fills (producers outpace writers because the backend is slow or unreachable), producer behaviour follows `WritePolicy`.
+- When `Evaluate` returns no ready tasks but the process has not completed (e.g. a join still waiting on parallel branches), the executor waits for those in-flight tasks rather than calling an outcome verb.
+- See [../message-brokers/overview.spec.md](../message-brokers/overview.spec.md) and [../state-stores/overview.spec.md](../state-stores/overview.spec.md) for component-specific edge cases.
 
-A complete `main.go` for a pure-worker binary. The processes the worker will run are pulled in via blank imports — that is the only mechanism that determines this binary's capability set.
+## Verification
 
-`worker.Run` blocks for the life of the binary. There is no `Start` / `Shutdown` API — lifecycle is governed entirely by the `context.Context` you pass in.
+No implementation exists yet (`status: agreed`). The intended verification home is `worker/worker_test.go`, alongside the intended `code:` location `worker/worker.go`; test links will be added here when the implementation lands.
 
-```go
-// cmd/worker/main.go
-package main
+## Deployment & Operations
 
-import (
-    "context"
-    "log"
-    "os"
-    "os/signal"
-    "syscall"
+### Example: Containerization & Deployment
 
-    redisbroker "github.com/friendly-business-machines/blkit/brokers/redis"
-    bl "github.com/friendly-business-machines/blkit/core"
-    pgstore "github.com/friendly-business-machines/blkit/stores/postgres"
-    "github.com/friendly-business-machines/blkit/worker"
-
-    // Blank imports load process-defining packages so their bl.NewProcess(...)
-    // calls run during package init and write into blkit's in-memory registry.
-    // The worker uses the registry as its capability set.
-    _ "example.com/area/lendingflows/v1"
-    _ "example.com/area/onboarding/v2"
-)
-
-func intPtr(n int) *int { return &n }
-
-func main() {
-    workerCtx, stopWorker := context.WithCancel(context.Background())
-    defer stopWorker()
-
-    go func() {
-        sig := make(chan os.Signal, 1)
-        signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
-        <-sig
-        log.Println("shutdown signal received; draining in-flight processes")
-        stopWorker()
-    }()
-
-    broker, err := redisbroker.New(redisbroker.Config{
-        Addr: os.Getenv("BLKIT_REDIS_ADDR"),
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer broker.Close()
-
-    // StateStore is still owned by the worker — the broker never touches it.
-    // Backends live in their own modules under stores/ (see
-    // ../../specs/state-stores/overview.spec.md); import the one you use.
-    stateStore := pgstore.New(pgstore.Config{
-        DSN: os.Getenv("BLKIT_DB_URL"),
-    })
-
-    err = worker.Run(workerCtx, broker, stateStore, worker.Options{
-        WorkerID:        os.Getenv("HOSTNAME"), // unique per worker instance
-        MaxConcurrent:   intPtr(16),
-        TaskConcurrency: intPtr(8),
-    })
-    if err != nil {
-        log.Fatalf("worker exited: %v", err)
-    }
-}
-```
-
-For deployments that want the MCP server and the worker in the same binary, use `mcpserver.Run` with the `EmbeddedWorker` option instead of calling `worker.Run` directly — see [../mcp/mcp-server.spec.md](../mcp/mcp-server.spec.md).
-
-From a single Go module you can produce as many different worker binaries as you want, each capable of running a different subset of processes. Add a `main` package per binary under `cmd/`, and have each one blank-import only the process packages that binary should be able to run. The registry contents of each binary determine which `Job`s its workers will pick up off the shared broker.
-
-Each of these binaries can then be containerised and deployed independently, creating distinct pools of workers that each focus on executing their own subset of processes — all consuming from the same broker, with the broker's selective-consumption routing the right work to the right pool.
-
----
-
-## Example: Containerization & Deployment
-
-A worker binary is a plain Go executable, so a minimal multi-stage `Dockerfile` is sufficient. Build statically, copy the binary into a distroless or `scratch` base, and run it as PID 1 — `worker.Run` already honours `SIGTERM` for graceful shutdown via the `workerCtx` passed in by the caller in `main`.
+A worker binary is a plain Go executable, so a minimal multi-stage `Dockerfile` is sufficient. Build statically, copy the binary into a distroless or `scratch` base, and run it as PID 1 — `worker.Run` handles `SIGTERM` itself for graceful shutdown.
 
 ```dockerfile
 # Dockerfile
@@ -437,25 +496,6 @@ Operational notes:
 
 - **Replicas.** Each pod runs one `worker.Run` loop. Multiple pods are independent consumers of the broker's job stream; serialization is whatever the underlying broker provides.
 - **Worker IDs.** Use `metadata.name` (the pod name) as `WorkerID` — Kubernetes guarantees pod names are unique per namespace.
-- **Graceful shutdown.** Kubernetes sends `SIGTERM` then waits up to `terminationGracePeriodSeconds` before `SIGKILL`. Size this window to exceed your longest expected in-flight process.
+- **Graceful shutdown.** Kubernetes sends `SIGTERM` then waits up to `terminationGracePeriodSeconds` before `SIGKILL`. Size this window to exceed your longest expected in-flight process — or set `DrainTimeout` just below it, so the worker abandons the drain and exits cleanly (flushing what it can) rather than being SIGKILLed mid-write.
 - **Routing by deployment.** To run different process subsets on different node pools, build a separate worker binary per subset and deploy each as its own `Deployment`.
 - **Health checks.** A `worker.Run` loop has no HTTP surface; rely on the process being alive (`livenessProbe` of type `exec` against the binary, or omit the probe entirely).
-
----
-
-## Edge Cases
-
-- An empty registry is valid: `broker.RegisterProcesses` is called with an empty registration list, `broker.FetchJobs` is called with an empty key set, and the fetch loop idles until `workerCtx` is cancelled.
-- `WorkerID` empty produces a `ValueError`.
-- `MaxConcurrent <= 0`, `TaskConcurrency <= 0`, `PollInterval <= 0`, or `HeartbeatInterval <= 0` produce a `ValueError`.
-- `MaxWriters <= 0`, `MaxBatchSize <= 0`, `WriterChannelBuffer <= 0`, `MaxBatchWait < 0`, or `IdleTimeout < 0` produce a `ValueError`.
-- An unknown `WritePolicy` value produces a `ValueError`.
-- If the writer channel fills (producers outpace writers because the backend is slow or unreachable), producer behaviour follows `WritePolicy`.
-- A process that suspends calls `broker.ReportSuspended(workerCtx, instanceID, resumeAt)`. The eventual `JobResume` may be picked up by any worker subscribed to the same broker.
-- When `Evaluate` returns no ready tasks but the process has not completed (e.g. a join still waiting on parallel branches), the executor waits for those in-flight tasks rather than calling an outcome verb.
-- A panic inside an executor goroutine is recovered; the executor calls `broker.ReportFailed` and the fetch loop continues. A panic in the fetch loop terminates `worker.Run`.
-- If the executor crashes before calling any outcome verb, the broker times out the in-flight slot (default `5 × HeartbeatInterval`) and redelivers the job to another worker.
-- Multiple `worker.Run` calls — within the same Go process or across multiple processes/machines — are supported. Each is an independent consumer of the broker. Serialization is whatever the underlying broker provides.
-- `worker.Run` does not own or modify the `Process` graph — it is read-only during execution.
-- The worker registers processes with the broker on startup but does **not** call `bl.NewProcess(...)` itself; in-process registration happens at package init time (via blank imports of process-defining packages from `main`).
-- See [../message-brokers/overview.spec.md](../message-brokers/overview.spec.md) and [../state-stores/overview.spec.md](../state-stores/overview.spec.md) for component-specific edge cases.
