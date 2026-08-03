@@ -1,15 +1,13 @@
 name: Docs
 
-# Builds the Zensical documentation site on every push and pull request, and
-# publishes it to GitHub Pages only on pushes to the default branch and on
-# release tags. See specs/project/documentation.spec.md ("CI Requirements").
+# Builds and publishes the Zensical documentation site on pushes to the
+# default branch and release tags. Pull requests are validated by
+# pull-request-checks.yml. See specs/project/documentation.spec.md.
 
 on:
   push:
     branches: [main]
     tags: ["v*"]
-  pull_request:
-    branches: [main]
 
 # Allow one concurrent deployment; cancel in-progress runs on the same ref.
 concurrency:
@@ -29,7 +27,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.25.x"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -43,9 +41,10 @@ jobs:
 
       - name: Fail if generated docs are stale
         run: |
-          if ! git diff --quiet -- docs/reference docs/llms.txt docs/llms-full.txt; then
+          generated_status="$(git status --porcelain -- docs/reference docs/llms.txt docs/llms-full.txt)"
+          if [[ -n "$generated_status" ]]; then
             echo "::error::Generated docs are out of date. Run scripts/generate-docs.sh and scripts/generate-llms.sh and commit the result." >&2
-            git diff --stat -- docs/reference docs/llms.txt docs/llms-full.txt
+            printf '%s\n' "$generated_status"
             exit 1
           fi
 

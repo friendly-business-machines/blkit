@@ -1,0 +1,110 @@
+name: Pull Request Checks
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: pull-request-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: |
+            go.sum
+            brokers/**/go.sum
+            stores/**/go.sum
+      - name: Build
+        run: go build ./...
+
+  format:
+    name: Format
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: |
+            go.sum
+            brokers/**/go.sum
+            stores/**/go.sum
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+      - name: Check formatting
+        run: golangci-lint fmt --diff
+
+  lint:
+    name: Lint
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: |
+            go.sum
+            brokers/**/go.sum
+            stores/**/go.sum
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+      - name: Lint
+        run: golangci-lint run ./...
+
+  test:
+    name: Test
+    needs: [format, lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: |
+            go.sum
+            brokers/**/go.sum
+            stores/**/go.sum
+      - name: Test
+        run: go test ./...
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: |
+            go.sum
+            brokers/**/go.sum
+            stores/**/go.sum
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+      - name: Generate API reference
+        run: bash scripts/generate-docs.sh
+      - name: Generate llms.txt files
+        run: bash scripts/generate-llms.sh
+      - name: Fail if generated docs are stale
+        shell: bash
+        run: |
+          generated_status="$(git status --porcelain -- docs/reference docs/llms.txt docs/llms-full.txt)"
+          if [[ -n "$generated_status" ]]; then
+            echo "::error::Generated docs are out of date. Regenerate and commit them." >&2
+            printf '%s\n' "$generated_status"
+            exit 1
+          fi
+      - name: Build site
+        run: uvx zensical build --strict --clean
