@@ -68,17 +68,118 @@ StartEvent("start")
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This is a sequential process with two exclusive (XOR) gateways and three
-    terminal end events (one of them an error end). The Go implementation
-    depends on the `processes` package, which is still being built. This page
-    documents the process; the runnable blkit code will be added once that
-    package lands.
+The process engine is not available yet, but order validation and both gateway
+decisions can be implemented and tested today.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/order-fulfillment.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type Item struct {
+	SKU      string `json:"sku"`
+	Quantity int    `json:"quantity"`
+}
+type Address struct {
+	Line1    string `json:"line1"`
+	City     string `json:"city"`
+	Postcode string `json:"postcode"`
+	Country  string `json:"country"`
+}
+type FulfilmentInput struct {
+	OrderID            string  `json:"order_id"`
+	CustomerID         string  `json:"customer_id"`
+	Items              []Item  `json:"items"`
+	PaymentMethodToken string  `json:"payment_method_token"`
+	ShippingAddress    Address `json:"shipping_address"`
+	StockAvailable     bool    `json:"stock_available"`
+	PaymentOK          bool    `json:"payment_ok"`
+}
+type FulfilmentDecision struct {
+	ValidationErrors []string `json:"validation_errors"`
+	Route            string   `json:"route"`
+}
+type routeEnv struct {
+	Stock   bl.BlBoolean `expr:"stock"`
+	Payment bl.BlBoolean `expr:"payment"`
+}
+
+var routeExpression = mustRouteExpr(bl.Expr[routeEnv](`if not(stock) then "end-backorder" else if not(payment) then "end-payment-error" else "end-success"`))
+
+func mustRouteExpr(e *bl.BlExpr[routeEnv], err error) *bl.BlExpr[routeEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+```
+
+Validation stays at the application boundary; gateway selection is evaluated by
+the compiled blkit expression.
+
+``` { .go .blkit-example title="main.go" }
+func DecideFulfilment(in FulfilmentInput) (FulfilmentDecision, error) {
+	errors := []string{}
+	if in.OrderID == "" {
+		errors = append(errors, "order_id is required")
+	}
+	if in.CustomerID == "" {
+		errors = append(errors, "customer_id is required")
+	}
+	if len(in.Items) == 0 {
+		errors = append(errors, "at least one item is required")
+	}
+	for _, item := range in.Items {
+		if item.SKU == "" || item.Quantity <= 0 {
+			errors = append(errors, "items require a sku and positive quantity")
+		}
+	}
+	if in.PaymentMethodToken == "" {
+		errors = append(errors, "payment_method_token is required")
+	}
+	if in.ShippingAddress.Line1 == "" || in.ShippingAddress.City == "" || in.ShippingAddress.Postcode == "" || in.ShippingAddress.Country == "" {
+		errors = append(errors, "shipping_address is incomplete")
+	}
+	if len(errors) > 0 {
+		return FulfilmentDecision{ValidationErrors: errors, Route: "invalid-order"}, nil
+	}
+	stock, _ := bl.Boolean(in.StockAvailable)
+	payment, _ := bl.Boolean(in.PaymentOK)
+	value, err := routeExpression.Evaluate(routeEnv{stock, payment})
+	if err != nil {
+		return FulfilmentDecision{}, err
+	}
+	return FulfilmentDecision{ValidationErrors: errors, Route: value.(bl.BlString).String()}, nil
+}
+```
+
+``` { .go .blkit-example title="main.go" }
+func main() {
+	var in FulfilmentInput
+	if err := json.NewDecoder(os.Stdin).Decode(&in); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	out, err := DecideFulfilment(in)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err = json.NewEncoder(os.Stdout).Encode(out); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+```
+
+The actual task sequence, inventory/payment side effects, compensation, process
+state, and end-event traversal require the unfinished process engine, so no Go
+source for them is shown yet.
 
 ## Notes
 

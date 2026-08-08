@@ -4,6 +4,7 @@ description: A tax agent calculates an Australian individual's annual income tax
 status: implemented
 code:
   - docs/examples/aus-personal-income-tax.md
+  - internal/doctest/testdata/aus-personal-income-tax/example_test.go
 ---
 
 # Example: Australian Personal Income Tax Calculator
@@ -355,6 +356,9 @@ A compulsory repayment is added to the tax liability when repayment income excee
 > Total tax = max(0, base tax − LITO − SAPTO − FITO) + Medicare Levy + MLS + HELP repayment
 >
 > Refund or payable = Total tax − (PAYG withheld + franking credits received)
+
+For the annual return result, total tax is rounded half-up to the nearest whole
+dollar before reconciliation, matching the worked examples.
 
 ## Examples
 

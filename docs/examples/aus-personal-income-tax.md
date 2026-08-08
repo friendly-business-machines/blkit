@@ -157,18 +157,184 @@ $200,000 taxable income:
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This is the most involved example: a layered calculation combining bracketed
-    rate tables (income tax, Medicare Levy, MLS, HELP/HECS), tapered offsets
-    (LITO, SAPTO, FITO), and per-residency branching, all composed over the
-    expression engine. The full, CI-tested Go implementation depends on the
-    `decisions` package, which is still being built. This page documents the
-    calculation; the runnable blkit code will be added once that package lands.
+The liability schedules can be compiled into one typed expression and reused for
+many returns. This application accepts taxable income after the assessable-income
+and deduction calculation described above.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/aus-personal-income-tax.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type TaxInput struct {
+	TaxableIncome   string `json:"taxable_income"`
+	Residency       string `json:"residency"`
+	Age             int    `json:"age"`
+	PrivateCover    bool   `json:"private_cover"`
+	FamilyStatus    string `json:"family_status"`
+	HELPDebt        string `json:"help_debt"`
+	PAYGWithheld    string `json:"payg_withheld"`
+	FrankingCredits string `json:"franking_credits"`
+}
+type TaxResult struct {
+	BaseTax  string `json:"base_tax"`
+	LITO     string `json:"lito"`
+	SAPTO    string `json:"sapto"`
+	Medicare string `json:"medicare"`
+	MLS      string `json:"mls"`
+	HELP     string `json:"help"`
+	TotalTax string `json:"total_tax"`
+	Balance  string `json:"balance"`
+	Outcome  string `json:"outcome"`
+}
+type taxEnv struct {
+	Income    bl.BlNumber  `expr:"income"`
+	Residency bl.BlString  `expr:"residency"`
+	Age       bl.BlNumber  `expr:"age"`
+	Private   bl.BlBoolean `expr:"private_cover"`
+	Family    bl.BlString  `expr:"family"`
+	Debt      bl.BlNumber  `expr:"debt"`
+	PAYG      bl.BlNumber  `expr:"payg"`
+	Franking  bl.BlNumber  `expr:"franking"`
+}
+```
+
+Taxable income itself can also be built with exact decimal arithmetic. The input
+keeps already-calculated category totals so the example stays focused on tax
+composition rather than tax-return form plumbing.
+
+``` { .go .blkit-example title="main.go" }
+type IncomeInput struct {
+	Salary, Interest, UnfrankedDividends, FrankedCash, FrankingCredits, NetRental, BusinessIncome, ForeignIncome, TrustDistributions, GrossCapitalGains, CurrentCapitalLosses, PriorCapitalLosses, Deductions string
+	CGTDiscountEligible                                                                                                                                                                                       bool
+}
+type incomeEnv struct {
+	Salary        bl.BlNumber  `expr:"salary"`
+	Interest      bl.BlNumber  `expr:"interest"`
+	Unfranked     bl.BlNumber  `expr:"unfranked"`
+	FrankedCash   bl.BlNumber  `expr:"franked_cash"`
+	Franking      bl.BlNumber  `expr:"franking"`
+	Rental        bl.BlNumber  `expr:"rental"`
+	Business      bl.BlNumber  `expr:"business"`
+	Foreign       bl.BlNumber  `expr:"foreign"`
+	Trust         bl.BlNumber  `expr:"trust"`
+	Gains         bl.BlNumber  `expr:"gains"`
+	CurrentLosses bl.BlNumber  `expr:"current_losses"`
+	PriorLosses   bl.BlNumber  `expr:"prior_losses"`
+	Deductions    bl.BlNumber  `expr:"deductions"`
+	Discount      bl.BlBoolean `expr:"discount"`
+}
+
+var incomeExpression = mustIncomeExpr(bl.Expr[incomeEnv](`{net_capital_gain: max([0,gains-current_losses-prior_losses])*(if discount then 0.5 else 1), assessable: salary+interest+unfranked+franked_cash+franking+rental+business+foreign+trust+net_capital_gain, taxable: max([0,assessable-deductions])}`))
+
+func mustIncomeExpr(e *bl.BlExpr[incomeEnv], err error) *bl.BlExpr[incomeEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+func BuildTaxableIncome(in IncomeInput) (string, string, error) {
+	values := []string{in.Salary, in.Interest, in.UnfrankedDividends, in.FrankedCash, in.FrankingCredits, in.NetRental, in.BusinessIncome, in.ForeignIncome, in.TrustDistributions, in.GrossCapitalGains, in.CurrentCapitalLosses, in.PriorCapitalLosses, in.Deductions}
+	numbers := make([]bl.BlNumber, len(values))
+	for i, s := range values {
+		if s == "" {
+			s = "0"
+		}
+		n, e := bl.Number(s)
+		if e != nil {
+			return "", "", e
+		}
+		numbers[i] = n
+	}
+	discount, _ := bl.Boolean(in.CGTDiscountEligible)
+	v, e := incomeExpression.Evaluate(incomeEnv{numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5], numbers[6], numbers[7], numbers[8], numbers[9], numbers[10], numbers[11], numbers[12], discount})
+	if e != nil {
+		return "", "", e
+	}
+	m := v.(bl.BlDictionary).Native()
+	return m["net_capital_gain"].(bl.BlNumber).String(), m["taxable"].(bl.BlNumber).String(), nil
+}
+```
+
+The entries mirror the schedules: base tax, non-refundable offsets, levies,
+HELP/HECS, then reconciliation. Final tax is rounded to whole dollars, matching
+the annual return examples.
+
+``` { .go .blkit-example title="main.go" }
+var taxExpression = mustTaxExpr(bl.Expr[taxEnv](`{
+base_tax: (if residency="foreign" then (if income<=135000 then income*0.30 else if income<=190000 then 40500+(income-135000)*0.37 else 60850+(income-190000)*0.45) else if residency="working_holiday" then (if income<=45000 then income*0.15 else if income<=135000 then 6750+(income-45000)*0.30 else if income<=190000 then 33750+(income-135000)*0.37 else 54100+(income-190000)*0.45) else (if income<=18200 then 0 else if income<=45000 then (income-18200)*0.16 else if income<=135000 then 4288+(income-45000)*0.30 else if income<=190000 then 31288+(income-135000)*0.37 else 51638+(income-190000)*0.45)),
+lito: (if residency!="resident" then 0 else if income<=37500 then 700 else if income<=45000 then 700-(income-37500)*0.05 else if income<=66667 then 325-(income-45000)*0.015 else 0),
+sapto: (if residency="resident" and age>=67 then max([0,2230-0.125*max([0,income-32279])]) else 0),
+income_tax: max([0,base_tax-lito-sapto]),
+medicare: (if residency!="resident" then 0 else if age>=67 then (if income<=43020 then 0 else if income<=53775 then (income-43020)*0.10 else income*0.02) else (if income<=27222 then 0 else if income<=34027 then (income-27222)*0.10 else income*0.02)),
+mls: (if residency!="resident" or private_cover or family!="single" then 0 else if income<=97000 then 0 else if income<=113000 then income*0.01 else if income<=151000 then income*0.0125 else income*0.015),
+help_rate: (if income<54435 then 0 else if income<=62850 then 1 else if income<=66620 then 2 else if income<=70618 then 2.5 else if income<=74855 then 3 else if income<=79346 then 3.5 else if income<=84107 then 4 else if income<=89154 then 4.5 else if income<=94503 then 5 else if income<=100174 then 5.5 else if income<=106185 then 6 else if income<=112556 then 6.5 else if income<=119309 then 7 else if income<=126467 then 7.5 else if income<=134056 then 8 else if income<=142100 then 8.5 else if income<=150626 then 9 else if income<=159663 then 9.5 else 10),
+help: (if debt=0 then 0 else min([debt,income*help_rate/100])),
+total_tax: round(income_tax+medicare+mls+help,0),
+balance: total_tax-payg-franking,
+outcome: (if balance<0 then "refund" else if balance>0 then "payable" else "settled")
+}`))
+
+func mustTaxExpr(e *bl.BlExpr[taxEnv], err error) *bl.BlExpr[taxEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+```
+
+``` { .go .blkit-example title="main.go" }
+func CalculateTax(in TaxInput) (TaxResult, error) {
+	income, e := bl.Number(in.TaxableIncome)
+	if e != nil {
+		return TaxResult{}, e
+	}
+	residency, _ := bl.String(in.Residency)
+	age, _ := bl.Number(in.Age)
+	private, _ := bl.Boolean(in.PrivateCover)
+	family, _ := bl.String(in.FamilyStatus)
+	debt, e := bl.Number(in.HELPDebt)
+	if e != nil {
+		return TaxResult{}, e
+	}
+	payg, e := bl.Number(in.PAYGWithheld)
+	if e != nil {
+		return TaxResult{}, e
+	}
+	franking, e := bl.Number(in.FrankingCredits)
+	if e != nil {
+		return TaxResult{}, e
+	}
+	value, e := taxExpression.Evaluate(taxEnv{income, residency, age, private, family, debt, payg, franking})
+	if e != nil {
+		return TaxResult{}, e
+	}
+	m := value.(bl.BlDictionary).Native()
+	get := func(k string) string { return m[k].(bl.BlNumber).String() }
+	return TaxResult{get("base_tax"), get("lito"), get("sapto"), get("medicare"), get("mls"), get("help"), get("total_tax"), get("balance"), m["outcome"].(bl.BlString).String()}, nil
+}
+func main() {
+	var in TaxInput
+	if e := json.NewDecoder(os.Stdin).Decode(&in); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	out, e := CalculateTax(in)
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	if e = json.NewEncoder(os.Stdout).Encode(out); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+}
+```
 
 ## Notes
 
@@ -177,7 +343,7 @@ $200,000 taxable income:
 - Residency status switches the entire downstream calculation — bracket schedule,
   Medicare eligibility, and offset entitlement — so it is best modelled as a
   branch over three parallel rate schedules rather than a single table.
-- All monetary arithmetic should use `bl.number()` decimals; the tapers and
+- All monetary arithmetic should use `bl.Number()` decimals; the tapers and
   gross-ups (e.g. franking credit `× 30 / 70`) accumulate rounding error quickly
   under native floating point.
 - The franking credit is **refundable** while LITO/SAPTO/FITO are

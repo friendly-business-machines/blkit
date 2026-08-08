@@ -93,6 +93,8 @@ jobs:
             stores/**/go.sum
       - name: Install uv
         uses: astral-sh/setup-uv@v6
+      - name: Test documentation examples
+        run: go test ./internal/doctest
       - name: Generate API reference
         run: bash scripts/generate-docs.sh
       - name: Generate llms.txt files

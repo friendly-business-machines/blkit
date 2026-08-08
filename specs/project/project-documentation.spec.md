@@ -1,7 +1,7 @@
 ---
 name: Documentation
 description: Documentation site structure, toolchain, and authoring conventions — compiled from Markdown using Zensical and hosted on GitHub Pages, including auto-generated Go API reference and llms.txt discovery files
-status: agreed
+status: implemented
 code:
   - docs/
   - internal/doctest/
@@ -113,7 +113,7 @@ The eleven examples currently defined in `specs/examples/` are:
 Each `docs/examples/<name>.md` page is structured as follows:
 
 1. **Business overview** — a plain-English presentation of the process drawn from the corresponding spec: the overview, input/trigger data, the decision rules or process steps, outcomes, and worked examples. The page should reproduce the spec's natural sections so it stands alone on the documentation site, rather than only linking out. Decision-style and process-style examples will not share identical headings.
-2. **Implementation** — a self-contained, runnable Go implementation of the example using blkit. While the `decisions` / `processes` packages an example depends on are still being built, this section is a clearly-marked **pending placeholder** (an admonition explaining the dependency and linking to the authoritative spec) instead of code. Pages are published in this pending state; the runnable implementation replaces the placeholder once the required packages land.
+2. **Implementation** — progressive, runnable Go for every part of the example that current blkit APIs can express. Functionality requiring an unfinished module has no Go block yet and is identified in ordinary prose without preventing available code on the same page from being compiled and tested.
 3. **Notes** — any caveats, limitations, or points of interest.
 
 ### Implementation File Layout
@@ -124,22 +124,23 @@ Each example implementation is a Markdown file under `docs/examples/`:
 docs/examples/<name>.md
 ```
 
-The Zensical build renders this directly as the example page. A page is published as soon as its file exists — including when its **Implementation** section is still the pending placeholder described above. If the file is missing entirely, the page is excluded from the site and a warning is emitted at build time.
+The Zensical build renders this directly as the example page. A page is published as soon as its file exists, whether or not current blkit APIs can yet express all of its behavior. If the file is missing entirely, the page is excluded from the site and a warning is emitted at build time.
 
 ### Executable Examples and Verification
 
-Once an example's pending placeholder is replaced by a complete Go
-implementation, that implementation becomes a first-class CI check. The Go
-implementation remains solely in the Markdown page: no generated or hand-copied
-`.go` implementation is committed elsewhere in the repository.
+Every implemented Go fragment in an example page is a first-class CI check.
+Functionality whose blkit API is not yet available has no Go fragment; the page
+may still explain that unavailable portion in prose. Go implementation remains
+solely in the Markdown page: no generated or hand-copied `.go` implementation is
+committed elsewhere in the repository.
 
 #### Progressive source blocks
 
-A completed page teaches the implementation progressively. Each step may explain
-a design choice and then contribute another fragment of the program in a marked
-Go fence. The outer four-backtick `markdown` fence below only displays the
-required authoring syntax inside this spec; an example page contains only the
-inner three-backtick Go fence.
+A page teaches available implementation progressively. Each step may explain a
+design choice and then contribute another fragment of the program in a marked Go
+fence. The outer four-backtick `markdown` fence below only displays the required
+authoring syntax inside this spec; an example page contains only the inner
+three-backtick Go fence.
 
 ````markdown
 ``` { .go .blkit-example title="main.go" }
@@ -168,17 +169,17 @@ functions that the external tests can call directly. This keeps the displayed
 code representative of an application a reader could adapt rather than turning
 `main()` into a test driver.
 
-A page is in exactly one state:
+A page with one or more marked fences has one matching external acceptance test
+fixture. A page without marked fences has no fixture and is skipped by the Go
+example runner. A fixture without marked source, or marked source without a
+fixture, is invalid. An unclosed marked fence, a marked non-Go fence, a marked
+fence with another title, or source that does not parse and compile is also a
+test failure.
 
-- **pending** — its Implementation section contains the standard
-  `Implementation pending` admonition and no `.blkit-example` fence; or
-- **completed** — it contains one or more `.blkit-example` fences, they assemble
-  into a complete program, and it has the matching external acceptance test
-  described below.
-
-A page containing both forms, or neither form, is invalid. An unclosed marked
-fence, a marked non-Go fence, a marked fence with another title, or source that
-does not parse and compile is a test failure.
+There is no separate page status or completeness metadata. Missing blkit
+functionality is represented by the absence of source for that behavior, not by
+pseudocode. Tests cover only behavior implemented by the marked blocks and must
+not claim that omitted process or worker side effects occurred.
 
 #### External acceptance tests
 
@@ -195,7 +196,7 @@ implementation from the Markdown page. At test time the driver copies the
 matching test into the temporary directory beside the assembled `main.go` and
 runs them as one `package main`.
 
-Every completed example is verified at both levels:
+Every example containing marked source is verified at both levels:
 
 1. **Direct logic acceptance tests** call the assembled application's reusable
    business-logic functions. They are table-driven and cover every worked row in
@@ -218,8 +219,8 @@ still present worked inputs and outputs in its explanatory prose or tables.
 
 The standard-library-only driver lives in `internal/doctest/` and is itself
 reached by `go test ./...`. It discovers every `docs/examples/*.md` page and
-matches completed page `<name>.md` to
-`internal/doctest/testdata/<name>/example_test.go`. For each completed page it:
+matches each page containing marked source to
+`internal/doctest/testdata/<name>/example_test.go`. For each tested page it:
 
 1. extracts and assembles the marked fragments in a fresh temporary directory;
 2. parses and compiles the assembled package;
@@ -233,8 +234,7 @@ Missing or extra test fixtures, duplicate page identities, extraction errors,
 compile errors, build errors, absent direct or command tests, runtime failures,
 and assertion failures all fail the suite. Temporary source and binaries are
 removed by the test lifecycle and are never committed or used as Zensical input.
-Pending pages are classified but are exempt from compilation and acceptance
-execution.
+Pages without marked source are ignored.
 
 Repository-authored Markdown and its external tests are trusted executable code.
 Pull requests changing either receive the same review and CI treatment as Go
@@ -255,7 +255,7 @@ The Reference section contains the Go API reference, generated from `//` godoc c
 
 Generated Markdown is committed to `docs/reference/` and consumed by Zensical as ordinary source files. The generation step runs in CI on every release.
 
-The section covers **every** buildable package in the workspace, not only the `core` module. Because each state-store backend under `stores/<name>/` and each message-broker backend under `brokers/<name>/` is its own Go module (see the State Stores and Message Brokers Sections below), `go list ./...` on its own does not reach them; `scripts/generate-docs.sh` additionally discovers each backend module through the workspace and documents it. The `core` package is written as `reference/blkit.md`; each state-store module as `reference/stores-<name>.md` (e.g. `reference/stores-postgres.md`) and each broker module as `reference/brokers-<name>.md` (e.g. `reference/brokers-redis.md`). All of these pages are wired into the Reference nav group.
+The section covers every user-facing buildable package in the workspace, not only the `core` module. Internal test/tooling packages such as `internal/doctest` are excluded. Because each state-store backend under `stores/<name>/` and each message-broker backend under `brokers/<name>/` is its own Go module (see the State Stores and Message Brokers Sections below), `go list ./...` on its own does not reach them; `scripts/generate-docs.sh` additionally discovers each backend module through the workspace and documents it. The `core` package is written as `reference/blkit.md`; each state-store module as `reference/stores-<name>.md` (e.g. `reference/stores-postgres.md`) and each broker module as `reference/brokers-<name>.md` (e.g. `reference/brokers-redis.md`). All of these pages are wired into the Reference nav group.
 
 ## Expressions Section
 
@@ -405,9 +405,9 @@ The documentation workflow must:
 3. Run `scripts/generate-llms-txt.sh` to regenerate the `llms.txt` discovery files.
 4. Fail the build if the regenerated Reference Markdown or `llms.txt` files
    differ from what is committed (a staleness check).
-5. Assemble every completed runnable implementation in the Examples section,
-   run its external direct and black-box Go tests, and verify its results against
-   the worked examples in the corresponding business-process spec.
+5. Assemble every marked Go implementation in the Examples section, run its
+   external direct and black-box tests, and verify the behavior represented by
+   that source against the corresponding business-process spec.
 6. Run `zensical build` (or equivalent) to compile the full site.
 7. Fail the build if any broken internal links are detected.
 8. Publish the compiled site to GitHub Pages only on pushes to the default branch or release tags (not on pull requests).

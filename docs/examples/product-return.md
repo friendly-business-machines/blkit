@@ -140,18 +140,135 @@ issued at 110% = **£385**.
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This example combines **date-window eligibility checks**, two lookup decision
-    tables (refund percentage, then resolution), and a **process** with a timer
-    for the 14-day receipt window. The Go implementation depends on the
-    `decisions` and `processes` packages, which are still being built. This page
-    documents the process; the runnable blkit code will be added once those
-    packages land.
+The eligibility, refund, and resolution logic can already be composed as one
+typed blkit expression.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/product-return.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type ReturnInput struct {
+	DeliveryDate       string `json:"delivery_date"`
+	RequestDate        string `json:"request_date"`
+	RMAIssuedDate      string `json:"rma_issued_date"`
+	ReceivedDate       string `json:"received_date"`
+	Returnable         bool   `json:"returnable"`
+	Quantity           int    `json:"quantity"`
+	Purchased          int    `json:"purchased"`
+	Reason             string `json:"reason"`
+	Grade              string `json:"grade"`
+	Preferred          string `json:"preferred"`
+	ReplacementInStock bool   `json:"replacement_in_stock"`
+	UnitPrice          string `json:"unit_price"`
+}
+type ReturnResult struct {
+	Eligible         bool   `json:"eligible"`
+	ReceivedInTime   bool   `json:"received_in_time"`
+	RefundPercent    string `json:"refund_percent"`
+	RefundAmount     string `json:"refund_amount"`
+	Resolution       string `json:"resolution"`
+	ResolutionAmount string `json:"resolution_amount"`
+}
+type returnEnv struct {
+	Delivery   bl.BlDate    `expr:"delivery"`
+	Request    bl.BlDate    `expr:"request"`
+	Issued     bl.BlDate    `expr:"issued"`
+	Received   bl.BlDate    `expr:"received"`
+	Returnable bl.BlBoolean `expr:"returnable"`
+	Quantity   bl.BlNumber  `expr:"quantity"`
+	Purchased  bl.BlNumber  `expr:"purchased"`
+	Reason     bl.BlString  `expr:"reason"`
+	Grade      bl.BlString  `expr:"grade"`
+	Preferred  bl.BlString  `expr:"preferred"`
+	Stock      bl.BlBoolean `expr:"stock"`
+	Price      bl.BlNumber  `expr:"price"`
+}
+```
+
+Sequential entries make each decision visible and reusable by later entries.
+
+``` { .go .blkit-example title="main.go" }
+var returnExpression = mustReturnExpr(bl.Expr[returnEnv](`{
+within_request_window: request-delivery <= dtDuration("P30D"),
+received_in_time: received-issued <= dtDuration("P14D"),
+eligible: within_request_window and returnable and quantity <= purchased,
+refund_percent: (if not(eligible) or not(received_in_time) then 0 else if reason in ["DEFECTIVE","WRONG_ITEM","NOT_AS_DESCRIBED"] then 100 else if grade in ["A","B"] then 100 else if grade = "C" then 50 else 0),
+refund_amount: price*quantity*refund_percent/100,
+resolution_amount: (if preferred="store_credit" and refund_percent=100 then refund_amount*1.1 else refund_amount),
+resolution: (if refund_percent=0 then "Declined" else if preferred="replacement" and stock then "Replacement dispatched" else if preferred="store_credit" then "Store credit" else if refund_percent=100 then "Full refund" else "Partial refund")
+}`))
+
+func mustReturnExpr(e *bl.BlExpr[returnEnv], err error) *bl.BlExpr[returnEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+func CalculateReturn(in ReturnInput) (ReturnResult, error) {
+	delivery, e := bl.Date(in.DeliveryDate)
+	if e != nil {
+		return ReturnResult{}, e
+	}
+	request, e := bl.Date(in.RequestDate)
+	if e != nil {
+		return ReturnResult{}, e
+	}
+	issued, e := bl.Date(in.RMAIssuedDate)
+	if e != nil {
+		return ReturnResult{}, e
+	}
+	received, e := bl.Date(in.ReceivedDate)
+	if e != nil {
+		return ReturnResult{}, e
+	}
+	q, _ := bl.Number(in.Quantity)
+	p, _ := bl.Number(in.Purchased)
+	reason, _ := bl.String(in.Reason)
+	grade, _ := bl.String(in.Grade)
+	preferred, _ := bl.String(in.Preferred)
+	price, e := bl.Number(in.UnitPrice)
+	if e != nil {
+		return ReturnResult{}, e
+	}
+	returnable, _ := bl.Boolean(in.Returnable)
+	stock, _ := bl.Boolean(in.ReplacementInStock)
+	v, e := returnExpression.Evaluate(returnEnv{delivery, request, issued, received, returnable, q, p, reason, grade, preferred, stock, price})
+	if e != nil {
+		return ReturnResult{}, e
+	}
+	m := v.(bl.BlDictionary).Native()
+	return ReturnResult{m["eligible"].(bl.BlBoolean).Native(), m["received_in_time"].(bl.BlBoolean).Native(), m["refund_percent"].(bl.BlNumber).String(), m["refund_amount"].(bl.BlNumber).String(), m["resolution"].(bl.BlString).String(), m["resolution_amount"].(bl.BlNumber).String()}, nil
+}
+```
+
+``` { .go .blkit-example title="main.go" }
+func main() {
+	var in ReturnInput
+	if e := json.NewDecoder(os.Stdin).Decode(&in); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	out, e := CalculateReturn(in)
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	if e = json.NewEncoder(os.Stdout).Encode(out); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+}
+```
+
+RMA creation, waiting for warehouse receipt, timer expiry, and dispatch/payment
+side effects require the unfinished process engine, so no Go source for those
+steps is shown yet.
 
 ## Notes
 

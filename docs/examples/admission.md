@@ -66,16 +66,119 @@ Declined applications return a maximum credit load of zero and no advising track
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This is a single decision table evaluated with **first-match** (priority)
-    hit policy. The Go implementation depends on the `decisions` package, which
-    is still being built. This page documents the business decision; the runnable
-    blkit code will be added once that package lands.
+Define the application boundary and the typed handles used by the decision table.
+GPA remains part of the application input, although this policy does not use it
+as a decision column.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/admission.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	bl "github.com/friendly-business-machines/blkit/core"
+)
+
+type AdmissionInput struct {
+	AptitudeScore int    `json:"aptitude_score"`
+	GPA           string `json:"gpa"`
+	AbsenceRatio  string `json:"absence_ratio"`
+	Enrolment     string `json:"enrolment"`
+}
+
+type AdmissionResult struct {
+	Decision   string `json:"decision"`
+	MaxCredits int    `json:"max_credits"`
+	Track      string `json:"track,omitempty"`
+}
+
+type admissionVariables struct {
+	Score     bl.Handle[bl.BlNumber] `expr:"score"`
+	Absence   bl.Handle[bl.BlNumber] `expr:"absence"`
+	Enrolment bl.Handle[bl.BlString] `expr:"enrolment"`
+}
+
+type admissionOutputs struct {
+	Decision   bl.Handle[bl.BlString] `expr:"decision"`
+	MaxCredits bl.Handle[bl.BlNumber] `expr:"max_credits"`
+	Track      bl.Handle[bl.BlString] `expr:"track"`
+}
+```
+
+The first matching row wins. Decline rows return zero credits and an empty track.
+
+``` { .go .blkit-example title="main.go" }
+var admissionTable = bl.NewDecisionTable[admissionVariables, admissionOutputs](bl.DecisionTableConfig{
+	Id: "course-admission", Name: "Course admission", HitPolicy: bl.HitPolicyFirst,
+	Columns: []bl.Column{
+		{Label: "Score", Expr: `score`, Type: bl.TypeNumber},
+		{Label: "Enrolment", Expr: `enrolment`, Type: bl.TypeString},
+		{Label: "Absence", Expr: `absence`, Type: bl.TypeNumber},
+	},
+	Rules: bl.Rules{
+		{`honors`, `>= 750`, `"full-time", "part-time"`, `<= 0.30`, `"Admitted"`, `21`, `"Honors"`},
+		{`standard`, `>= 700`, `"full-time", "part-time"`, `<= 0.40`, `"Admitted"`, `18`, `"Standard"`},
+		{`foundation`, `>= 650`, `"full-time", "part-time"`, `<= 0.40`, `"Waitlisted"`, `15`, `"Foundation"`},
+		{`support`, `>= 600`, `"full-time", "part-time"`, `<= 0.50`, `"Waitlisted"`, `12`, `"Support"`},
+		{`low-score`, `< 600`, `-`, `-`, `"Declined"`, `0`, `""`},
+		{`withdrawn`, `-`, `"withdrawn"`, `-`, `"Declined"`, `0`, `""`},
+		{`high-absence`, `-`, `-`, `> 0.50`, `"Declined"`, `0`, `""`},
+	},
+})
+```
+
+Convert caller values to blkit values and evaluate the table.
+
+``` { .go .blkit-example title="main.go" }
+func DecideAdmission(input AdmissionInput) (AdmissionResult, error) {
+	score, err := bl.Number(input.AptitudeScore)
+	if err != nil {
+		return AdmissionResult{}, err
+	}
+	absence, err := bl.Number(input.AbsenceRatio)
+	if err != nil {
+		return AdmissionResult{}, err
+	}
+	enrolment, err := bl.String(input.Enrolment)
+	if err != nil {
+		return AdmissionResult{}, err
+	}
+	output, err := admissionTable.Evaluate(admissionVariables{
+		Score: bl.NewHandle(score), Absence: bl.NewHandle(absence), Enrolment: bl.NewHandle(enrolment),
+	})
+	if err != nil {
+		return AdmissionResult{}, err
+	}
+	return AdmissionResult{
+		Decision:   output.Decision.Get().String(),
+		MaxCredits: int(output.MaxCredits.Get().Decimal().IntPart()),
+		Track:      output.Track.Get().String(),
+	}, nil
+}
+```
+
+The command reads one application and writes its decision.
+
+``` { .go .blkit-example title="main.go" }
+func main() {
+	var input AdmissionInput
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	result, err := DecideAdmission(input)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+```
 
 ## Notes
 

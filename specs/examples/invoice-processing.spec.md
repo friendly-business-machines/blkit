@@ -4,6 +4,7 @@ description: An accounts payable team processes incoming supplier invoices throu
 status: implemented
 code:
   - docs/examples/invoice-processing.md
+  - internal/doctest/testdata/invoice-processing/example_test.go
 ---
 
 # Example: Invoice Processing Workflow

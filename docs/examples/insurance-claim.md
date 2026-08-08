@@ -111,7 +111,7 @@ their decision.
 | Claim | Cover Type | Damage Categories | Vehicle Value | Excess | Raw Score | Capped Score | Severity | Gross | Net | Outcome |
 |---|---|---|---|---|---|---|---|---|---|---|
 | CLM-001 | Comprehensive | Collision (30) + Vandalism (20) | £12,000 | £500 | 50 | 50 | Moderate | £4,200 | £3,700 | Offer issued |
-| CLM-002 | Comprehensive | Fire (40) + Theft (50) | £30,000 | £1,000 | 90 | 100 | Total loss | £30,000 | £29,000 | Senior assessor referral |
+| CLM-002 | Comprehensive | Fire (40) + Theft (50) | £30,000 | £1,000 | 90 | 90 | Total loss | £30,000 | £29,000 | Senior assessor referral |
 | CLM-003 | Third-party only | Third-party vehicle (20) | £8,000 | £250 | 20 | 20 | Minor | £1,200 | £950 | Offer issued |
 | CLM-004 | Third-party only | Collision (not covered) | £15,000 | £500 | — | — | — | — | — | Rejected: damage not covered |
 | CLM-005 | Comprehensive | Weather (15) | £3,000 | £500 | 15 | 15 | Minor | £450 | £0 | Valid, no payment (below excess) |
@@ -123,22 +123,143 @@ Gross = £12,000 × 35% = £4,200; net = £4,200 − £500 = **£3,700**, below 
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This example chains three sub-decisions (eligibility, severity scoring,
-    settlement) — naturally three linked decision tables — with a referral
-    threshold at the end. The Go implementation depends on the `decisions`
-    package, which is still being built. This page documents the assessment; the
-    runnable blkit code will be added once that package lands.
+Define the claim boundary and the typed environment for the linked assessment.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/insurance-claim.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type ClaimInput struct {
+	PolicyActive bool     `json:"policy_active"`
+	IncidentDate string   `json:"incident_date"`
+	PolicyStart  string   `json:"policy_start"`
+	PolicyEnd    string   `json:"policy_end"`
+	CoverType    string   `json:"cover_type"`
+	Damage       []string `json:"damage"`
+	VehicleValue string   `json:"vehicle_value"`
+	Excess       string   `json:"excess"`
+}
+type ClaimResult struct {
+	Eligible    bool   `json:"eligible"`
+	RawScore    string `json:"raw_score"`
+	CappedScore string `json:"capped_score"`
+	Severity    string `json:"severity"`
+	Gross       string `json:"gross"`
+	Net         string `json:"net"`
+	Outcome     string `json:"outcome"`
+}
+type claimEnv struct {
+	Active   bl.BlBoolean `expr:"active"`
+	Incident bl.BlDate    `expr:"incident"`
+	Start    bl.BlDate    `expr:"start"`
+	End      bl.BlDate    `expr:"end"`
+	Covered  bl.BlBoolean `expr:"covered"`
+	Raw      bl.BlNumber  `expr:"raw"`
+	Value    bl.BlNumber  `expr:"value"`
+	Excess   bl.BlNumber  `expr:"excess"`
+}
+```
+
+The compiled expression gates eligibility, caps and bands the score, then derives
+the settlement and referral outcome.
+
+``` { .go .blkit-example title="main.go" }
+var claimExpression = mustClaimExpr(bl.Expr[claimEnv](`{
+eligible: active and incident>=start and incident<=end and covered,
+capped: clamp(raw,0,100),
+severity: (if capped<=20 then "Minor" else if capped<=50 then "Moderate" else if capped<=80 then "Significant" else "Total loss"),
+percentage: (if severity="Minor" then 15 else if severity="Moderate" then 35 else if severity="Significant" then 65 else 100),
+gross: (if eligible then value*percentage/100 else 0),
+net: max([0,gross-excess]),
+outcome: (if not(eligible) then "Rejected: damage not covered" else if net=0 then "Valid, no payment" else if net>25000 then "Senior assessor referral" else "Offer issued")
+}`))
+
+func mustClaimExpr(e *bl.BlExpr[claimEnv], err error) *bl.BlExpr[claimEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+
+var damageScores = map[string]int{"third_party_vehicle": 20, "third_party_property": 15, "fire": 40, "theft": 50, "collision": 30, "weather": 15, "vandalism": 20}
+
+func damageCovered(cover, damage string) bool {
+	if cover == "comprehensive" {
+		return true
+	}
+	if damage == "third_party_vehicle" || damage == "third_party_property" {
+		return true
+	}
+	return cover == "third_party_fire_theft" && (damage == "fire" || damage == "theft")
+}
+```
+
+``` { .go .blkit-example title="main.go" }
+func AssessClaim(in ClaimInput) (ClaimResult, error) {
+	incident, e := bl.Date(in.IncidentDate)
+	if e != nil {
+		return ClaimResult{}, e
+	}
+	start, e := bl.Date(in.PolicyStart)
+	if e != nil {
+		return ClaimResult{}, e
+	}
+	end, e := bl.Date(in.PolicyEnd)
+	if e != nil {
+		return ClaimResult{}, e
+	}
+	raw := 0
+	covered := false
+	for _, d := range in.Damage {
+		raw += damageScores[d]
+		covered = covered || damageCovered(in.CoverType, d)
+	}
+	rawNumber, _ := bl.Number(raw)
+	value, e := bl.Number(in.VehicleValue)
+	if e != nil {
+		return ClaimResult{}, e
+	}
+	excess, e := bl.Number(in.Excess)
+	if e != nil {
+		return ClaimResult{}, e
+	}
+	active, _ := bl.Boolean(in.PolicyActive)
+	coveredValue, _ := bl.Boolean(covered)
+	result, e := claimExpression.Evaluate(claimEnv{active, incident, start, end, coveredValue, rawNumber, value, excess})
+	if e != nil {
+		return ClaimResult{}, e
+	}
+	m := result.(bl.BlDictionary).Native()
+	return ClaimResult{m["eligible"].(bl.BlBoolean).Native(), rawNumber.String(), m["capped"].(bl.BlNumber).String(), m["severity"].(bl.BlString).String(), m["gross"].(bl.BlNumber).String(), m["net"].(bl.BlNumber).String(), m["outcome"].(bl.BlString).String()}, nil
+}
+func main() {
+	var in ClaimInput
+	if e := json.NewDecoder(os.Stdin).Decode(&in); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	out, e := AssessClaim(in)
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	if e = json.NewEncoder(os.Stdout).Encode(out); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+}
+```
 
 ## Notes
 
 - The three sub-decisions feed forward: eligibility gates scoring, the capped
   score selects a severity band, and the band's percentage drives settlement.
-- The score is **capped at 100** before banding (see CLM-002, raw 90 vs capped
-  100), and a settlement that nets below £0 yields no payment rather than a
-  negative amount.
+- The score is **capped at 100** before banding. CLM-002's raw score of 90
+  remains 90 after capping, and a settlement that nets below £0 yields no payment
+  rather than a negative amount.

@@ -76,17 +76,137 @@ or before the due date, and a payment batch reference is recorded.
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This is a process with a **parallel (fork/join) section** for the three
-    validation checks, a join that aggregates their results, and an amount-based
-    approval gateway. The Go implementation depends on the `processes` package,
-    which is still being built. This page documents the workflow; the runnable
-    blkit code will be added once that package lands.
+The validations, arithmetic, GL mapping, and approval decision can be implemented
+without the process engine.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/invoice-processing.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type InvoiceLine struct {
+	Description string `json:"description"`
+	Quantity    string `json:"quantity"`
+	UnitPrice   string `json:"unit_price"`
+	Category    string `json:"category"`
+}
+type InvoiceInput struct {
+	Total            string        `json:"total"`
+	Duplicate        bool          `json:"duplicate"`
+	VendorActive     bool          `json:"vendor_active"`
+	CurrencyApproved bool          `json:"currency_approved"`
+	Lines            []InvoiceLine `json:"lines"`
+}
+type InvoiceDecision struct {
+	ValidationErrors []string `json:"validation_errors"`
+	ComputedTotal    string   `json:"computed_total"`
+	GLCodes          []string `json:"gl_codes"`
+	RequiresApproval bool     `json:"requires_approval"`
+}
+type lineEnv struct {
+	Quantity bl.BlNumber `expr:"quantity"`
+	Price    bl.BlNumber `expr:"price"`
+}
+
+var lineTotal = mustLineExpr(bl.Expr[lineEnv](`quantity*price`))
+
+type invoiceEnv struct {
+	Computed bl.BlNumber `expr:"computed"`
+	Stated   bl.BlNumber `expr:"stated"`
+}
+
+var invoiceChecks = mustInvoiceExpr(bl.Expr[invoiceEnv](`{lines_valid: abs(computed-stated)<=0.01, requires_approval: stated>10000}`))
+
+func mustLineExpr(e *bl.BlExpr[lineEnv], err error) *bl.BlExpr[lineEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+func mustInvoiceExpr(e *bl.BlExpr[invoiceEnv], err error) *bl.BlExpr[invoiceEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+```
+
+Each validation contributes its own message, so callers receive all failures.
+
+``` { .go .blkit-example title="main.go" }
+func DecideInvoice(in InvoiceInput) (InvoiceDecision, error) {
+	stated, err := bl.Number(in.Total)
+	if err != nil {
+		return InvoiceDecision{}, err
+	}
+	computed, _ := bl.Number(0)
+	codes := []string{}
+	mapping := map[string]string{"travel": "6000", "equipment": "6100", "services": "6200"}
+	for _, line := range in.Lines {
+		q, e := bl.Number(line.Quantity)
+		if e != nil {
+			return InvoiceDecision{}, e
+		}
+		p, e := bl.Number(line.UnitPrice)
+		if e != nil {
+			return InvoiceDecision{}, e
+		}
+		v, e := lineTotal.Evaluate(lineEnv{q, p})
+		if e != nil {
+			return InvoiceDecision{}, e
+		}
+		computed, _ = bl.Number(computed.Decimal().Add(v.(bl.BlNumber).Decimal()))
+		code := mapping[line.Category]
+		if code == "" {
+			code = "6999"
+		}
+		codes = append(codes, code)
+	}
+	checks, err := invoiceChecks.Evaluate(invoiceEnv{computed, stated})
+	if err != nil {
+		return InvoiceDecision{}, err
+	}
+	m := checks.(bl.BlDictionary).Native()
+	errors := []string{}
+	if in.Duplicate {
+		errors = append(errors, "duplicate invoice")
+	}
+	if !in.VendorActive || !in.CurrencyApproved {
+		errors = append(errors, "vendor is not approved")
+	}
+	if !m["lines_valid"].(bl.BlBoolean).Native() {
+		errors = append(errors, "line total mismatch")
+	}
+	return InvoiceDecision{errors, computed.String(), codes, m["requires_approval"].(bl.BlBoolean).Native()}, nil
+}
+```
+
+``` { .go .blkit-example title="main.go" }
+func main() {
+	var in InvoiceInput
+	if e := json.NewDecoder(os.Stdin).Decode(&in); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	out, e := DecideInvoice(in)
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	if e = json.NewEncoder(os.Stdout).Encode(out); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+}
+```
+
+Parallel fork/join execution, waiting for manager input, vendor notification, and
+payment scheduling require the process engine and are not shown as Go yet.
 
 ## Notes
 
@@ -94,4 +214,4 @@ or before the due date, and a payment batch reference is recorded.
   decided. The join **collects all failures** rather than short-circuiting on the
   first, so the vendor gets a complete rejection reason.
 - The line-item check compares a computed total against the stated total within a
-  0.01 tolerance — a good fit for `bl.number()` decimal arithmetic.
+  0.01 tolerance — a good fit for `bl.Number()` decimal arithmetic.

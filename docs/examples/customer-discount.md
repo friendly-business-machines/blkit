@@ -84,17 +84,124 @@ For C-003, four rules match — R1 (5%), R6 (12%), R7 (8%), R8 (6%). The highest
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This is a decision table evaluated with a **collect (aggregate) hit policy** —
-    gather every matching rule's percentage, then take the maximum. The Go
-    implementation depends on the `decisions` package, which is still being
-    built. This page documents the rules; the runnable blkit code will be added
-    once that package lands.
+Define the order boundary and the decision table's typed input and output
+contracts.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/customer-discount.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type DiscountInput struct {
+	Tier             string `json:"tier"`
+	AccountAgeMonths int    `json:"account_age_months"`
+	Subtotal         string `json:"subtotal"`
+	ItemCount        int    `json:"item_count"`
+	Category         string `json:"category"`
+	PromoCode        string `json:"promo_code"`
+	Month            string `json:"month"`
+}
+type DiscountResult struct {
+	DiscountPercent string `json:"discount_percent"`
+	DiscountAmount  string `json:"discount_amount"`
+	Total           string `json:"total"`
+}
+type discountVars struct {
+	Tier     bl.Handle[bl.BlString] `expr:"tier"`
+	Age      bl.Handle[bl.BlNumber] `expr:"age"`
+	Subtotal bl.Handle[bl.BlNumber] `expr:"subtotal"`
+	Items    bl.Handle[bl.BlNumber] `expr:"items"`
+	Category bl.Handle[bl.BlString] `expr:"category"`
+	Code     bl.Handle[bl.BlString] `expr:"code"`
+	Month    bl.Handle[bl.BlString] `expr:"month"`
+}
+type discountOut struct {
+	Discount bl.Handle[bl.BlNumber] `expr:"discount"`
+}
+```
+
+A collect/max policy evaluates every row and retains the largest percentage.
+
+``` { .go .blkit-example title="main.go" }
+var maxAggregation = bl.AggregationMax
+var discountTable = bl.NewDecisionTable[discountVars, discountOut](bl.DecisionTableConfig{
+	Id: "customer-discount", HitPolicy: bl.HitPolicyCollect, Aggregation: &maxAggregation,
+	Columns: []bl.Column{
+		{Label: "Tier", Expr: `tier`, Type: bl.TypeString}, {Label: "Age", Expr: `age`, Type: bl.TypeNumber},
+		{Label: "Subtotal", Expr: `subtotal`, Type: bl.TypeNumber}, {Label: "Items", Expr: `items`, Type: bl.TypeNumber},
+		{Label: "Category", Expr: `category`, Type: bl.TypeString}, {Label: "Code", Expr: `code`, Type: bl.TypeString}, {Label: "Month", Expr: `month`, Type: bl.TypeString},
+	},
+	Rules: bl.Rules{
+		{`R1`, `"Silver"`, `>= 12`, `-`, `-`, `-`, `-`, `-`, `5`}, {`R2`, `"Gold"`, `>= 12`, `-`, `-`, `-`, `-`, `-`, `10`}, {`R3`, `"Platinum"`, `>= 12`, `-`, `-`, `-`, `-`, `-`, `15`},
+		{`R4`, `-`, `< 3`, `-`, `-`, `-`, `-`, `-`, `10`}, {`R5`, `-`, `-`, `-`, `[10..25)`, `-`, `-`, `-`, `5`}, {`R6`, `-`, `-`, `-`, `>= 25`, `-`, `-`, `-`, `12`},
+		{`R7`, `-`, `-`, `> 500`, `-`, `-`, `-`, `-`, `8`}, {`R8`, `-`, `-`, `-`, `-`, `"Furniture"`, `-`, `-`, `6`}, {`R9`, `-`, `-`, `-`, `-`, `-`, `-`, `"January", "July"`, `20`},
+		{`R10`, `-`, `-`, `-`, `-`, `-`, `"WELCOME20"`, `-`, `20`}, {`R11`, `"Gold", "Platinum"`, `-`, `-`, `-`, `-`, `"LOYAL10"`, `-`, `10`}, {`R12`, `-`, `-`, `-`, `>= 10`, `-`, `"BULK15"`, `-`, `15`},
+	},
+})
+
+type totalEnv struct {
+	Subtotal bl.BlNumber `expr:"subtotal"`
+	Discount bl.BlNumber `expr:"discount"`
+}
+
+var totalExpression = mustTotalExpr(bl.Expr[totalEnv](`{amount: subtotal * discount / 100, total: subtotal * (1 - discount / 100)}`))
+
+func mustTotalExpr(expr *bl.BlExpr[totalEnv], err error) *bl.BlExpr[totalEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return expr
+}
+```
+
+Evaluate the table, then evaluate the monetary expression with its result.
+
+``` { .go .blkit-example title="main.go" }
+func CalculateDiscount(input DiscountInput) (DiscountResult, error) {
+	tier, _ := bl.String(input.Tier)
+	age, _ := bl.Number(input.AccountAgeMonths)
+	subtotal, err := bl.Number(input.Subtotal)
+	if err != nil {
+		return DiscountResult{}, err
+	}
+	items, _ := bl.Number(input.ItemCount)
+	category, _ := bl.String(input.Category)
+	code, _ := bl.String(input.PromoCode)
+	month, _ := bl.String(input.Month)
+	selected, err := discountTable.Evaluate(discountVars{bl.NewHandle(tier), bl.NewHandle(age), bl.NewHandle(subtotal), bl.NewHandle(items), bl.NewHandle(category), bl.NewHandle(code), bl.NewHandle(month)})
+	if err != nil {
+		return DiscountResult{}, err
+	}
+	discount := selected.Discount.Get()
+	totals, err := totalExpression.Evaluate(totalEnv{subtotal, discount})
+	if err != nil {
+		return DiscountResult{}, err
+	}
+	values := totals.(bl.BlDictionary).Native()
+	return DiscountResult{discount.String(), values["amount"].(bl.BlNumber).String(), values["total"].(bl.BlNumber).String()}, nil
+}
+func main() {
+	var input DiscountInput
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	result, err := CalculateDiscount(input)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+```
 
 ## Notes
 

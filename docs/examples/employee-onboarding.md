@@ -98,17 +98,111 @@ instructions, and the HR portal link.
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This is a process with a **parallel fork** into three independent
-    workstreams, a **join gate** that waits for all three, and a **timer-based
-    escalation** at five business days. The Go implementation depends on the
-    `processes` package, which is still being built. This page documents the
-    process; the runnable blkit code will be added once that package lands.
+Business-day arithmetic and the completion/escalation decision are available
+today, even though parallel process execution is not.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/employee-onboarding.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type OnboardingInput struct {
+	HireDate              string `json:"hire_date"`
+	ITCompleteDay         int    `json:"it_complete_day"`
+	HRCompleteDay         int    `json:"hr_complete_day"`
+	FacilitiesCompleteDay int    `json:"facilities_complete_day"`
+}
+type OnboardingDecision struct {
+	Deadline    string   `json:"deadline"`
+	Result      string   `json:"result"`
+	Outstanding []string `json:"outstanding"`
+}
+type deadlineEnv struct {
+	Hire bl.BlDate `expr:"hire"`
+}
+
+var deadlineExpression = mustDeadlineExpr(bl.Expr[deadlineEnv](`addBusinessDays(hire,5)`))
+
+type completionEnv struct {
+	IT         bl.BlNumber `expr:"it"`
+	HR         bl.BlNumber `expr:"hr"`
+	Facilities bl.BlNumber `expr:"facilities"`
+}
+
+var completionExpression = mustCompletionExpr(bl.Expr[completionEnv](`if it<=5 and hr<=5 and facilities<=5 then "welcome" else "escalate"`))
+
+func mustDeadlineExpr(e *bl.BlExpr[deadlineEnv], err error) *bl.BlExpr[deadlineEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+func mustCompletionExpr(e *bl.BlExpr[completionEnv], err error) *bl.BlExpr[completionEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+```
+
+``` { .go .blkit-example title="main.go" }
+func DecideOnboarding(in OnboardingInput) (OnboardingDecision, error) {
+	hire, err := bl.Date(in.HireDate)
+	if err != nil {
+		return OnboardingDecision{}, err
+	}
+	deadline, err := deadlineExpression.Evaluate(deadlineEnv{hire})
+	if err != nil {
+		return OnboardingDecision{}, err
+	}
+	it, _ := bl.Number(in.ITCompleteDay)
+	hr, _ := bl.Number(in.HRCompleteDay)
+	facilities, _ := bl.Number(in.FacilitiesCompleteDay)
+	result, err := completionExpression.Evaluate(completionEnv{it, hr, facilities})
+	if err != nil {
+		return OnboardingDecision{}, err
+	}
+	outstanding := []string{}
+	if in.ITCompleteDay > 5 {
+		outstanding = append(outstanding, "IT")
+	}
+	if in.HRCompleteDay > 5 {
+		outstanding = append(outstanding, "HR")
+	}
+	if in.FacilitiesCompleteDay > 5 {
+		outstanding = append(outstanding, "Facilities")
+	}
+	return OnboardingDecision{deadline.(bl.BlDate).String(), result.(bl.BlString).String(), outstanding}, nil
+}
+```
+
+``` { .go .blkit-example title="main.go" }
+func main() {
+	var in OnboardingInput
+	if e := json.NewDecoder(os.Stdin).Decode(&in); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	out, e := DecideOnboarding(in)
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	if e = json.NewEncoder(os.Stdout).Encode(out); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+}
+```
+
+Parallel workstream execution, AND-join token handling, a live boundary-timer
+race, notifications, and persisted open process state require the process engine
+and are not shown as Go yet.
 
 ## Notes
 

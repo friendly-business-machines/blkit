@@ -4,6 +4,7 @@ description: An employee submits a business expense claim; the approval route (a
 status: implemented
 code:
   - docs/examples/expense-approval.md
+  - internal/doctest/testdata/expense-approval/example_test.go
 ---
 
 # Example: Employee Expense Approval

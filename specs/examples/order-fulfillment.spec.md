@@ -4,6 +4,7 @@ description: An e-commerce platform handles an order from customer placement thr
 status: implemented
 code:
   - docs/examples/order-fulfillment.md
+  - internal/doctest/testdata/order-fulfillment/example_test.go
 ---
 
 # Example: Order Fulfillment Process

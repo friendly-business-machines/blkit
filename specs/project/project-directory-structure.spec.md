@@ -1,7 +1,7 @@
 ---
 name: Project Directory Structure
 description: Repository directory layout — Go implementation, docs, scripts, and copier templates
-status: agreed
+status: implemented
 ---
 
 # Project Directory Structure
@@ -63,7 +63,7 @@ docs/
 
 Hand-authored Markdown lives in all directories except `reference/`, whose contents are programmatically generated from source and must not be edited by hand.
 
-Completed example implementations are assembled directly from marked, progressive
+Available example implementations are assembled directly from marked, progressive
 Go blocks in `docs/examples/*.md`. The test-only driver and external acceptance
 fixtures live under `internal/doctest/`; no extracted Go implementation is
 committed. See

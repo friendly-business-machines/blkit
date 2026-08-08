@@ -4,6 +4,7 @@ description: Business process specification for assessing a motor insurance clai
 status: implemented
 code:
   - docs/examples/insurance-claim.md
+  - internal/doctest/testdata/insurance-claim/example_test.go
 ---
 
 # Insurance Claim Assessment
@@ -128,7 +129,7 @@ If the calculated settlement amount (after deducting the excess) exceeds £25,00
 | Claim | Cover Type | Damage Categories | Vehicle Value | Excess | Raw Score | Capped Score | Severity | Gross Settlement | Net Settlement | Outcome |
 |---|---|---|---|---|---|---|---|---|---|---|
 | CLM-001 | Comprehensive | Collision (30) + Vandalism (20) | £12,000 | £500 | 50 | 50 | Moderate | £4,200 | £3,700 | Offer issued |
-| CLM-002 | Comprehensive | Fire (40) + Theft (50) | £30,000 | £1,000 | 90 | 100 | Total loss | £30,000 | £29,000 | Senior assessor referral |
+| CLM-002 | Comprehensive | Fire (40) + Theft (50) | £30,000 | £1,000 | 90 | 90 | Total loss | £30,000 | £29,000 | Senior assessor referral |
 | CLM-003 | Third-party only | Third-party vehicle (20) | £8,000 | £250 | 20 | 20 | Minor | £1,200 | £950 | Offer issued |
 | CLM-004 | Third-party only | Collision (not covered) | £15,000 | £500 | — | — | — | — | — | Rejected: damage not covered |
 | CLM-005 | Comprehensive | Weather (15) | £3,000 | £500 | 15 | 15 | Minor | £450 | £0 | Valid, no payment (below excess) |

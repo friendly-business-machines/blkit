@@ -105,6 +105,8 @@ core_pkgs="$(go list ./... 2>/dev/null)" || fail "go list failed — module does
 [ -n "$core_pkgs" ] || fail "no Go packages found to document"
 while IFS= read -r pkg; do
   [ -n "$pkg" ] || continue
+  # Internal test harnesses are repository tooling, not user-facing API.
+  [[ "$pkg" == */internal/* ]] && continue
   # Derive a stable, flat file name from the import path: the core package
   # becomes blkit.md (it is the project's primary reference page and the site
   # nav links to reference/blkit.md), sub-packages become e.g. messagegateway.md.

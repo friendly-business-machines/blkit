@@ -67,17 +67,107 @@ Finance Director regardless of category or employee level.
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This example combines a **first-match decision table** (route selection)
-    with a **process** (the human review workflow the chosen route triggers). The
-    Go implementation depends on the `decisions` and `processes` packages, which
-    are still being built. This page documents the policy and routes; the
-    runnable blkit code will be added once those packages land.
+The approval route is available today as a decision table. Define its caller and
+handle types first.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/expense-approval.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type ExpenseInput struct {
+	Amount        string `json:"amount"`
+	Category      string `json:"category"`
+	EmployeeLevel string `json:"employee_level"`
+}
+
+type ExpenseRoute struct {
+	Route string `json:"route"`
+}
+
+type routeInputs struct {
+	Amount   bl.Handle[bl.BlNumber] `expr:"amount"`
+	Category bl.Handle[bl.BlString] `expr:"category"`
+	Level    bl.Handle[bl.BlString] `expr:"level"`
+}
+type routeOutputs struct {
+	Route bl.Handle[bl.BlString] `expr:"route"`
+}
+```
+
+The rows follow policy priority exactly.
+
+``` { .go .blkit-example title="main.go" }
+var routeTable = bl.NewDecisionTable[routeInputs, routeOutputs](bl.DecisionTableConfig{
+	Id: "expense-route", HitPolicy: bl.HitPolicyFirst,
+	Columns: []bl.Column{
+		{Label: "Amount", Expr: `amount`, Type: bl.TypeNumber},
+		{Label: "Category", Expr: `category`, Type: bl.TypeString},
+		{Label: "Level", Expr: `level`, Type: bl.TypeString},
+	},
+	Rules: bl.Rules{
+		{`automatic`, `<= 50`, `-`, `-`, `"Automatic"`},
+		{`standard-manager`, `<= 500`, `"meals", "travel", "accommodation"`, `-`, `"Manager"`},
+		{`senior-manager`, `<= 500`, `"equipment", "other"`, `"senior", "executive"`, `"Manager"`},
+		{`executive-manager`, `<= 2000`, `-`, `"executive"`, `"Manager"`},
+		{`finance-under-limit`, `<= 2000`, `-`, `-`, `"Finance Director"`},
+		{`finance-over-limit`, `> 2000`, `-`, `-`, `"Finance Director"`},
+	},
+})
+
+func SelectExpenseRoute(input ExpenseInput) (ExpenseRoute, error) {
+	amount, err := bl.Number(input.Amount)
+	if err != nil {
+		return ExpenseRoute{}, err
+	}
+	category, err := bl.String(input.Category)
+	if err != nil {
+		return ExpenseRoute{}, err
+	}
+	level, err := bl.String(input.EmployeeLevel)
+	if err != nil {
+		return ExpenseRoute{}, err
+	}
+	output, err := routeTable.Evaluate(routeInputs{bl.NewHandle(amount), bl.NewHandle(category), bl.NewHandle(level)})
+	if err != nil {
+		return ExpenseRoute{}, err
+	}
+	return ExpenseRoute{Route: output.Route.Get().String()}, nil
+}
+```
+
+The command exposes route selection to an application caller.
+
+``` { .go .blkit-example title="main.go" }
+func main() {
+	var input ExpenseInput
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	result, err := SelectExpenseRoute(input)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+```
+
+### What cannot be shown yet
+
+The selected route will eventually feed a blkit process that waits for manager or
+Finance Director input, records approval/rejection, notifies the employee, and
+starts reimbursement. Process execution is not implemented yet, so no Go source
+for those steps is shown.
 
 ## Notes
 

@@ -4,6 +4,7 @@ description: Business process specification for identifying all applicable disco
 status: implemented
 code:
   - docs/examples/customer-discount.md
+  - internal/doctest/testdata/customer-discount/example_test.go
 ---
 
 # Customer Discount Eligibility

@@ -4,6 +4,7 @@ description: Business process specification for coordinating the parallel setup 
 status: implemented
 code:
   - docs/examples/employee-onboarding.md
+  - internal/doctest/testdata/employee-onboarding/example_test.go
 ---
 
 # Employee Onboarding

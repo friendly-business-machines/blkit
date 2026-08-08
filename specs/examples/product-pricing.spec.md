@@ -4,6 +4,7 @@ description: A SaaS company calculates the final per-seat price and total monthl
 status: implemented
 code:
   - docs/examples/product-pricing.md
+  - internal/doctest/testdata/product-pricing/example_test.go
 ---
 
 # Example: SaaS Subscription Pricing Engine
@@ -63,6 +64,8 @@ The effective per-seat price is calculated as:
 2. Subtract the promotional code reduction (if any).
 3. Apply the volume discount to the result.
 4. Apply the customer tier discount to the result.
+5. Round the effective per-seat price half-up to two decimal places before
+   calculating totals.
 
 The total monthly charge is:
 

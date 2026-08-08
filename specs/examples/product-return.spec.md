@@ -4,6 +4,7 @@ description: Business process specification for handling a customer's request to
 status: implemented
 code:
   - docs/examples/product-return.md
+  - internal/doctest/testdata/product-return/example_test.go
 ---
 
 # Product Return and Refund

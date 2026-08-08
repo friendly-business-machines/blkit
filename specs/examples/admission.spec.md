@@ -4,6 +4,7 @@ description: A university admissions office determines whether an undergraduate 
 status: implemented
 code:
   - docs/examples/admission.md
+  - internal/doctest/testdata/admission/example_test.go
 ---
 
 # Example: Course Admission

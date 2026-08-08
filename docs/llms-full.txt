@@ -260,16 +260,119 @@ Declined applications return a maximum credit load of zero and no advising track
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This is a single decision table evaluated with **first-match** (priority)
-    hit policy. The Go implementation depends on the `decisions` package, which
-    is still being built. This page documents the business decision; the runnable
-    blkit code will be added once that package lands.
+Define the application boundary and the typed handles used by the decision table.
+GPA remains part of the application input, although this policy does not use it
+as a decision column.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/admission.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	bl "github.com/friendly-business-machines/blkit/core"
+)
+
+type AdmissionInput struct {
+	AptitudeScore int    `json:"aptitude_score"`
+	GPA           string `json:"gpa"`
+	AbsenceRatio  string `json:"absence_ratio"`
+	Enrolment     string `json:"enrolment"`
+}
+
+type AdmissionResult struct {
+	Decision   string `json:"decision"`
+	MaxCredits int    `json:"max_credits"`
+	Track      string `json:"track,omitempty"`
+}
+
+type admissionVariables struct {
+	Score     bl.Handle[bl.BlNumber] `expr:"score"`
+	Absence   bl.Handle[bl.BlNumber] `expr:"absence"`
+	Enrolment bl.Handle[bl.BlString] `expr:"enrolment"`
+}
+
+type admissionOutputs struct {
+	Decision   bl.Handle[bl.BlString] `expr:"decision"`
+	MaxCredits bl.Handle[bl.BlNumber] `expr:"max_credits"`
+	Track      bl.Handle[bl.BlString] `expr:"track"`
+}
+```
+
+The first matching row wins. Decline rows return zero credits and an empty track.
+
+``` { .go .blkit-example title="main.go" }
+var admissionTable = bl.NewDecisionTable[admissionVariables, admissionOutputs](bl.DecisionTableConfig{
+	Id: "course-admission", Name: "Course admission", HitPolicy: bl.HitPolicyFirst,
+	Columns: []bl.Column{
+		{Label: "Score", Expr: `score`, Type: bl.TypeNumber},
+		{Label: "Enrolment", Expr: `enrolment`, Type: bl.TypeString},
+		{Label: "Absence", Expr: `absence`, Type: bl.TypeNumber},
+	},
+	Rules: bl.Rules{
+		{`honors`, `>= 750`, `"full-time", "part-time"`, `<= 0.30`, `"Admitted"`, `21`, `"Honors"`},
+		{`standard`, `>= 700`, `"full-time", "part-time"`, `<= 0.40`, `"Admitted"`, `18`, `"Standard"`},
+		{`foundation`, `>= 650`, `"full-time", "part-time"`, `<= 0.40`, `"Waitlisted"`, `15`, `"Foundation"`},
+		{`support`, `>= 600`, `"full-time", "part-time"`, `<= 0.50`, `"Waitlisted"`, `12`, `"Support"`},
+		{`low-score`, `< 600`, `-`, `-`, `"Declined"`, `0`, `""`},
+		{`withdrawn`, `-`, `"withdrawn"`, `-`, `"Declined"`, `0`, `""`},
+		{`high-absence`, `-`, `-`, `> 0.50`, `"Declined"`, `0`, `""`},
+	},
+})
+```
+
+Convert caller values to blkit values and evaluate the table.
+
+``` { .go .blkit-example title="main.go" }
+func DecideAdmission(input AdmissionInput) (AdmissionResult, error) {
+	score, err := bl.Number(input.AptitudeScore)
+	if err != nil {
+		return AdmissionResult{}, err
+	}
+	absence, err := bl.Number(input.AbsenceRatio)
+	if err != nil {
+		return AdmissionResult{}, err
+	}
+	enrolment, err := bl.String(input.Enrolment)
+	if err != nil {
+		return AdmissionResult{}, err
+	}
+	output, err := admissionTable.Evaluate(admissionVariables{
+		Score: bl.NewHandle(score), Absence: bl.NewHandle(absence), Enrolment: bl.NewHandle(enrolment),
+	})
+	if err != nil {
+		return AdmissionResult{}, err
+	}
+	return AdmissionResult{
+		Decision:   output.Decision.Get().String(),
+		MaxCredits: int(output.MaxCredits.Get().Decimal().IntPart()),
+		Track:      output.Track.Get().String(),
+	}, nil
+}
+```
+
+The command reads one application and writes its decision.
+
+``` { .go .blkit-example title="main.go" }
+func main() {
+	var input AdmissionInput
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	result, err := DecideAdmission(input)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+```
 
 ## Notes
 
@@ -347,9 +450,9 @@ The fuel surcharge is 8% of
 | actual_weight | L×W×H (cm) | Volumetric | Billable | Zone | Speed | Total |
 |---|---|---|---|---|---|---|
 | 3.2 kg | 40×30×20 | 4.8 kg | 4.8 kg | 2 (regional) | express | 38.88 |
-| 10.0 kg | 20×15×10 | 0.6 kg | 10.0 kg | 1 (domestic) | standard | 18.90 |
-| 0.5 kg | 60×40×30 | 14.4 kg | 14.4 kg | 3 (international) | overnight | 214.20 |
-| 2.0 kg | 25×15×10 | 0.75 kg | 2.0 kg | 1 (domestic) | overnight | 20.25 |
+| 10.0 kg | 20×15×10 | 0.6 kg | 10.0 kg | 1 (domestic) | standard | 21.60 |
+| 0.5 kg | 60×40×30 | 14.4 kg | 14.4 kg | 3 (international) | overnight | 223.02 |
+| 2.0 kg | 25×15×10 | 0.75 kg | 2.0 kg | 1 (domestic) | overnight | 21.60 |
 
 Walking the first row through the steps: volumetric weight =
 (40 × 30 × 20) ÷ 5000 = 4.8 kg, so billable = 4.8 kg. Regional zone gives
@@ -359,39 +462,137 @@ Total = **38.88**.
 
 ## Implementation
 
-Because this example uses only the expression engine (the root `blkit` package),
-it can be built today. The spec captures the calculation as composable
-expression fragments — the outline below mirrors that structure. The full,
-CI-tested Go listing will be published here once the surrounding example
-scaffolding lands.
+Start with request and response types. Decimal inputs are strings so conversion
+to `bl.BlNumber` never passes through binary floating point.
 
-!!! note "Expression engine available today"
-    The building blocks below (`bl.var`, `bl.number`, arithmetic, `if_then_else`,
-    `bl.context`, and `.evaluate`) ship in the current `blkit` package. See the
-    [Reference](../reference/blkit.md) for the full expression API and the
-    authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/shipping-rate.spec.md)
-    for the complete worked outline.
+``` { .go .blkit-example title="main.go" }
+package main
 
-```text
-volumetric_weight = length_cm × width_cm × height_cm ÷ 5000
-billable_weight   = max(actual_weight_kg, volumetric_weight)
-zone_rates        = if zone == 1 → {base: 5.00,  per_kg: 1.50}
-                    if zone == 2 → {base: 12.00, per_kg: 2.50}
-                    else         → {base: 25.00, per_kg: 4.00}
-speed_multiplier  = if tier == "standard" → 1.0
-                    if tier == "express"  → 1.5
-                    else                  → 2.5
-subtotal          = (zone_rates.base + billable_weight × zone_rates.per_kg) × speed_multiplier
-fuel_surcharge    = subtotal × 0.08
-total             = subtotal + fuel_surcharge
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	bl "github.com/friendly-business-machines/blkit/core"
+)
+
+type ShippingInput struct {
+	ActualWeightKG  string `json:"actual_weight_kg"`
+	LengthCM        string `json:"length_cm"`
+	WidthCM         string `json:"width_cm"`
+	HeightCM        string `json:"height_cm"`
+	DestinationZone int    `json:"destination_zone"`
+	SpeedTier       string `json:"speed_tier"`
+}
+
+type ShippingQuote struct {
+	VolumetricWeightKG string `json:"volumetric_weight_kg"`
+	BillableWeightKG   string `json:"billable_weight_kg"`
+	Subtotal           string `json:"subtotal"`
+	FuelSurcharge      string `json:"fuel_surcharge"`
+	Total              string `json:"total"`
+}
+```
+
+The expression is compiled once. Dictionary entries are evaluated in order, so
+later entries can reuse earlier intermediate values.
+
+``` { .go .blkit-example title="main.go" }
+type shippingEnv struct {
+	ActualWeightKG  bl.BlNumber `expr:"actual_weight_kg"`
+	LengthCM        bl.BlNumber `expr:"length_cm"`
+	WidthCM         bl.BlNumber `expr:"width_cm"`
+	HeightCM        bl.BlNumber `expr:"height_cm"`
+	DestinationZone bl.BlNumber `expr:"destination_zone"`
+	SpeedTier       bl.BlString `expr:"speed_tier"`
+}
+
+var shippingExpression = mustExpression(bl.Expr[shippingEnv](`{
+    volumetric_weight: length_cm * width_cm * height_cm / 5000,
+    billable_weight: max([actual_weight_kg, volumetric_weight]),
+    base_rate: (if destination_zone = 1 then 5 else if destination_zone = 2 then 12 else 25),
+    per_kg_rate: (if destination_zone = 1 then 1.5 else if destination_zone = 2 then 2.5 else 4),
+    speed_multiplier: (if speed_tier = "standard" then 1 else if speed_tier = "express" then 1.5 else 2.5),
+    subtotal: (base_rate + billable_weight * per_kg_rate) * speed_multiplier,
+    fuel_surcharge: subtotal * 0.08,
+    total: subtotal + fuel_surcharge
+}`))
+
+func mustExpression(expr *bl.BlExpr[shippingEnv], err error) *bl.BlExpr[shippingEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return expr
+}
+
+func number(value string) (bl.BlNumber, error) { return bl.Number(value) }
+```
+
+`CalculateShipping` converts the application boundary, evaluates the reusable
+expression, and projects its dictionary result.
+
+``` { .go .blkit-example title="main.go" }
+func CalculateShipping(input ShippingInput) (ShippingQuote, error) {
+	actual, err := number(input.ActualWeightKG)
+	if err != nil {
+		return ShippingQuote{}, err
+	}
+	length, err := number(input.LengthCM)
+	if err != nil {
+		return ShippingQuote{}, err
+	}
+	width, err := number(input.WidthCM)
+	if err != nil {
+		return ShippingQuote{}, err
+	}
+	height, err := number(input.HeightCM)
+	if err != nil {
+		return ShippingQuote{}, err
+	}
+	zone, err := bl.Number(input.DestinationZone)
+	if err != nil {
+		return ShippingQuote{}, err
+	}
+	tier, err := bl.String(input.SpeedTier)
+	if err != nil {
+		return ShippingQuote{}, err
+	}
+	value, err := shippingExpression.Evaluate(shippingEnv{actual, length, width, height, zone, tier})
+	if err != nil {
+		return ShippingQuote{}, err
+	}
+	values := value.(bl.BlDictionary).Native()
+	get := func(name string) string { return values[name].(bl.BlNumber).String() }
+	return ShippingQuote{get("volumetric_weight"), get("billable_weight"), get("subtotal"), get("fuel_surcharge"), get("total")}, nil
+}
+```
+
+Finally, the command accepts a JSON request from its caller and returns the quote.
+
+``` { .go .blkit-example title="main.go" }
+func main() {
+	var input ShippingInput
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	quote, err := CalculateShipping(input)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(quote); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
 ```
 
 ## Notes
 
 - Expressions are pure data structures: the result expression can be built once
   and evaluated many times with different variable maps.
-- Prefer `bl.number()` (arbitrary-precision decimal) over native floating point
+- Prefer `bl.Number()` (arbitrary-precision decimal) over native floating point
   for monetary arithmetic — it avoids the rounding drift that float math
   introduces in financial calculations.
 
@@ -469,17 +670,118 @@ StartEvent("start")
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This is a sequential process with two exclusive (XOR) gateways and three
-    terminal end events (one of them an error end). The Go implementation
-    depends on the `processes` package, which is still being built. This page
-    documents the process; the runnable blkit code will be added once that
-    package lands.
+The process engine is not available yet, but order validation and both gateway
+decisions can be implemented and tested today.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/order-fulfillment.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type Item struct {
+	SKU      string `json:"sku"`
+	Quantity int    `json:"quantity"`
+}
+type Address struct {
+	Line1    string `json:"line1"`
+	City     string `json:"city"`
+	Postcode string `json:"postcode"`
+	Country  string `json:"country"`
+}
+type FulfilmentInput struct {
+	OrderID            string  `json:"order_id"`
+	CustomerID         string  `json:"customer_id"`
+	Items              []Item  `json:"items"`
+	PaymentMethodToken string  `json:"payment_method_token"`
+	ShippingAddress    Address `json:"shipping_address"`
+	StockAvailable     bool    `json:"stock_available"`
+	PaymentOK          bool    `json:"payment_ok"`
+}
+type FulfilmentDecision struct {
+	ValidationErrors []string `json:"validation_errors"`
+	Route            string   `json:"route"`
+}
+type routeEnv struct {
+	Stock   bl.BlBoolean `expr:"stock"`
+	Payment bl.BlBoolean `expr:"payment"`
+}
+
+var routeExpression = mustRouteExpr(bl.Expr[routeEnv](`if not(stock) then "end-backorder" else if not(payment) then "end-payment-error" else "end-success"`))
+
+func mustRouteExpr(e *bl.BlExpr[routeEnv], err error) *bl.BlExpr[routeEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+```
+
+Validation stays at the application boundary; gateway selection is evaluated by
+the compiled blkit expression.
+
+``` { .go .blkit-example title="main.go" }
+func DecideFulfilment(in FulfilmentInput) (FulfilmentDecision, error) {
+	errors := []string{}
+	if in.OrderID == "" {
+		errors = append(errors, "order_id is required")
+	}
+	if in.CustomerID == "" {
+		errors = append(errors, "customer_id is required")
+	}
+	if len(in.Items) == 0 {
+		errors = append(errors, "at least one item is required")
+	}
+	for _, item := range in.Items {
+		if item.SKU == "" || item.Quantity <= 0 {
+			errors = append(errors, "items require a sku and positive quantity")
+		}
+	}
+	if in.PaymentMethodToken == "" {
+		errors = append(errors, "payment_method_token is required")
+	}
+	if in.ShippingAddress.Line1 == "" || in.ShippingAddress.City == "" || in.ShippingAddress.Postcode == "" || in.ShippingAddress.Country == "" {
+		errors = append(errors, "shipping_address is incomplete")
+	}
+	if len(errors) > 0 {
+		return FulfilmentDecision{ValidationErrors: errors, Route: "invalid-order"}, nil
+	}
+	stock, _ := bl.Boolean(in.StockAvailable)
+	payment, _ := bl.Boolean(in.PaymentOK)
+	value, err := routeExpression.Evaluate(routeEnv{stock, payment})
+	if err != nil {
+		return FulfilmentDecision{}, err
+	}
+	return FulfilmentDecision{ValidationErrors: errors, Route: value.(bl.BlString).String()}, nil
+}
+```
+
+``` { .go .blkit-example title="main.go" }
+func main() {
+	var in FulfilmentInput
+	if err := json.NewDecoder(os.Stdin).Decode(&in); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	out, err := DecideFulfilment(in)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err = json.NewEncoder(os.Stdout).Encode(out); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+```
+
+The actual task sequence, inventory/payment side effects, compensation, process
+state, and end-event traversal require the unfinished process engine, so no Go
+source for them is shown yet.
 
 ## Notes
 
@@ -563,17 +865,107 @@ Finance Director regardless of category or employee level.
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This example combines a **first-match decision table** (route selection)
-    with a **process** (the human review workflow the chosen route triggers). The
-    Go implementation depends on the `decisions` and `processes` packages, which
-    are still being built. This page documents the policy and routes; the
-    runnable blkit code will be added once those packages land.
+The approval route is available today as a decision table. Define its caller and
+handle types first.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/expense-approval.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type ExpenseInput struct {
+	Amount        string `json:"amount"`
+	Category      string `json:"category"`
+	EmployeeLevel string `json:"employee_level"`
+}
+
+type ExpenseRoute struct {
+	Route string `json:"route"`
+}
+
+type routeInputs struct {
+	Amount   bl.Handle[bl.BlNumber] `expr:"amount"`
+	Category bl.Handle[bl.BlString] `expr:"category"`
+	Level    bl.Handle[bl.BlString] `expr:"level"`
+}
+type routeOutputs struct {
+	Route bl.Handle[bl.BlString] `expr:"route"`
+}
+```
+
+The rows follow policy priority exactly.
+
+``` { .go .blkit-example title="main.go" }
+var routeTable = bl.NewDecisionTable[routeInputs, routeOutputs](bl.DecisionTableConfig{
+	Id: "expense-route", HitPolicy: bl.HitPolicyFirst,
+	Columns: []bl.Column{
+		{Label: "Amount", Expr: `amount`, Type: bl.TypeNumber},
+		{Label: "Category", Expr: `category`, Type: bl.TypeString},
+		{Label: "Level", Expr: `level`, Type: bl.TypeString},
+	},
+	Rules: bl.Rules{
+		{`automatic`, `<= 50`, `-`, `-`, `"Automatic"`},
+		{`standard-manager`, `<= 500`, `"meals", "travel", "accommodation"`, `-`, `"Manager"`},
+		{`senior-manager`, `<= 500`, `"equipment", "other"`, `"senior", "executive"`, `"Manager"`},
+		{`executive-manager`, `<= 2000`, `-`, `"executive"`, `"Manager"`},
+		{`finance-under-limit`, `<= 2000`, `-`, `-`, `"Finance Director"`},
+		{`finance-over-limit`, `> 2000`, `-`, `-`, `"Finance Director"`},
+	},
+})
+
+func SelectExpenseRoute(input ExpenseInput) (ExpenseRoute, error) {
+	amount, err := bl.Number(input.Amount)
+	if err != nil {
+		return ExpenseRoute{}, err
+	}
+	category, err := bl.String(input.Category)
+	if err != nil {
+		return ExpenseRoute{}, err
+	}
+	level, err := bl.String(input.EmployeeLevel)
+	if err != nil {
+		return ExpenseRoute{}, err
+	}
+	output, err := routeTable.Evaluate(routeInputs{bl.NewHandle(amount), bl.NewHandle(category), bl.NewHandle(level)})
+	if err != nil {
+		return ExpenseRoute{}, err
+	}
+	return ExpenseRoute{Route: output.Route.Get().String()}, nil
+}
+```
+
+The command exposes route selection to an application caller.
+
+``` { .go .blkit-example title="main.go" }
+func main() {
+	var input ExpenseInput
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	result, err := SelectExpenseRoute(input)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+```
+
+### What cannot be shown yet
+
+The selected route will eventually feed a blkit process that waits for manager or
+Finance Director input, records approval/rejection, notifies the employee, and
+starts reimbursement. Process execution is not implemented yet, so no Go source
+for those steps is shown.
 
 ## Notes
 
@@ -654,6 +1046,8 @@ The effective per-seat price is:
 2. Subtract the promotional code reduction (if any).
 3. Apply the volume discount to the result.
 4. Apply the customer tier discount to the result.
+5. Round the effective per-seat price half-up to two decimal places before
+   calculating totals.
 
 > total monthly = effective per-seat price × number of seats
 >
@@ -675,21 +1069,126 @@ Total monthly = 18.63 × 30 = **558.90**.
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    The discount lookups can be modelled as decision tables and the four-step
-    price reduction as a composed expression. The Go implementation depends on
-    the `decisions` package, which is still being built. This page documents the
-    pricing model; the runnable blkit code will be added once that package lands.
+Define a caller-facing request and the small contracts shared by the lookup
+tables.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/product-pricing.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type PricingInput struct {
+	Plan         string `json:"plan"`
+	BillingCycle string `json:"billing_cycle"`
+	Seats        int    `json:"seats"`
+	Tier         string `json:"tier"`
+	PromoCode    string `json:"promo_code"`
+}
+type PricingResult struct {
+	BasePerSeat      string `json:"base_per_seat"`
+	EffectivePerSeat string `json:"effective_per_seat"`
+	TotalMonthly     string `json:"total_monthly"`
+	TotalAnnual      string `json:"total_annual"`
+}
+type twoStrings struct {
+	First  bl.Handle[bl.BlString] `expr:"first"`
+	Second bl.Handle[bl.BlString] `expr:"second"`
+}
+type oneString struct {
+	Value bl.Handle[bl.BlString] `expr:"value"`
+}
+type oneNumber struct {
+	Value bl.Handle[bl.BlNumber] `expr:"value"`
+}
+type lookupNumber struct {
+	Number bl.Handle[bl.BlNumber] `expr:"number"`
+}
+```
+
+Four first-match tables keep independent commercial schedules independent.
+
+``` { .go .blkit-example title="main.go" }
+var basePrices = bl.NewDecisionTable[twoStrings, lookupNumber](bl.DecisionTableConfig{HitPolicy: bl.HitPolicyFirst, Columns: []bl.Column{{Label: "Plan", Expr: `first`, Type: bl.TypeString}, {Label: "Cycle", Expr: `second`, Type: bl.TypeString}}, Rules: bl.Rules{
+	{`starter-monthly`, `"Starter"`, `"Monthly"`, `10`}, {`starter-annual`, `"Starter"`, `"Annual"`, `8`}, {`pro-monthly`, `"Pro"`, `"Monthly"`, `29`}, {`pro-annual`, `"Pro"`, `"Annual"`, `24`}, {`enterprise-monthly`, `"Enterprise"`, `"Monthly"`, `99`}, {`enterprise-annual`, `"Enterprise"`, `"Annual"`, `83`}}})
+var volumeDiscounts = bl.NewDecisionTable[oneNumber, lookupNumber](bl.DecisionTableConfig{HitPolicy: bl.HitPolicyFirst, Columns: []bl.Column{{Label: "Seats", Expr: `value`, Type: bl.TypeNumber}}, Rules: bl.Rules{{`small`, `< 5`, `0`}, {`team`, `[5..25)`, `5`}, {`business`, `[25..100)`, `10`}, {`large`, `[100..500)`, `15`}, {`enterprise`, `>= 500`, `20`}}})
+var tierDiscounts = bl.NewDecisionTable[oneString, lookupNumber](bl.DecisionTableConfig{HitPolicy: bl.HitPolicyFirst, Columns: []bl.Column{{Label: "Tier", Expr: `value`, Type: bl.TypeString}}, Rules: bl.Rules{{`standard`, `"Standard"`, `0`}, {`silver`, `"Silver"`, `5`}, {`gold`, `"Gold"`, `10`}, {`platinum`, `"Platinum"`, `20`}}})
+var promoReductions = bl.NewDecisionTable[oneString, lookupNumber](bl.DecisionTableConfig{HitPolicy: bl.HitPolicyFirst, Columns: []bl.Column{{Label: "Code", Expr: `value`, Type: bl.TypeString}}, Rules: bl.Rules{{`save10`, `"SAVE10"`, `1`}, {`launch20`, `"LAUNCH20"`, `2`}, {`none`, `-`, `0`}}})
+```
+
+The effective seat price is rounded half-up to cents before the seat total is
+calculated. This makes invoice totals stable and matches the worked examples.
+
+``` { .go .blkit-example title="main.go" }
+type pricingEnv struct {
+	Base   bl.BlNumber `expr:"base"`
+	Promo  bl.BlNumber `expr:"promo"`
+	Volume bl.BlNumber `expr:"volume"`
+	Tier   bl.BlNumber `expr:"tier"`
+	Seats  bl.BlNumber `expr:"seats"`
+}
+
+var pricingExpression = mustPricingExpr(bl.Expr[pricingEnv](`{effective: round((base-promo)*(1-volume/100)*(1-tier/100),2), monthly: effective*seats, annual: monthly*12}`))
+
+func mustPricingExpr(expr *bl.BlExpr[pricingEnv], err error) *bl.BlExpr[pricingEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return expr
+}
+func strHandle(s string) bl.Handle[bl.BlString] { v, _ := bl.String(s); return bl.NewHandle(v) }
+func numHandle(n int) bl.Handle[bl.BlNumber]    { v, _ := bl.Number(n); return bl.NewHandle(v) }
+func PriceSubscription(input PricingInput) (PricingResult, error) {
+	base, err := basePrices.Evaluate(twoStrings{strHandle(input.Plan), strHandle(input.BillingCycle)})
+	if err != nil {
+		return PricingResult{}, err
+	}
+	volume, err := volumeDiscounts.Evaluate(oneNumber{numHandle(input.Seats)})
+	if err != nil {
+		return PricingResult{}, err
+	}
+	tier, err := tierDiscounts.Evaluate(oneString{strHandle(input.Tier)})
+	if err != nil {
+		return PricingResult{}, err
+	}
+	promo, err := promoReductions.Evaluate(oneString{strHandle(input.PromoCode)})
+	if err != nil {
+		return PricingResult{}, err
+	}
+	values, err := pricingExpression.Evaluate(pricingEnv{base.Number.Get(), promo.Number.Get(), volume.Number.Get(), tier.Number.Get(), numHandle(input.Seats).Get()})
+	if err != nil {
+		return PricingResult{}, err
+	}
+	m := values.(bl.BlDictionary).Native()
+	get := func(k string) string { return m[k].(bl.BlNumber).String() }
+	return PricingResult{base.Number.Get().String(), get("effective"), get("monthly"), get("annual")}, nil
+}
+func main() {
+	var input PricingInput
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	result, err := PriceSubscription(input)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+```
 
 ## Notes
 
 - The discounts **compound** (multiply) rather than add: a 10% volume discount
-  followed by a 10% tier discount is 0.90 × 0.90 = 0.81, an 19% net reduction —
+  followed by a 10% tier discount is 0.90 × 0.90 = 0.81, a 19% net reduction —
   not 20%.
 - The promo code is a fixed cash reduction applied **before** the percentage
   discounts, so its effective value depends on where it sits in the chain.
@@ -776,17 +1275,137 @@ or before the due date, and a payment batch reference is recorded.
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This is a process with a **parallel (fork/join) section** for the three
-    validation checks, a join that aggregates their results, and an amount-based
-    approval gateway. The Go implementation depends on the `processes` package,
-    which is still being built. This page documents the workflow; the runnable
-    blkit code will be added once that package lands.
+The validations, arithmetic, GL mapping, and approval decision can be implemented
+without the process engine.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/invoice-processing.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type InvoiceLine struct {
+	Description string `json:"description"`
+	Quantity    string `json:"quantity"`
+	UnitPrice   string `json:"unit_price"`
+	Category    string `json:"category"`
+}
+type InvoiceInput struct {
+	Total            string        `json:"total"`
+	Duplicate        bool          `json:"duplicate"`
+	VendorActive     bool          `json:"vendor_active"`
+	CurrencyApproved bool          `json:"currency_approved"`
+	Lines            []InvoiceLine `json:"lines"`
+}
+type InvoiceDecision struct {
+	ValidationErrors []string `json:"validation_errors"`
+	ComputedTotal    string   `json:"computed_total"`
+	GLCodes          []string `json:"gl_codes"`
+	RequiresApproval bool     `json:"requires_approval"`
+}
+type lineEnv struct {
+	Quantity bl.BlNumber `expr:"quantity"`
+	Price    bl.BlNumber `expr:"price"`
+}
+
+var lineTotal = mustLineExpr(bl.Expr[lineEnv](`quantity*price`))
+
+type invoiceEnv struct {
+	Computed bl.BlNumber `expr:"computed"`
+	Stated   bl.BlNumber `expr:"stated"`
+}
+
+var invoiceChecks = mustInvoiceExpr(bl.Expr[invoiceEnv](`{lines_valid: abs(computed-stated)<=0.01, requires_approval: stated>10000}`))
+
+func mustLineExpr(e *bl.BlExpr[lineEnv], err error) *bl.BlExpr[lineEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+func mustInvoiceExpr(e *bl.BlExpr[invoiceEnv], err error) *bl.BlExpr[invoiceEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+```
+
+Each validation contributes its own message, so callers receive all failures.
+
+``` { .go .blkit-example title="main.go" }
+func DecideInvoice(in InvoiceInput) (InvoiceDecision, error) {
+	stated, err := bl.Number(in.Total)
+	if err != nil {
+		return InvoiceDecision{}, err
+	}
+	computed, _ := bl.Number(0)
+	codes := []string{}
+	mapping := map[string]string{"travel": "6000", "equipment": "6100", "services": "6200"}
+	for _, line := range in.Lines {
+		q, e := bl.Number(line.Quantity)
+		if e != nil {
+			return InvoiceDecision{}, e
+		}
+		p, e := bl.Number(line.UnitPrice)
+		if e != nil {
+			return InvoiceDecision{}, e
+		}
+		v, e := lineTotal.Evaluate(lineEnv{q, p})
+		if e != nil {
+			return InvoiceDecision{}, e
+		}
+		computed, _ = bl.Number(computed.Decimal().Add(v.(bl.BlNumber).Decimal()))
+		code := mapping[line.Category]
+		if code == "" {
+			code = "6999"
+		}
+		codes = append(codes, code)
+	}
+	checks, err := invoiceChecks.Evaluate(invoiceEnv{computed, stated})
+	if err != nil {
+		return InvoiceDecision{}, err
+	}
+	m := checks.(bl.BlDictionary).Native()
+	errors := []string{}
+	if in.Duplicate {
+		errors = append(errors, "duplicate invoice")
+	}
+	if !in.VendorActive || !in.CurrencyApproved {
+		errors = append(errors, "vendor is not approved")
+	}
+	if !m["lines_valid"].(bl.BlBoolean).Native() {
+		errors = append(errors, "line total mismatch")
+	}
+	return InvoiceDecision{errors, computed.String(), codes, m["requires_approval"].(bl.BlBoolean).Native()}, nil
+}
+```
+
+``` { .go .blkit-example title="main.go" }
+func main() {
+	var in InvoiceInput
+	if e := json.NewDecoder(os.Stdin).Decode(&in); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	out, e := DecideInvoice(in)
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	if e = json.NewEncoder(os.Stdout).Encode(out); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+}
+```
+
+Parallel fork/join execution, waiting for manager input, vendor notification, and
+payment scheduling require the process engine and are not shown as Go yet.
 
 ## Notes
 
@@ -794,7 +1413,7 @@ or before the due date, and a payment batch reference is recorded.
   decided. The join **collects all failures** rather than short-circuiting on the
   first, so the vendor gets a complete rejection reason.
 - The line-item check compares a computed total against the stated total within a
-  0.01 tolerance — a good fit for `bl.number()` decimal arithmetic.
+  0.01 tolerance — a good fit for `bl.Number()` decimal arithmetic.
 
 ---
 
@@ -900,17 +1519,111 @@ instructions, and the HR portal link.
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This is a process with a **parallel fork** into three independent
-    workstreams, a **join gate** that waits for all three, and a **timer-based
-    escalation** at five business days. The Go implementation depends on the
-    `processes` package, which is still being built. This page documents the
-    process; the runnable blkit code will be added once that package lands.
+Business-day arithmetic and the completion/escalation decision are available
+today, even though parallel process execution is not.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/employee-onboarding.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type OnboardingInput struct {
+	HireDate              string `json:"hire_date"`
+	ITCompleteDay         int    `json:"it_complete_day"`
+	HRCompleteDay         int    `json:"hr_complete_day"`
+	FacilitiesCompleteDay int    `json:"facilities_complete_day"`
+}
+type OnboardingDecision struct {
+	Deadline    string   `json:"deadline"`
+	Result      string   `json:"result"`
+	Outstanding []string `json:"outstanding"`
+}
+type deadlineEnv struct {
+	Hire bl.BlDate `expr:"hire"`
+}
+
+var deadlineExpression = mustDeadlineExpr(bl.Expr[deadlineEnv](`addBusinessDays(hire,5)`))
+
+type completionEnv struct {
+	IT         bl.BlNumber `expr:"it"`
+	HR         bl.BlNumber `expr:"hr"`
+	Facilities bl.BlNumber `expr:"facilities"`
+}
+
+var completionExpression = mustCompletionExpr(bl.Expr[completionEnv](`if it<=5 and hr<=5 and facilities<=5 then "welcome" else "escalate"`))
+
+func mustDeadlineExpr(e *bl.BlExpr[deadlineEnv], err error) *bl.BlExpr[deadlineEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+func mustCompletionExpr(e *bl.BlExpr[completionEnv], err error) *bl.BlExpr[completionEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+```
+
+``` { .go .blkit-example title="main.go" }
+func DecideOnboarding(in OnboardingInput) (OnboardingDecision, error) {
+	hire, err := bl.Date(in.HireDate)
+	if err != nil {
+		return OnboardingDecision{}, err
+	}
+	deadline, err := deadlineExpression.Evaluate(deadlineEnv{hire})
+	if err != nil {
+		return OnboardingDecision{}, err
+	}
+	it, _ := bl.Number(in.ITCompleteDay)
+	hr, _ := bl.Number(in.HRCompleteDay)
+	facilities, _ := bl.Number(in.FacilitiesCompleteDay)
+	result, err := completionExpression.Evaluate(completionEnv{it, hr, facilities})
+	if err != nil {
+		return OnboardingDecision{}, err
+	}
+	outstanding := []string{}
+	if in.ITCompleteDay > 5 {
+		outstanding = append(outstanding, "IT")
+	}
+	if in.HRCompleteDay > 5 {
+		outstanding = append(outstanding, "HR")
+	}
+	if in.FacilitiesCompleteDay > 5 {
+		outstanding = append(outstanding, "Facilities")
+	}
+	return OnboardingDecision{deadline.(bl.BlDate).String(), result.(bl.BlString).String(), outstanding}, nil
+}
+```
+
+``` { .go .blkit-example title="main.go" }
+func main() {
+	var in OnboardingInput
+	if e := json.NewDecoder(os.Stdin).Decode(&in); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	out, e := DecideOnboarding(in)
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	if e = json.NewEncoder(os.Stdout).Encode(out); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+}
+```
+
+Parallel workstream execution, AND-join token handling, a live boundary-timer
+race, notifications, and persisted open process state require the process engine
+and are not shown as Go yet.
 
 ## Notes
 
@@ -1039,7 +1752,7 @@ their decision.
 | Claim | Cover Type | Damage Categories | Vehicle Value | Excess | Raw Score | Capped Score | Severity | Gross | Net | Outcome |
 |---|---|---|---|---|---|---|---|---|---|---|
 | CLM-001 | Comprehensive | Collision (30) + Vandalism (20) | £12,000 | £500 | 50 | 50 | Moderate | £4,200 | £3,700 | Offer issued |
-| CLM-002 | Comprehensive | Fire (40) + Theft (50) | £30,000 | £1,000 | 90 | 100 | Total loss | £30,000 | £29,000 | Senior assessor referral |
+| CLM-002 | Comprehensive | Fire (40) + Theft (50) | £30,000 | £1,000 | 90 | 90 | Total loss | £30,000 | £29,000 | Senior assessor referral |
 | CLM-003 | Third-party only | Third-party vehicle (20) | £8,000 | £250 | 20 | 20 | Minor | £1,200 | £950 | Offer issued |
 | CLM-004 | Third-party only | Collision (not covered) | £15,000 | £500 | — | — | — | — | — | Rejected: damage not covered |
 | CLM-005 | Comprehensive | Weather (15) | £3,000 | £500 | 15 | 15 | Minor | £450 | £0 | Valid, no payment (below excess) |
@@ -1051,25 +1764,146 @@ Gross = £12,000 × 35% = £4,200; net = £4,200 − £500 = **£3,700**, below 
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This example chains three sub-decisions (eligibility, severity scoring,
-    settlement) — naturally three linked decision tables — with a referral
-    threshold at the end. The Go implementation depends on the `decisions`
-    package, which is still being built. This page documents the assessment; the
-    runnable blkit code will be added once that package lands.
+Define the claim boundary and the typed environment for the linked assessment.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/insurance-claim.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type ClaimInput struct {
+	PolicyActive bool     `json:"policy_active"`
+	IncidentDate string   `json:"incident_date"`
+	PolicyStart  string   `json:"policy_start"`
+	PolicyEnd    string   `json:"policy_end"`
+	CoverType    string   `json:"cover_type"`
+	Damage       []string `json:"damage"`
+	VehicleValue string   `json:"vehicle_value"`
+	Excess       string   `json:"excess"`
+}
+type ClaimResult struct {
+	Eligible    bool   `json:"eligible"`
+	RawScore    string `json:"raw_score"`
+	CappedScore string `json:"capped_score"`
+	Severity    string `json:"severity"`
+	Gross       string `json:"gross"`
+	Net         string `json:"net"`
+	Outcome     string `json:"outcome"`
+}
+type claimEnv struct {
+	Active   bl.BlBoolean `expr:"active"`
+	Incident bl.BlDate    `expr:"incident"`
+	Start    bl.BlDate    `expr:"start"`
+	End      bl.BlDate    `expr:"end"`
+	Covered  bl.BlBoolean `expr:"covered"`
+	Raw      bl.BlNumber  `expr:"raw"`
+	Value    bl.BlNumber  `expr:"value"`
+	Excess   bl.BlNumber  `expr:"excess"`
+}
+```
+
+The compiled expression gates eligibility, caps and bands the score, then derives
+the settlement and referral outcome.
+
+``` { .go .blkit-example title="main.go" }
+var claimExpression = mustClaimExpr(bl.Expr[claimEnv](`{
+eligible: active and incident>=start and incident<=end and covered,
+capped: clamp(raw,0,100),
+severity: (if capped<=20 then "Minor" else if capped<=50 then "Moderate" else if capped<=80 then "Significant" else "Total loss"),
+percentage: (if severity="Minor" then 15 else if severity="Moderate" then 35 else if severity="Significant" then 65 else 100),
+gross: (if eligible then value*percentage/100 else 0),
+net: max([0,gross-excess]),
+outcome: (if not(eligible) then "Rejected: damage not covered" else if net=0 then "Valid, no payment" else if net>25000 then "Senior assessor referral" else "Offer issued")
+}`))
+
+func mustClaimExpr(e *bl.BlExpr[claimEnv], err error) *bl.BlExpr[claimEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+
+var damageScores = map[string]int{"third_party_vehicle": 20, "third_party_property": 15, "fire": 40, "theft": 50, "collision": 30, "weather": 15, "vandalism": 20}
+
+func damageCovered(cover, damage string) bool {
+	if cover == "comprehensive" {
+		return true
+	}
+	if damage == "third_party_vehicle" || damage == "third_party_property" {
+		return true
+	}
+	return cover == "third_party_fire_theft" && (damage == "fire" || damage == "theft")
+}
+```
+
+``` { .go .blkit-example title="main.go" }
+func AssessClaim(in ClaimInput) (ClaimResult, error) {
+	incident, e := bl.Date(in.IncidentDate)
+	if e != nil {
+		return ClaimResult{}, e
+	}
+	start, e := bl.Date(in.PolicyStart)
+	if e != nil {
+		return ClaimResult{}, e
+	}
+	end, e := bl.Date(in.PolicyEnd)
+	if e != nil {
+		return ClaimResult{}, e
+	}
+	raw := 0
+	covered := false
+	for _, d := range in.Damage {
+		raw += damageScores[d]
+		covered = covered || damageCovered(in.CoverType, d)
+	}
+	rawNumber, _ := bl.Number(raw)
+	value, e := bl.Number(in.VehicleValue)
+	if e != nil {
+		return ClaimResult{}, e
+	}
+	excess, e := bl.Number(in.Excess)
+	if e != nil {
+		return ClaimResult{}, e
+	}
+	active, _ := bl.Boolean(in.PolicyActive)
+	coveredValue, _ := bl.Boolean(covered)
+	result, e := claimExpression.Evaluate(claimEnv{active, incident, start, end, coveredValue, rawNumber, value, excess})
+	if e != nil {
+		return ClaimResult{}, e
+	}
+	m := result.(bl.BlDictionary).Native()
+	return ClaimResult{m["eligible"].(bl.BlBoolean).Native(), rawNumber.String(), m["capped"].(bl.BlNumber).String(), m["severity"].(bl.BlString).String(), m["gross"].(bl.BlNumber).String(), m["net"].(bl.BlNumber).String(), m["outcome"].(bl.BlString).String()}, nil
+}
+func main() {
+	var in ClaimInput
+	if e := json.NewDecoder(os.Stdin).Decode(&in); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	out, e := AssessClaim(in)
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	if e = json.NewEncoder(os.Stdout).Encode(out); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+}
+```
 
 ## Notes
 
 - The three sub-decisions feed forward: eligibility gates scoring, the capped
   score selects a severity band, and the band's percentage drives settlement.
-- The score is **capped at 100** before banding (see CLM-002, raw 90 vs capped
-  100), and a settlement that nets below £0 yields no payment rather than a
-  negative amount.
+- The score is **capped at 100** before banding. CLM-002's raw score of 90
+  remains 90 after capping, and a settlement that nets below £0 yields no payment
+  rather than a negative amount.
 
 ---
 
@@ -1161,17 +1995,124 @@ For C-003, four rules match — R1 (5%), R6 (12%), R7 (8%), R8 (6%). The highest
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This is a decision table evaluated with a **collect (aggregate) hit policy** —
-    gather every matching rule's percentage, then take the maximum. The Go
-    implementation depends on the `decisions` package, which is still being
-    built. This page documents the rules; the runnable blkit code will be added
-    once that package lands.
+Define the order boundary and the decision table's typed input and output
+contracts.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/customer-discount.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type DiscountInput struct {
+	Tier             string `json:"tier"`
+	AccountAgeMonths int    `json:"account_age_months"`
+	Subtotal         string `json:"subtotal"`
+	ItemCount        int    `json:"item_count"`
+	Category         string `json:"category"`
+	PromoCode        string `json:"promo_code"`
+	Month            string `json:"month"`
+}
+type DiscountResult struct {
+	DiscountPercent string `json:"discount_percent"`
+	DiscountAmount  string `json:"discount_amount"`
+	Total           string `json:"total"`
+}
+type discountVars struct {
+	Tier     bl.Handle[bl.BlString] `expr:"tier"`
+	Age      bl.Handle[bl.BlNumber] `expr:"age"`
+	Subtotal bl.Handle[bl.BlNumber] `expr:"subtotal"`
+	Items    bl.Handle[bl.BlNumber] `expr:"items"`
+	Category bl.Handle[bl.BlString] `expr:"category"`
+	Code     bl.Handle[bl.BlString] `expr:"code"`
+	Month    bl.Handle[bl.BlString] `expr:"month"`
+}
+type discountOut struct {
+	Discount bl.Handle[bl.BlNumber] `expr:"discount"`
+}
+```
+
+A collect/max policy evaluates every row and retains the largest percentage.
+
+``` { .go .blkit-example title="main.go" }
+var maxAggregation = bl.AggregationMax
+var discountTable = bl.NewDecisionTable[discountVars, discountOut](bl.DecisionTableConfig{
+	Id: "customer-discount", HitPolicy: bl.HitPolicyCollect, Aggregation: &maxAggregation,
+	Columns: []bl.Column{
+		{Label: "Tier", Expr: `tier`, Type: bl.TypeString}, {Label: "Age", Expr: `age`, Type: bl.TypeNumber},
+		{Label: "Subtotal", Expr: `subtotal`, Type: bl.TypeNumber}, {Label: "Items", Expr: `items`, Type: bl.TypeNumber},
+		{Label: "Category", Expr: `category`, Type: bl.TypeString}, {Label: "Code", Expr: `code`, Type: bl.TypeString}, {Label: "Month", Expr: `month`, Type: bl.TypeString},
+	},
+	Rules: bl.Rules{
+		{`R1`, `"Silver"`, `>= 12`, `-`, `-`, `-`, `-`, `-`, `5`}, {`R2`, `"Gold"`, `>= 12`, `-`, `-`, `-`, `-`, `-`, `10`}, {`R3`, `"Platinum"`, `>= 12`, `-`, `-`, `-`, `-`, `-`, `15`},
+		{`R4`, `-`, `< 3`, `-`, `-`, `-`, `-`, `-`, `10`}, {`R5`, `-`, `-`, `-`, `[10..25)`, `-`, `-`, `-`, `5`}, {`R6`, `-`, `-`, `-`, `>= 25`, `-`, `-`, `-`, `12`},
+		{`R7`, `-`, `-`, `> 500`, `-`, `-`, `-`, `-`, `8`}, {`R8`, `-`, `-`, `-`, `-`, `"Furniture"`, `-`, `-`, `6`}, {`R9`, `-`, `-`, `-`, `-`, `-`, `-`, `"January", "July"`, `20`},
+		{`R10`, `-`, `-`, `-`, `-`, `-`, `"WELCOME20"`, `-`, `20`}, {`R11`, `"Gold", "Platinum"`, `-`, `-`, `-`, `-`, `"LOYAL10"`, `-`, `10`}, {`R12`, `-`, `-`, `-`, `>= 10`, `-`, `"BULK15"`, `-`, `15`},
+	},
+})
+
+type totalEnv struct {
+	Subtotal bl.BlNumber `expr:"subtotal"`
+	Discount bl.BlNumber `expr:"discount"`
+}
+
+var totalExpression = mustTotalExpr(bl.Expr[totalEnv](`{amount: subtotal * discount / 100, total: subtotal * (1 - discount / 100)}`))
+
+func mustTotalExpr(expr *bl.BlExpr[totalEnv], err error) *bl.BlExpr[totalEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return expr
+}
+```
+
+Evaluate the table, then evaluate the monetary expression with its result.
+
+``` { .go .blkit-example title="main.go" }
+func CalculateDiscount(input DiscountInput) (DiscountResult, error) {
+	tier, _ := bl.String(input.Tier)
+	age, _ := bl.Number(input.AccountAgeMonths)
+	subtotal, err := bl.Number(input.Subtotal)
+	if err != nil {
+		return DiscountResult{}, err
+	}
+	items, _ := bl.Number(input.ItemCount)
+	category, _ := bl.String(input.Category)
+	code, _ := bl.String(input.PromoCode)
+	month, _ := bl.String(input.Month)
+	selected, err := discountTable.Evaluate(discountVars{bl.NewHandle(tier), bl.NewHandle(age), bl.NewHandle(subtotal), bl.NewHandle(items), bl.NewHandle(category), bl.NewHandle(code), bl.NewHandle(month)})
+	if err != nil {
+		return DiscountResult{}, err
+	}
+	discount := selected.Discount.Get()
+	totals, err := totalExpression.Evaluate(totalEnv{subtotal, discount})
+	if err != nil {
+		return DiscountResult{}, err
+	}
+	values := totals.(bl.BlDictionary).Native()
+	return DiscountResult{discount.String(), values["amount"].(bl.BlNumber).String(), values["total"].(bl.BlNumber).String()}, nil
+}
+func main() {
+	var input DiscountInput
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	result, err := CalculateDiscount(input)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+```
 
 ## Notes
 
@@ -1327,18 +2268,135 @@ issued at 110% = **£385**.
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This example combines **date-window eligibility checks**, two lookup decision
-    tables (refund percentage, then resolution), and a **process** with a timer
-    for the 14-day receipt window. The Go implementation depends on the
-    `decisions` and `processes` packages, which are still being built. This page
-    documents the process; the runnable blkit code will be added once those
-    packages land.
+The eligibility, refund, and resolution logic can already be composed as one
+typed blkit expression.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/product-return.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type ReturnInput struct {
+	DeliveryDate       string `json:"delivery_date"`
+	RequestDate        string `json:"request_date"`
+	RMAIssuedDate      string `json:"rma_issued_date"`
+	ReceivedDate       string `json:"received_date"`
+	Returnable         bool   `json:"returnable"`
+	Quantity           int    `json:"quantity"`
+	Purchased          int    `json:"purchased"`
+	Reason             string `json:"reason"`
+	Grade              string `json:"grade"`
+	Preferred          string `json:"preferred"`
+	ReplacementInStock bool   `json:"replacement_in_stock"`
+	UnitPrice          string `json:"unit_price"`
+}
+type ReturnResult struct {
+	Eligible         bool   `json:"eligible"`
+	ReceivedInTime   bool   `json:"received_in_time"`
+	RefundPercent    string `json:"refund_percent"`
+	RefundAmount     string `json:"refund_amount"`
+	Resolution       string `json:"resolution"`
+	ResolutionAmount string `json:"resolution_amount"`
+}
+type returnEnv struct {
+	Delivery   bl.BlDate    `expr:"delivery"`
+	Request    bl.BlDate    `expr:"request"`
+	Issued     bl.BlDate    `expr:"issued"`
+	Received   bl.BlDate    `expr:"received"`
+	Returnable bl.BlBoolean `expr:"returnable"`
+	Quantity   bl.BlNumber  `expr:"quantity"`
+	Purchased  bl.BlNumber  `expr:"purchased"`
+	Reason     bl.BlString  `expr:"reason"`
+	Grade      bl.BlString  `expr:"grade"`
+	Preferred  bl.BlString  `expr:"preferred"`
+	Stock      bl.BlBoolean `expr:"stock"`
+	Price      bl.BlNumber  `expr:"price"`
+}
+```
+
+Sequential entries make each decision visible and reusable by later entries.
+
+``` { .go .blkit-example title="main.go" }
+var returnExpression = mustReturnExpr(bl.Expr[returnEnv](`{
+within_request_window: request-delivery <= dtDuration("P30D"),
+received_in_time: received-issued <= dtDuration("P14D"),
+eligible: within_request_window and returnable and quantity <= purchased,
+refund_percent: (if not(eligible) or not(received_in_time) then 0 else if reason in ["DEFECTIVE","WRONG_ITEM","NOT_AS_DESCRIBED"] then 100 else if grade in ["A","B"] then 100 else if grade = "C" then 50 else 0),
+refund_amount: price*quantity*refund_percent/100,
+resolution_amount: (if preferred="store_credit" and refund_percent=100 then refund_amount*1.1 else refund_amount),
+resolution: (if refund_percent=0 then "Declined" else if preferred="replacement" and stock then "Replacement dispatched" else if preferred="store_credit" then "Store credit" else if refund_percent=100 then "Full refund" else "Partial refund")
+}`))
+
+func mustReturnExpr(e *bl.BlExpr[returnEnv], err error) *bl.BlExpr[returnEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+func CalculateReturn(in ReturnInput) (ReturnResult, error) {
+	delivery, e := bl.Date(in.DeliveryDate)
+	if e != nil {
+		return ReturnResult{}, e
+	}
+	request, e := bl.Date(in.RequestDate)
+	if e != nil {
+		return ReturnResult{}, e
+	}
+	issued, e := bl.Date(in.RMAIssuedDate)
+	if e != nil {
+		return ReturnResult{}, e
+	}
+	received, e := bl.Date(in.ReceivedDate)
+	if e != nil {
+		return ReturnResult{}, e
+	}
+	q, _ := bl.Number(in.Quantity)
+	p, _ := bl.Number(in.Purchased)
+	reason, _ := bl.String(in.Reason)
+	grade, _ := bl.String(in.Grade)
+	preferred, _ := bl.String(in.Preferred)
+	price, e := bl.Number(in.UnitPrice)
+	if e != nil {
+		return ReturnResult{}, e
+	}
+	returnable, _ := bl.Boolean(in.Returnable)
+	stock, _ := bl.Boolean(in.ReplacementInStock)
+	v, e := returnExpression.Evaluate(returnEnv{delivery, request, issued, received, returnable, q, p, reason, grade, preferred, stock, price})
+	if e != nil {
+		return ReturnResult{}, e
+	}
+	m := v.(bl.BlDictionary).Native()
+	return ReturnResult{m["eligible"].(bl.BlBoolean).Native(), m["received_in_time"].(bl.BlBoolean).Native(), m["refund_percent"].(bl.BlNumber).String(), m["refund_amount"].(bl.BlNumber).String(), m["resolution"].(bl.BlString).String(), m["resolution_amount"].(bl.BlNumber).String()}, nil
+}
+```
+
+``` { .go .blkit-example title="main.go" }
+func main() {
+	var in ReturnInput
+	if e := json.NewDecoder(os.Stdin).Decode(&in); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	out, e := CalculateReturn(in)
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	if e = json.NewEncoder(os.Stdout).Encode(out); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+}
+```
+
+RMA creation, waiting for warehouse receipt, timer expiry, and dispatch/payment
+side effects require the unfinished process engine, so no Go source for those
+steps is shown yet.
 
 ## Notes
 
@@ -1512,18 +2570,184 @@ $200,000 taxable income:
 
 ## Implementation
 
-!!! warning "Implementation pending"
-    This is the most involved example: a layered calculation combining bracketed
-    rate tables (income tax, Medicare Levy, MLS, HELP/HECS), tapered offsets
-    (LITO, SAPTO, FITO), and per-residency branching, all composed over the
-    expression engine. The full, CI-tested Go implementation depends on the
-    `decisions` package, which is still being built. This page documents the
-    calculation; the runnable blkit code will be added once that package lands.
+The liability schedules can be compiled into one typed expression and reused for
+many returns. This application accepts taxable income after the assessable-income
+and deduction calculation described above.
 
-    In the meantime, see the authoritative
-    [business spec](https://github.com/friendly-business-machines/blkit/blob/main/specs/examples/aus-personal-income-tax.spec.md),
-    [Getting started](../getting-started/index.md) for orientation, and the
-    [Reference](../reference/blkit.md) for the expression engine available today.
+``` { .go .blkit-example title="main.go" }
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	bl "github.com/friendly-business-machines/blkit/core"
+	"os"
+)
+
+type TaxInput struct {
+	TaxableIncome   string `json:"taxable_income"`
+	Residency       string `json:"residency"`
+	Age             int    `json:"age"`
+	PrivateCover    bool   `json:"private_cover"`
+	FamilyStatus    string `json:"family_status"`
+	HELPDebt        string `json:"help_debt"`
+	PAYGWithheld    string `json:"payg_withheld"`
+	FrankingCredits string `json:"franking_credits"`
+}
+type TaxResult struct {
+	BaseTax  string `json:"base_tax"`
+	LITO     string `json:"lito"`
+	SAPTO    string `json:"sapto"`
+	Medicare string `json:"medicare"`
+	MLS      string `json:"mls"`
+	HELP     string `json:"help"`
+	TotalTax string `json:"total_tax"`
+	Balance  string `json:"balance"`
+	Outcome  string `json:"outcome"`
+}
+type taxEnv struct {
+	Income    bl.BlNumber  `expr:"income"`
+	Residency bl.BlString  `expr:"residency"`
+	Age       bl.BlNumber  `expr:"age"`
+	Private   bl.BlBoolean `expr:"private_cover"`
+	Family    bl.BlString  `expr:"family"`
+	Debt      bl.BlNumber  `expr:"debt"`
+	PAYG      bl.BlNumber  `expr:"payg"`
+	Franking  bl.BlNumber  `expr:"franking"`
+}
+```
+
+Taxable income itself can also be built with exact decimal arithmetic. The input
+keeps already-calculated category totals so the example stays focused on tax
+composition rather than tax-return form plumbing.
+
+``` { .go .blkit-example title="main.go" }
+type IncomeInput struct {
+	Salary, Interest, UnfrankedDividends, FrankedCash, FrankingCredits, NetRental, BusinessIncome, ForeignIncome, TrustDistributions, GrossCapitalGains, CurrentCapitalLosses, PriorCapitalLosses, Deductions string
+	CGTDiscountEligible                                                                                                                                                                                       bool
+}
+type incomeEnv struct {
+	Salary        bl.BlNumber  `expr:"salary"`
+	Interest      bl.BlNumber  `expr:"interest"`
+	Unfranked     bl.BlNumber  `expr:"unfranked"`
+	FrankedCash   bl.BlNumber  `expr:"franked_cash"`
+	Franking      bl.BlNumber  `expr:"franking"`
+	Rental        bl.BlNumber  `expr:"rental"`
+	Business      bl.BlNumber  `expr:"business"`
+	Foreign       bl.BlNumber  `expr:"foreign"`
+	Trust         bl.BlNumber  `expr:"trust"`
+	Gains         bl.BlNumber  `expr:"gains"`
+	CurrentLosses bl.BlNumber  `expr:"current_losses"`
+	PriorLosses   bl.BlNumber  `expr:"prior_losses"`
+	Deductions    bl.BlNumber  `expr:"deductions"`
+	Discount      bl.BlBoolean `expr:"discount"`
+}
+
+var incomeExpression = mustIncomeExpr(bl.Expr[incomeEnv](`{net_capital_gain: max([0,gains-current_losses-prior_losses])*(if discount then 0.5 else 1), assessable: salary+interest+unfranked+franked_cash+franking+rental+business+foreign+trust+net_capital_gain, taxable: max([0,assessable-deductions])}`))
+
+func mustIncomeExpr(e *bl.BlExpr[incomeEnv], err error) *bl.BlExpr[incomeEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+func BuildTaxableIncome(in IncomeInput) (string, string, error) {
+	values := []string{in.Salary, in.Interest, in.UnfrankedDividends, in.FrankedCash, in.FrankingCredits, in.NetRental, in.BusinessIncome, in.ForeignIncome, in.TrustDistributions, in.GrossCapitalGains, in.CurrentCapitalLosses, in.PriorCapitalLosses, in.Deductions}
+	numbers := make([]bl.BlNumber, len(values))
+	for i, s := range values {
+		if s == "" {
+			s = "0"
+		}
+		n, e := bl.Number(s)
+		if e != nil {
+			return "", "", e
+		}
+		numbers[i] = n
+	}
+	discount, _ := bl.Boolean(in.CGTDiscountEligible)
+	v, e := incomeExpression.Evaluate(incomeEnv{numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5], numbers[6], numbers[7], numbers[8], numbers[9], numbers[10], numbers[11], numbers[12], discount})
+	if e != nil {
+		return "", "", e
+	}
+	m := v.(bl.BlDictionary).Native()
+	return m["net_capital_gain"].(bl.BlNumber).String(), m["taxable"].(bl.BlNumber).String(), nil
+}
+```
+
+The entries mirror the schedules: base tax, non-refundable offsets, levies,
+HELP/HECS, then reconciliation. Final tax is rounded to whole dollars, matching
+the annual return examples.
+
+``` { .go .blkit-example title="main.go" }
+var taxExpression = mustTaxExpr(bl.Expr[taxEnv](`{
+base_tax: (if residency="foreign" then (if income<=135000 then income*0.30 else if income<=190000 then 40500+(income-135000)*0.37 else 60850+(income-190000)*0.45) else if residency="working_holiday" then (if income<=45000 then income*0.15 else if income<=135000 then 6750+(income-45000)*0.30 else if income<=190000 then 33750+(income-135000)*0.37 else 54100+(income-190000)*0.45) else (if income<=18200 then 0 else if income<=45000 then (income-18200)*0.16 else if income<=135000 then 4288+(income-45000)*0.30 else if income<=190000 then 31288+(income-135000)*0.37 else 51638+(income-190000)*0.45)),
+lito: (if residency!="resident" then 0 else if income<=37500 then 700 else if income<=45000 then 700-(income-37500)*0.05 else if income<=66667 then 325-(income-45000)*0.015 else 0),
+sapto: (if residency="resident" and age>=67 then max([0,2230-0.125*max([0,income-32279])]) else 0),
+income_tax: max([0,base_tax-lito-sapto]),
+medicare: (if residency!="resident" then 0 else if age>=67 then (if income<=43020 then 0 else if income<=53775 then (income-43020)*0.10 else income*0.02) else (if income<=27222 then 0 else if income<=34027 then (income-27222)*0.10 else income*0.02)),
+mls: (if residency!="resident" or private_cover or family!="single" then 0 else if income<=97000 then 0 else if income<=113000 then income*0.01 else if income<=151000 then income*0.0125 else income*0.015),
+help_rate: (if income<54435 then 0 else if income<=62850 then 1 else if income<=66620 then 2 else if income<=70618 then 2.5 else if income<=74855 then 3 else if income<=79346 then 3.5 else if income<=84107 then 4 else if income<=89154 then 4.5 else if income<=94503 then 5 else if income<=100174 then 5.5 else if income<=106185 then 6 else if income<=112556 then 6.5 else if income<=119309 then 7 else if income<=126467 then 7.5 else if income<=134056 then 8 else if income<=142100 then 8.5 else if income<=150626 then 9 else if income<=159663 then 9.5 else 10),
+help: (if debt=0 then 0 else min([debt,income*help_rate/100])),
+total_tax: round(income_tax+medicare+mls+help,0),
+balance: total_tax-payg-franking,
+outcome: (if balance<0 then "refund" else if balance>0 then "payable" else "settled")
+}`))
+
+func mustTaxExpr(e *bl.BlExpr[taxEnv], err error) *bl.BlExpr[taxEnv] {
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+```
+
+``` { .go .blkit-example title="main.go" }
+func CalculateTax(in TaxInput) (TaxResult, error) {
+	income, e := bl.Number(in.TaxableIncome)
+	if e != nil {
+		return TaxResult{}, e
+	}
+	residency, _ := bl.String(in.Residency)
+	age, _ := bl.Number(in.Age)
+	private, _ := bl.Boolean(in.PrivateCover)
+	family, _ := bl.String(in.FamilyStatus)
+	debt, e := bl.Number(in.HELPDebt)
+	if e != nil {
+		return TaxResult{}, e
+	}
+	payg, e := bl.Number(in.PAYGWithheld)
+	if e != nil {
+		return TaxResult{}, e
+	}
+	franking, e := bl.Number(in.FrankingCredits)
+	if e != nil {
+		return TaxResult{}, e
+	}
+	value, e := taxExpression.Evaluate(taxEnv{income, residency, age, private, family, debt, payg, franking})
+	if e != nil {
+		return TaxResult{}, e
+	}
+	m := value.(bl.BlDictionary).Native()
+	get := func(k string) string { return m[k].(bl.BlNumber).String() }
+	return TaxResult{get("base_tax"), get("lito"), get("sapto"), get("medicare"), get("mls"), get("help"), get("total_tax"), get("balance"), m["outcome"].(bl.BlString).String()}, nil
+}
+func main() {
+	var in TaxInput
+	if e := json.NewDecoder(os.Stdin).Decode(&in); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	out, e := CalculateTax(in)
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+	if e = json.NewEncoder(os.Stdout).Encode(out); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+}
+```
 
 ## Notes
 
@@ -1532,7 +2756,7 @@ $200,000 taxable income:
 - Residency status switches the entire downstream calculation — bracket schedule,
   Medicare eligibility, and offset entitlement — so it is best modelled as a
   branch over three parallel rate schedules rather than a single table.
-- All monetary arithmetic should use `bl.number()` decimals; the tapers and
+- All monetary arithmetic should use `bl.Number()` decimals; the tapers and
   gross-ups (e.g. franking credit `× 30 / 70`) accumulate rounding error quickly
   under native floating point.
 - The franking credit is **refundable** while LITO/SAPTO/FITO are

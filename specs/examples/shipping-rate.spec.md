@@ -4,6 +4,7 @@ description: An e-commerce platform calculates the total shipping charge for a p
 status: implemented
 code:
   - docs/examples/shipping-rate.md
+  - internal/doctest/testdata/shipping-rate/example_test.go
 ---
 
 # Example: Shipping Rate Calculator
@@ -169,9 +170,9 @@ result = await result_expr.evaluate({
 | actual_weight | L×W×H (cm) | Volumetric | Billable | Zone | Speed | Total |
 |---|---|---|---|---|---|---|
 | 3.2 kg | 40×30×20 | 4.8 kg | 4.8 kg | 2 (regional) | express | 38.88 |
-| 10.0 kg | 20×15×10 | 0.6 kg | 10.0 kg | 1 (domestic) | standard | 18.90 |
-| 0.5 kg | 60×40×30 | 14.4 kg | 14.4 kg | 3 (international) | overnight | 214.20 |
-| 2.0 kg | 25×15×10 | 0.75 kg | 2.0 kg | 1 (domestic) | overnight | 20.25 |
+| 10.0 kg | 20×15×10 | 0.6 kg | 10.0 kg | 1 (domestic) | standard | 21.60 |
+| 0.5 kg | 60×40×30 | 14.4 kg | 14.4 kg | 3 (international) | overnight | 223.02 |
+| 2.0 kg | 25×15×10 | 0.75 kg | 2.0 kg | 1 (domestic) | overnight | 21.60 |
 
 ## Documentation Page Requirements
 
