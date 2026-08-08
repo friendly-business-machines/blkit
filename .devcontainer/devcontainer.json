@@ -21,6 +21,8 @@
       "extensions": [
         // Claude Code integration.
         "anthropic.claude-code",
+        // Pendant sidebar integration for the pi coding agent.
+        "cdervis.vscode-pi",
         // Go language support (syntax, gopls, debugging).
         "golang.go",
         // Inline hadolint warnings/errors in Dockerfiles as you edit.

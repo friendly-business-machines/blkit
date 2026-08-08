@@ -38,6 +38,8 @@ ARG USER_GID=${USER_UID}
 #   (e.g. markdownlint). Without it those hooks fail to start with
 #   "error while loading shared libraries: libatomic.so.1".
 # - nano: lightweight terminal text editor.
+# - nodejs: Node.js runtime required by the pi coding agent.
+# - npm: package manager used to install the pi coding agent.
 # - pass: standard Unix password manager.
 # - pinentry-tty: passphrase prompt helper for terminal-based GPG workflows.
 # - sudo: allow privileged actions from non-root `vscode` account.
@@ -64,6 +66,8 @@ RUN apt-get update \
         libatomic1=16-20260322-1ubuntu1 \
         make=4.4.1-3 \
         nano=8.7.1-1ubuntu0.1 \
+        nodejs=22.22.1+dfsg+~cs22.19.15-1ubuntu1 \
+        npm=9.2.0~ds3-1 \
         pass=1.7.4-8 \
         pinentry-tty=1.3.2-3ubuntu1 \
         sudo=1.9.17p2-1ubuntu3 \
@@ -112,6 +116,11 @@ RUN arch="$(dpkg --print-architecture)" \
     && install -m 0755 "${hadolint_bin}" /usr/local/bin/hadolint \
     && rm -f "${hadolint_bin}" "${hadolint_bin}.sha256"
 WORKDIR /
+
+# Install the pi coding agent globally so the `pi` command is available to the
+# non-root development user. Keep the version explicit for reproducible builds.
+ARG PI_CODING_AGENT_VERSION=0.84.1
+RUN npm install --global "@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}"
 
 # Create non-root user/group and configure sudo.
 # - Running as non-root is the default best practice for dev containers.
