@@ -31,7 +31,7 @@ blkit/
 ├── README.md         # Project overview and quick-start
 ├── LICENSE           # Project licence
 ├── AGENTS.md         # Instructions for AI coding agents working in this repository
-├── .gitignore                 # Ignored files (includes PR_DESCRIPTION.md, RELEASE_NOTES.md, etc.)
+├── .gitignore                 # Repository ignore rules for generated and local-only files
 ├── .pre-commit-config.yaml    # Pre-commit hook configuration (formatter, linter)
 └── .github/                   # GitHub Actions workflows and repository configuration
 ```
@@ -46,7 +46,7 @@ all live in the `core/` package — `package core`, imported as `bl` (see
 
 ## `docs/`
 
-Contains the source files for the blkit documentation site, compiled by [Zensical](https://github.com/zensical/zensical) into a static site hosted on GitHub Pages. See [documentation.spec.md](documentation.spec.md) for full details.
+Contains the source files for the blkit documentation site, compiled by [Zensical](https://github.com/zensical/zensical) into a static site hosted on GitHub Pages. See [project-documentation.spec.md](project-documentation.spec.md) for full details.
 
 ```
 docs/
@@ -67,8 +67,8 @@ Contains GitHub Actions workflow definitions and repository configuration.
 ```
 .github/
 ├── workflows/
-│   ├── pull-request-checks.yml  # PR checks workflow — Go build/format/lint/test + docs job (see pull-request-workflow.spec.md)
-│   ├── docs.yml     # Docs publish workflow — builds and deploys the Zensical site to GitHub Pages (see documentation.spec.md)
+│   ├── pull-request-checks.yml  # PR checks workflow — Go build/format/lint/test + docs job
+│   ├── docs.yml     # Docs publish workflow — builds and deploys the Zensical site to GitHub Pages (see project-documentation.spec.md)
 │   └── publish.yml  # Publish workflow — triggers pkg.go.dev on GitHub Release creation (see release-workflow.spec.md)
 └── CODEOWNERS       # Code ownership rules controlling required reviewers per path
 ```
@@ -77,10 +77,10 @@ Contains GitHub Actions workflow definitions and repository configuration.
 
 Contains shell scripts that codify automation workflows:
 
-- `scripts/create-pull-request.sh` — pre-pull-request process (see [pull-request-workflow.spec.md](pull-request-workflow.spec.md))
+- `scripts/create-pull-request.sh` — validates the current branch and opens a pull request, invoked by `make pr` or the `/pr` prompt
 - `scripts/create-release.sh` — release process (see [release-workflow.spec.md](release-workflow.spec.md))
-- `scripts/generate-docs.sh` — regenerates programmatically generated API reference Markdown in `docs/reference/` (see [documentation.spec.md](documentation.spec.md))
-- `scripts/generate-llms.sh` — regenerates the `docs/llms.txt` and `docs/llms-full.txt` LLM discovery files from `zensical.toml` and the docs pages (see [documentation.spec.md](documentation.spec.md))
+- `scripts/generate-docs.sh` — regenerates programmatically generated API reference Markdown in `docs/reference/` (see [project-documentation.spec.md](project-documentation.spec.md))
+- `scripts/generate-llms-txt.sh` — regenerates the `docs/llms.txt` and `docs/llms-full.txt` LLM discovery files from `zensical.toml` and the docs pages (see [project-documentation.spec.md](project-documentation.spec.md))
 
 ## `copier/`
 

@@ -5,8 +5,9 @@ status: implemented
 code:
   - docs/
   - scripts/generate-docs.sh
-  - scripts/generate-llms.sh
+  - scripts/generate-llms-txt.sh
   - .github/workflows/docs.yml
+  - .github/workflows/pull-request-checks.yml
 ---
 
 # Documentation
@@ -124,6 +125,12 @@ docs/examples/<name>.md
 
 The Zensical build renders this directly as the example page. A page is published as soon as its file exists — including when its **Implementation** section is still the pending placeholder described above. If the file is missing entirely, the page is excluded from the site and a warning is emitted at build time.
 
+### Executable Examples and Verification
+
+Once an example's pending placeholder is replaced by a complete, runnable Go implementation, that implementation becomes a first-class CI check. CI must compile and execute it, verify deterministic results, and fail the pull-request checks if it does not compile or its results are incorrect. Pending placeholders are not executable examples and are exempt from these checks.
+
+The worked examples in the corresponding `specs/examples/<name>.spec.md` are the acceptance cases: every worked-example row must be verified by the executable check. The practical mechanism for extracting or driving implementations from the Markdown pages is deliberately deferred until the first runnable implementation is introduced.
+
 ## Reference Section
 
 The Reference section contains the Go API reference, generated from `//` godoc comments in source via `go doc` / `godoc` → Markdown.
@@ -222,7 +229,7 @@ not at the domain root.
 
 ### Generation and Staleness
 
-Both files are produced by `scripts/generate-llms.sh` (see below), committed to
+Both files are produced by `scripts/generate-llms-txt.sh` (see below), committed to
 `docs/`, and **must not be edited by hand**. Their freshness is enforced the
 same way as the Reference Markdown: a pre-commit hook regenerates them when
 documentation source or `zensical.toml` changes, and the `docs` CI job
@@ -230,9 +237,9 @@ regenerates and diffs them, failing if the committed copy is stale. Because
 `llms-full.txt` embeds the generated Reference, generation runs *after*
 `scripts/generate-docs.sh`.
 
-## `scripts/generate-llms.sh`
+## `scripts/generate-llms-txt.sh`
 
-`scripts/generate-llms.sh` is the entry point for regenerating `docs/llms.txt`
+`scripts/generate-llms-txt.sh` is the entry point for regenerating `docs/llms.txt`
 and `docs/llms-full.txt`. It reads `zensical.toml` for the site metadata and nav
 and reads the referenced pages under `docs/`, then writes the two files. It
 requires `python3` with the `tomllib` module (Python 3.11+) to parse the
@@ -277,9 +284,10 @@ The documentation workflow must:
 
 1. Install Zensical and the godoc-to-Markdown generation toolchain.
 2. Run source-to-Markdown generation for the Reference section.
-3. Run `scripts/generate-llms.sh` to regenerate the `llms.txt` discovery files.
+3. Run `scripts/generate-llms-txt.sh` to regenerate the `llms.txt` discovery files.
 4. Fail the build if the regenerated Reference Markdown or `llms.txt` files
    differ from what is committed (a staleness check).
-5. Run `zensical build` (or equivalent) to compile the full site.
-6. Fail the build if any broken internal links are detected.
-7. Publish the compiled site to GitHub Pages only on pushes to the default branch or release tags (not on pull requests).
+5. Compile and execute every completed runnable implementation in the Examples section, verifying its results against the worked examples in its corresponding business-process spec.
+6. Run `zensical build` (or equivalent) to compile the full site.
+7. Fail the build if any broken internal links are detected.
+8. Publish the compiled site to GitHub Pages only on pushes to the default branch or release tags (not on pull requests).

@@ -96,7 +96,7 @@ jobs:
       - name: Generate API reference
         run: bash scripts/generate-docs.sh
       - name: Generate llms.txt files
-        run: bash scripts/generate-llms.sh
+        run: bash scripts/generate-llms-txt.sh
       - name: Fail if generated docs are stale
         shell: bash
         run: |

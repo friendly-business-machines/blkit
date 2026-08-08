@@ -62,7 +62,7 @@
 # Phase 3: Documentation validation
 # ---------------------------------
 # `scripts/generate-docs.sh` rebuilds the committed Go API reference, then
-# `scripts/generate-llms.sh` rebuilds `llms.txt` and `llms-full.txt` from the
+# `scripts/generate-llms-txt.sh` rebuilds `llms.txt` and `llms-full.txt` from the
 # refreshed reference and documentation navigation. Git status is inspected for
 # changed or newly generated artifacts; any difference means the generated files
 # must be reviewed and committed before retrying. Zensical then builds the whole
@@ -416,7 +416,7 @@ run_step \
   "Docs regeneration" \
   "LLM discovery file generation failed" \
   "Fix the generation error, then rerun the command." \
-  bash scripts/generate-llms.sh
+  bash scripts/generate-llms-txt.sh
 
 generated_diff="$(git status --porcelain -- docs/reference docs/llms.txt docs/llms-full.txt)"
 [[ -z "$generated_diff" ]] || fail \

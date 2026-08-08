@@ -2,7 +2,7 @@ name: Docs
 
 # Builds and publishes the Zensical documentation site on pushes to the
 # default branch and release tags. Pull requests are validated by
-# pull-request-checks.yml. See specs/project/documentation.spec.md.
+# pull-request-checks.yml. See specs/project/project-documentation.spec.md.
 
 on:
   push:
@@ -37,13 +37,13 @@ jobs:
 
       - name: Generate llms.txt files
         # Runs after the reference so llms-full.txt embeds the fresh reference.
-        run: bash scripts/generate-llms.sh
+        run: bash scripts/generate-llms-txt.sh
 
       - name: Fail if generated docs are stale
         run: |
           generated_status="$(git status --porcelain -- docs/reference docs/llms.txt docs/llms-full.txt)"
           if [[ -n "$generated_status" ]]; then
-            echo "::error::Generated docs are out of date. Run scripts/generate-docs.sh and scripts/generate-llms.sh and commit the result." >&2
+            echo "::error::Generated docs are out of date. Run scripts/generate-docs.sh and scripts/generate-llms-txt.sh and commit the result." >&2
             printf '%s\n' "$generated_status"
             exit 1
           fi

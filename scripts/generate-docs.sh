@@ -3,7 +3,7 @@
 # generate-docs.sh — regenerate the API reference Markdown under docs/reference/
 # from godoc comments in source.
 #
-# See specs/project/documentation.spec.md ("scripts/generate-docs.sh"). The
+# See specs/project/project-documentation.spec.md ("scripts/generate-docs.sh"). The
 # script runs the godoc-to-Markdown tool (gomarkdoc) over every buildable Go
 # package in the workspace and writes one Markdown file per package into
 # docs/reference/. The output is committed and consumed by Zensical as ordinary
