@@ -1,9 +1,10 @@
 ---
 name: Documentation
 description: Documentation site structure, toolchain, and authoring conventions — compiled from Markdown using Zensical and hosted on GitHub Pages, including auto-generated Go API reference and llms.txt discovery files
-status: implemented
+status: agreed
 code:
   - docs/
+  - internal/doctest/
   - scripts/generate-docs.sh
   - scripts/generate-llms-txt.sh
   - .github/workflows/docs.yml
@@ -127,9 +128,126 @@ The Zensical build renders this directly as the example page. A page is publishe
 
 ### Executable Examples and Verification
 
-Once an example's pending placeholder is replaced by a complete, runnable Go implementation, that implementation becomes a first-class CI check. CI must compile and execute it, verify deterministic results, and fail the pull-request checks if it does not compile or its results are incorrect. Pending placeholders are not executable examples and are exempt from these checks.
+Once an example's pending placeholder is replaced by a complete Go
+implementation, that implementation becomes a first-class CI check. The Go
+implementation remains solely in the Markdown page: no generated or hand-copied
+`.go` implementation is committed elsewhere in the repository.
 
-The worked examples in the corresponding `specs/examples/<name>.spec.md` are the acceptance cases: every worked-example row must be verified by the executable check. The practical mechanism for extracting or driving implementations from the Markdown pages is deliberately deferred until the first runnable implementation is introduced.
+#### Progressive source blocks
+
+A completed page teaches the implementation progressively. Each step may explain
+a design choice and then contribute another fragment of the program in a marked
+Go fence. The outer four-backtick `markdown` fence below only displays the
+required authoring syntax inside this spec; an example page contains only the
+inner three-backtick Go fence.
+
+````markdown
+``` { .go .blkit-example title="main.go" }
+// The next fragment of the application.
+```
+````
+
+The `.blkit-example` class is the executable-source marker. Ordinary `go` fences
+without that class are illustrative and are not part of the executable program.
+Arbitrary custom fence options are not used because Zensical does not preserve
+them reliably; custom classes are supported and render as normal highlighted Go.
+
+The test driver concatenates the bodies of all `.blkit-example` Go fences in
+document order, separated by newlines, to form one temporary `main.go`. Every
+marked fence on a page must use `title="main.go"`. Version 1 deliberately supports
+one generated Go source file per example; multi-file tangling is a non-goal until
+a real example requires it. The driver may add Go `//line` directives between
+fragments so compiler diagnostics identify the originating Markdown path and
+line, but it must not otherwise transform the source.
+
+The assembled source must be a complete `package main` application. Its
+`main()` accepts input from an external boundary appropriate to the example,
+such as command-line arguments or standard input; it must not contain hardcoded
+acceptance cases or expected results. Reusable business logic is kept in
+functions that the external tests can call directly. This keeps the displayed
+code representative of an application a reader could adapt rather than turning
+`main()` into a test driver.
+
+A page is in exactly one state:
+
+- **pending** — its Implementation section contains the standard
+  `Implementation pending` admonition and no `.blkit-example` fence; or
+- **completed** — it contains one or more `.blkit-example` fences, they assemble
+  into a complete program, and it has the matching external acceptance test
+  described below.
+
+A page containing both forms, or neither form, is invalid. An unclosed marked
+fence, a marked non-Go fence, a marked fence with another title, or source that
+does not parse and compile is a test failure.
+
+#### External acceptance tests
+
+Tests are intentionally outside the Markdown so the reader-facing application
+contains no embedded test cases. They live under the test driver's Go-ignored
+fixture tree (`testdata/` is not discovered as a package by `go test ./...`):
+
+```
+internal/doctest/testdata/<example-name>/example_test.go
+```
+
+These files contain tests only. They must not reproduce, wrap, or complete the
+implementation from the Markdown page. At test time the driver copies the
+matching test into the temporary directory beside the assembled `main.go` and
+runs them as one `package main`.
+
+Every completed example is verified at both levels:
+
+1. **Direct logic acceptance tests** call the assembled application's reusable
+   business-logic functions. They are table-driven and cover every worked row in
+   the corresponding `specs/examples/<name>.spec.md`, including returned values
+   and documented errors.
+2. **Black-box application tests** execute the built temporary command with
+   externally supplied input and verify its exit status, standard output, and
+   relevant standard error. At least one worked scenario is exercised through
+   this boundary, proving that `main()` connects application input and output to
+   the tested business logic.
+
+Top-level direct tests use the `TestLogic` name or prefix; black-box tests use
+`TestCommand`. The driver builds the assembled command before running tests and
+provides its path in `BLKIT_EXAMPLE_BINARY`, so command tests execute the exact
+source extracted from the page. Acceptance values live in the business spec and
+external tests, never in the executable Go fences. The documentation page may
+still present worked inputs and outputs in its explanatory prose or tables.
+
+#### Test-driver behaviour
+
+The standard-library-only driver lives in `internal/doctest/` and is itself
+reached by `go test ./...`. It discovers every `docs/examples/*.md` page and
+matches completed page `<name>.md` to
+`internal/doctest/testdata/<name>/example_test.go`. For each completed page it:
+
+1. extracts and assembles the marked fragments in a fresh temporary directory;
+2. parses and compiles the assembled package;
+3. builds the temporary application binary;
+4. runs the external direct and black-box tests with
+   `BLKIT_EXAMPLE_BINARY` set; and
+5. reports failures against the example page, preserving Markdown line
+   attribution where Go tooling permits it.
+
+Missing or extra test fixtures, duplicate page identities, extraction errors,
+compile errors, build errors, absent direct or command tests, runtime failures,
+and assertion failures all fail the suite. Temporary source and binaries are
+removed by the test lifecycle and are never committed or used as Zensical input.
+Pending pages are classified but are exempt from compilation and acceptance
+execution.
+
+Repository-authored Markdown and its external tests are trusted executable code.
+Pull requests changing either receive the same review and CI treatment as Go
+source changes; the driver does not execute Markdown obtained from untrusted
+runtime input.
+
+The approach was selected after disposable feasibility checks of native Go
+`Example` blocks, complete `package main` blocks with embedded or adjacent
+expected output, Zensical Markdown Exec, progressive source tangling, and
+external tests. Progressive tangling with external direct and black-box tests
+was chosen because it keeps the portal tutorial-shaped, keeps production logic
+single-sourced in Markdown, keeps acceptance data out of the displayed program,
+and still verifies both the business API and the runnable application boundary.
 
 ## Reference Section
 
@@ -287,7 +405,9 @@ The documentation workflow must:
 3. Run `scripts/generate-llms-txt.sh` to regenerate the `llms.txt` discovery files.
 4. Fail the build if the regenerated Reference Markdown or `llms.txt` files
    differ from what is committed (a staleness check).
-5. Compile and execute every completed runnable implementation in the Examples section, verifying its results against the worked examples in its corresponding business-process spec.
+5. Assemble every completed runnable implementation in the Examples section,
+   run its external direct and black-box Go tests, and verify its results against
+   the worked examples in the corresponding business-process spec.
 6. Run `zensical build` (or equivalent) to compile the full site.
 7. Fail the build if any broken internal links are detected.
 8. Publish the compiled site to GitHub Pages only on pushes to the default branch or release tags (not on pull requests).

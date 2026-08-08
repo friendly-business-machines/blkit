@@ -1,7 +1,7 @@
 ---
 name: Project Directory Structure
 description: Repository directory layout — Go implementation, docs, scripts, and copier templates
-status: implemented
+status: agreed
 ---
 
 # Project Directory Structure
@@ -22,6 +22,9 @@ blkit/
 ├── worker/           # blkit/worker — worker.Run, ProcessTask lifecycle, writer pool
 ├── restserver/       # blkit/restserver — HTTP REST + SSE server for the MessageBroker
 ├── docs/             # Static documentation site source files (Zensical)
+├── internal/
+│   └── doctest/      # Test driver and external acceptance fixtures for Go code
+│                     #   assembled from progressive docs/examples/*.md blocks
 ├── scripts/          # Automation scripts (create-pull-request.sh, create-release.sh, etc.)
 ├── copier/           # Copier project templates
 ├── specs/            # Interface Specifications (this directory)
@@ -59,6 +62,21 @@ docs/
 ```
 
 Hand-authored Markdown lives in all directories except `reference/`, whose contents are programmatically generated from source and must not be edited by hand.
+
+Completed example implementations are assembled directly from marked, progressive
+Go blocks in `docs/examples/*.md`. The test-only driver and external acceptance
+fixtures live under `internal/doctest/`; no extracted Go implementation is
+committed. See
+[project-documentation.spec.md](project-documentation.spec.md#executable-examples-and-verification)
+for the source-block and verification contract.
+
+## `internal/doctest/`
+
+Contains the standard-library-only test driver for executable documentation
+examples. Its Go-ignored `testdata/<example-name>/example_test.go` fixtures provide
+direct business-logic acceptance tests and black-box command tests without
+reproducing the Markdown-defined application source. The driver assembles source
+and runs the fixtures in temporary directories as part of `go test ./...`.
 
 ## `.github/`
 
