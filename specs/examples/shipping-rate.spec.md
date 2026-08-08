@@ -18,17 +18,15 @@ An e-commerce fulfilment platform needs to calculate the shipping cost for any o
 - **Speed tier** — standard, express, or overnight, each applying a cost multiplier.
 - **Fuel surcharge** — a flat 8% applied to the pre-surcharge total.
 
-This example shows how to compose these calculations entirely using blkit expressions, without needing a `DecisionTable` or a `Process`. The expression system is a standalone feature of blkit — it can be used anywhere arithmetic, conditionals, or deferred expression evaluation is useful.
+This example composes the calculation as a `DecisionExpression`, without needing a `DecisionTable` or a `Process`. Named entries represent each intermediate result and blkit evaluates their dependencies in order.
 
 ## What This Example Demonstrates
 
-- Using `bl.number()` for precise decimal arithmetic
-- Using `bl.var()` to reference runtime variables
-- Arithmetic operations: `.add()`, `.sub()`, `.mul()`, `.div()`
-- Comparison and conditional: `.gt()`, `.if_then_else()`
-- Using `bl.context()` to build a structured output
-- Calling `.evaluate(variables)` to materialise a result
-- Composing a multi-step calculation from reusable expression fragments
+- Defining typed input and output contracts with `bl.Handle`
+- Compiling related calculations with `bl.NewDecisionExpression`
+- Referencing sibling outputs from dependent expression entries
+- Using `bl.Number()` for precise decimal arithmetic
+- Evaluating one reusable decision with different input values
 
 ## Data Model
 
@@ -87,83 +85,9 @@ This example shows how to compose these calculations entirely using blkit expres
 6. **Fuel surcharge**: `subtotal × 0.08`
 7. **Total**: `subtotal + fuel_surcharge`
 
-## Implementation Outline
+## Decision Definition
 
-```python
-# Step 1 — volumetric weight
-volumetric_weight = (
-    bl.var("length_cm")
-    .mul(bl.var("width_cm"))
-    .mul(bl.var("height_cm"))
-    .div(bl.number(5000))
-)
-
-# Step 2 — billable weight (max of actual vs volumetric)
-# bl.function_call("max", ...) invokes the built-in max() function
-billable_weight = bl.function_call("max", [
-    bl.var("actual_weight_kg"),
-    volumetric_weight,
-])
-
-# Step 3 — zone-based rates returned as a Bl context
-zone_rates = (
-    bl.var("destination_zone").eq(bl.number(1))
-    .if_then_else(
-        bl.context({"base": bl.number(5.00), "per_kg": bl.number(1.50)}),
-        bl.var("destination_zone").eq(bl.number(2))
-        .if_then_else(
-            bl.context({"base": bl.number(12.00), "per_kg": bl.number(2.50)}),
-            bl.context({"base": bl.number(25.00), "per_kg": bl.number(4.00)}),
-        ),
-    )
-)
-
-# Step 4 — speed multiplier
-speed_multiplier = (
-    bl.var("speed_tier").eq(bl.string("standard"))
-    .if_then_else(
-        bl.number(1.0),
-        bl.var("speed_tier").eq(bl.string("express"))
-        .if_then_else(
-            bl.number(1.5),
-            bl.number(2.5),
-        ),
-    )
-)
-
-# Steps 5–7 — build the full output context
-# (zone_rates.base and zone_rates.per_kg accessed via path expressions)
-subtotal = (
-    zone_rates.path("base")
-    .add(billable_weight.mul(zone_rates.path("per_kg")))
-    .mul(speed_multiplier)
-)
-fuel_surcharge = subtotal.mul(bl.number(0.08))
-total = subtotal.add(fuel_surcharge)
-
-# Final result as a structured context
-result_expr = bl.context({
-    "billable_weight_kg": billable_weight,
-    "subtotal":           subtotal,
-    "fuel_surcharge":     fuel_surcharge,
-    "total":              total,
-})
-
-# Evaluate
-result = await result_expr.evaluate({
-    "actual_weight_kg": 3.2,
-    "length_cm": 40,
-    "width_cm": 30,
-    "height_cm": 20,
-    "destination_zone": 2,
-    "speed_tier": "express",
-})
-# volumetric_weight = (40×30×20)/5000 = 4.8 kg → billable = 4.8
-# base_rate = 12.00, per_kg = 2.50
-# subtotal = (12.00 + 4.8×2.50) × 1.5 = (12.00 + 12.00) × 1.5 = 36.00
-# fuel_surcharge = 36.00 × 0.08 = 2.88
-# total = 38.88
-```
+The implementation defines one `DecisionExpression` whose entries correspond to the calculation steps above. Inputs and outputs use typed `bl.Handle` fields. Intermediate outputs such as `base_rate`, `per_kg_rate`, and `subtotal` remain part of the decision contract so later entries can depend on them. The application boundary converts JSON decimal strings with `bl.Number()` before evaluating the decision.
 
 ## Sample Inputs and Expected Outputs
 
@@ -181,5 +105,5 @@ The documentation page for this example (`docs/examples/shipping-rate.md`) must 
 1. A short narrative introduction explaining the billing model and what the reader will build.
 2. The complete, runnable Go code.
 3. An explicit walkthrough: show the intermediate values for the first sample row (actual=3.2 kg, regional, express, total=38.88) with each intermediate computation labelled.
-4. A callout explaining the difference between `bl.number()` values (arbitrary precision) and native floating-point — and why `Bl` arithmetic is preferable for financial calculations.
-5. A short note on reusability: because the expressions are pure data structures, `result_expr` can be built once and evaluated many times with different variable maps.
+4. A callout explaining the difference between `bl.Number()` values (arbitrary precision) and native floating-point — and why `Bl` arithmetic is preferable for financial calculations.
+5. A short note on reusability: the decision definition is built once and evaluated many times with different typed inputs.

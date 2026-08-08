@@ -154,38 +154,43 @@ type ClaimResult struct {
 	Net         string `json:"net"`
 	Outcome     string `json:"outcome"`
 }
-type claimEnv struct {
-	Active   bl.BlBoolean `expr:"active"`
-	Incident bl.BlDate    `expr:"incident"`
-	Start    bl.BlDate    `expr:"start"`
-	End      bl.BlDate    `expr:"end"`
-	Covered  bl.BlBoolean `expr:"covered"`
-	Raw      bl.BlNumber  `expr:"raw"`
-	Value    bl.BlNumber  `expr:"value"`
-	Excess   bl.BlNumber  `expr:"excess"`
+type claimVars struct {
+	Active   bl.Handle[bl.BlBoolean] `expr:"active"`
+	Incident bl.Handle[bl.BlDate]    `expr:"incident"`
+	Start    bl.Handle[bl.BlDate]    `expr:"start"`
+	End      bl.Handle[bl.BlDate]    `expr:"end"`
+	Covered  bl.Handle[bl.BlBoolean] `expr:"covered"`
+	Raw      bl.Handle[bl.BlNumber]  `expr:"raw"`
+	Value    bl.Handle[bl.BlNumber]  `expr:"value"`
+	Excess   bl.Handle[bl.BlNumber]  `expr:"excess"`
+}
+type claimOutputs struct {
+	Eligible   bl.Handle[bl.BlBoolean] `expr:"eligible"`
+	Capped     bl.Handle[bl.BlNumber]  `expr:"capped"`
+	Severity   bl.Handle[bl.BlString]  `expr:"severity"`
+	Percentage bl.Handle[bl.BlNumber]  `expr:"percentage"`
+	Gross      bl.Handle[bl.BlNumber]  `expr:"gross"`
+	Net        bl.Handle[bl.BlNumber]  `expr:"net"`
+	Outcome    bl.Handle[bl.BlString]  `expr:"outcome"`
 }
 ```
 
-The compiled expression gates eligibility, caps and bands the score, then derives
+The compiled decision gates eligibility, caps and bands the score, then derives
 the settlement and referral outcome.
 
 ``` { .go .blkit-example title="main.go" }
-var claimExpression = mustClaimExpr(bl.Expr[claimEnv](`{
-eligible: active and incident>=start and incident<=end and covered,
-capped: clamp(raw,0,100),
-severity: (if capped<=20 then "Minor" else if capped<=50 then "Moderate" else if capped<=80 then "Significant" else "Total loss"),
-percentage: (if severity="Minor" then 15 else if severity="Moderate" then 35 else if severity="Significant" then 65 else 100),
-gross: (if eligible then value*percentage/100 else 0),
-net: max([0,gross-excess]),
-outcome: (if not(eligible) then "Rejected: damage not covered" else if net=0 then "Valid, no payment" else if net>25000 then "Senior assessor referral" else "Offer issued")
-}`))
-
-func mustClaimExpr(e *bl.BlExpr[claimEnv], err error) *bl.BlExpr[claimEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
+var claimDecision = bl.NewDecisionExpression[claimVars, claimOutputs](bl.DecisionExpressionConfig{
+	Id: "claim-assessment",
+	Entries: bl.Entries{
+		"eligible":   `active and incident>=start and incident<=end and covered`,
+		"capped":     `clamp(raw,0,100)`,
+		"severity":   `if capped<=20 then "Minor" else if capped<=50 then "Moderate" else if capped<=80 then "Significant" else "Total loss"`,
+		"percentage": `if severity="Minor" then 15 else if severity="Moderate" then 35 else if severity="Significant" then 65 else 100`,
+		"gross":      `if eligible then value*percentage/100 else 0`,
+		"net":        `max([0,gross-excess])`,
+		"outcome":    `if not(eligible) then "Rejected: damage not covered" else if net=0 then "Valid, no payment" else if net>25000 then "Senior assessor referral" else "Offer issued"`,
+	},
+})
 
 var damageScores = map[string]int{"third_party_vehicle": 20, "third_party_property": 15, "fire": 40, "theft": 50, "collision": 30, "weather": 15, "vandalism": 20}
 
@@ -231,12 +236,20 @@ func AssessClaim(in ClaimInput) (ClaimResult, error) {
 	}
 	active, _ := bl.Boolean(in.PolicyActive)
 	coveredValue, _ := bl.Boolean(covered)
-	result, e := claimExpression.Evaluate(claimEnv{active, incident, start, end, coveredValue, rawNumber, value, excess})
+	result, e := claimDecision.Evaluate(claimVars{
+		bl.NewHandle(active), bl.NewHandle(incident), bl.NewHandle(start),
+		bl.NewHandle(end), bl.NewHandle(coveredValue), bl.NewHandle(rawNumber),
+		bl.NewHandle(value), bl.NewHandle(excess),
+	})
 	if e != nil {
 		return ClaimResult{}, e
 	}
-	m := result.(bl.BlDictionary).Native()
-	return ClaimResult{m["eligible"].(bl.BlBoolean).Native(), rawNumber.String(), m["capped"].(bl.BlNumber).String(), m["severity"].(bl.BlString).String(), m["gross"].(bl.BlNumber).String(), m["net"].(bl.BlNumber).String(), m["outcome"].(bl.BlString).String()}, nil
+	return ClaimResult{
+		result.Eligible.Get().Native(), rawNumber.String(),
+		result.Capped.Get().String(), result.Severity.Get().String(),
+		result.Gross.Get().String(), result.Net.Get().String(),
+		result.Outcome.Get().String(),
+	}, nil
 }
 func main() {
 	var in ClaimInput

@@ -141,7 +141,7 @@ issued at 110% = **£385**.
 ## Implementation
 
 The eligibility, refund, and resolution logic can already be composed as one
-typed blkit expression.
+typed `DecisionExpression`.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -175,41 +175,47 @@ type ReturnResult struct {
 	Resolution       string `json:"resolution"`
 	ResolutionAmount string `json:"resolution_amount"`
 }
-type returnEnv struct {
-	Delivery   bl.BlDate    `expr:"delivery"`
-	Request    bl.BlDate    `expr:"request"`
-	Issued     bl.BlDate    `expr:"issued"`
-	Received   bl.BlDate    `expr:"received"`
-	Returnable bl.BlBoolean `expr:"returnable"`
-	Quantity   bl.BlNumber  `expr:"quantity"`
-	Purchased  bl.BlNumber  `expr:"purchased"`
-	Reason     bl.BlString  `expr:"reason"`
-	Grade      bl.BlString  `expr:"grade"`
-	Preferred  bl.BlString  `expr:"preferred"`
-	Stock      bl.BlBoolean `expr:"stock"`
-	Price      bl.BlNumber  `expr:"price"`
+type returnVars struct {
+	Delivery   bl.Handle[bl.BlDate]    `expr:"delivery"`
+	Request    bl.Handle[bl.BlDate]    `expr:"request"`
+	Issued     bl.Handle[bl.BlDate]    `expr:"issued"`
+	Received   bl.Handle[bl.BlDate]    `expr:"received"`
+	Returnable bl.Handle[bl.BlBoolean] `expr:"returnable"`
+	Quantity   bl.Handle[bl.BlNumber]  `expr:"quantity"`
+	Purchased  bl.Handle[bl.BlNumber]  `expr:"purchased"`
+	Reason     bl.Handle[bl.BlString]  `expr:"reason"`
+	Grade      bl.Handle[bl.BlString]  `expr:"grade"`
+	Preferred  bl.Handle[bl.BlString]  `expr:"preferred"`
+	Stock      bl.Handle[bl.BlBoolean] `expr:"stock"`
+	Price      bl.Handle[bl.BlNumber]  `expr:"price"`
+}
+type returnOutputs struct {
+	WithinRequestWindow bl.Handle[bl.BlBoolean] `expr:"within_request_window"`
+	ReceivedInTime      bl.Handle[bl.BlBoolean] `expr:"received_in_time"`
+	Eligible            bl.Handle[bl.BlBoolean] `expr:"eligible"`
+	RefundPercent       bl.Handle[bl.BlNumber]  `expr:"refund_percent"`
+	RefundAmount        bl.Handle[bl.BlNumber]  `expr:"refund_amount"`
+	ResolutionAmount    bl.Handle[bl.BlNumber]  `expr:"resolution_amount"`
+	Resolution          bl.Handle[bl.BlString]  `expr:"resolution"`
 }
 ```
 
 Sequential entries make each decision visible and reusable by later entries.
 
 ``` { .go .blkit-example title="main.go" }
-var returnExpression = mustReturnExpr(bl.Expr[returnEnv](`{
-within_request_window: request-delivery <= dtDuration("P30D"),
-received_in_time: received-issued <= dtDuration("P14D"),
-eligible: within_request_window and returnable and quantity <= purchased,
-refund_percent: (if not(eligible) or not(received_in_time) then 0 else if reason in ["DEFECTIVE","WRONG_ITEM","NOT_AS_DESCRIBED"] then 100 else if grade in ["A","B"] then 100 else if grade = "C" then 50 else 0),
-refund_amount: price*quantity*refund_percent/100,
-resolution_amount: (if preferred="store_credit" and refund_percent=100 then refund_amount*1.1 else refund_amount),
-resolution: (if refund_percent=0 then "Declined" else if preferred="replacement" and stock then "Replacement dispatched" else if preferred="store_credit" then "Store credit" else if refund_percent=100 then "Full refund" else "Partial refund")
-}`))
+var returnDecision = bl.NewDecisionExpression[returnVars, returnOutputs](bl.DecisionExpressionConfig{
+	Id: "product-return",
+	Entries: bl.Entries{
+		"within_request_window": `request-delivery <= dtDuration("P30D")`,
+		"received_in_time":      `received-issued <= dtDuration("P14D")`,
+		"eligible":              `within_request_window and returnable and quantity <= purchased`,
+		"refund_percent":        `if not(eligible) or not(received_in_time) then 0 else if reason in ["DEFECTIVE","WRONG_ITEM","NOT_AS_DESCRIBED"] then 100 else if grade in ["A","B"] then 100 else if grade = "C" then 50 else 0`,
+		"refund_amount":         `price*quantity*refund_percent/100`,
+		"resolution_amount":     `if preferred="store_credit" and refund_percent=100 then refund_amount*1.1 else refund_amount`,
+		"resolution":            `if refund_percent=0 then "Declined" else if preferred="replacement" and stock then "Replacement dispatched" else if preferred="store_credit" then "Store credit" else if refund_percent=100 then "Full refund" else "Partial refund"`,
+	},
+})
 
-func mustReturnExpr(e *bl.BlExpr[returnEnv], err error) *bl.BlExpr[returnEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
 func CalculateReturn(in ReturnInput) (ReturnResult, error) {
 	delivery, e := bl.Date(in.DeliveryDate)
 	if e != nil {
@@ -238,12 +244,20 @@ func CalculateReturn(in ReturnInput) (ReturnResult, error) {
 	}
 	returnable, _ := bl.Boolean(in.Returnable)
 	stock, _ := bl.Boolean(in.ReplacementInStock)
-	v, e := returnExpression.Evaluate(returnEnv{delivery, request, issued, received, returnable, q, p, reason, grade, preferred, stock, price})
+	v, e := returnDecision.Evaluate(returnVars{
+		bl.NewHandle(delivery), bl.NewHandle(request), bl.NewHandle(issued),
+		bl.NewHandle(received), bl.NewHandle(returnable), bl.NewHandle(q),
+		bl.NewHandle(p), bl.NewHandle(reason), bl.NewHandle(grade),
+		bl.NewHandle(preferred), bl.NewHandle(stock), bl.NewHandle(price),
+	})
 	if e != nil {
 		return ReturnResult{}, e
 	}
-	m := v.(bl.BlDictionary).Native()
-	return ReturnResult{m["eligible"].(bl.BlBoolean).Native(), m["received_in_time"].(bl.BlBoolean).Native(), m["refund_percent"].(bl.BlNumber).String(), m["refund_amount"].(bl.BlNumber).String(), m["resolution"].(bl.BlString).String(), m["resolution_amount"].(bl.BlNumber).String()}, nil
+	return ReturnResult{
+		v.Eligible.Get().Native(), v.ReceivedInTime.Get().Native(),
+		v.RefundPercent.Get().String(), v.RefundAmount.Get().String(),
+		v.Resolution.Get().String(), v.ResolutionAmount.Get().String(),
+	}, nil
 }
 ```
 
@@ -275,6 +289,6 @@ steps is shown yet.
 - Two distinct timers govern the flow: a 30-calendar-day eligibility window
   before authorisation, and a 14-calendar-day receipt window after it — both
   natural fits for blkit's date and duration expressions.
-- The refund percentage and the resolution are **two separate decision tables**:
-  the first (reason × grade) produces a percentage, which then feeds the second
-  (percentage × stock × preference) to choose the actual resolution.
+- Refund percentage and resolution are separate named decision outputs: the
+  percentage depends on reason and grade, then feeds the resolution calculation
+  alongside stock and preference.

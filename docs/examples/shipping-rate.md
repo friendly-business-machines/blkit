@@ -16,8 +16,9 @@ outbound parcel. The cost depends on:
 - **Speed tier** — standard, express, or overnight, each applying a multiplier.
 - **Fuel surcharge** — a flat 8% applied to the pre-surcharge total.
 
-Unlike most examples here, this one needs no `DecisionTable` or `Process` — it
-is composed purely from blkit expressions, which are available today.
+Unlike most examples here, this one needs no `DecisionTable` or `Process`. A
+`DecisionExpression` gives the calculation typed inputs, named intermediate
+outputs, and a reusable compiled definition.
 
 ### Inputs
 
@@ -106,42 +107,50 @@ type ShippingQuote struct {
 }
 ```
 
-The expression is compiled once. Dictionary entries are evaluated in order, so
-later entries can reuse earlier intermediate values.
+The decision is compiled once. Each named output may reference inputs or an
+earlier output; blkit determines the dependency order.
 
 ``` { .go .blkit-example title="main.go" }
-type shippingEnv struct {
-	ActualWeightKG  bl.BlNumber `expr:"actual_weight_kg"`
-	LengthCM        bl.BlNumber `expr:"length_cm"`
-	WidthCM         bl.BlNumber `expr:"width_cm"`
-	HeightCM        bl.BlNumber `expr:"height_cm"`
-	DestinationZone bl.BlNumber `expr:"destination_zone"`
-	SpeedTier       bl.BlString `expr:"speed_tier"`
+type shippingVariables struct {
+	ActualWeightKG  bl.Handle[bl.BlNumber] `expr:"actual_weight_kg"`
+	LengthCM        bl.Handle[bl.BlNumber] `expr:"length_cm"`
+	WidthCM         bl.Handle[bl.BlNumber] `expr:"width_cm"`
+	HeightCM        bl.Handle[bl.BlNumber] `expr:"height_cm"`
+	DestinationZone bl.Handle[bl.BlNumber] `expr:"destination_zone"`
+	SpeedTier       bl.Handle[bl.BlString] `expr:"speed_tier"`
 }
 
-var shippingExpression = mustExpression(bl.Expr[shippingEnv](`{
-    volumetric_weight: length_cm * width_cm * height_cm / 5000,
-    billable_weight: max([actual_weight_kg, volumetric_weight]),
-    base_rate: (if destination_zone = 1 then 5 else if destination_zone = 2 then 12 else 25),
-    per_kg_rate: (if destination_zone = 1 then 1.5 else if destination_zone = 2 then 2.5 else 4),
-    speed_multiplier: (if speed_tier = "standard" then 1 else if speed_tier = "express" then 1.5 else 2.5),
-    subtotal: (base_rate + billable_weight * per_kg_rate) * speed_multiplier,
-    fuel_surcharge: subtotal * 0.08,
-    total: subtotal + fuel_surcharge
-}`))
-
-func mustExpression(expr *bl.BlExpr[shippingEnv], err error) *bl.BlExpr[shippingEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return expr
+type shippingOutputs struct {
+	VolumetricWeight bl.Handle[bl.BlNumber] `expr:"volumetric_weight"`
+	BillableWeight   bl.Handle[bl.BlNumber] `expr:"billable_weight"`
+	BaseRate         bl.Handle[bl.BlNumber] `expr:"base_rate"`
+	PerKGRate        bl.Handle[bl.BlNumber] `expr:"per_kg_rate"`
+	SpeedMultiplier  bl.Handle[bl.BlNumber] `expr:"speed_multiplier"`
+	Subtotal         bl.Handle[bl.BlNumber] `expr:"subtotal"`
+	FuelSurcharge    bl.Handle[bl.BlNumber] `expr:"fuel_surcharge"`
+	Total            bl.Handle[bl.BlNumber] `expr:"total"`
 }
+
+var shippingDecision = bl.NewDecisionExpression[shippingVariables, shippingOutputs](bl.DecisionExpressionConfig{
+	Id:   "shipping-rate",
+	Name: "Shipping rate",
+	Entries: bl.Entries{
+		"volumetric_weight": `length_cm * width_cm * height_cm / 5000`,
+		"billable_weight":   `max([actual_weight_kg, volumetric_weight])`,
+		"base_rate":         `if destination_zone = 1 then 5 else if destination_zone = 2 then 12 else 25`,
+		"per_kg_rate":       `if destination_zone = 1 then 1.5 else if destination_zone = 2 then 2.5 else 4`,
+		"speed_multiplier":  `if speed_tier = "standard" then 1 else if speed_tier = "express" then 1.5 else 2.5`,
+		"subtotal":          `(base_rate + billable_weight * per_kg_rate) * speed_multiplier`,
+		"fuel_surcharge":    `subtotal * 0.08`,
+		"total":             `subtotal + fuel_surcharge`,
+	},
+})
 
 func number(value string) (bl.BlNumber, error) { return bl.Number(value) }
 ```
 
 `CalculateShipping` converts the application boundary, evaluates the reusable
-expression, and projects its dictionary result.
+decision, and projects its typed outputs.
 
 ``` { .go .blkit-example title="main.go" }
 func CalculateShipping(input ShippingInput) (ShippingQuote, error) {
@@ -169,13 +178,24 @@ func CalculateShipping(input ShippingInput) (ShippingQuote, error) {
 	if err != nil {
 		return ShippingQuote{}, err
 	}
-	value, err := shippingExpression.Evaluate(shippingEnv{actual, length, width, height, zone, tier})
+	output, err := shippingDecision.Evaluate(shippingVariables{
+		ActualWeightKG:  bl.NewHandle(actual),
+		LengthCM:        bl.NewHandle(length),
+		WidthCM:         bl.NewHandle(width),
+		HeightCM:        bl.NewHandle(height),
+		DestinationZone: bl.NewHandle(zone),
+		SpeedTier:       bl.NewHandle(tier),
+	})
 	if err != nil {
 		return ShippingQuote{}, err
 	}
-	values := value.(bl.BlDictionary).Native()
-	get := func(name string) string { return values[name].(bl.BlNumber).String() }
-	return ShippingQuote{get("volumetric_weight"), get("billable_weight"), get("subtotal"), get("fuel_surcharge"), get("total")}, nil
+	return ShippingQuote{
+		output.VolumetricWeight.Get().String(),
+		output.BillableWeight.Get().String(),
+		output.Subtotal.Get().String(),
+		output.FuelSurcharge.Get().String(),
+		output.Total.Get().String(),
+	}, nil
 }
 ```
 
@@ -202,8 +222,8 @@ func main() {
 
 ## Notes
 
-- Expressions are pure data structures: the result expression can be built once
-  and evaluated many times with different variable maps.
+- The decision definition is built once and evaluated many times with different
+  typed inputs.
 - Prefer `bl.Number()` (arbitrary-precision decimal) over native floating point
   for monetary arithmetic — it avoids the rounding drift that float math
   introduces in financial calculations.

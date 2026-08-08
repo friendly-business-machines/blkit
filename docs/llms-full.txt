@@ -404,8 +404,9 @@ outbound parcel. The cost depends on:
 - **Speed tier** — standard, express, or overnight, each applying a multiplier.
 - **Fuel surcharge** — a flat 8% applied to the pre-surcharge total.
 
-Unlike most examples here, this one needs no `DecisionTable` or `Process` — it
-is composed purely from blkit expressions, which are available today.
+Unlike most examples here, this one needs no `DecisionTable` or `Process`. A
+`DecisionExpression` gives the calculation typed inputs, named intermediate
+outputs, and a reusable compiled definition.
 
 ### Inputs
 
@@ -494,42 +495,50 @@ type ShippingQuote struct {
 }
 ```
 
-The expression is compiled once. Dictionary entries are evaluated in order, so
-later entries can reuse earlier intermediate values.
+The decision is compiled once. Each named output may reference inputs or an
+earlier output; blkit determines the dependency order.
 
 ``` { .go .blkit-example title="main.go" }
-type shippingEnv struct {
-	ActualWeightKG  bl.BlNumber `expr:"actual_weight_kg"`
-	LengthCM        bl.BlNumber `expr:"length_cm"`
-	WidthCM         bl.BlNumber `expr:"width_cm"`
-	HeightCM        bl.BlNumber `expr:"height_cm"`
-	DestinationZone bl.BlNumber `expr:"destination_zone"`
-	SpeedTier       bl.BlString `expr:"speed_tier"`
+type shippingVariables struct {
+	ActualWeightKG  bl.Handle[bl.BlNumber] `expr:"actual_weight_kg"`
+	LengthCM        bl.Handle[bl.BlNumber] `expr:"length_cm"`
+	WidthCM         bl.Handle[bl.BlNumber] `expr:"width_cm"`
+	HeightCM        bl.Handle[bl.BlNumber] `expr:"height_cm"`
+	DestinationZone bl.Handle[bl.BlNumber] `expr:"destination_zone"`
+	SpeedTier       bl.Handle[bl.BlString] `expr:"speed_tier"`
 }
 
-var shippingExpression = mustExpression(bl.Expr[shippingEnv](`{
-    volumetric_weight: length_cm * width_cm * height_cm / 5000,
-    billable_weight: max([actual_weight_kg, volumetric_weight]),
-    base_rate: (if destination_zone = 1 then 5 else if destination_zone = 2 then 12 else 25),
-    per_kg_rate: (if destination_zone = 1 then 1.5 else if destination_zone = 2 then 2.5 else 4),
-    speed_multiplier: (if speed_tier = "standard" then 1 else if speed_tier = "express" then 1.5 else 2.5),
-    subtotal: (base_rate + billable_weight * per_kg_rate) * speed_multiplier,
-    fuel_surcharge: subtotal * 0.08,
-    total: subtotal + fuel_surcharge
-}`))
-
-func mustExpression(expr *bl.BlExpr[shippingEnv], err error) *bl.BlExpr[shippingEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return expr
+type shippingOutputs struct {
+	VolumetricWeight bl.Handle[bl.BlNumber] `expr:"volumetric_weight"`
+	BillableWeight   bl.Handle[bl.BlNumber] `expr:"billable_weight"`
+	BaseRate         bl.Handle[bl.BlNumber] `expr:"base_rate"`
+	PerKGRate        bl.Handle[bl.BlNumber] `expr:"per_kg_rate"`
+	SpeedMultiplier  bl.Handle[bl.BlNumber] `expr:"speed_multiplier"`
+	Subtotal         bl.Handle[bl.BlNumber] `expr:"subtotal"`
+	FuelSurcharge    bl.Handle[bl.BlNumber] `expr:"fuel_surcharge"`
+	Total            bl.Handle[bl.BlNumber] `expr:"total"`
 }
+
+var shippingDecision = bl.NewDecisionExpression[shippingVariables, shippingOutputs](bl.DecisionExpressionConfig{
+	Id:   "shipping-rate",
+	Name: "Shipping rate",
+	Entries: bl.Entries{
+		"volumetric_weight": `length_cm * width_cm * height_cm / 5000`,
+		"billable_weight":   `max([actual_weight_kg, volumetric_weight])`,
+		"base_rate":         `if destination_zone = 1 then 5 else if destination_zone = 2 then 12 else 25`,
+		"per_kg_rate":       `if destination_zone = 1 then 1.5 else if destination_zone = 2 then 2.5 else 4`,
+		"speed_multiplier":  `if speed_tier = "standard" then 1 else if speed_tier = "express" then 1.5 else 2.5`,
+		"subtotal":          `(base_rate + billable_weight * per_kg_rate) * speed_multiplier`,
+		"fuel_surcharge":    `subtotal * 0.08`,
+		"total":             `subtotal + fuel_surcharge`,
+	},
+})
 
 func number(value string) (bl.BlNumber, error) { return bl.Number(value) }
 ```
 
 `CalculateShipping` converts the application boundary, evaluates the reusable
-expression, and projects its dictionary result.
+decision, and projects its typed outputs.
 
 ``` { .go .blkit-example title="main.go" }
 func CalculateShipping(input ShippingInput) (ShippingQuote, error) {
@@ -557,13 +566,24 @@ func CalculateShipping(input ShippingInput) (ShippingQuote, error) {
 	if err != nil {
 		return ShippingQuote{}, err
 	}
-	value, err := shippingExpression.Evaluate(shippingEnv{actual, length, width, height, zone, tier})
+	output, err := shippingDecision.Evaluate(shippingVariables{
+		ActualWeightKG:  bl.NewHandle(actual),
+		LengthCM:        bl.NewHandle(length),
+		WidthCM:         bl.NewHandle(width),
+		HeightCM:        bl.NewHandle(height),
+		DestinationZone: bl.NewHandle(zone),
+		SpeedTier:       bl.NewHandle(tier),
+	})
 	if err != nil {
 		return ShippingQuote{}, err
 	}
-	values := value.(bl.BlDictionary).Native()
-	get := func(name string) string { return values[name].(bl.BlNumber).String() }
-	return ShippingQuote{get("volumetric_weight"), get("billable_weight"), get("subtotal"), get("fuel_surcharge"), get("total")}, nil
+	return ShippingQuote{
+		output.VolumetricWeight.Get().String(),
+		output.BillableWeight.Get().String(),
+		output.Subtotal.Get().String(),
+		output.FuelSurcharge.Get().String(),
+		output.Total.Get().String(),
+	}, nil
 }
 ```
 
@@ -590,8 +610,8 @@ func main() {
 
 ## Notes
 
-- Expressions are pure data structures: the result expression can be built once
-  and evaluated many times with different variable maps.
+- The decision definition is built once and evaluated many times with different
+  typed inputs.
 - Prefer `bl.Number()` (arbitrary-precision decimal) over native floating point
   for monetary arithmetic — it avoids the rounding drift that float math
   introduces in financial calculations.
@@ -706,23 +726,24 @@ type FulfilmentDecision struct {
 	ValidationErrors []string `json:"validation_errors"`
 	Route            string   `json:"route"`
 }
-type routeEnv struct {
-	Stock   bl.BlBoolean `expr:"stock"`
-	Payment bl.BlBoolean `expr:"payment"`
+type routeVars struct {
+	Stock   bl.Handle[bl.BlBoolean] `expr:"stock"`
+	Payment bl.Handle[bl.BlBoolean] `expr:"payment"`
+}
+type routeOutputs struct {
+	Route bl.Handle[bl.BlString] `expr:"route"`
 }
 
-var routeExpression = mustRouteExpr(bl.Expr[routeEnv](`if not(stock) then "end-backorder" else if not(payment) then "end-payment-error" else "end-success"`))
-
-func mustRouteExpr(e *bl.BlExpr[routeEnv], err error) *bl.BlExpr[routeEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
+var routeDecision = bl.NewDecisionExpression[routeVars, routeOutputs](bl.DecisionExpressionConfig{
+	Id: "fulfilment-route",
+	Entries: bl.Entries{
+		"route": `if not(stock) then "end-backorder" else if not(payment) then "end-payment-error" else "end-success"`,
+	},
+})
 ```
 
 Validation stays at the application boundary; gateway selection is evaluated by
-the compiled blkit expression.
+a typed `DecisionExpression`.
 
 ``` { .go .blkit-example title="main.go" }
 func DecideFulfilment(in FulfilmentInput) (FulfilmentDecision, error) {
@@ -752,11 +773,11 @@ func DecideFulfilment(in FulfilmentInput) (FulfilmentDecision, error) {
 	}
 	stock, _ := bl.Boolean(in.StockAvailable)
 	payment, _ := bl.Boolean(in.PaymentOK)
-	value, err := routeExpression.Evaluate(routeEnv{stock, payment})
+	value, err := routeDecision.Evaluate(routeVars{bl.NewHandle(stock), bl.NewHandle(payment)})
 	if err != nil {
 		return FulfilmentDecision{}, err
 	}
-	return FulfilmentDecision{ValidationErrors: errors, Route: value.(bl.BlString).String()}, nil
+	return FulfilmentDecision{ValidationErrors: errors, Route: value.Route.Get().String()}, nil
 }
 ```
 
@@ -1124,22 +1145,28 @@ The effective seat price is rounded half-up to cents before the seat total is
 calculated. This makes invoice totals stable and matches the worked examples.
 
 ``` { .go .blkit-example title="main.go" }
-type pricingEnv struct {
-	Base   bl.BlNumber `expr:"base"`
-	Promo  bl.BlNumber `expr:"promo"`
-	Volume bl.BlNumber `expr:"volume"`
-	Tier   bl.BlNumber `expr:"tier"`
-	Seats  bl.BlNumber `expr:"seats"`
+type pricingVars struct {
+	Base   bl.Handle[bl.BlNumber] `expr:"base"`
+	Promo  bl.Handle[bl.BlNumber] `expr:"promo"`
+	Volume bl.Handle[bl.BlNumber] `expr:"volume"`
+	Tier   bl.Handle[bl.BlNumber] `expr:"tier"`
+	Seats  bl.Handle[bl.BlNumber] `expr:"seats"`
+}
+type pricingOutputs struct {
+	Effective bl.Handle[bl.BlNumber] `expr:"effective"`
+	Monthly   bl.Handle[bl.BlNumber] `expr:"monthly"`
+	Annual    bl.Handle[bl.BlNumber] `expr:"annual"`
 }
 
-var pricingExpression = mustPricingExpr(bl.Expr[pricingEnv](`{effective: round((base-promo)*(1-volume/100)*(1-tier/100),2), monthly: effective*seats, annual: monthly*12}`))
+var pricingDecision = bl.NewDecisionExpression[pricingVars, pricingOutputs](bl.DecisionExpressionConfig{
+	Id: "pricing-calculation",
+	Entries: bl.Entries{
+		"effective": `round((base-promo)*(1-volume/100)*(1-tier/100),2)`,
+		"monthly":   `effective*seats`,
+		"annual":    `monthly*12`,
+	},
+})
 
-func mustPricingExpr(expr *bl.BlExpr[pricingEnv], err error) *bl.BlExpr[pricingEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return expr
-}
 func strHandle(s string) bl.Handle[bl.BlString] { v, _ := bl.String(s); return bl.NewHandle(v) }
 func numHandle(n int) bl.Handle[bl.BlNumber]    { v, _ := bl.Number(n); return bl.NewHandle(v) }
 func PriceSubscription(input PricingInput) (PricingResult, error) {
@@ -1159,13 +1186,22 @@ func PriceSubscription(input PricingInput) (PricingResult, error) {
 	if err != nil {
 		return PricingResult{}, err
 	}
-	values, err := pricingExpression.Evaluate(pricingEnv{base.Number.Get(), promo.Number.Get(), volume.Number.Get(), tier.Number.Get(), numHandle(input.Seats).Get()})
+	values, err := pricingDecision.Evaluate(pricingVars{
+		bl.NewHandle(base.Number.Get()),
+		bl.NewHandle(promo.Number.Get()),
+		bl.NewHandle(volume.Number.Get()),
+		bl.NewHandle(tier.Number.Get()),
+		numHandle(input.Seats),
+	})
 	if err != nil {
 		return PricingResult{}, err
 	}
-	m := values.(bl.BlDictionary).Native()
-	get := func(k string) string { return m[k].(bl.BlNumber).String() }
-	return PricingResult{base.Number.Get().String(), get("effective"), get("monthly"), get("annual")}, nil
+	return PricingResult{
+		base.Number.Get().String(),
+		values.Effective.Get().String(),
+		values.Monthly.Get().String(),
+		values.Annual.Get().String(),
+	}, nil
 }
 func main() {
 	var input PricingInput
@@ -1307,32 +1343,35 @@ type InvoiceDecision struct {
 	GLCodes          []string `json:"gl_codes"`
 	RequiresApproval bool     `json:"requires_approval"`
 }
-type lineEnv struct {
-	Quantity bl.BlNumber `expr:"quantity"`
-	Price    bl.BlNumber `expr:"price"`
+type lineVars struct {
+	Quantity bl.Handle[bl.BlNumber] `expr:"quantity"`
+	Price    bl.Handle[bl.BlNumber] `expr:"price"`
+}
+type lineOutputs struct {
+	Total bl.Handle[bl.BlNumber] `expr:"total"`
 }
 
-var lineTotal = mustLineExpr(bl.Expr[lineEnv](`quantity*price`))
+var lineDecision = bl.NewDecisionExpression[lineVars, lineOutputs](bl.DecisionExpressionConfig{
+	Id:      "invoice-line-total",
+	Entries: bl.Entries{"total": `quantity*price`},
+})
 
-type invoiceEnv struct {
-	Computed bl.BlNumber `expr:"computed"`
-	Stated   bl.BlNumber `expr:"stated"`
+type invoiceVars struct {
+	Computed bl.Handle[bl.BlNumber] `expr:"computed"`
+	Stated   bl.Handle[bl.BlNumber] `expr:"stated"`
+}
+type invoiceOutputs struct {
+	LinesValid       bl.Handle[bl.BlBoolean] `expr:"lines_valid"`
+	RequiresApproval bl.Handle[bl.BlBoolean] `expr:"requires_approval"`
 }
 
-var invoiceChecks = mustInvoiceExpr(bl.Expr[invoiceEnv](`{lines_valid: abs(computed-stated)<=0.01, requires_approval: stated>10000}`))
-
-func mustLineExpr(e *bl.BlExpr[lineEnv], err error) *bl.BlExpr[lineEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
-func mustInvoiceExpr(e *bl.BlExpr[invoiceEnv], err error) *bl.BlExpr[invoiceEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
+var invoiceDecision = bl.NewDecisionExpression[invoiceVars, invoiceOutputs](bl.DecisionExpressionConfig{
+	Id: "invoice-checks",
+	Entries: bl.Entries{
+		"lines_valid":       `abs(computed-stated)<=0.01`,
+		"requires_approval": `stated>10000`,
+	},
+})
 ```
 
 Each validation contributes its own message, so callers receive all failures.
@@ -1355,22 +1394,21 @@ func DecideInvoice(in InvoiceInput) (InvoiceDecision, error) {
 		if e != nil {
 			return InvoiceDecision{}, e
 		}
-		v, e := lineTotal.Evaluate(lineEnv{q, p})
+		v, e := lineDecision.Evaluate(lineVars{bl.NewHandle(q), bl.NewHandle(p)})
 		if e != nil {
 			return InvoiceDecision{}, e
 		}
-		computed, _ = bl.Number(computed.Decimal().Add(v.(bl.BlNumber).Decimal()))
+		computed, _ = bl.Number(computed.Decimal().Add(v.Total.Get().Decimal()))
 		code := mapping[line.Category]
 		if code == "" {
 			code = "6999"
 		}
 		codes = append(codes, code)
 	}
-	checks, err := invoiceChecks.Evaluate(invoiceEnv{computed, stated})
+	checks, err := invoiceDecision.Evaluate(invoiceVars{bl.NewHandle(computed), bl.NewHandle(stated)})
 	if err != nil {
 		return InvoiceDecision{}, err
 	}
-	m := checks.(bl.BlDictionary).Native()
 	errors := []string{}
 	if in.Duplicate {
 		errors = append(errors, "duplicate invoice")
@@ -1378,10 +1416,10 @@ func DecideInvoice(in InvoiceInput) (InvoiceDecision, error) {
 	if !in.VendorActive || !in.CurrencyApproved {
 		errors = append(errors, "vendor is not approved")
 	}
-	if !m["lines_valid"].(bl.BlBoolean).Native() {
+	if !checks.LinesValid.Get().Native() {
 		errors = append(errors, "line total mismatch")
 	}
-	return InvoiceDecision{errors, computed.String(), codes, m["requires_approval"].(bl.BlBoolean).Native()}, nil
+	return InvoiceDecision{errors, computed.String(), codes, checks.RequiresApproval.Get().Native()}, nil
 }
 ```
 
@@ -1543,32 +1581,24 @@ type OnboardingDecision struct {
 	Result      string   `json:"result"`
 	Outstanding []string `json:"outstanding"`
 }
-type deadlineEnv struct {
-	Hire bl.BlDate `expr:"hire"`
+type onboardingVars struct {
+	Hire       bl.Handle[bl.BlDate]   `expr:"hire"`
+	IT         bl.Handle[bl.BlNumber] `expr:"it"`
+	HR         bl.Handle[bl.BlNumber] `expr:"hr"`
+	Facilities bl.Handle[bl.BlNumber] `expr:"facilities"`
+}
+type onboardingOutputs struct {
+	Deadline bl.Handle[bl.BlDate]   `expr:"deadline"`
+	Result   bl.Handle[bl.BlString] `expr:"result"`
 }
 
-var deadlineExpression = mustDeadlineExpr(bl.Expr[deadlineEnv](`addBusinessDays(hire,5)`))
-
-type completionEnv struct {
-	IT         bl.BlNumber `expr:"it"`
-	HR         bl.BlNumber `expr:"hr"`
-	Facilities bl.BlNumber `expr:"facilities"`
-}
-
-var completionExpression = mustCompletionExpr(bl.Expr[completionEnv](`if it<=5 and hr<=5 and facilities<=5 then "welcome" else "escalate"`))
-
-func mustDeadlineExpr(e *bl.BlExpr[deadlineEnv], err error) *bl.BlExpr[deadlineEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
-func mustCompletionExpr(e *bl.BlExpr[completionEnv], err error) *bl.BlExpr[completionEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
+var onboardingDecision = bl.NewDecisionExpression[onboardingVars, onboardingOutputs](bl.DecisionExpressionConfig{
+	Id: "onboarding-deadline",
+	Entries: bl.Entries{
+		"deadline": `addBusinessDays(hire,5)`,
+		"result":   `if it<=5 and hr<=5 and facilities<=5 then "welcome" else "escalate"`,
+	},
+})
 ```
 
 ``` { .go .blkit-example title="main.go" }
@@ -1577,14 +1607,12 @@ func DecideOnboarding(in OnboardingInput) (OnboardingDecision, error) {
 	if err != nil {
 		return OnboardingDecision{}, err
 	}
-	deadline, err := deadlineExpression.Evaluate(deadlineEnv{hire})
-	if err != nil {
-		return OnboardingDecision{}, err
-	}
 	it, _ := bl.Number(in.ITCompleteDay)
 	hr, _ := bl.Number(in.HRCompleteDay)
 	facilities, _ := bl.Number(in.FacilitiesCompleteDay)
-	result, err := completionExpression.Evaluate(completionEnv{it, hr, facilities})
+	result, err := onboardingDecision.Evaluate(onboardingVars{
+		bl.NewHandle(hire), bl.NewHandle(it), bl.NewHandle(hr), bl.NewHandle(facilities),
+	})
 	if err != nil {
 		return OnboardingDecision{}, err
 	}
@@ -1598,7 +1626,7 @@ func DecideOnboarding(in OnboardingInput) (OnboardingDecision, error) {
 	if in.FacilitiesCompleteDay > 5 {
 		outstanding = append(outstanding, "Facilities")
 	}
-	return OnboardingDecision{deadline.(bl.BlDate).String(), result.(bl.BlString).String(), outstanding}, nil
+	return OnboardingDecision{result.Deadline.Get().String(), result.Result.Get().String(), outstanding}, nil
 }
 ```
 
@@ -1795,38 +1823,43 @@ type ClaimResult struct {
 	Net         string `json:"net"`
 	Outcome     string `json:"outcome"`
 }
-type claimEnv struct {
-	Active   bl.BlBoolean `expr:"active"`
-	Incident bl.BlDate    `expr:"incident"`
-	Start    bl.BlDate    `expr:"start"`
-	End      bl.BlDate    `expr:"end"`
-	Covered  bl.BlBoolean `expr:"covered"`
-	Raw      bl.BlNumber  `expr:"raw"`
-	Value    bl.BlNumber  `expr:"value"`
-	Excess   bl.BlNumber  `expr:"excess"`
+type claimVars struct {
+	Active   bl.Handle[bl.BlBoolean] `expr:"active"`
+	Incident bl.Handle[bl.BlDate]    `expr:"incident"`
+	Start    bl.Handle[bl.BlDate]    `expr:"start"`
+	End      bl.Handle[bl.BlDate]    `expr:"end"`
+	Covered  bl.Handle[bl.BlBoolean] `expr:"covered"`
+	Raw      bl.Handle[bl.BlNumber]  `expr:"raw"`
+	Value    bl.Handle[bl.BlNumber]  `expr:"value"`
+	Excess   bl.Handle[bl.BlNumber]  `expr:"excess"`
+}
+type claimOutputs struct {
+	Eligible   bl.Handle[bl.BlBoolean] `expr:"eligible"`
+	Capped     bl.Handle[bl.BlNumber]  `expr:"capped"`
+	Severity   bl.Handle[bl.BlString]  `expr:"severity"`
+	Percentage bl.Handle[bl.BlNumber]  `expr:"percentage"`
+	Gross      bl.Handle[bl.BlNumber]  `expr:"gross"`
+	Net        bl.Handle[bl.BlNumber]  `expr:"net"`
+	Outcome    bl.Handle[bl.BlString]  `expr:"outcome"`
 }
 ```
 
-The compiled expression gates eligibility, caps and bands the score, then derives
+The compiled decision gates eligibility, caps and bands the score, then derives
 the settlement and referral outcome.
 
 ``` { .go .blkit-example title="main.go" }
-var claimExpression = mustClaimExpr(bl.Expr[claimEnv](`{
-eligible: active and incident>=start and incident<=end and covered,
-capped: clamp(raw,0,100),
-severity: (if capped<=20 then "Minor" else if capped<=50 then "Moderate" else if capped<=80 then "Significant" else "Total loss"),
-percentage: (if severity="Minor" then 15 else if severity="Moderate" then 35 else if severity="Significant" then 65 else 100),
-gross: (if eligible then value*percentage/100 else 0),
-net: max([0,gross-excess]),
-outcome: (if not(eligible) then "Rejected: damage not covered" else if net=0 then "Valid, no payment" else if net>25000 then "Senior assessor referral" else "Offer issued")
-}`))
-
-func mustClaimExpr(e *bl.BlExpr[claimEnv], err error) *bl.BlExpr[claimEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
+var claimDecision = bl.NewDecisionExpression[claimVars, claimOutputs](bl.DecisionExpressionConfig{
+	Id: "claim-assessment",
+	Entries: bl.Entries{
+		"eligible":   `active and incident>=start and incident<=end and covered`,
+		"capped":     `clamp(raw,0,100)`,
+		"severity":   `if capped<=20 then "Minor" else if capped<=50 then "Moderate" else if capped<=80 then "Significant" else "Total loss"`,
+		"percentage": `if severity="Minor" then 15 else if severity="Moderate" then 35 else if severity="Significant" then 65 else 100`,
+		"gross":      `if eligible then value*percentage/100 else 0`,
+		"net":        `max([0,gross-excess])`,
+		"outcome":    `if not(eligible) then "Rejected: damage not covered" else if net=0 then "Valid, no payment" else if net>25000 then "Senior assessor referral" else "Offer issued"`,
+	},
+})
 
 var damageScores = map[string]int{"third_party_vehicle": 20, "third_party_property": 15, "fire": 40, "theft": 50, "collision": 30, "weather": 15, "vandalism": 20}
 
@@ -1872,12 +1905,20 @@ func AssessClaim(in ClaimInput) (ClaimResult, error) {
 	}
 	active, _ := bl.Boolean(in.PolicyActive)
 	coveredValue, _ := bl.Boolean(covered)
-	result, e := claimExpression.Evaluate(claimEnv{active, incident, start, end, coveredValue, rawNumber, value, excess})
+	result, e := claimDecision.Evaluate(claimVars{
+		bl.NewHandle(active), bl.NewHandle(incident), bl.NewHandle(start),
+		bl.NewHandle(end), bl.NewHandle(coveredValue), bl.NewHandle(rawNumber),
+		bl.NewHandle(value), bl.NewHandle(excess),
+	})
 	if e != nil {
 		return ClaimResult{}, e
 	}
-	m := result.(bl.BlDictionary).Native()
-	return ClaimResult{m["eligible"].(bl.BlBoolean).Native(), rawNumber.String(), m["capped"].(bl.BlNumber).String(), m["severity"].(bl.BlString).String(), m["gross"].(bl.BlNumber).String(), m["net"].(bl.BlNumber).String(), m["outcome"].(bl.BlString).String()}, nil
+	return ClaimResult{
+		result.Eligible.Get().Native(), rawNumber.String(),
+		result.Capped.Get().String(), result.Severity.Get().String(),
+		result.Gross.Get().String(), result.Net.Get().String(),
+		result.Outcome.Get().String(),
+	}, nil
 }
 func main() {
 	var in ClaimInput
@@ -2055,22 +2096,25 @@ var discountTable = bl.NewDecisionTable[discountVars, discountOut](bl.DecisionTa
 	},
 })
 
-type totalEnv struct {
-	Subtotal bl.BlNumber `expr:"subtotal"`
-	Discount bl.BlNumber `expr:"discount"`
+type totalVars struct {
+	Subtotal bl.Handle[bl.BlNumber] `expr:"subtotal"`
+	Discount bl.Handle[bl.BlNumber] `expr:"discount"`
+}
+type totalOutputs struct {
+	Amount bl.Handle[bl.BlNumber] `expr:"amount"`
+	Total  bl.Handle[bl.BlNumber] `expr:"total"`
 }
 
-var totalExpression = mustTotalExpr(bl.Expr[totalEnv](`{amount: subtotal * discount / 100, total: subtotal * (1 - discount / 100)}`))
-
-func mustTotalExpr(expr *bl.BlExpr[totalEnv], err error) *bl.BlExpr[totalEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return expr
-}
+var totalDecision = bl.NewDecisionExpression[totalVars, totalOutputs](bl.DecisionExpressionConfig{
+	Id: "discount-totals",
+	Entries: bl.Entries{
+		"amount": `subtotal * discount / 100`,
+		"total":  `subtotal - amount`,
+	},
+})
 ```
 
-Evaluate the table, then evaluate the monetary expression with its result.
+Evaluate the table, then pass its result into the monetary decision.
 
 ``` { .go .blkit-example title="main.go" }
 func CalculateDiscount(input DiscountInput) (DiscountResult, error) {
@@ -2089,12 +2133,11 @@ func CalculateDiscount(input DiscountInput) (DiscountResult, error) {
 		return DiscountResult{}, err
 	}
 	discount := selected.Discount.Get()
-	totals, err := totalExpression.Evaluate(totalEnv{subtotal, discount})
+	totals, err := totalDecision.Evaluate(totalVars{bl.NewHandle(subtotal), bl.NewHandle(discount)})
 	if err != nil {
 		return DiscountResult{}, err
 	}
-	values := totals.(bl.BlDictionary).Native()
-	return DiscountResult{discount.String(), values["amount"].(bl.BlNumber).String(), values["total"].(bl.BlNumber).String()}, nil
+	return DiscountResult{discount.String(), totals.Amount.Get().String(), totals.Total.Get().String()}, nil
 }
 func main() {
 	var input DiscountInput
@@ -2269,7 +2312,7 @@ issued at 110% = **£385**.
 ## Implementation
 
 The eligibility, refund, and resolution logic can already be composed as one
-typed blkit expression.
+typed `DecisionExpression`.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -2303,41 +2346,47 @@ type ReturnResult struct {
 	Resolution       string `json:"resolution"`
 	ResolutionAmount string `json:"resolution_amount"`
 }
-type returnEnv struct {
-	Delivery   bl.BlDate    `expr:"delivery"`
-	Request    bl.BlDate    `expr:"request"`
-	Issued     bl.BlDate    `expr:"issued"`
-	Received   bl.BlDate    `expr:"received"`
-	Returnable bl.BlBoolean `expr:"returnable"`
-	Quantity   bl.BlNumber  `expr:"quantity"`
-	Purchased  bl.BlNumber  `expr:"purchased"`
-	Reason     bl.BlString  `expr:"reason"`
-	Grade      bl.BlString  `expr:"grade"`
-	Preferred  bl.BlString  `expr:"preferred"`
-	Stock      bl.BlBoolean `expr:"stock"`
-	Price      bl.BlNumber  `expr:"price"`
+type returnVars struct {
+	Delivery   bl.Handle[bl.BlDate]    `expr:"delivery"`
+	Request    bl.Handle[bl.BlDate]    `expr:"request"`
+	Issued     bl.Handle[bl.BlDate]    `expr:"issued"`
+	Received   bl.Handle[bl.BlDate]    `expr:"received"`
+	Returnable bl.Handle[bl.BlBoolean] `expr:"returnable"`
+	Quantity   bl.Handle[bl.BlNumber]  `expr:"quantity"`
+	Purchased  bl.Handle[bl.BlNumber]  `expr:"purchased"`
+	Reason     bl.Handle[bl.BlString]  `expr:"reason"`
+	Grade      bl.Handle[bl.BlString]  `expr:"grade"`
+	Preferred  bl.Handle[bl.BlString]  `expr:"preferred"`
+	Stock      bl.Handle[bl.BlBoolean] `expr:"stock"`
+	Price      bl.Handle[bl.BlNumber]  `expr:"price"`
+}
+type returnOutputs struct {
+	WithinRequestWindow bl.Handle[bl.BlBoolean] `expr:"within_request_window"`
+	ReceivedInTime      bl.Handle[bl.BlBoolean] `expr:"received_in_time"`
+	Eligible            bl.Handle[bl.BlBoolean] `expr:"eligible"`
+	RefundPercent       bl.Handle[bl.BlNumber]  `expr:"refund_percent"`
+	RefundAmount        bl.Handle[bl.BlNumber]  `expr:"refund_amount"`
+	ResolutionAmount    bl.Handle[bl.BlNumber]  `expr:"resolution_amount"`
+	Resolution          bl.Handle[bl.BlString]  `expr:"resolution"`
 }
 ```
 
 Sequential entries make each decision visible and reusable by later entries.
 
 ``` { .go .blkit-example title="main.go" }
-var returnExpression = mustReturnExpr(bl.Expr[returnEnv](`{
-within_request_window: request-delivery <= dtDuration("P30D"),
-received_in_time: received-issued <= dtDuration("P14D"),
-eligible: within_request_window and returnable and quantity <= purchased,
-refund_percent: (if not(eligible) or not(received_in_time) then 0 else if reason in ["DEFECTIVE","WRONG_ITEM","NOT_AS_DESCRIBED"] then 100 else if grade in ["A","B"] then 100 else if grade = "C" then 50 else 0),
-refund_amount: price*quantity*refund_percent/100,
-resolution_amount: (if preferred="store_credit" and refund_percent=100 then refund_amount*1.1 else refund_amount),
-resolution: (if refund_percent=0 then "Declined" else if preferred="replacement" and stock then "Replacement dispatched" else if preferred="store_credit" then "Store credit" else if refund_percent=100 then "Full refund" else "Partial refund")
-}`))
+var returnDecision = bl.NewDecisionExpression[returnVars, returnOutputs](bl.DecisionExpressionConfig{
+	Id: "product-return",
+	Entries: bl.Entries{
+		"within_request_window": `request-delivery <= dtDuration("P30D")`,
+		"received_in_time":      `received-issued <= dtDuration("P14D")`,
+		"eligible":              `within_request_window and returnable and quantity <= purchased`,
+		"refund_percent":        `if not(eligible) or not(received_in_time) then 0 else if reason in ["DEFECTIVE","WRONG_ITEM","NOT_AS_DESCRIBED"] then 100 else if grade in ["A","B"] then 100 else if grade = "C" then 50 else 0`,
+		"refund_amount":         `price*quantity*refund_percent/100`,
+		"resolution_amount":     `if preferred="store_credit" and refund_percent=100 then refund_amount*1.1 else refund_amount`,
+		"resolution":            `if refund_percent=0 then "Declined" else if preferred="replacement" and stock then "Replacement dispatched" else if preferred="store_credit" then "Store credit" else if refund_percent=100 then "Full refund" else "Partial refund"`,
+	},
+})
 
-func mustReturnExpr(e *bl.BlExpr[returnEnv], err error) *bl.BlExpr[returnEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
 func CalculateReturn(in ReturnInput) (ReturnResult, error) {
 	delivery, e := bl.Date(in.DeliveryDate)
 	if e != nil {
@@ -2366,12 +2415,20 @@ func CalculateReturn(in ReturnInput) (ReturnResult, error) {
 	}
 	returnable, _ := bl.Boolean(in.Returnable)
 	stock, _ := bl.Boolean(in.ReplacementInStock)
-	v, e := returnExpression.Evaluate(returnEnv{delivery, request, issued, received, returnable, q, p, reason, grade, preferred, stock, price})
+	v, e := returnDecision.Evaluate(returnVars{
+		bl.NewHandle(delivery), bl.NewHandle(request), bl.NewHandle(issued),
+		bl.NewHandle(received), bl.NewHandle(returnable), bl.NewHandle(q),
+		bl.NewHandle(p), bl.NewHandle(reason), bl.NewHandle(grade),
+		bl.NewHandle(preferred), bl.NewHandle(stock), bl.NewHandle(price),
+	})
 	if e != nil {
 		return ReturnResult{}, e
 	}
-	m := v.(bl.BlDictionary).Native()
-	return ReturnResult{m["eligible"].(bl.BlBoolean).Native(), m["received_in_time"].(bl.BlBoolean).Native(), m["refund_percent"].(bl.BlNumber).String(), m["refund_amount"].(bl.BlNumber).String(), m["resolution"].(bl.BlString).String(), m["resolution_amount"].(bl.BlNumber).String()}, nil
+	return ReturnResult{
+		v.Eligible.Get().Native(), v.ReceivedInTime.Get().Native(),
+		v.RefundPercent.Get().String(), v.RefundAmount.Get().String(),
+		v.Resolution.Get().String(), v.ResolutionAmount.Get().String(),
+	}, nil
 }
 ```
 
@@ -2403,9 +2460,9 @@ steps is shown yet.
 - Two distinct timers govern the flow: a 30-calendar-day eligibility window
   before authorisation, and a 14-calendar-day receipt window after it — both
   natural fits for blkit's date and duration expressions.
-- The refund percentage and the resolution are **two separate decision tables**:
-  the first (reason × grade) produces a percentage, which then feeds the second
-  (percentage × stock × preference) to choose the actual resolution.
+- Refund percentage and resolution are separate named decision outputs: the
+  percentage depends on reason and grade, then feeds the resolution calculation
+  alongside stock and preference.
 
 ---
 
@@ -2570,8 +2627,8 @@ $200,000 taxable income:
 
 ## Implementation
 
-The liability schedules can be compiled into one typed expression and reused for
-many returns. This application accepts taxable income after the assessable-income
+The liability schedules can be compiled into one typed `DecisionExpression` and
+reused for many returns. This application accepts taxable income after the assessable-income
 and deduction calculation described above.
 
 ``` { .go .blkit-example title="main.go" }
@@ -2605,15 +2662,28 @@ type TaxResult struct {
 	Balance  string `json:"balance"`
 	Outcome  string `json:"outcome"`
 }
-type taxEnv struct {
-	Income    bl.BlNumber  `expr:"income"`
-	Residency bl.BlString  `expr:"residency"`
-	Age       bl.BlNumber  `expr:"age"`
-	Private   bl.BlBoolean `expr:"private_cover"`
-	Family    bl.BlString  `expr:"family"`
-	Debt      bl.BlNumber  `expr:"debt"`
-	PAYG      bl.BlNumber  `expr:"payg"`
-	Franking  bl.BlNumber  `expr:"franking"`
+type taxVars struct {
+	Income    bl.Handle[bl.BlNumber]  `expr:"income"`
+	Residency bl.Handle[bl.BlString]  `expr:"residency"`
+	Age       bl.Handle[bl.BlNumber]  `expr:"age"`
+	Private   bl.Handle[bl.BlBoolean] `expr:"private_cover"`
+	Family    bl.Handle[bl.BlString]  `expr:"family"`
+	Debt      bl.Handle[bl.BlNumber]  `expr:"debt"`
+	PAYG      bl.Handle[bl.BlNumber]  `expr:"payg"`
+	Franking  bl.Handle[bl.BlNumber]  `expr:"franking"`
+}
+type taxOutputs struct {
+	BaseTax   bl.Handle[bl.BlNumber] `expr:"base_tax"`
+	LITO      bl.Handle[bl.BlNumber] `expr:"lito"`
+	SAPTO     bl.Handle[bl.BlNumber] `expr:"sapto"`
+	IncomeTax bl.Handle[bl.BlNumber] `expr:"income_tax"`
+	Medicare  bl.Handle[bl.BlNumber] `expr:"medicare"`
+	MLS       bl.Handle[bl.BlNumber] `expr:"mls"`
+	HELPRate  bl.Handle[bl.BlNumber] `expr:"help_rate"`
+	HELP      bl.Handle[bl.BlNumber] `expr:"help"`
+	TotalTax  bl.Handle[bl.BlNumber] `expr:"total_tax"`
+	Balance   bl.Handle[bl.BlNumber] `expr:"balance"`
+	Outcome   bl.Handle[bl.BlString] `expr:"outcome"`
 }
 ```
 
@@ -2626,31 +2696,37 @@ type IncomeInput struct {
 	Salary, Interest, UnfrankedDividends, FrankedCash, FrankingCredits, NetRental, BusinessIncome, ForeignIncome, TrustDistributions, GrossCapitalGains, CurrentCapitalLosses, PriorCapitalLosses, Deductions string
 	CGTDiscountEligible                                                                                                                                                                                       bool
 }
-type incomeEnv struct {
-	Salary        bl.BlNumber  `expr:"salary"`
-	Interest      bl.BlNumber  `expr:"interest"`
-	Unfranked     bl.BlNumber  `expr:"unfranked"`
-	FrankedCash   bl.BlNumber  `expr:"franked_cash"`
-	Franking      bl.BlNumber  `expr:"franking"`
-	Rental        bl.BlNumber  `expr:"rental"`
-	Business      bl.BlNumber  `expr:"business"`
-	Foreign       bl.BlNumber  `expr:"foreign"`
-	Trust         bl.BlNumber  `expr:"trust"`
-	Gains         bl.BlNumber  `expr:"gains"`
-	CurrentLosses bl.BlNumber  `expr:"current_losses"`
-	PriorLosses   bl.BlNumber  `expr:"prior_losses"`
-	Deductions    bl.BlNumber  `expr:"deductions"`
-	Discount      bl.BlBoolean `expr:"discount"`
+type incomeVars struct {
+	Salary        bl.Handle[bl.BlNumber]  `expr:"salary"`
+	Interest      bl.Handle[bl.BlNumber]  `expr:"interest"`
+	Unfranked     bl.Handle[bl.BlNumber]  `expr:"unfranked"`
+	FrankedCash   bl.Handle[bl.BlNumber]  `expr:"franked_cash"`
+	Franking      bl.Handle[bl.BlNumber]  `expr:"franking"`
+	Rental        bl.Handle[bl.BlNumber]  `expr:"rental"`
+	Business      bl.Handle[bl.BlNumber]  `expr:"business"`
+	Foreign       bl.Handle[bl.BlNumber]  `expr:"foreign"`
+	Trust         bl.Handle[bl.BlNumber]  `expr:"trust"`
+	Gains         bl.Handle[bl.BlNumber]  `expr:"gains"`
+	CurrentLosses bl.Handle[bl.BlNumber]  `expr:"current_losses"`
+	PriorLosses   bl.Handle[bl.BlNumber]  `expr:"prior_losses"`
+	Deductions    bl.Handle[bl.BlNumber]  `expr:"deductions"`
+	Discount      bl.Handle[bl.BlBoolean] `expr:"discount"`
+}
+type incomeOutputs struct {
+	NetCapitalGain bl.Handle[bl.BlNumber] `expr:"net_capital_gain"`
+	Assessable     bl.Handle[bl.BlNumber] `expr:"assessable"`
+	Taxable        bl.Handle[bl.BlNumber] `expr:"taxable"`
 }
 
-var incomeExpression = mustIncomeExpr(bl.Expr[incomeEnv](`{net_capital_gain: max([0,gains-current_losses-prior_losses])*(if discount then 0.5 else 1), assessable: salary+interest+unfranked+franked_cash+franking+rental+business+foreign+trust+net_capital_gain, taxable: max([0,assessable-deductions])}`))
+var incomeDecision = bl.NewDecisionExpression[incomeVars, incomeOutputs](bl.DecisionExpressionConfig{
+	Id: "taxable-income",
+	Entries: bl.Entries{
+		"net_capital_gain": `max([0,gains-current_losses-prior_losses])*(if discount then 0.5 else 1)`,
+		"assessable":       `salary+interest+unfranked+franked_cash+franking+rental+business+foreign+trust+net_capital_gain`,
+		"taxable":          `max([0,assessable-deductions])`,
+	},
+})
 
-func mustIncomeExpr(e *bl.BlExpr[incomeEnv], err error) *bl.BlExpr[incomeEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
 func BuildTaxableIncome(in IncomeInput) (string, string, error) {
 	values := []string{in.Salary, in.Interest, in.UnfrankedDividends, in.FrankedCash, in.FrankingCredits, in.NetRental, in.BusinessIncome, in.ForeignIncome, in.TrustDistributions, in.GrossCapitalGains, in.CurrentCapitalLosses, in.PriorCapitalLosses, in.Deductions}
 	numbers := make([]bl.BlNumber, len(values))
@@ -2665,12 +2741,17 @@ func BuildTaxableIncome(in IncomeInput) (string, string, error) {
 		numbers[i] = n
 	}
 	discount, _ := bl.Boolean(in.CGTDiscountEligible)
-	v, e := incomeExpression.Evaluate(incomeEnv{numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5], numbers[6], numbers[7], numbers[8], numbers[9], numbers[10], numbers[11], numbers[12], discount})
+	v, e := incomeDecision.Evaluate(incomeVars{
+		bl.NewHandle(numbers[0]), bl.NewHandle(numbers[1]), bl.NewHandle(numbers[2]),
+		bl.NewHandle(numbers[3]), bl.NewHandle(numbers[4]), bl.NewHandle(numbers[5]),
+		bl.NewHandle(numbers[6]), bl.NewHandle(numbers[7]), bl.NewHandle(numbers[8]),
+		bl.NewHandle(numbers[9]), bl.NewHandle(numbers[10]), bl.NewHandle(numbers[11]),
+		bl.NewHandle(numbers[12]), bl.NewHandle(discount),
+	})
 	if e != nil {
 		return "", "", e
 	}
-	m := v.(bl.BlDictionary).Native()
-	return m["net_capital_gain"].(bl.BlNumber).String(), m["taxable"].(bl.BlNumber).String(), nil
+	return v.NetCapitalGain.Get().String(), v.Taxable.Get().String(), nil
 }
 ```
 
@@ -2679,26 +2760,22 @@ HELP/HECS, then reconciliation. Final tax is rounded to whole dollars, matching
 the annual return examples.
 
 ``` { .go .blkit-example title="main.go" }
-var taxExpression = mustTaxExpr(bl.Expr[taxEnv](`{
-base_tax: (if residency="foreign" then (if income<=135000 then income*0.30 else if income<=190000 then 40500+(income-135000)*0.37 else 60850+(income-190000)*0.45) else if residency="working_holiday" then (if income<=45000 then income*0.15 else if income<=135000 then 6750+(income-45000)*0.30 else if income<=190000 then 33750+(income-135000)*0.37 else 54100+(income-190000)*0.45) else (if income<=18200 then 0 else if income<=45000 then (income-18200)*0.16 else if income<=135000 then 4288+(income-45000)*0.30 else if income<=190000 then 31288+(income-135000)*0.37 else 51638+(income-190000)*0.45)),
-lito: (if residency!="resident" then 0 else if income<=37500 then 700 else if income<=45000 then 700-(income-37500)*0.05 else if income<=66667 then 325-(income-45000)*0.015 else 0),
-sapto: (if residency="resident" and age>=67 then max([0,2230-0.125*max([0,income-32279])]) else 0),
-income_tax: max([0,base_tax-lito-sapto]),
-medicare: (if residency!="resident" then 0 else if age>=67 then (if income<=43020 then 0 else if income<=53775 then (income-43020)*0.10 else income*0.02) else (if income<=27222 then 0 else if income<=34027 then (income-27222)*0.10 else income*0.02)),
-mls: (if residency!="resident" or private_cover or family!="single" then 0 else if income<=97000 then 0 else if income<=113000 then income*0.01 else if income<=151000 then income*0.0125 else income*0.015),
-help_rate: (if income<54435 then 0 else if income<=62850 then 1 else if income<=66620 then 2 else if income<=70618 then 2.5 else if income<=74855 then 3 else if income<=79346 then 3.5 else if income<=84107 then 4 else if income<=89154 then 4.5 else if income<=94503 then 5 else if income<=100174 then 5.5 else if income<=106185 then 6 else if income<=112556 then 6.5 else if income<=119309 then 7 else if income<=126467 then 7.5 else if income<=134056 then 8 else if income<=142100 then 8.5 else if income<=150626 then 9 else if income<=159663 then 9.5 else 10),
-help: (if debt=0 then 0 else min([debt,income*help_rate/100])),
-total_tax: round(income_tax+medicare+mls+help,0),
-balance: total_tax-payg-franking,
-outcome: (if balance<0 then "refund" else if balance>0 then "payable" else "settled")
-}`))
-
-func mustTaxExpr(e *bl.BlExpr[taxEnv], err error) *bl.BlExpr[taxEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
+var taxDecision = bl.NewDecisionExpression[taxVars, taxOutputs](bl.DecisionExpressionConfig{
+	Id: "income-tax",
+	Entries: bl.Entries{
+		"base_tax":   `if residency="foreign" then (if income<=135000 then income*0.30 else if income<=190000 then 40500+(income-135000)*0.37 else 60850+(income-190000)*0.45) else if residency="working_holiday" then (if income<=45000 then income*0.15 else if income<=135000 then 6750+(income-45000)*0.30 else if income<=190000 then 33750+(income-135000)*0.37 else 54100+(income-190000)*0.45) else (if income<=18200 then 0 else if income<=45000 then (income-18200)*0.16 else if income<=135000 then 4288+(income-45000)*0.30 else if income<=190000 then 31288+(income-135000)*0.37 else 51638+(income-190000)*0.45)`,
+		"lito":       `if residency!="resident" then 0 else if income<=37500 then 700 else if income<=45000 then 700-(income-37500)*0.05 else if income<=66667 then 325-(income-45000)*0.015 else 0`,
+		"sapto":      `if residency="resident" and age>=67 then max([0,2230-0.125*max([0,income-32279])]) else 0`,
+		"income_tax": `max([0,base_tax-lito-sapto])`,
+		"medicare":   `if residency!="resident" then 0 else if age>=67 then (if income<=43020 then 0 else if income<=53775 then (income-43020)*0.10 else income*0.02) else (if income<=27222 then 0 else if income<=34027 then (income-27222)*0.10 else income*0.02)`,
+		"mls":        `if residency!="resident" or private_cover or family!="single" then 0 else if income<=97000 then 0 else if income<=113000 then income*0.01 else if income<=151000 then income*0.0125 else income*0.015`,
+		"help_rate":  `if income<54435 then 0 else if income<=62850 then 1 else if income<=66620 then 2 else if income<=70618 then 2.5 else if income<=74855 then 3 else if income<=79346 then 3.5 else if income<=84107 then 4 else if income<=89154 then 4.5 else if income<=94503 then 5 else if income<=100174 then 5.5 else if income<=106185 then 6 else if income<=112556 then 6.5 else if income<=119309 then 7 else if income<=126467 then 7.5 else if income<=134056 then 8 else if income<=142100 then 8.5 else if income<=150626 then 9 else if income<=159663 then 9.5 else 10`,
+		"help":       `if debt=0 then 0 else min([debt,income*help_rate/100])`,
+		"total_tax":  `round(income_tax+medicare+mls+help,0)`,
+		"balance":    `total_tax-payg-franking`,
+		"outcome":    `if balance<0 then "refund" else if balance>0 then "payable" else "settled"`,
+	},
+})
 ```
 
 ``` { .go .blkit-example title="main.go" }
@@ -2723,13 +2800,21 @@ func CalculateTax(in TaxInput) (TaxResult, error) {
 	if e != nil {
 		return TaxResult{}, e
 	}
-	value, e := taxExpression.Evaluate(taxEnv{income, residency, age, private, family, debt, payg, franking})
+	value, e := taxDecision.Evaluate(taxVars{
+		bl.NewHandle(income), bl.NewHandle(residency), bl.NewHandle(age),
+		bl.NewHandle(private), bl.NewHandle(family), bl.NewHandle(debt),
+		bl.NewHandle(payg), bl.NewHandle(franking),
+	})
 	if e != nil {
 		return TaxResult{}, e
 	}
-	m := value.(bl.BlDictionary).Native()
-	get := func(k string) string { return m[k].(bl.BlNumber).String() }
-	return TaxResult{get("base_tax"), get("lito"), get("sapto"), get("medicare"), get("mls"), get("help"), get("total_tax"), get("balance"), m["outcome"].(bl.BlString).String()}, nil
+	return TaxResult{
+		value.BaseTax.Get().String(), value.LITO.Get().String(),
+		value.SAPTO.Get().String(), value.Medicare.Get().String(),
+		value.MLS.Get().String(), value.HELP.Get().String(),
+		value.TotalTax.Get().String(), value.Balance.Get().String(),
+		value.Outcome.Get().String(),
+	}, nil
 }
 func main() {
 	var in TaxInput
@@ -2751,8 +2836,8 @@ func main() {
 
 ## Notes
 
-- The progressive brackets are the canonical use case for a decision table keyed
-  on an income range, with the marginal-rate arithmetic expressed per row.
+- Named decision outputs expose each stage of the calculation, so later entries
+  can depend on base tax, offsets, levy rates, and reconciliation results.
 - Residency status switches the entire downstream calculation — bracket schedule,
   Medicare eligibility, and offset entitlement — so it is best modelled as a
   branch over three parallel rate schedules rather than a single table.

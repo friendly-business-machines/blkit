@@ -108,32 +108,35 @@ type InvoiceDecision struct {
 	GLCodes          []string `json:"gl_codes"`
 	RequiresApproval bool     `json:"requires_approval"`
 }
-type lineEnv struct {
-	Quantity bl.BlNumber `expr:"quantity"`
-	Price    bl.BlNumber `expr:"price"`
+type lineVars struct {
+	Quantity bl.Handle[bl.BlNumber] `expr:"quantity"`
+	Price    bl.Handle[bl.BlNumber] `expr:"price"`
+}
+type lineOutputs struct {
+	Total bl.Handle[bl.BlNumber] `expr:"total"`
 }
 
-var lineTotal = mustLineExpr(bl.Expr[lineEnv](`quantity*price`))
+var lineDecision = bl.NewDecisionExpression[lineVars, lineOutputs](bl.DecisionExpressionConfig{
+	Id:      "invoice-line-total",
+	Entries: bl.Entries{"total": `quantity*price`},
+})
 
-type invoiceEnv struct {
-	Computed bl.BlNumber `expr:"computed"`
-	Stated   bl.BlNumber `expr:"stated"`
+type invoiceVars struct {
+	Computed bl.Handle[bl.BlNumber] `expr:"computed"`
+	Stated   bl.Handle[bl.BlNumber] `expr:"stated"`
+}
+type invoiceOutputs struct {
+	LinesValid       bl.Handle[bl.BlBoolean] `expr:"lines_valid"`
+	RequiresApproval bl.Handle[bl.BlBoolean] `expr:"requires_approval"`
 }
 
-var invoiceChecks = mustInvoiceExpr(bl.Expr[invoiceEnv](`{lines_valid: abs(computed-stated)<=0.01, requires_approval: stated>10000}`))
-
-func mustLineExpr(e *bl.BlExpr[lineEnv], err error) *bl.BlExpr[lineEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
-func mustInvoiceExpr(e *bl.BlExpr[invoiceEnv], err error) *bl.BlExpr[invoiceEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
+var invoiceDecision = bl.NewDecisionExpression[invoiceVars, invoiceOutputs](bl.DecisionExpressionConfig{
+	Id: "invoice-checks",
+	Entries: bl.Entries{
+		"lines_valid":       `abs(computed-stated)<=0.01`,
+		"requires_approval": `stated>10000`,
+	},
+})
 ```
 
 Each validation contributes its own message, so callers receive all failures.
@@ -156,22 +159,21 @@ func DecideInvoice(in InvoiceInput) (InvoiceDecision, error) {
 		if e != nil {
 			return InvoiceDecision{}, e
 		}
-		v, e := lineTotal.Evaluate(lineEnv{q, p})
+		v, e := lineDecision.Evaluate(lineVars{bl.NewHandle(q), bl.NewHandle(p)})
 		if e != nil {
 			return InvoiceDecision{}, e
 		}
-		computed, _ = bl.Number(computed.Decimal().Add(v.(bl.BlNumber).Decimal()))
+		computed, _ = bl.Number(computed.Decimal().Add(v.Total.Get().Decimal()))
 		code := mapping[line.Category]
 		if code == "" {
 			code = "6999"
 		}
 		codes = append(codes, code)
 	}
-	checks, err := invoiceChecks.Evaluate(invoiceEnv{computed, stated})
+	checks, err := invoiceDecision.Evaluate(invoiceVars{bl.NewHandle(computed), bl.NewHandle(stated)})
 	if err != nil {
 		return InvoiceDecision{}, err
 	}
-	m := checks.(bl.BlDictionary).Native()
 	errors := []string{}
 	if in.Duplicate {
 		errors = append(errors, "duplicate invoice")
@@ -179,10 +181,10 @@ func DecideInvoice(in InvoiceInput) (InvoiceDecision, error) {
 	if !in.VendorActive || !in.CurrencyApproved {
 		errors = append(errors, "vendor is not approved")
 	}
-	if !m["lines_valid"].(bl.BlBoolean).Native() {
+	if !checks.LinesValid.Get().Native() {
 		errors = append(errors, "line total mismatch")
 	}
-	return InvoiceDecision{errors, computed.String(), codes, m["requires_approval"].(bl.BlBoolean).Native()}, nil
+	return InvoiceDecision{errors, computed.String(), codes, checks.RequiresApproval.Get().Native()}, nil
 }
 ```
 

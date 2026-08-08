@@ -143,22 +143,28 @@ The effective seat price is rounded half-up to cents before the seat total is
 calculated. This makes invoice totals stable and matches the worked examples.
 
 ``` { .go .blkit-example title="main.go" }
-type pricingEnv struct {
-	Base   bl.BlNumber `expr:"base"`
-	Promo  bl.BlNumber `expr:"promo"`
-	Volume bl.BlNumber `expr:"volume"`
-	Tier   bl.BlNumber `expr:"tier"`
-	Seats  bl.BlNumber `expr:"seats"`
+type pricingVars struct {
+	Base   bl.Handle[bl.BlNumber] `expr:"base"`
+	Promo  bl.Handle[bl.BlNumber] `expr:"promo"`
+	Volume bl.Handle[bl.BlNumber] `expr:"volume"`
+	Tier   bl.Handle[bl.BlNumber] `expr:"tier"`
+	Seats  bl.Handle[bl.BlNumber] `expr:"seats"`
+}
+type pricingOutputs struct {
+	Effective bl.Handle[bl.BlNumber] `expr:"effective"`
+	Monthly   bl.Handle[bl.BlNumber] `expr:"monthly"`
+	Annual    bl.Handle[bl.BlNumber] `expr:"annual"`
 }
 
-var pricingExpression = mustPricingExpr(bl.Expr[pricingEnv](`{effective: round((base-promo)*(1-volume/100)*(1-tier/100),2), monthly: effective*seats, annual: monthly*12}`))
+var pricingDecision = bl.NewDecisionExpression[pricingVars, pricingOutputs](bl.DecisionExpressionConfig{
+	Id: "pricing-calculation",
+	Entries: bl.Entries{
+		"effective": `round((base-promo)*(1-volume/100)*(1-tier/100),2)`,
+		"monthly":   `effective*seats`,
+		"annual":    `monthly*12`,
+	},
+})
 
-func mustPricingExpr(expr *bl.BlExpr[pricingEnv], err error) *bl.BlExpr[pricingEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return expr
-}
 func strHandle(s string) bl.Handle[bl.BlString] { v, _ := bl.String(s); return bl.NewHandle(v) }
 func numHandle(n int) bl.Handle[bl.BlNumber]    { v, _ := bl.Number(n); return bl.NewHandle(v) }
 func PriceSubscription(input PricingInput) (PricingResult, error) {
@@ -178,13 +184,22 @@ func PriceSubscription(input PricingInput) (PricingResult, error) {
 	if err != nil {
 		return PricingResult{}, err
 	}
-	values, err := pricingExpression.Evaluate(pricingEnv{base.Number.Get(), promo.Number.Get(), volume.Number.Get(), tier.Number.Get(), numHandle(input.Seats).Get()})
+	values, err := pricingDecision.Evaluate(pricingVars{
+		bl.NewHandle(base.Number.Get()),
+		bl.NewHandle(promo.Number.Get()),
+		bl.NewHandle(volume.Number.Get()),
+		bl.NewHandle(tier.Number.Get()),
+		numHandle(input.Seats),
+	})
 	if err != nil {
 		return PricingResult{}, err
 	}
-	m := values.(bl.BlDictionary).Native()
-	get := func(k string) string { return m[k].(bl.BlNumber).String() }
-	return PricingResult{base.Number.Get().String(), get("effective"), get("monthly"), get("annual")}, nil
+	return PricingResult{
+		base.Number.Get().String(),
+		values.Effective.Get().String(),
+		values.Monthly.Get().String(),
+		values.Annual.Get().String(),
+	}, nil
 }
 func main() {
 	var input PricingInput

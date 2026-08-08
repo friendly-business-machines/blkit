@@ -104,23 +104,24 @@ type FulfilmentDecision struct {
 	ValidationErrors []string `json:"validation_errors"`
 	Route            string   `json:"route"`
 }
-type routeEnv struct {
-	Stock   bl.BlBoolean `expr:"stock"`
-	Payment bl.BlBoolean `expr:"payment"`
+type routeVars struct {
+	Stock   bl.Handle[bl.BlBoolean] `expr:"stock"`
+	Payment bl.Handle[bl.BlBoolean] `expr:"payment"`
+}
+type routeOutputs struct {
+	Route bl.Handle[bl.BlString] `expr:"route"`
 }
 
-var routeExpression = mustRouteExpr(bl.Expr[routeEnv](`if not(stock) then "end-backorder" else if not(payment) then "end-payment-error" else "end-success"`))
-
-func mustRouteExpr(e *bl.BlExpr[routeEnv], err error) *bl.BlExpr[routeEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
+var routeDecision = bl.NewDecisionExpression[routeVars, routeOutputs](bl.DecisionExpressionConfig{
+	Id: "fulfilment-route",
+	Entries: bl.Entries{
+		"route": `if not(stock) then "end-backorder" else if not(payment) then "end-payment-error" else "end-success"`,
+	},
+})
 ```
 
 Validation stays at the application boundary; gateway selection is evaluated by
-the compiled blkit expression.
+a typed `DecisionExpression`.
 
 ``` { .go .blkit-example title="main.go" }
 func DecideFulfilment(in FulfilmentInput) (FulfilmentDecision, error) {
@@ -150,11 +151,11 @@ func DecideFulfilment(in FulfilmentInput) (FulfilmentDecision, error) {
 	}
 	stock, _ := bl.Boolean(in.StockAvailable)
 	payment, _ := bl.Boolean(in.PaymentOK)
-	value, err := routeExpression.Evaluate(routeEnv{stock, payment})
+	value, err := routeDecision.Evaluate(routeVars{bl.NewHandle(stock), bl.NewHandle(payment)})
 	if err != nil {
 		return FulfilmentDecision{}, err
 	}
-	return FulfilmentDecision{ValidationErrors: errors, Route: value.(bl.BlString).String()}, nil
+	return FulfilmentDecision{ValidationErrors: errors, Route: value.Route.Get().String()}, nil
 }
 ```
 

@@ -122,32 +122,24 @@ type OnboardingDecision struct {
 	Result      string   `json:"result"`
 	Outstanding []string `json:"outstanding"`
 }
-type deadlineEnv struct {
-	Hire bl.BlDate `expr:"hire"`
+type onboardingVars struct {
+	Hire       bl.Handle[bl.BlDate]   `expr:"hire"`
+	IT         bl.Handle[bl.BlNumber] `expr:"it"`
+	HR         bl.Handle[bl.BlNumber] `expr:"hr"`
+	Facilities bl.Handle[bl.BlNumber] `expr:"facilities"`
+}
+type onboardingOutputs struct {
+	Deadline bl.Handle[bl.BlDate]   `expr:"deadline"`
+	Result   bl.Handle[bl.BlString] `expr:"result"`
 }
 
-var deadlineExpression = mustDeadlineExpr(bl.Expr[deadlineEnv](`addBusinessDays(hire,5)`))
-
-type completionEnv struct {
-	IT         bl.BlNumber `expr:"it"`
-	HR         bl.BlNumber `expr:"hr"`
-	Facilities bl.BlNumber `expr:"facilities"`
-}
-
-var completionExpression = mustCompletionExpr(bl.Expr[completionEnv](`if it<=5 and hr<=5 and facilities<=5 then "welcome" else "escalate"`))
-
-func mustDeadlineExpr(e *bl.BlExpr[deadlineEnv], err error) *bl.BlExpr[deadlineEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
-func mustCompletionExpr(e *bl.BlExpr[completionEnv], err error) *bl.BlExpr[completionEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
+var onboardingDecision = bl.NewDecisionExpression[onboardingVars, onboardingOutputs](bl.DecisionExpressionConfig{
+	Id: "onboarding-deadline",
+	Entries: bl.Entries{
+		"deadline": `addBusinessDays(hire,5)`,
+		"result":   `if it<=5 and hr<=5 and facilities<=5 then "welcome" else "escalate"`,
+	},
+})
 ```
 
 ``` { .go .blkit-example title="main.go" }
@@ -156,14 +148,12 @@ func DecideOnboarding(in OnboardingInput) (OnboardingDecision, error) {
 	if err != nil {
 		return OnboardingDecision{}, err
 	}
-	deadline, err := deadlineExpression.Evaluate(deadlineEnv{hire})
-	if err != nil {
-		return OnboardingDecision{}, err
-	}
 	it, _ := bl.Number(in.ITCompleteDay)
 	hr, _ := bl.Number(in.HRCompleteDay)
 	facilities, _ := bl.Number(in.FacilitiesCompleteDay)
-	result, err := completionExpression.Evaluate(completionEnv{it, hr, facilities})
+	result, err := onboardingDecision.Evaluate(onboardingVars{
+		bl.NewHandle(hire), bl.NewHandle(it), bl.NewHandle(hr), bl.NewHandle(facilities),
+	})
 	if err != nil {
 		return OnboardingDecision{}, err
 	}
@@ -177,7 +167,7 @@ func DecideOnboarding(in OnboardingInput) (OnboardingDecision, error) {
 	if in.FacilitiesCompleteDay > 5 {
 		outstanding = append(outstanding, "Facilities")
 	}
-	return OnboardingDecision{deadline.(bl.BlDate).String(), result.(bl.BlString).String(), outstanding}, nil
+	return OnboardingDecision{result.Deadline.Get().String(), result.Result.Get().String(), outstanding}, nil
 }
 ```
 

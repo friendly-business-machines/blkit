@@ -169,6 +169,13 @@ functions that the external tests can call directly. This keeps the displayed
 code representative of an application a reader could adapt rather than turning
 `main()` into a test driver.
 
+Examples use the highest-level available blkit abstraction that matches the
+business concept. Tabular rules use `DecisionTable`; named calculations and
+linked outputs use `DecisionExpression`. A page uses `bl.Expr` directly only when
+its purpose specifically requires the lower-level expression API, and explains
+that choice. This keeps examples representative of normal application code and
+avoids local construction wrappers that a decision definition already handles.
+
 A page with one or more marked fences has one matching external acceptance test
 fixture. A page without marked fences has no fixture and is skipped by the Go
 example runner. A fixture without marked source, or marked source without a

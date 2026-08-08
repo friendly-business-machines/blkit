@@ -144,22 +144,25 @@ var discountTable = bl.NewDecisionTable[discountVars, discountOut](bl.DecisionTa
 	},
 })
 
-type totalEnv struct {
-	Subtotal bl.BlNumber `expr:"subtotal"`
-	Discount bl.BlNumber `expr:"discount"`
+type totalVars struct {
+	Subtotal bl.Handle[bl.BlNumber] `expr:"subtotal"`
+	Discount bl.Handle[bl.BlNumber] `expr:"discount"`
+}
+type totalOutputs struct {
+	Amount bl.Handle[bl.BlNumber] `expr:"amount"`
+	Total  bl.Handle[bl.BlNumber] `expr:"total"`
 }
 
-var totalExpression = mustTotalExpr(bl.Expr[totalEnv](`{amount: subtotal * discount / 100, total: subtotal * (1 - discount / 100)}`))
-
-func mustTotalExpr(expr *bl.BlExpr[totalEnv], err error) *bl.BlExpr[totalEnv] {
-	if err != nil {
-		panic(err)
-	}
-	return expr
-}
+var totalDecision = bl.NewDecisionExpression[totalVars, totalOutputs](bl.DecisionExpressionConfig{
+	Id: "discount-totals",
+	Entries: bl.Entries{
+		"amount": `subtotal * discount / 100`,
+		"total":  `subtotal - amount`,
+	},
+})
 ```
 
-Evaluate the table, then evaluate the monetary expression with its result.
+Evaluate the table, then pass its result into the monetary decision.
 
 ``` { .go .blkit-example title="main.go" }
 func CalculateDiscount(input DiscountInput) (DiscountResult, error) {
@@ -178,12 +181,11 @@ func CalculateDiscount(input DiscountInput) (DiscountResult, error) {
 		return DiscountResult{}, err
 	}
 	discount := selected.Discount.Get()
-	totals, err := totalExpression.Evaluate(totalEnv{subtotal, discount})
+	totals, err := totalDecision.Evaluate(totalVars{bl.NewHandle(subtotal), bl.NewHandle(discount)})
 	if err != nil {
 		return DiscountResult{}, err
 	}
-	values := totals.(bl.BlDictionary).Native()
-	return DiscountResult{discount.String(), values["amount"].(bl.BlNumber).String(), values["total"].(bl.BlNumber).String()}, nil
+	return DiscountResult{discount.String(), totals.Amount.Get().String(), totals.Total.Get().String()}, nil
 }
 func main() {
 	var input DiscountInput
