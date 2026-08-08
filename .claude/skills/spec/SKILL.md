@@ -34,8 +34,9 @@ feature documents. This skill covers the workflow around them.
 
 ## After changing code
 
-- Sync the spec in the same commit/PR (commit type `spec` per COMMITS.md when
-  the change is spec-only).
+- Sync the spec in the same commit/PR (commit type `spec` per the
+  [commit message conventions](../commitmsg/SKILL.md#commit-message-conventions)
+  when the change is spec-only).
 - New behaviour discovered during implementation goes into Behaviour / Edge Cases.
 - Update Verification links when tests are added or moved.
 - If the code now matches an `agreed` spec, flip `status: implemented`.

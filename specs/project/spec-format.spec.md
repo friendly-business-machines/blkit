@@ -184,8 +184,8 @@ caller.
   paths relative to the spec file; only frontmatter `code:` is root-relative.
 - **Examples are illustrative, not normative,** unless the spec says otherwise.
 - **Specs move with code.** A behaviour or API change updates the spec in the same
-  commit/PR; spec-only changes use the `spec` commit type per
-  [COMMITS.md](../../COMMITS.md).
+  commit/PR; spec-only changes use the `spec` commit type per the
+  [commit message conventions](../../.claude/skills/commitmsg/SKILL.md#commit-message-conventions).
 - **Superseding:** set `status: superseded` and `superseded-by:`, move any
   still-authoritative content into the successor first, and update inbound links.
   A superseded spec must never be the only home of a live fact.

@@ -2,7 +2,7 @@
 
 ## Commit Messages
 
-When creating commits or generating commit messages, follow the conventions in [COMMITS.md](COMMITS.md).
+When creating commits or generating commit messages, follow the [commit message conventions](.claude/skills/commitmsg/SKILL.md#commit-message-conventions).
 
 ## Specifications
 
