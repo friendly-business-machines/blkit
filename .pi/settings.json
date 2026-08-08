@@ -3,5 +3,8 @@
     "npm:pi-web-access",
     "npm:@bacnh85/pi-plan",
     "npm:@lll9p/pi-better-compaction"
+  ],
+  "skills": [
+    "../.claude/skills"
   ]
 }
