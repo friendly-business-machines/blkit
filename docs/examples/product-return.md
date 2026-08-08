@@ -141,7 +141,7 @@ issued at 110% = **£385**.
 ## Implementation
 
 The eligibility, refund, and resolution logic can already be composed as one
-typed `DecisionExpression`.
+typed `DecisionTask` containing a `DecisionExpression`.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -203,8 +203,8 @@ type returnOutputs struct {
 Sequential entries make each decision visible and reusable by later entries.
 
 ``` { .go .blkit-example title="main.go" }
-var returnDecision = bl.NewDecisionExpression[returnVars, returnOutputs](bl.DecisionExpressionConfig{
-	Id: "product-return",
+var returnExpression = bl.NewDecisionExpression[returnVars, returnOutputs](bl.DecisionExpressionConfig{
+	Id: "product-return-calculation",
 	Entries: bl.Entries{
 		"within_request_window": `request-delivery <= dtDuration("P30D")`,
 		"received_in_time":      `received-issued <= dtDuration("P14D")`,
@@ -215,6 +215,33 @@ var returnDecision = bl.NewDecisionExpression[returnVars, returnOutputs](bl.Deci
 		"resolution":            `if refund_percent=0 then "Declined" else if preferred="replacement" and stock then "Replacement dispatched" else if preferred="store_credit" then "Store credit" else if refund_percent=100 then "Full refund" else "Partial refund"`,
 	},
 })
+
+var returnDecision = bl.NewDecisionTask[returnVars, returnOutputs](bl.DecisionTaskConfig{
+	Id:   "product-return",
+	Name: "Product return",
+})
+
+var _ = returnDecision.Graph(
+	bl.Edge(returnDecision.In.Delivery, returnExpression.In.Delivery),
+	bl.Edge(returnDecision.In.Request, returnExpression.In.Request),
+	bl.Edge(returnDecision.In.Issued, returnExpression.In.Issued),
+	bl.Edge(returnDecision.In.Received, returnExpression.In.Received),
+	bl.Edge(returnDecision.In.Returnable, returnExpression.In.Returnable),
+	bl.Edge(returnDecision.In.Quantity, returnExpression.In.Quantity),
+	bl.Edge(returnDecision.In.Purchased, returnExpression.In.Purchased),
+	bl.Edge(returnDecision.In.Reason, returnExpression.In.Reason),
+	bl.Edge(returnDecision.In.Grade, returnExpression.In.Grade),
+	bl.Edge(returnDecision.In.Preferred, returnExpression.In.Preferred),
+	bl.Edge(returnDecision.In.Stock, returnExpression.In.Stock),
+	bl.Edge(returnDecision.In.Price, returnExpression.In.Price),
+	bl.Edge(returnExpression.Out.WithinRequestWindow, returnDecision.Out.WithinRequestWindow),
+	bl.Edge(returnExpression.Out.ReceivedInTime, returnDecision.Out.ReceivedInTime),
+	bl.Edge(returnExpression.Out.Eligible, returnDecision.Out.Eligible),
+	bl.Edge(returnExpression.Out.RefundPercent, returnDecision.Out.RefundPercent),
+	bl.Edge(returnExpression.Out.RefundAmount, returnDecision.Out.RefundAmount),
+	bl.Edge(returnExpression.Out.ResolutionAmount, returnDecision.Out.ResolutionAmount),
+	bl.Edge(returnExpression.Out.Resolution, returnDecision.Out.Resolution),
+)
 
 func CalculateReturn(in ReturnInput) (ReturnResult, error) {
 	delivery, e := bl.Date(in.DeliveryDate)

@@ -46,6 +46,10 @@ Decisions are evaluated in priority order. The first rule that matches all condi
 
 Rules 5, 6, and 7 are catch-alls that ensure every application receives a decision. A withdrawn applicant with a high aptitude score matches rule 6 before reaching any of rules 1–4.
 
+## Implementation
+
+The executable example represents the admission policy as a [`DecisionTask`](../decision-tasks/decision-task.spec.md) containing one first-hit decision table. Application data is converted at the command boundary and the task is evaluated as the complete admission decision.
+
 ## Outcomes
 
 | Decision | Meaning |

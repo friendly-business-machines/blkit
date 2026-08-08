@@ -66,9 +66,9 @@ Declined applications return a maximum credit load of zero and no advising track
 
 ## Implementation
 
-Define the application boundary and the typed handles used by the decision table.
-GPA remains part of the application input, although this policy does not use it
-as a decision column.
+Define the application boundary and the typed handles used by the decision task
+and its table. GPA remains part of the application input, although this policy
+does not use it as a decision column.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -111,25 +111,39 @@ The first matching row wins. Decline rows return zero credits and an empty track
 
 ``` { .go .blkit-example title="main.go" }
 var admissionTable = bl.NewDecisionTable[admissionVariables, admissionOutputs](bl.DecisionTableConfig{
-	Id: "course-admission", Name: "Course admission", HitPolicy: bl.HitPolicyFirst,
+	Id: "admission-rules", Name: "Admission rules", HitPolicy: bl.HitPolicyFirst,
 	Columns: []bl.Column{
 		{Label: "Score", Expr: `score`, Type: bl.TypeNumber},
 		{Label: "Enrolment", Expr: `enrolment`, Type: bl.TypeString},
 		{Label: "Absence", Expr: `absence`, Type: bl.TypeNumber},
 	},
 	Rules: bl.Rules{
-		{`honors`, `>= 750`, `"full-time", "part-time"`, `<= 0.30`, `"Admitted"`, `21`, `"Honors"`},
-		{`standard`, `>= 700`, `"full-time", "part-time"`, `<= 0.40`, `"Admitted"`, `18`, `"Standard"`},
-		{`foundation`, `>= 650`, `"full-time", "part-time"`, `<= 0.40`, `"Waitlisted"`, `15`, `"Foundation"`},
-		{`support`, `>= 600`, `"full-time", "part-time"`, `<= 0.50`, `"Waitlisted"`, `12`, `"Support"`},
-		{`low-score`, `< 600`, `-`, `-`, `"Declined"`, `0`, `""`},
-		{`withdrawn`, `-`, `"withdrawn"`, `-`, `"Declined"`, `0`, `""`},
-		{`high-absence`, `-`, `-`, `> 0.50`, `"Declined"`, `0`, `""`},
+		{`honors`,       `>= 750`, `"full-time", "part-time"`, `<= 0.30`, `"Admitted"`,   `21`, `"Honors"`},
+		{`standard`,     `>= 700`, `"full-time", "part-time"`, `<= 0.40`, `"Admitted"`,   `18`, `"Standard"`},
+		{`foundation`,   `>= 650`, `"full-time", "part-time"`, `<= 0.40`, `"Waitlisted"`, `15`, `"Foundation"`},
+		{`support`,      `>= 600`, `"full-time", "part-time"`, `<= 0.50`, `"Waitlisted"`, `12`, `"Support"`},
+		{`low-score`,    `< 600`,  `-`,                        `-`,       `"Declined"`,   `0`,  `""`},
+		{`withdrawn`,    `-`,      `"withdrawn"`,              `-`,       `"Declined"`,   `0`,  `""`},
+		{`high-absence`, `-`,      `-`,                        `> 0.50`,  `"Declined"`,   `0`,  `""`},
 	},
 })
+
+var admissionDecision = bl.NewDecisionTask[admissionVariables, admissionOutputs](bl.DecisionTaskConfig{
+	Id:   "course-admission",
+	Name: "Course admission",
+})
+
+var _ = admissionDecision.Graph(
+	bl.Edge(admissionDecision.In.Score, admissionTable.In.Score),
+	bl.Edge(admissionDecision.In.Absence, admissionTable.In.Absence),
+	bl.Edge(admissionDecision.In.Enrolment, admissionTable.In.Enrolment),
+	bl.Edge(admissionTable.Out.Decision, admissionDecision.Out.Decision),
+	bl.Edge(admissionTable.Out.MaxCredits, admissionDecision.Out.MaxCredits),
+	bl.Edge(admissionTable.Out.Track, admissionDecision.Out.Track),
+)
 ```
 
-Convert caller values to blkit values and evaluate the table.
+Convert caller values to blkit values and evaluate the complete decision task.
 
 ``` { .go .blkit-example title="main.go" }
 func DecideAdmission(input AdmissionInput) (AdmissionResult, error) {
@@ -145,7 +159,7 @@ func DecideAdmission(input AdmissionInput) (AdmissionResult, error) {
 	if err != nil {
 		return AdmissionResult{}, err
 	}
-	output, err := admissionTable.Evaluate(admissionVariables{
+	output, err := admissionDecision.Evaluate(admissionVariables{
 		Score: bl.NewHandle(score), Absence: bl.NewHandle(absence), Enrolment: bl.NewHandle(enrolment),
 	})
 	if err != nil {

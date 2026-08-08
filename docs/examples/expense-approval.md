@@ -67,8 +67,8 @@ Finance Director regardless of category or employee level.
 
 ## Implementation
 
-The approval route is available today as a decision table. Define its caller and
-handle types first.
+The approval route is available today as a decision task containing one decision
+table. Define the JSON transport types and typed decision contract first.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -76,8 +76,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	bl "github.com/friendly-business-machines/blkit/core"
 	"os"
+
+	bl "github.com/friendly-business-machines/blkit/core"
 )
 
 type ExpenseInput struct {
@@ -111,37 +112,35 @@ var routeTable = bl.NewDecisionTable[routeInputs, routeOutputs](bl.DecisionTable
 		{Label: "Level", Expr: `level`, Type: bl.TypeString},
 	},
 	Rules: bl.Rules{
-		{`automatic`, `<= 50`, `-`, `-`, `"Automatic"`},
-		{`standard-manager`, `<= 500`, `"meals", "travel", "accommodation"`, `-`, `"Manager"`},
-		{`senior-manager`, `<= 500`, `"equipment", "other"`, `"senior", "executive"`, `"Manager"`},
-		{`executive-manager`, `<= 2000`, `-`, `"executive"`, `"Manager"`},
-		{`finance-under-limit`, `<= 2000`, `-`, `-`, `"Finance Director"`},
-		{`finance-over-limit`, `> 2000`, `-`, `-`, `"Finance Director"`},
+		{`automatic`,           `<= 50`,   `-`,                                  `-`,                     `"Automatic"`},
+		{`standard-manager`,    `<= 500`,  `"meals", "travel", "accommodation"`, `-`,                     `"Manager"`},
+		{`senior-manager`,      `<= 500`,  `"equipment", "other"`,               `"senior", "executive"`, `"Manager"`},
+		{`executive-manager`,   `<= 2000`, `-`,                                  `"executive"`,           `"Manager"`},
+		{`finance-under-limit`, `<= 2000`, `-`,                                  `-`,                     `"Finance Director"`},
+		{`finance-over-limit`,  `> 2000`,  `-`,                                  `-`,                     `"Finance Director"`},
 	},
 })
-
-func SelectExpenseRoute(input ExpenseInput) (ExpenseRoute, error) {
-	amount, err := bl.Number(input.Amount)
-	if err != nil {
-		return ExpenseRoute{}, err
-	}
-	category, err := bl.String(input.Category)
-	if err != nil {
-		return ExpenseRoute{}, err
-	}
-	level, err := bl.String(input.EmployeeLevel)
-	if err != nil {
-		return ExpenseRoute{}, err
-	}
-	output, err := routeTable.Evaluate(routeInputs{bl.NewHandle(amount), bl.NewHandle(category), bl.NewHandle(level)})
-	if err != nil {
-		return ExpenseRoute{}, err
-	}
-	return ExpenseRoute{Route: output.Route.Get().String()}, nil
-}
 ```
 
-The command exposes route selection to an application caller.
+The decision task provides the boundary for the complete routing decision. Its
+single node is the route table.
+
+``` { .go .blkit-example title="main.go" }
+var expenseRouting = bl.NewDecisionTask[routeInputs, routeOutputs](bl.DecisionTaskConfig{
+	Id:   "expense-routing",
+	Name: "Expense Routing",
+})
+
+var _ = expenseRouting.Graph(
+	bl.Edge(expenseRouting.In.Amount, routeTable.In.Amount),
+	bl.Edge(expenseRouting.In.Category, routeTable.In.Category),
+	bl.Edge(expenseRouting.In.Level, routeTable.In.Level),
+	bl.Edge(routeTable.Out.Route, expenseRouting.Out.Route),
+)
+```
+
+The command adapts JSON input to the decision task's typed contract, evaluates the
+complete decision, and converts its output back to JSON.
 
 ``` { .go .blkit-example title="main.go" }
 func main() {
@@ -150,11 +149,31 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	result, err := SelectExpenseRoute(input)
+	amount, err := bl.Number(input.Amount)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	category, err := bl.String(input.Category)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	level, err := bl.String(input.EmployeeLevel)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	output, err := expenseRouting.Evaluate(routeInputs{
+		Amount:   bl.NewHandle(amount),
+		Category: bl.NewHandle(category),
+		Level:    bl.NewHandle(level),
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	result := ExpenseRoute{Route: output.Route.Get().String()}
 	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

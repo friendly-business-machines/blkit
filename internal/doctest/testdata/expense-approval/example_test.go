@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	bl "github.com/friendly-business-machines/blkit/core"
 	"os"
 	"os/exec"
 	"testing"
@@ -18,12 +19,19 @@ func TestLogicExpenseRoutes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := SelectExpenseRoute(ExpenseInput{tt.amount, tt.category, tt.level})
+			amount, _ := bl.Number(tt.amount)
+			category, _ := bl.String(tt.category)
+			level, _ := bl.String(tt.level)
+			got, err := expenseRouting.Evaluate(routeInputs{
+				Amount:   bl.NewHandle(amount),
+				Category: bl.NewHandle(category),
+				Level:    bl.NewHandle(level),
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Route != tt.want {
-				t.Errorf("route=%s want %s", got.Route, tt.want)
+			if got.Route.Get().String() != tt.want {
+				t.Errorf("route=%s want %s", got.Route.Get().String(), tt.want)
 			}
 		})
 	}

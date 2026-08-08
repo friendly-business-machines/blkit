@@ -116,10 +116,21 @@ type lineOutputs struct {
 	Total bl.Handle[bl.BlNumber] `expr:"total"`
 }
 
-var lineDecision = bl.NewDecisionExpression[lineVars, lineOutputs](bl.DecisionExpressionConfig{
-	Id:      "invoice-line-total",
+var lineExpression = bl.NewDecisionExpression[lineVars, lineOutputs](bl.DecisionExpressionConfig{
+	Id:      "invoice-line-calculation",
 	Entries: bl.Entries{"total": `quantity*price`},
 })
+
+var lineDecision = bl.NewDecisionTask[lineVars, lineOutputs](bl.DecisionTaskConfig{
+	Id:   "invoice-line-total",
+	Name: "Invoice line total",
+})
+
+var _ = lineDecision.Graph(
+	bl.Edge(lineDecision.In.Quantity, lineExpression.In.Quantity),
+	bl.Edge(lineDecision.In.Price, lineExpression.In.Price),
+	bl.Edge(lineExpression.Out.Total, lineDecision.Out.Total),
+)
 
 type invoiceVars struct {
 	Computed bl.Handle[bl.BlNumber] `expr:"computed"`
@@ -130,13 +141,25 @@ type invoiceOutputs struct {
 	RequiresApproval bl.Handle[bl.BlBoolean] `expr:"requires_approval"`
 }
 
-var invoiceDecision = bl.NewDecisionExpression[invoiceVars, invoiceOutputs](bl.DecisionExpressionConfig{
-	Id: "invoice-checks",
+var invoiceChecks = bl.NewDecisionExpression[invoiceVars, invoiceOutputs](bl.DecisionExpressionConfig{
+	Id: "invoice-checks-expression",
 	Entries: bl.Entries{
 		"lines_valid":       `abs(computed-stated)<=0.01`,
 		"requires_approval": `stated>10000`,
 	},
 })
+
+var invoiceDecision = bl.NewDecisionTask[invoiceVars, invoiceOutputs](bl.DecisionTaskConfig{
+	Id:   "invoice-checks",
+	Name: "Invoice checks",
+})
+
+var _ = invoiceDecision.Graph(
+	bl.Edge(invoiceDecision.In.Computed, invoiceChecks.In.Computed),
+	bl.Edge(invoiceDecision.In.Stated, invoiceChecks.In.Stated),
+	bl.Edge(invoiceChecks.Out.LinesValid, invoiceDecision.Out.LinesValid),
+	bl.Edge(invoiceChecks.Out.RequiresApproval, invoiceDecision.Out.RequiresApproval),
+)
 ```
 
 Each validation contributes its own message, so callers receive all failures.

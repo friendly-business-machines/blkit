@@ -62,6 +62,10 @@ If the manager rejects the invoice, it is returned to the vendor as disputed wit
 
 Approved invoices are submitted to the payment system to be included in the next payment run on or before the due date. A payment batch reference is recorded against the invoice.
 
+## Implementation
+
+The executable example evaluates reusable [`DecisionTask`](../decision-tasks/decision-task.spec.md) definitions for line-total calculation and invoice-level arithmetic checks. Iteration over invoice lines and collection of validation messages remain at the application boundary until the process layer can model the complete workflow.
+
 ## Outcomes
 
 | Outcome | Meaning |

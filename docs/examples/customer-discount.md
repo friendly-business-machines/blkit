@@ -84,8 +84,8 @@ For C-003, four rules match — R1 (5%), R6 (12%), R7 (8%), R8 (6%). The highest
 
 ## Implementation
 
-Define the order boundary and the decision table's typed input and output
-contracts.
+Define the order boundary and the typed contracts used by the decision task and
+its nodes.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -130,17 +130,29 @@ A collect/max policy evaluates every row and retains the largest percentage.
 ``` { .go .blkit-example title="main.go" }
 var maxAggregation = bl.AggregationMax
 var discountTable = bl.NewDecisionTable[discountVars, discountOut](bl.DecisionTableConfig{
-	Id: "customer-discount", HitPolicy: bl.HitPolicyCollect, Aggregation: &maxAggregation,
+	Id: "discount-rules", HitPolicy: bl.HitPolicyCollect, Aggregation: &maxAggregation,
 	Columns: []bl.Column{
-		{Label: "Tier", Expr: `tier`, Type: bl.TypeString}, {Label: "Age", Expr: `age`, Type: bl.TypeNumber},
-		{Label: "Subtotal", Expr: `subtotal`, Type: bl.TypeNumber}, {Label: "Items", Expr: `items`, Type: bl.TypeNumber},
-		{Label: "Category", Expr: `category`, Type: bl.TypeString}, {Label: "Code", Expr: `code`, Type: bl.TypeString}, {Label: "Month", Expr: `month`, Type: bl.TypeString},
+		{Label: "Tier", Expr: `tier`, Type: bl.TypeString},
+		{Label: "Age", Expr: `age`, Type: bl.TypeNumber},
+		{Label: "Subtotal", Expr: `subtotal`, Type: bl.TypeNumber},
+		{Label: "Items", Expr: `items`, Type: bl.TypeNumber},
+		{Label: "Category", Expr: `category`, Type: bl.TypeString},
+		{Label: "Code", Expr: `code`, Type: bl.TypeString},
+		{Label: "Month", Expr: `month`, Type: bl.TypeString},
 	},
 	Rules: bl.Rules{
-		{`R1`, `"Silver"`, `>= 12`, `-`, `-`, `-`, `-`, `-`, `5`}, {`R2`, `"Gold"`, `>= 12`, `-`, `-`, `-`, `-`, `-`, `10`}, {`R3`, `"Platinum"`, `>= 12`, `-`, `-`, `-`, `-`, `-`, `15`},
-		{`R4`, `-`, `< 3`, `-`, `-`, `-`, `-`, `-`, `10`}, {`R5`, `-`, `-`, `-`, `[10..25)`, `-`, `-`, `-`, `5`}, {`R6`, `-`, `-`, `-`, `>= 25`, `-`, `-`, `-`, `12`},
-		{`R7`, `-`, `-`, `> 500`, `-`, `-`, `-`, `-`, `8`}, {`R8`, `-`, `-`, `-`, `-`, `"Furniture"`, `-`, `-`, `6`}, {`R9`, `-`, `-`, `-`, `-`, `-`, `-`, `"January", "July"`, `20`},
-		{`R10`, `-`, `-`, `-`, `-`, `-`, `"WELCOME20"`, `-`, `20`}, {`R11`, `"Gold", "Platinum"`, `-`, `-`, `-`, `-`, `"LOYAL10"`, `-`, `10`}, {`R12`, `-`, `-`, `-`, `>= 10`, `-`, `"BULK15"`, `-`, `15`},
+		{`R1`,  `"Silver"`,           `>= 12`, `-`,     `-`,        `-`,           `-`,           `-`,                 `5`},
+		{`R2`,  `"Gold"`,             `>= 12`, `-`,     `-`,        `-`,           `-`,           `-`,                 `10`},
+		{`R3`,  `"Platinum"`,         `>= 12`, `-`,     `-`,        `-`,           `-`,           `-`,                 `15`},
+		{`R4`,  `-`,                  `< 3`,   `-`,     `-`,        `-`,           `-`,           `-`,                 `10`},
+		{`R5`,  `-`,                  `-`,     `-`,     `[10..25)`, `-`,           `-`,           `-`,                 `5`},
+		{`R6`,  `-`,                  `-`,     `-`,     `>= 25`,    `-`,           `-`,           `-`,                 `12`},
+		{`R7`,  `-`,                  `-`,     `> 500`, `-`,        `-`,           `-`,           `-`,                 `8`},
+		{`R8`,  `-`,                  `-`,     `-`,     `-`,        `"Furniture"`, `-`,           `-`,                 `6`},
+		{`R9`,  `-`,                  `-`,     `-`,     `-`,        `-`,           `-`,           `"January", "July"`, `20`},
+		{`R10`, `-`,                  `-`,     `-`,     `-`,        `-`,           `"WELCOME20"`, `-`,                 `20`},
+		{`R11`, `"Gold", "Platinum"`, `-`,     `-`,     `-`,        `-`,           `"LOYAL10"`,   `-`,                 `10`},
+		{`R12`, `-`,                  `-`,     `-`,     `>= 10`,    `-`,           `"BULK15"`,    `-`,                 `15`},
 	},
 })
 
@@ -152,17 +164,43 @@ type totalOutputs struct {
 	Amount bl.Handle[bl.BlNumber] `expr:"amount"`
 	Total  bl.Handle[bl.BlNumber] `expr:"total"`
 }
+type discountOutputs struct {
+	Discount bl.Handle[bl.BlNumber] `expr:"discount"`
+	Amount   bl.Handle[bl.BlNumber] `expr:"amount"`
+	Total    bl.Handle[bl.BlNumber] `expr:"total"`
+}
 
-var totalDecision = bl.NewDecisionExpression[totalVars, totalOutputs](bl.DecisionExpressionConfig{
+var totalCalculation = bl.NewDecisionExpression[totalVars, totalOutputs](bl.DecisionExpressionConfig{
 	Id: "discount-totals",
 	Entries: bl.Entries{
 		"amount": `subtotal * discount / 100`,
 		"total":  `subtotal - amount`,
 	},
 })
+
+var customerDiscount = bl.NewDecisionTask[discountVars, discountOutputs](bl.DecisionTaskConfig{
+	Id:   "customer-discount",
+	Name: "Customer discount",
+})
+
+var _ = customerDiscount.Graph(
+	bl.Edge(customerDiscount.In.Tier, discountTable.In.Tier),
+	bl.Edge(customerDiscount.In.Age, discountTable.In.Age),
+	bl.Edge(customerDiscount.In.Subtotal, discountTable.In.Subtotal),
+	bl.Edge(customerDiscount.In.Items, discountTable.In.Items),
+	bl.Edge(customerDiscount.In.Category, discountTable.In.Category),
+	bl.Edge(customerDiscount.In.Code, discountTable.In.Code),
+	bl.Edge(customerDiscount.In.Month, discountTable.In.Month),
+	bl.Edge(customerDiscount.In.Subtotal, totalCalculation.In.Subtotal),
+	bl.Edge(discountTable.Out.Discount, totalCalculation.In.Discount),
+	bl.Edge(discountTable.Out.Discount, customerDiscount.Out.Discount),
+	bl.Edge(totalCalculation.Out.Amount, customerDiscount.Out.Amount),
+	bl.Edge(totalCalculation.Out.Total, customerDiscount.Out.Total),
+)
 ```
 
-Evaluate the table, then pass its result into the monetary decision.
+The decision task wires the table output into the monetary calculation and is
+evaluated as one reusable decision.
 
 ``` { .go .blkit-example title="main.go" }
 func CalculateDiscount(input DiscountInput) (DiscountResult, error) {
@@ -176,16 +214,19 @@ func CalculateDiscount(input DiscountInput) (DiscountResult, error) {
 	category, _ := bl.String(input.Category)
 	code, _ := bl.String(input.PromoCode)
 	month, _ := bl.String(input.Month)
-	selected, err := discountTable.Evaluate(discountVars{bl.NewHandle(tier), bl.NewHandle(age), bl.NewHandle(subtotal), bl.NewHandle(items), bl.NewHandle(category), bl.NewHandle(code), bl.NewHandle(month)})
+	result, err := customerDiscount.Evaluate(discountVars{
+		Tier:     bl.NewHandle(tier),
+		Age:      bl.NewHandle(age),
+		Subtotal: bl.NewHandle(subtotal),
+		Items:    bl.NewHandle(items),
+		Category: bl.NewHandle(category),
+		Code:     bl.NewHandle(code),
+		Month:    bl.NewHandle(month),
+	})
 	if err != nil {
 		return DiscountResult{}, err
 	}
-	discount := selected.Discount.Get()
-	totals, err := totalDecision.Evaluate(totalVars{bl.NewHandle(subtotal), bl.NewHandle(discount)})
-	if err != nil {
-		return DiscountResult{}, err
-	}
-	return DiscountResult{discount.String(), totals.Amount.Get().String(), totals.Total.Get().String()}, nil
+	return DiscountResult{result.Discount.Get().String(), result.Amount.Get().String(), result.Total.Get().String()}, nil
 }
 func main() {
 	var input DiscountInput

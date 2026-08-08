@@ -157,9 +157,10 @@ $200,000 taxable income:
 
 ## Implementation
 
-The liability schedules can be compiled into one typed `DecisionExpression` and
-reused for many returns. This application accepts taxable income after the assessable-income
-and deduction calculation described above.
+The liability schedules can be compiled into a `DecisionTask` containing one
+typed `DecisionExpression` and reused for many returns. This application accepts
+taxable income after the assessable-income and deduction calculation described
+above.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -248,14 +249,39 @@ type incomeOutputs struct {
 	Taxable        bl.Handle[bl.BlNumber] `expr:"taxable"`
 }
 
-var incomeDecision = bl.NewDecisionExpression[incomeVars, incomeOutputs](bl.DecisionExpressionConfig{
-	Id: "taxable-income",
+var incomeExpression = bl.NewDecisionExpression[incomeVars, incomeOutputs](bl.DecisionExpressionConfig{
+	Id: "taxable-income-calculation",
 	Entries: bl.Entries{
 		"net_capital_gain": `max([0,gains-current_losses-prior_losses])*(if discount then 0.5 else 1)`,
 		"assessable":       `salary+interest+unfranked+franked_cash+franking+rental+business+foreign+trust+net_capital_gain`,
 		"taxable":          `max([0,assessable-deductions])`,
 	},
 })
+
+var incomeDecision = bl.NewDecisionTask[incomeVars, incomeOutputs](bl.DecisionTaskConfig{
+	Id:   "taxable-income",
+	Name: "Taxable income",
+})
+
+var _ = incomeDecision.Graph(
+	bl.Edge(incomeDecision.In.Salary, incomeExpression.In.Salary),
+	bl.Edge(incomeDecision.In.Interest, incomeExpression.In.Interest),
+	bl.Edge(incomeDecision.In.Unfranked, incomeExpression.In.Unfranked),
+	bl.Edge(incomeDecision.In.FrankedCash, incomeExpression.In.FrankedCash),
+	bl.Edge(incomeDecision.In.Franking, incomeExpression.In.Franking),
+	bl.Edge(incomeDecision.In.Rental, incomeExpression.In.Rental),
+	bl.Edge(incomeDecision.In.Business, incomeExpression.In.Business),
+	bl.Edge(incomeDecision.In.Foreign, incomeExpression.In.Foreign),
+	bl.Edge(incomeDecision.In.Trust, incomeExpression.In.Trust),
+	bl.Edge(incomeDecision.In.Gains, incomeExpression.In.Gains),
+	bl.Edge(incomeDecision.In.CurrentLosses, incomeExpression.In.CurrentLosses),
+	bl.Edge(incomeDecision.In.PriorLosses, incomeExpression.In.PriorLosses),
+	bl.Edge(incomeDecision.In.Deductions, incomeExpression.In.Deductions),
+	bl.Edge(incomeDecision.In.Discount, incomeExpression.In.Discount),
+	bl.Edge(incomeExpression.Out.NetCapitalGain, incomeDecision.Out.NetCapitalGain),
+	bl.Edge(incomeExpression.Out.Assessable, incomeDecision.Out.Assessable),
+	bl.Edge(incomeExpression.Out.Taxable, incomeDecision.Out.Taxable),
+)
 
 func BuildTaxableIncome(in IncomeInput) (string, string, error) {
 	values := []string{in.Salary, in.Interest, in.UnfrankedDividends, in.FrankedCash, in.FrankingCredits, in.NetRental, in.BusinessIncome, in.ForeignIncome, in.TrustDistributions, in.GrossCapitalGains, in.CurrentCapitalLosses, in.PriorCapitalLosses, in.Deductions}
@@ -290,8 +316,8 @@ HELP/HECS, then reconciliation. Final tax is rounded to whole dollars, matching
 the annual return examples.
 
 ``` { .go .blkit-example title="main.go" }
-var taxDecision = bl.NewDecisionExpression[taxVars, taxOutputs](bl.DecisionExpressionConfig{
-	Id: "income-tax",
+var taxExpression = bl.NewDecisionExpression[taxVars, taxOutputs](bl.DecisionExpressionConfig{
+	Id: "income-tax-calculation",
 	Entries: bl.Entries{
 		"base_tax":   `if residency="foreign" then (if income<=135000 then income*0.30 else if income<=190000 then 40500+(income-135000)*0.37 else 60850+(income-190000)*0.45) else if residency="working_holiday" then (if income<=45000 then income*0.15 else if income<=135000 then 6750+(income-45000)*0.30 else if income<=190000 then 33750+(income-135000)*0.37 else 54100+(income-190000)*0.45) else (if income<=18200 then 0 else if income<=45000 then (income-18200)*0.16 else if income<=135000 then 4288+(income-45000)*0.30 else if income<=190000 then 31288+(income-135000)*0.37 else 51638+(income-190000)*0.45)`,
 		"lito":       `if residency!="resident" then 0 else if income<=37500 then 700 else if income<=45000 then 700-(income-37500)*0.05 else if income<=66667 then 325-(income-45000)*0.015 else 0`,
@@ -306,6 +332,33 @@ var taxDecision = bl.NewDecisionExpression[taxVars, taxOutputs](bl.DecisionExpre
 		"outcome":    `if balance<0 then "refund" else if balance>0 then "payable" else "settled"`,
 	},
 })
+
+var taxDecision = bl.NewDecisionTask[taxVars, taxOutputs](bl.DecisionTaskConfig{
+	Id:   "income-tax",
+	Name: "Income tax",
+})
+
+var _ = taxDecision.Graph(
+	bl.Edge(taxDecision.In.Income, taxExpression.In.Income),
+	bl.Edge(taxDecision.In.Residency, taxExpression.In.Residency),
+	bl.Edge(taxDecision.In.Age, taxExpression.In.Age),
+	bl.Edge(taxDecision.In.Private, taxExpression.In.Private),
+	bl.Edge(taxDecision.In.Family, taxExpression.In.Family),
+	bl.Edge(taxDecision.In.Debt, taxExpression.In.Debt),
+	bl.Edge(taxDecision.In.PAYG, taxExpression.In.PAYG),
+	bl.Edge(taxDecision.In.Franking, taxExpression.In.Franking),
+	bl.Edge(taxExpression.Out.BaseTax, taxDecision.Out.BaseTax),
+	bl.Edge(taxExpression.Out.LITO, taxDecision.Out.LITO),
+	bl.Edge(taxExpression.Out.SAPTO, taxDecision.Out.SAPTO),
+	bl.Edge(taxExpression.Out.IncomeTax, taxDecision.Out.IncomeTax),
+	bl.Edge(taxExpression.Out.Medicare, taxDecision.Out.Medicare),
+	bl.Edge(taxExpression.Out.MLS, taxDecision.Out.MLS),
+	bl.Edge(taxExpression.Out.HELPRate, taxDecision.Out.HELPRate),
+	bl.Edge(taxExpression.Out.HELP, taxDecision.Out.HELP),
+	bl.Edge(taxExpression.Out.TotalTax, taxDecision.Out.TotalTax),
+	bl.Edge(taxExpression.Out.Balance, taxDecision.Out.Balance),
+	bl.Edge(taxExpression.Out.Outcome, taxDecision.Out.Outcome),
+)
 ```
 
 ``` { .go .blkit-example title="main.go" }

@@ -112,16 +112,27 @@ type routeOutputs struct {
 	Route bl.Handle[bl.BlString] `expr:"route"`
 }
 
-var routeDecision = bl.NewDecisionExpression[routeVars, routeOutputs](bl.DecisionExpressionConfig{
-	Id: "fulfilment-route",
+var routeExpression = bl.NewDecisionExpression[routeVars, routeOutputs](bl.DecisionExpressionConfig{
+	Id: "fulfilment-route-expression",
 	Entries: bl.Entries{
 		"route": `if not(stock) then "end-backorder" else if not(payment) then "end-payment-error" else "end-success"`,
 	},
 })
+
+var routeDecision = bl.NewDecisionTask[routeVars, routeOutputs](bl.DecisionTaskConfig{
+	Id:   "fulfilment-route",
+	Name: "Fulfilment route",
+})
+
+var _ = routeDecision.Graph(
+	bl.Edge(routeDecision.In.Stock, routeExpression.In.Stock),
+	bl.Edge(routeDecision.In.Payment, routeExpression.In.Payment),
+	bl.Edge(routeExpression.Out.Route, routeDecision.Out.Route),
+)
 ```
 
 Validation stays at the application boundary; gateway selection is evaluated by
-a typed `DecisionExpression`.
+a typed decision task containing the route expression.
 
 ``` { .go .blkit-example title="main.go" }
 func DecideFulfilment(in FulfilmentInput) (FulfilmentDecision, error) {

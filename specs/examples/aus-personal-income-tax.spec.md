@@ -360,6 +360,10 @@ A compulsory repayment is added to the tax liability when repayment income excee
 For the annual return result, total tax is rounded half-up to the nearest whole
 dollar before reconciliation, matching the worked examples.
 
+## Implementation
+
+The executable example exposes taxable-income construction and annual tax calculation as separate [`DecisionTask`](../decision-tasks/decision-task.spec.md) definitions. Each task contains its corresponding decision expression, while command-boundary code converts application values to typed handles and projects task outputs.
+
 ## Examples
 
 | # | Taxable income | Residency | Age | Private cover | Family | HELP debt | PAYG withheld | Total tax | Outcome |

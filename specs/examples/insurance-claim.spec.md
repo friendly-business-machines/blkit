@@ -113,6 +113,10 @@ If the calculated settlement amount (after deducting the excess) exceeds £25,00
 
 ---
 
+## Implementation
+
+The executable example represents the linked eligibility, severity, settlement, and referral calculations as a [`DecisionTask`](../decision-tasks/decision-task.spec.md) containing one decision expression. Application-boundary code derives the raw damage score and coverage flag before evaluating the complete task.
+
 ## Outcomes
 
 | Condition | Outcome |

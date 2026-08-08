@@ -75,6 +75,10 @@ The total annual charge is:
 
 > total annual = total monthly × 12
 
+## Implementation
+
+The executable example represents subscription pricing as one [`DecisionTask`](../decision-tasks/decision-task.spec.md). Its graph evaluates four independent decision tables for base price, volume discount, tier discount, and promotion reduction, then wires those results into the final pricing expression.
+
 ## Examples
 
 | Plan | Billing Cycle | Seats | Tier | Promo Code | Base/Seat | Effective/Seat | Total Monthly |

@@ -133,13 +133,27 @@ type onboardingOutputs struct {
 	Result   bl.Handle[bl.BlString] `expr:"result"`
 }
 
-var onboardingDecision = bl.NewDecisionExpression[onboardingVars, onboardingOutputs](bl.DecisionExpressionConfig{
+var onboardingExpression = bl.NewDecisionExpression[onboardingVars, onboardingOutputs](bl.DecisionExpressionConfig{
 	Id: "onboarding-deadline",
 	Entries: bl.Entries{
 		"deadline": `addBusinessDays(hire,5)`,
 		"result":   `if it<=5 and hr<=5 and facilities<=5 then "welcome" else "escalate"`,
 	},
 })
+
+var onboardingDecision = bl.NewDecisionTask[onboardingVars, onboardingOutputs](bl.DecisionTaskConfig{
+	Id:   "employee-onboarding-decision",
+	Name: "Employee onboarding decision",
+})
+
+var _ = onboardingDecision.Graph(
+	bl.Edge(onboardingDecision.In.Hire, onboardingExpression.In.Hire),
+	bl.Edge(onboardingDecision.In.IT, onboardingExpression.In.IT),
+	bl.Edge(onboardingDecision.In.HR, onboardingExpression.In.HR),
+	bl.Edge(onboardingDecision.In.Facilities, onboardingExpression.In.Facilities),
+	bl.Edge(onboardingExpression.Out.Deadline, onboardingDecision.Out.Deadline),
+	bl.Edge(onboardingExpression.Out.Result, onboardingDecision.Out.Result),
+)
 ```
 
 ``` { .go .blkit-example title="main.go" }

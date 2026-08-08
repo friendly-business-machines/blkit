@@ -18,15 +18,16 @@ An e-commerce fulfilment platform needs to calculate the shipping cost for any o
 - **Speed tier** — standard, express, or overnight, each applying a cost multiplier.
 - **Fuel surcharge** — a flat 8% applied to the pre-surcharge total.
 
-This example composes the calculation as a `DecisionExpression`, without needing a `DecisionTable` or a `Process`. Named entries represent each intermediate result and blkit evaluates their dependencies in order.
+This example composes the calculation as a [`DecisionTask`](../decision-tasks/decision-task.spec.md) containing one `DecisionExpression`, without needing a `DecisionTable` or a `Process`. Named expression entries represent each intermediate result and blkit evaluates their dependencies in order.
 
 ## What This Example Demonstrates
 
 - Defining typed input and output contracts with `bl.Handle`
 - Compiling related calculations with `bl.NewDecisionExpression`
+- Wiring the expression into a complete `bl.DecisionTask`
 - Referencing sibling outputs from dependent expression entries
 - Using `bl.Number()` for precise decimal arithmetic
-- Evaluating one reusable decision with different input values
+- Evaluating one reusable decision task with different input values
 
 ## Data Model
 
@@ -87,7 +88,7 @@ This example composes the calculation as a `DecisionExpression`, without needing
 
 ## Decision Definition
 
-The implementation defines one `DecisionExpression` whose entries correspond to the calculation steps above. Inputs and outputs use typed `bl.Handle` fields. Intermediate outputs such as `base_rate`, `per_kg_rate`, and `subtotal` remain part of the decision contract so later entries can depend on them. The application boundary converts JSON decimal strings with `bl.Number()` before evaluating the decision.
+The implementation defines one `DecisionTask` whose graph contains a `DecisionExpression` with entries corresponding to the calculation steps above. Inputs and outputs use typed `bl.Handle` fields. Intermediate outputs such as `base_rate`, `per_kg_rate`, and `subtotal` remain part of the task contract so later entries can depend on them. The application boundary converts JSON decimal strings with `bl.Number()` before evaluating the task.
 
 ## Sample Inputs and Expected Outputs
 
@@ -106,4 +107,4 @@ The documentation page for this example (`docs/examples/shipping-rate.md`) must 
 2. The complete, runnable Go code.
 3. An explicit walkthrough: show the intermediate values for the first sample row (actual=3.2 kg, regional, express, total=38.88) with each intermediate computation labelled.
 4. A callout explaining the difference between `bl.Number()` values (arbitrary precision) and native floating-point — and why `Bl` arithmetic is preferable for financial calculations.
-5. A short note on reusability: the decision definition is built once and evaluated many times with different typed inputs.
+5. A short note on reusability: the decision task is built once and evaluated many times with different typed inputs.

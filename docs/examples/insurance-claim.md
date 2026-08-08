@@ -175,12 +175,12 @@ type claimOutputs struct {
 }
 ```
 
-The compiled decision gates eligibility, caps and bands the score, then derives
-the settlement and referral outcome.
+The decision task contains an expression that gates eligibility, caps and bands
+the score, then derives the settlement and referral outcome.
 
 ``` { .go .blkit-example title="main.go" }
-var claimDecision = bl.NewDecisionExpression[claimVars, claimOutputs](bl.DecisionExpressionConfig{
-	Id: "claim-assessment",
+var claimAssessment = bl.NewDecisionExpression[claimVars, claimOutputs](bl.DecisionExpressionConfig{
+	Id: "claim-assessment-calculation",
 	Entries: bl.Entries{
 		"eligible":   `active and incident>=start and incident<=end and covered`,
 		"capped":     `clamp(raw,0,100)`,
@@ -191,6 +191,29 @@ var claimDecision = bl.NewDecisionExpression[claimVars, claimOutputs](bl.Decisio
 		"outcome":    `if not(eligible) then "Rejected: damage not covered" else if net=0 then "Valid, no payment" else if net>25000 then "Senior assessor referral" else "Offer issued"`,
 	},
 })
+
+var claimDecision = bl.NewDecisionTask[claimVars, claimOutputs](bl.DecisionTaskConfig{
+	Id:   "claim-assessment",
+	Name: "Claim assessment",
+})
+
+var _ = claimDecision.Graph(
+	bl.Edge(claimDecision.In.Active, claimAssessment.In.Active),
+	bl.Edge(claimDecision.In.Incident, claimAssessment.In.Incident),
+	bl.Edge(claimDecision.In.Start, claimAssessment.In.Start),
+	bl.Edge(claimDecision.In.End, claimAssessment.In.End),
+	bl.Edge(claimDecision.In.Covered, claimAssessment.In.Covered),
+	bl.Edge(claimDecision.In.Raw, claimAssessment.In.Raw),
+	bl.Edge(claimDecision.In.Value, claimAssessment.In.Value),
+	bl.Edge(claimDecision.In.Excess, claimAssessment.In.Excess),
+	bl.Edge(claimAssessment.Out.Eligible, claimDecision.Out.Eligible),
+	bl.Edge(claimAssessment.Out.Capped, claimDecision.Out.Capped),
+	bl.Edge(claimAssessment.Out.Severity, claimDecision.Out.Severity),
+	bl.Edge(claimAssessment.Out.Percentage, claimDecision.Out.Percentage),
+	bl.Edge(claimAssessment.Out.Gross, claimDecision.Out.Gross),
+	bl.Edge(claimAssessment.Out.Net, claimDecision.Out.Net),
+	bl.Edge(claimAssessment.Out.Outcome, claimDecision.Out.Outcome),
+)
 
 var damageScores = map[string]int{"third_party_vehicle": 20, "third_party_property": 15, "fire": 40, "theft": 50, "collision": 30, "weather": 15, "vandalism": 20}
 

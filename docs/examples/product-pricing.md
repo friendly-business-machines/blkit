@@ -132,15 +132,56 @@ type lookupNumber struct {
 Four first-match tables keep independent commercial schedules independent.
 
 ``` { .go .blkit-example title="main.go" }
-var basePrices = bl.NewDecisionTable[twoStrings, lookupNumber](bl.DecisionTableConfig{HitPolicy: bl.HitPolicyFirst, Columns: []bl.Column{{Label: "Plan", Expr: `first`, Type: bl.TypeString}, {Label: "Cycle", Expr: `second`, Type: bl.TypeString}}, Rules: bl.Rules{
-	{`starter-monthly`, `"Starter"`, `"Monthly"`, `10`}, {`starter-annual`, `"Starter"`, `"Annual"`, `8`}, {`pro-monthly`, `"Pro"`, `"Monthly"`, `29`}, {`pro-annual`, `"Pro"`, `"Annual"`, `24`}, {`enterprise-monthly`, `"Enterprise"`, `"Monthly"`, `99`}, {`enterprise-annual`, `"Enterprise"`, `"Annual"`, `83`}}})
-var volumeDiscounts = bl.NewDecisionTable[oneNumber, lookupNumber](bl.DecisionTableConfig{HitPolicy: bl.HitPolicyFirst, Columns: []bl.Column{{Label: "Seats", Expr: `value`, Type: bl.TypeNumber}}, Rules: bl.Rules{{`small`, `< 5`, `0`}, {`team`, `[5..25)`, `5`}, {`business`, `[25..100)`, `10`}, {`large`, `[100..500)`, `15`}, {`enterprise`, `>= 500`, `20`}}})
-var tierDiscounts = bl.NewDecisionTable[oneString, lookupNumber](bl.DecisionTableConfig{HitPolicy: bl.HitPolicyFirst, Columns: []bl.Column{{Label: "Tier", Expr: `value`, Type: bl.TypeString}}, Rules: bl.Rules{{`standard`, `"Standard"`, `0`}, {`silver`, `"Silver"`, `5`}, {`gold`, `"Gold"`, `10`}, {`platinum`, `"Platinum"`, `20`}}})
-var promoReductions = bl.NewDecisionTable[oneString, lookupNumber](bl.DecisionTableConfig{HitPolicy: bl.HitPolicyFirst, Columns: []bl.Column{{Label: "Code", Expr: `value`, Type: bl.TypeString}}, Rules: bl.Rules{{`save10`, `"SAVE10"`, `1`}, {`launch20`, `"LAUNCH20"`, `2`}, {`none`, `-`, `0`}}})
+var basePrices = bl.NewDecisionTable[twoStrings, lookupNumber](bl.DecisionTableConfig{
+	Id: "base-prices", HitPolicy: bl.HitPolicyFirst,
+	Columns: []bl.Column{
+		{Label: "Plan", Expr: `first`, Type: bl.TypeString},
+		{Label: "Cycle", Expr: `second`, Type: bl.TypeString},
+	},
+	Rules: bl.Rules{
+		{`starter-monthly`,    `"Starter"`,    `"Monthly"`, `10`},
+		{`starter-annual`,     `"Starter"`,    `"Annual"`,  `8`},
+		{`pro-monthly`,        `"Pro"`,        `"Monthly"`, `29`},
+		{`pro-annual`,         `"Pro"`,        `"Annual"`,  `24`},
+		{`enterprise-monthly`, `"Enterprise"`, `"Monthly"`, `99`},
+		{`enterprise-annual`,  `"Enterprise"`, `"Annual"`,  `83`},
+	},
+})
+var volumeDiscounts = bl.NewDecisionTable[oneNumber, lookupNumber](bl.DecisionTableConfig{
+	Id: "volume-discounts", HitPolicy: bl.HitPolicyFirst,
+	Columns: []bl.Column{{Label: "Seats", Expr: `value`, Type: bl.TypeNumber}},
+	Rules: bl.Rules{
+		{`small`,      `< 5`,        `0`},
+		{`team`,       `[5..25)`,    `5`},
+		{`business`,   `[25..100)`,  `10`},
+		{`large`,      `[100..500)`, `15`},
+		{`enterprise`, `>= 500`,     `20`},
+	},
+})
+var tierDiscounts = bl.NewDecisionTable[oneString, lookupNumber](bl.DecisionTableConfig{
+	Id: "tier-discounts", HitPolicy: bl.HitPolicyFirst,
+	Columns: []bl.Column{{Label: "Tier", Expr: `value`, Type: bl.TypeString}},
+	Rules: bl.Rules{
+		{`standard`, `"Standard"`, `0`},
+		{`silver`,   `"Silver"`,   `5`},
+		{`gold`,     `"Gold"`,     `10`},
+		{`platinum`, `"Platinum"`, `20`},
+	},
+})
+var promoReductions = bl.NewDecisionTable[oneString, lookupNumber](bl.DecisionTableConfig{
+	Id: "promo-reductions", HitPolicy: bl.HitPolicyFirst,
+	Columns: []bl.Column{{Label: "Code", Expr: `value`, Type: bl.TypeString}},
+	Rules: bl.Rules{
+		{`save10`,   `"SAVE10"`,   `1`},
+		{`launch20`, `"LAUNCH20"`, `2`},
+		{`none`,     `-`,          `0`},
+	},
+})
 ```
 
-The effective seat price is rounded half-up to cents before the seat total is
-calculated. This makes invoice totals stable and matches the worked examples.
+A decision task wires the four lookup results into the pricing calculation. The
+effective seat price is rounded half-up to cents before the seat total is
+calculated, making invoice totals stable and matching the worked examples.
 
 ``` { .go .blkit-example title="main.go" }
 type pricingVars struct {
@@ -155,8 +196,21 @@ type pricingOutputs struct {
 	Monthly   bl.Handle[bl.BlNumber] `expr:"monthly"`
 	Annual    bl.Handle[bl.BlNumber] `expr:"annual"`
 }
+type pricingInputs struct {
+	Plan  bl.Handle[bl.BlString] `expr:"plan"`
+	Cycle bl.Handle[bl.BlString] `expr:"cycle"`
+	Seats bl.Handle[bl.BlNumber] `expr:"seats"`
+	Tier  bl.Handle[bl.BlString] `expr:"tier"`
+	Promo bl.Handle[bl.BlString] `expr:"promo"`
+}
+type pricingResultOutputs struct {
+	Base      bl.Handle[bl.BlNumber] `expr:"base"`
+	Effective bl.Handle[bl.BlNumber] `expr:"effective"`
+	Monthly   bl.Handle[bl.BlNumber] `expr:"monthly"`
+	Annual    bl.Handle[bl.BlNumber] `expr:"annual"`
+}
 
-var pricingDecision = bl.NewDecisionExpression[pricingVars, pricingOutputs](bl.DecisionExpressionConfig{
+var pricingCalculation = bl.NewDecisionExpression[pricingVars, pricingOutputs](bl.DecisionExpressionConfig{
 	Id: "pricing-calculation",
 	Entries: bl.Entries{
 		"effective": `round((base-promo)*(1-volume/100)*(1-tier/100),2)`,
@@ -165,37 +219,43 @@ var pricingDecision = bl.NewDecisionExpression[pricingVars, pricingOutputs](bl.D
 	},
 })
 
+var subscriptionPricing = bl.NewDecisionTask[pricingInputs, pricingResultOutputs](bl.DecisionTaskConfig{
+	Id:   "subscription-pricing",
+	Name: "Subscription pricing",
+})
+
+var _ = subscriptionPricing.Graph(
+	bl.Edge(subscriptionPricing.In.Plan, basePrices.In.First),
+	bl.Edge(subscriptionPricing.In.Cycle, basePrices.In.Second),
+	bl.Edge(subscriptionPricing.In.Seats, volumeDiscounts.In.Value),
+	bl.Edge(subscriptionPricing.In.Tier, tierDiscounts.In.Value),
+	bl.Edge(subscriptionPricing.In.Promo, promoReductions.In.Value),
+	bl.Edge(basePrices.Out.Number, pricingCalculation.In.Base),
+	bl.Edge(promoReductions.Out.Number, pricingCalculation.In.Promo),
+	bl.Edge(volumeDiscounts.Out.Number, pricingCalculation.In.Volume),
+	bl.Edge(tierDiscounts.Out.Number, pricingCalculation.In.Tier),
+	bl.Edge(subscriptionPricing.In.Seats, pricingCalculation.In.Seats),
+	bl.Edge(basePrices.Out.Number, subscriptionPricing.Out.Base),
+	bl.Edge(pricingCalculation.Out.Effective, subscriptionPricing.Out.Effective),
+	bl.Edge(pricingCalculation.Out.Monthly, subscriptionPricing.Out.Monthly),
+	bl.Edge(pricingCalculation.Out.Annual, subscriptionPricing.Out.Annual),
+)
+
 func strHandle(s string) bl.Handle[bl.BlString] { v, _ := bl.String(s); return bl.NewHandle(v) }
 func numHandle(n int) bl.Handle[bl.BlNumber]    { v, _ := bl.Number(n); return bl.NewHandle(v) }
 func PriceSubscription(input PricingInput) (PricingResult, error) {
-	base, err := basePrices.Evaluate(twoStrings{strHandle(input.Plan), strHandle(input.BillingCycle)})
-	if err != nil {
-		return PricingResult{}, err
-	}
-	volume, err := volumeDiscounts.Evaluate(oneNumber{numHandle(input.Seats)})
-	if err != nil {
-		return PricingResult{}, err
-	}
-	tier, err := tierDiscounts.Evaluate(oneString{strHandle(input.Tier)})
-	if err != nil {
-		return PricingResult{}, err
-	}
-	promo, err := promoReductions.Evaluate(oneString{strHandle(input.PromoCode)})
-	if err != nil {
-		return PricingResult{}, err
-	}
-	values, err := pricingDecision.Evaluate(pricingVars{
-		bl.NewHandle(base.Number.Get()),
-		bl.NewHandle(promo.Number.Get()),
-		bl.NewHandle(volume.Number.Get()),
-		bl.NewHandle(tier.Number.Get()),
-		numHandle(input.Seats),
+	values, err := subscriptionPricing.Evaluate(pricingInputs{
+		Plan:  strHandle(input.Plan),
+		Cycle: strHandle(input.BillingCycle),
+		Seats: numHandle(input.Seats),
+		Tier:  strHandle(input.Tier),
+		Promo: strHandle(input.PromoCode),
 	})
 	if err != nil {
 		return PricingResult{}, err
 	}
 	return PricingResult{
-		base.Number.Get().String(),
+		values.Base.Get().String(),
 		values.Effective.Get().String(),
 		values.Monthly.Get().String(),
 		values.Annual.Get().String(),

@@ -118,6 +118,10 @@ The actual resolution issued depends on the refund percentage, whether a replace
 
 ---
 
+## Implementation
+
+The executable portion represents eligibility, refund, and resolution calculation as a [`DecisionTask`](../decision-tasks/decision-task.spec.md) containing one decision expression. RMA creation, warehouse receipt, expiry, and payment or dispatch side effects remain process-layer behaviour and are not implemented yet.
+
 ## Outcomes
 
 | Condition | Outcome |

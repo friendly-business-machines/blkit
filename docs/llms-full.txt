@@ -260,9 +260,9 @@ Declined applications return a maximum credit load of zero and no advising track
 
 ## Implementation
 
-Define the application boundary and the typed handles used by the decision table.
-GPA remains part of the application input, although this policy does not use it
-as a decision column.
+Define the application boundary and the typed handles used by the decision task
+and its table. GPA remains part of the application input, although this policy
+does not use it as a decision column.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -305,25 +305,39 @@ The first matching row wins. Decline rows return zero credits and an empty track
 
 ``` { .go .blkit-example title="main.go" }
 var admissionTable = bl.NewDecisionTable[admissionVariables, admissionOutputs](bl.DecisionTableConfig{
-	Id: "course-admission", Name: "Course admission", HitPolicy: bl.HitPolicyFirst,
+	Id: "admission-rules", Name: "Admission rules", HitPolicy: bl.HitPolicyFirst,
 	Columns: []bl.Column{
 		{Label: "Score", Expr: `score`, Type: bl.TypeNumber},
 		{Label: "Enrolment", Expr: `enrolment`, Type: bl.TypeString},
 		{Label: "Absence", Expr: `absence`, Type: bl.TypeNumber},
 	},
 	Rules: bl.Rules{
-		{`honors`, `>= 750`, `"full-time", "part-time"`, `<= 0.30`, `"Admitted"`, `21`, `"Honors"`},
-		{`standard`, `>= 700`, `"full-time", "part-time"`, `<= 0.40`, `"Admitted"`, `18`, `"Standard"`},
-		{`foundation`, `>= 650`, `"full-time", "part-time"`, `<= 0.40`, `"Waitlisted"`, `15`, `"Foundation"`},
-		{`support`, `>= 600`, `"full-time", "part-time"`, `<= 0.50`, `"Waitlisted"`, `12`, `"Support"`},
-		{`low-score`, `< 600`, `-`, `-`, `"Declined"`, `0`, `""`},
-		{`withdrawn`, `-`, `"withdrawn"`, `-`, `"Declined"`, `0`, `""`},
-		{`high-absence`, `-`, `-`, `> 0.50`, `"Declined"`, `0`, `""`},
+		{`honors`,       `>= 750`, `"full-time", "part-time"`, `<= 0.30`, `"Admitted"`,   `21`, `"Honors"`},
+		{`standard`,     `>= 700`, `"full-time", "part-time"`, `<= 0.40`, `"Admitted"`,   `18`, `"Standard"`},
+		{`foundation`,   `>= 650`, `"full-time", "part-time"`, `<= 0.40`, `"Waitlisted"`, `15`, `"Foundation"`},
+		{`support`,      `>= 600`, `"full-time", "part-time"`, `<= 0.50`, `"Waitlisted"`, `12`, `"Support"`},
+		{`low-score`,    `< 600`,  `-`,                        `-`,       `"Declined"`,   `0`,  `""`},
+		{`withdrawn`,    `-`,      `"withdrawn"`,              `-`,       `"Declined"`,   `0`,  `""`},
+		{`high-absence`, `-`,      `-`,                        `> 0.50`,  `"Declined"`,   `0`,  `""`},
 	},
 })
+
+var admissionDecision = bl.NewDecisionTask[admissionVariables, admissionOutputs](bl.DecisionTaskConfig{
+	Id:   "course-admission",
+	Name: "Course admission",
+})
+
+var _ = admissionDecision.Graph(
+	bl.Edge(admissionDecision.In.Score, admissionTable.In.Score),
+	bl.Edge(admissionDecision.In.Absence, admissionTable.In.Absence),
+	bl.Edge(admissionDecision.In.Enrolment, admissionTable.In.Enrolment),
+	bl.Edge(admissionTable.Out.Decision, admissionDecision.Out.Decision),
+	bl.Edge(admissionTable.Out.MaxCredits, admissionDecision.Out.MaxCredits),
+	bl.Edge(admissionTable.Out.Track, admissionDecision.Out.Track),
+)
 ```
 
-Convert caller values to blkit values and evaluate the table.
+Convert caller values to blkit values and evaluate the complete decision task.
 
 ``` { .go .blkit-example title="main.go" }
 func DecideAdmission(input AdmissionInput) (AdmissionResult, error) {
@@ -339,7 +353,7 @@ func DecideAdmission(input AdmissionInput) (AdmissionResult, error) {
 	if err != nil {
 		return AdmissionResult{}, err
 	}
-	output, err := admissionTable.Evaluate(admissionVariables{
+	output, err := admissionDecision.Evaluate(admissionVariables{
 		Score: bl.NewHandle(score), Absence: bl.NewHandle(absence), Enrolment: bl.NewHandle(enrolment),
 	})
 	if err != nil {
@@ -405,8 +419,8 @@ outbound parcel. The cost depends on:
 - **Fuel surcharge** — a flat 8% applied to the pre-surcharge total.
 
 Unlike most examples here, this one needs no `DecisionTable` or `Process`. A
-`DecisionExpression` gives the calculation typed inputs, named intermediate
-outputs, and a reusable compiled definition.
+`DecisionTask` containing one `DecisionExpression` gives the calculation typed
+inputs, named intermediate outputs, and a reusable compiled definition.
 
 ### Inputs
 
@@ -519,9 +533,9 @@ type shippingOutputs struct {
 	Total            bl.Handle[bl.BlNumber] `expr:"total"`
 }
 
-var shippingDecision = bl.NewDecisionExpression[shippingVariables, shippingOutputs](bl.DecisionExpressionConfig{
-	Id:   "shipping-rate",
-	Name: "Shipping rate",
+var shippingCalculation = bl.NewDecisionExpression[shippingVariables, shippingOutputs](bl.DecisionExpressionConfig{
+	Id:   "shipping-rate-calculation",
+	Name: "Shipping rate calculation",
 	Entries: bl.Entries{
 		"volumetric_weight": `length_cm * width_cm * height_cm / 5000`,
 		"billable_weight":   `max([actual_weight_kg, volumetric_weight])`,
@@ -534,11 +548,33 @@ var shippingDecision = bl.NewDecisionExpression[shippingVariables, shippingOutpu
 	},
 })
 
+var shippingDecision = bl.NewDecisionTask[shippingVariables, shippingOutputs](bl.DecisionTaskConfig{
+	Id:   "shipping-rate",
+	Name: "Shipping rate",
+})
+
+var _ = shippingDecision.Graph(
+	bl.Edge(shippingDecision.In.ActualWeightKG, shippingCalculation.In.ActualWeightKG),
+	bl.Edge(shippingDecision.In.LengthCM, shippingCalculation.In.LengthCM),
+	bl.Edge(shippingDecision.In.WidthCM, shippingCalculation.In.WidthCM),
+	bl.Edge(shippingDecision.In.HeightCM, shippingCalculation.In.HeightCM),
+	bl.Edge(shippingDecision.In.DestinationZone, shippingCalculation.In.DestinationZone),
+	bl.Edge(shippingDecision.In.SpeedTier, shippingCalculation.In.SpeedTier),
+	bl.Edge(shippingCalculation.Out.VolumetricWeight, shippingDecision.Out.VolumetricWeight),
+	bl.Edge(shippingCalculation.Out.BillableWeight, shippingDecision.Out.BillableWeight),
+	bl.Edge(shippingCalculation.Out.BaseRate, shippingDecision.Out.BaseRate),
+	bl.Edge(shippingCalculation.Out.PerKGRate, shippingDecision.Out.PerKGRate),
+	bl.Edge(shippingCalculation.Out.SpeedMultiplier, shippingDecision.Out.SpeedMultiplier),
+	bl.Edge(shippingCalculation.Out.Subtotal, shippingDecision.Out.Subtotal),
+	bl.Edge(shippingCalculation.Out.FuelSurcharge, shippingDecision.Out.FuelSurcharge),
+	bl.Edge(shippingCalculation.Out.Total, shippingDecision.Out.Total),
+)
+
 func number(value string) (bl.BlNumber, error) { return bl.Number(value) }
 ```
 
 `CalculateShipping` converts the application boundary, evaluates the reusable
-decision, and projects its typed outputs.
+decision task, and projects its typed outputs.
 
 ``` { .go .blkit-example title="main.go" }
 func CalculateShipping(input ShippingInput) (ShippingQuote, error) {
@@ -610,8 +646,8 @@ func main() {
 
 ## Notes
 
-- The decision definition is built once and evaluated many times with different
-  typed inputs.
+- The decision task is built once and evaluated many times with different typed
+  inputs.
 - Prefer `bl.Number()` (arbitrary-precision decimal) over native floating point
   for monetary arithmetic — it avoids the rounding drift that float math
   introduces in financial calculations.
@@ -734,16 +770,27 @@ type routeOutputs struct {
 	Route bl.Handle[bl.BlString] `expr:"route"`
 }
 
-var routeDecision = bl.NewDecisionExpression[routeVars, routeOutputs](bl.DecisionExpressionConfig{
-	Id: "fulfilment-route",
+var routeExpression = bl.NewDecisionExpression[routeVars, routeOutputs](bl.DecisionExpressionConfig{
+	Id: "fulfilment-route-expression",
 	Entries: bl.Entries{
 		"route": `if not(stock) then "end-backorder" else if not(payment) then "end-payment-error" else "end-success"`,
 	},
 })
+
+var routeDecision = bl.NewDecisionTask[routeVars, routeOutputs](bl.DecisionTaskConfig{
+	Id:   "fulfilment-route",
+	Name: "Fulfilment route",
+})
+
+var _ = routeDecision.Graph(
+	bl.Edge(routeDecision.In.Stock, routeExpression.In.Stock),
+	bl.Edge(routeDecision.In.Payment, routeExpression.In.Payment),
+	bl.Edge(routeExpression.Out.Route, routeDecision.Out.Route),
+)
 ```
 
 Validation stays at the application boundary; gateway selection is evaluated by
-a typed `DecisionExpression`.
+a typed decision task containing the route expression.
 
 ``` { .go .blkit-example title="main.go" }
 func DecideFulfilment(in FulfilmentInput) (FulfilmentDecision, error) {
@@ -886,8 +933,8 @@ Finance Director regardless of category or employee level.
 
 ## Implementation
 
-The approval route is available today as a decision table. Define its caller and
-handle types first.
+The approval route is available today as a decision task containing one decision
+table. Define the JSON transport types and typed decision contract first.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -895,8 +942,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	bl "github.com/friendly-business-machines/blkit/core"
 	"os"
+
+	bl "github.com/friendly-business-machines/blkit/core"
 )
 
 type ExpenseInput struct {
@@ -930,37 +978,35 @@ var routeTable = bl.NewDecisionTable[routeInputs, routeOutputs](bl.DecisionTable
 		{Label: "Level", Expr: `level`, Type: bl.TypeString},
 	},
 	Rules: bl.Rules{
-		{`automatic`, `<= 50`, `-`, `-`, `"Automatic"`},
-		{`standard-manager`, `<= 500`, `"meals", "travel", "accommodation"`, `-`, `"Manager"`},
-		{`senior-manager`, `<= 500`, `"equipment", "other"`, `"senior", "executive"`, `"Manager"`},
-		{`executive-manager`, `<= 2000`, `-`, `"executive"`, `"Manager"`},
-		{`finance-under-limit`, `<= 2000`, `-`, `-`, `"Finance Director"`},
-		{`finance-over-limit`, `> 2000`, `-`, `-`, `"Finance Director"`},
+		{`automatic`,           `<= 50`,   `-`,                                  `-`,                     `"Automatic"`},
+		{`standard-manager`,    `<= 500`,  `"meals", "travel", "accommodation"`, `-`,                     `"Manager"`},
+		{`senior-manager`,      `<= 500`,  `"equipment", "other"`,               `"senior", "executive"`, `"Manager"`},
+		{`executive-manager`,   `<= 2000`, `-`,                                  `"executive"`,           `"Manager"`},
+		{`finance-under-limit`, `<= 2000`, `-`,                                  `-`,                     `"Finance Director"`},
+		{`finance-over-limit`,  `> 2000`,  `-`,                                  `-`,                     `"Finance Director"`},
 	},
 })
-
-func SelectExpenseRoute(input ExpenseInput) (ExpenseRoute, error) {
-	amount, err := bl.Number(input.Amount)
-	if err != nil {
-		return ExpenseRoute{}, err
-	}
-	category, err := bl.String(input.Category)
-	if err != nil {
-		return ExpenseRoute{}, err
-	}
-	level, err := bl.String(input.EmployeeLevel)
-	if err != nil {
-		return ExpenseRoute{}, err
-	}
-	output, err := routeTable.Evaluate(routeInputs{bl.NewHandle(amount), bl.NewHandle(category), bl.NewHandle(level)})
-	if err != nil {
-		return ExpenseRoute{}, err
-	}
-	return ExpenseRoute{Route: output.Route.Get().String()}, nil
-}
 ```
 
-The command exposes route selection to an application caller.
+The decision task provides the boundary for the complete routing decision. Its
+single node is the route table.
+
+``` { .go .blkit-example title="main.go" }
+var expenseRouting = bl.NewDecisionTask[routeInputs, routeOutputs](bl.DecisionTaskConfig{
+	Id:   "expense-routing",
+	Name: "Expense Routing",
+})
+
+var _ = expenseRouting.Graph(
+	bl.Edge(expenseRouting.In.Amount, routeTable.In.Amount),
+	bl.Edge(expenseRouting.In.Category, routeTable.In.Category),
+	bl.Edge(expenseRouting.In.Level, routeTable.In.Level),
+	bl.Edge(routeTable.Out.Route, expenseRouting.Out.Route),
+)
+```
+
+The command adapts JSON input to the decision task's typed contract, evaluates the
+complete decision, and converts its output back to JSON.
 
 ``` { .go .blkit-example title="main.go" }
 func main() {
@@ -969,11 +1015,31 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	result, err := SelectExpenseRoute(input)
+	amount, err := bl.Number(input.Amount)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	category, err := bl.String(input.Category)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	level, err := bl.String(input.EmployeeLevel)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	output, err := expenseRouting.Evaluate(routeInputs{
+		Amount:   bl.NewHandle(amount),
+		Category: bl.NewHandle(category),
+		Level:    bl.NewHandle(level),
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	result := ExpenseRoute{Route: output.Route.Get().String()}
 	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -1134,15 +1200,56 @@ type lookupNumber struct {
 Four first-match tables keep independent commercial schedules independent.
 
 ``` { .go .blkit-example title="main.go" }
-var basePrices = bl.NewDecisionTable[twoStrings, lookupNumber](bl.DecisionTableConfig{HitPolicy: bl.HitPolicyFirst, Columns: []bl.Column{{Label: "Plan", Expr: `first`, Type: bl.TypeString}, {Label: "Cycle", Expr: `second`, Type: bl.TypeString}}, Rules: bl.Rules{
-	{`starter-monthly`, `"Starter"`, `"Monthly"`, `10`}, {`starter-annual`, `"Starter"`, `"Annual"`, `8`}, {`pro-monthly`, `"Pro"`, `"Monthly"`, `29`}, {`pro-annual`, `"Pro"`, `"Annual"`, `24`}, {`enterprise-monthly`, `"Enterprise"`, `"Monthly"`, `99`}, {`enterprise-annual`, `"Enterprise"`, `"Annual"`, `83`}}})
-var volumeDiscounts = bl.NewDecisionTable[oneNumber, lookupNumber](bl.DecisionTableConfig{HitPolicy: bl.HitPolicyFirst, Columns: []bl.Column{{Label: "Seats", Expr: `value`, Type: bl.TypeNumber}}, Rules: bl.Rules{{`small`, `< 5`, `0`}, {`team`, `[5..25)`, `5`}, {`business`, `[25..100)`, `10`}, {`large`, `[100..500)`, `15`}, {`enterprise`, `>= 500`, `20`}}})
-var tierDiscounts = bl.NewDecisionTable[oneString, lookupNumber](bl.DecisionTableConfig{HitPolicy: bl.HitPolicyFirst, Columns: []bl.Column{{Label: "Tier", Expr: `value`, Type: bl.TypeString}}, Rules: bl.Rules{{`standard`, `"Standard"`, `0`}, {`silver`, `"Silver"`, `5`}, {`gold`, `"Gold"`, `10`}, {`platinum`, `"Platinum"`, `20`}}})
-var promoReductions = bl.NewDecisionTable[oneString, lookupNumber](bl.DecisionTableConfig{HitPolicy: bl.HitPolicyFirst, Columns: []bl.Column{{Label: "Code", Expr: `value`, Type: bl.TypeString}}, Rules: bl.Rules{{`save10`, `"SAVE10"`, `1`}, {`launch20`, `"LAUNCH20"`, `2`}, {`none`, `-`, `0`}}})
+var basePrices = bl.NewDecisionTable[twoStrings, lookupNumber](bl.DecisionTableConfig{
+	Id: "base-prices", HitPolicy: bl.HitPolicyFirst,
+	Columns: []bl.Column{
+		{Label: "Plan", Expr: `first`, Type: bl.TypeString},
+		{Label: "Cycle", Expr: `second`, Type: bl.TypeString},
+	},
+	Rules: bl.Rules{
+		{`starter-monthly`,    `"Starter"`,    `"Monthly"`, `10`},
+		{`starter-annual`,     `"Starter"`,    `"Annual"`,  `8`},
+		{`pro-monthly`,        `"Pro"`,        `"Monthly"`, `29`},
+		{`pro-annual`,         `"Pro"`,        `"Annual"`,  `24`},
+		{`enterprise-monthly`, `"Enterprise"`, `"Monthly"`, `99`},
+		{`enterprise-annual`,  `"Enterprise"`, `"Annual"`,  `83`},
+	},
+})
+var volumeDiscounts = bl.NewDecisionTable[oneNumber, lookupNumber](bl.DecisionTableConfig{
+	Id: "volume-discounts", HitPolicy: bl.HitPolicyFirst,
+	Columns: []bl.Column{{Label: "Seats", Expr: `value`, Type: bl.TypeNumber}},
+	Rules: bl.Rules{
+		{`small`,      `< 5`,        `0`},
+		{`team`,       `[5..25)`,    `5`},
+		{`business`,   `[25..100)`,  `10`},
+		{`large`,      `[100..500)`, `15`},
+		{`enterprise`, `>= 500`,     `20`},
+	},
+})
+var tierDiscounts = bl.NewDecisionTable[oneString, lookupNumber](bl.DecisionTableConfig{
+	Id: "tier-discounts", HitPolicy: bl.HitPolicyFirst,
+	Columns: []bl.Column{{Label: "Tier", Expr: `value`, Type: bl.TypeString}},
+	Rules: bl.Rules{
+		{`standard`, `"Standard"`, `0`},
+		{`silver`,   `"Silver"`,   `5`},
+		{`gold`,     `"Gold"`,     `10`},
+		{`platinum`, `"Platinum"`, `20`},
+	},
+})
+var promoReductions = bl.NewDecisionTable[oneString, lookupNumber](bl.DecisionTableConfig{
+	Id: "promo-reductions", HitPolicy: bl.HitPolicyFirst,
+	Columns: []bl.Column{{Label: "Code", Expr: `value`, Type: bl.TypeString}},
+	Rules: bl.Rules{
+		{`save10`,   `"SAVE10"`,   `1`},
+		{`launch20`, `"LAUNCH20"`, `2`},
+		{`none`,     `-`,          `0`},
+	},
+})
 ```
 
-The effective seat price is rounded half-up to cents before the seat total is
-calculated. This makes invoice totals stable and matches the worked examples.
+A decision task wires the four lookup results into the pricing calculation. The
+effective seat price is rounded half-up to cents before the seat total is
+calculated, making invoice totals stable and matching the worked examples.
 
 ``` { .go .blkit-example title="main.go" }
 type pricingVars struct {
@@ -1157,8 +1264,21 @@ type pricingOutputs struct {
 	Monthly   bl.Handle[bl.BlNumber] `expr:"monthly"`
 	Annual    bl.Handle[bl.BlNumber] `expr:"annual"`
 }
+type pricingInputs struct {
+	Plan  bl.Handle[bl.BlString] `expr:"plan"`
+	Cycle bl.Handle[bl.BlString] `expr:"cycle"`
+	Seats bl.Handle[bl.BlNumber] `expr:"seats"`
+	Tier  bl.Handle[bl.BlString] `expr:"tier"`
+	Promo bl.Handle[bl.BlString] `expr:"promo"`
+}
+type pricingResultOutputs struct {
+	Base      bl.Handle[bl.BlNumber] `expr:"base"`
+	Effective bl.Handle[bl.BlNumber] `expr:"effective"`
+	Monthly   bl.Handle[bl.BlNumber] `expr:"monthly"`
+	Annual    bl.Handle[bl.BlNumber] `expr:"annual"`
+}
 
-var pricingDecision = bl.NewDecisionExpression[pricingVars, pricingOutputs](bl.DecisionExpressionConfig{
+var pricingCalculation = bl.NewDecisionExpression[pricingVars, pricingOutputs](bl.DecisionExpressionConfig{
 	Id: "pricing-calculation",
 	Entries: bl.Entries{
 		"effective": `round((base-promo)*(1-volume/100)*(1-tier/100),2)`,
@@ -1167,37 +1287,43 @@ var pricingDecision = bl.NewDecisionExpression[pricingVars, pricingOutputs](bl.D
 	},
 })
 
+var subscriptionPricing = bl.NewDecisionTask[pricingInputs, pricingResultOutputs](bl.DecisionTaskConfig{
+	Id:   "subscription-pricing",
+	Name: "Subscription pricing",
+})
+
+var _ = subscriptionPricing.Graph(
+	bl.Edge(subscriptionPricing.In.Plan, basePrices.In.First),
+	bl.Edge(subscriptionPricing.In.Cycle, basePrices.In.Second),
+	bl.Edge(subscriptionPricing.In.Seats, volumeDiscounts.In.Value),
+	bl.Edge(subscriptionPricing.In.Tier, tierDiscounts.In.Value),
+	bl.Edge(subscriptionPricing.In.Promo, promoReductions.In.Value),
+	bl.Edge(basePrices.Out.Number, pricingCalculation.In.Base),
+	bl.Edge(promoReductions.Out.Number, pricingCalculation.In.Promo),
+	bl.Edge(volumeDiscounts.Out.Number, pricingCalculation.In.Volume),
+	bl.Edge(tierDiscounts.Out.Number, pricingCalculation.In.Tier),
+	bl.Edge(subscriptionPricing.In.Seats, pricingCalculation.In.Seats),
+	bl.Edge(basePrices.Out.Number, subscriptionPricing.Out.Base),
+	bl.Edge(pricingCalculation.Out.Effective, subscriptionPricing.Out.Effective),
+	bl.Edge(pricingCalculation.Out.Monthly, subscriptionPricing.Out.Monthly),
+	bl.Edge(pricingCalculation.Out.Annual, subscriptionPricing.Out.Annual),
+)
+
 func strHandle(s string) bl.Handle[bl.BlString] { v, _ := bl.String(s); return bl.NewHandle(v) }
 func numHandle(n int) bl.Handle[bl.BlNumber]    { v, _ := bl.Number(n); return bl.NewHandle(v) }
 func PriceSubscription(input PricingInput) (PricingResult, error) {
-	base, err := basePrices.Evaluate(twoStrings{strHandle(input.Plan), strHandle(input.BillingCycle)})
-	if err != nil {
-		return PricingResult{}, err
-	}
-	volume, err := volumeDiscounts.Evaluate(oneNumber{numHandle(input.Seats)})
-	if err != nil {
-		return PricingResult{}, err
-	}
-	tier, err := tierDiscounts.Evaluate(oneString{strHandle(input.Tier)})
-	if err != nil {
-		return PricingResult{}, err
-	}
-	promo, err := promoReductions.Evaluate(oneString{strHandle(input.PromoCode)})
-	if err != nil {
-		return PricingResult{}, err
-	}
-	values, err := pricingDecision.Evaluate(pricingVars{
-		bl.NewHandle(base.Number.Get()),
-		bl.NewHandle(promo.Number.Get()),
-		bl.NewHandle(volume.Number.Get()),
-		bl.NewHandle(tier.Number.Get()),
-		numHandle(input.Seats),
+	values, err := subscriptionPricing.Evaluate(pricingInputs{
+		Plan:  strHandle(input.Plan),
+		Cycle: strHandle(input.BillingCycle),
+		Seats: numHandle(input.Seats),
+		Tier:  strHandle(input.Tier),
+		Promo: strHandle(input.PromoCode),
 	})
 	if err != nil {
 		return PricingResult{}, err
 	}
 	return PricingResult{
-		base.Number.Get().String(),
+		values.Base.Get().String(),
 		values.Effective.Get().String(),
 		values.Monthly.Get().String(),
 		values.Annual.Get().String(),
@@ -1351,10 +1477,21 @@ type lineOutputs struct {
 	Total bl.Handle[bl.BlNumber] `expr:"total"`
 }
 
-var lineDecision = bl.NewDecisionExpression[lineVars, lineOutputs](bl.DecisionExpressionConfig{
-	Id:      "invoice-line-total",
+var lineExpression = bl.NewDecisionExpression[lineVars, lineOutputs](bl.DecisionExpressionConfig{
+	Id:      "invoice-line-calculation",
 	Entries: bl.Entries{"total": `quantity*price`},
 })
+
+var lineDecision = bl.NewDecisionTask[lineVars, lineOutputs](bl.DecisionTaskConfig{
+	Id:   "invoice-line-total",
+	Name: "Invoice line total",
+})
+
+var _ = lineDecision.Graph(
+	bl.Edge(lineDecision.In.Quantity, lineExpression.In.Quantity),
+	bl.Edge(lineDecision.In.Price, lineExpression.In.Price),
+	bl.Edge(lineExpression.Out.Total, lineDecision.Out.Total),
+)
 
 type invoiceVars struct {
 	Computed bl.Handle[bl.BlNumber] `expr:"computed"`
@@ -1365,13 +1502,25 @@ type invoiceOutputs struct {
 	RequiresApproval bl.Handle[bl.BlBoolean] `expr:"requires_approval"`
 }
 
-var invoiceDecision = bl.NewDecisionExpression[invoiceVars, invoiceOutputs](bl.DecisionExpressionConfig{
-	Id: "invoice-checks",
+var invoiceChecks = bl.NewDecisionExpression[invoiceVars, invoiceOutputs](bl.DecisionExpressionConfig{
+	Id: "invoice-checks-expression",
 	Entries: bl.Entries{
 		"lines_valid":       `abs(computed-stated)<=0.01`,
 		"requires_approval": `stated>10000`,
 	},
 })
+
+var invoiceDecision = bl.NewDecisionTask[invoiceVars, invoiceOutputs](bl.DecisionTaskConfig{
+	Id:   "invoice-checks",
+	Name: "Invoice checks",
+})
+
+var _ = invoiceDecision.Graph(
+	bl.Edge(invoiceDecision.In.Computed, invoiceChecks.In.Computed),
+	bl.Edge(invoiceDecision.In.Stated, invoiceChecks.In.Stated),
+	bl.Edge(invoiceChecks.Out.LinesValid, invoiceDecision.Out.LinesValid),
+	bl.Edge(invoiceChecks.Out.RequiresApproval, invoiceDecision.Out.RequiresApproval),
+)
 ```
 
 Each validation contributes its own message, so callers receive all failures.
@@ -1592,13 +1741,27 @@ type onboardingOutputs struct {
 	Result   bl.Handle[bl.BlString] `expr:"result"`
 }
 
-var onboardingDecision = bl.NewDecisionExpression[onboardingVars, onboardingOutputs](bl.DecisionExpressionConfig{
+var onboardingExpression = bl.NewDecisionExpression[onboardingVars, onboardingOutputs](bl.DecisionExpressionConfig{
 	Id: "onboarding-deadline",
 	Entries: bl.Entries{
 		"deadline": `addBusinessDays(hire,5)`,
 		"result":   `if it<=5 and hr<=5 and facilities<=5 then "welcome" else "escalate"`,
 	},
 })
+
+var onboardingDecision = bl.NewDecisionTask[onboardingVars, onboardingOutputs](bl.DecisionTaskConfig{
+	Id:   "employee-onboarding-decision",
+	Name: "Employee onboarding decision",
+})
+
+var _ = onboardingDecision.Graph(
+	bl.Edge(onboardingDecision.In.Hire, onboardingExpression.In.Hire),
+	bl.Edge(onboardingDecision.In.IT, onboardingExpression.In.IT),
+	bl.Edge(onboardingDecision.In.HR, onboardingExpression.In.HR),
+	bl.Edge(onboardingDecision.In.Facilities, onboardingExpression.In.Facilities),
+	bl.Edge(onboardingExpression.Out.Deadline, onboardingDecision.Out.Deadline),
+	bl.Edge(onboardingExpression.Out.Result, onboardingDecision.Out.Result),
+)
 ```
 
 ``` { .go .blkit-example title="main.go" }
@@ -1844,12 +2007,12 @@ type claimOutputs struct {
 }
 ```
 
-The compiled decision gates eligibility, caps and bands the score, then derives
-the settlement and referral outcome.
+The decision task contains an expression that gates eligibility, caps and bands
+the score, then derives the settlement and referral outcome.
 
 ``` { .go .blkit-example title="main.go" }
-var claimDecision = bl.NewDecisionExpression[claimVars, claimOutputs](bl.DecisionExpressionConfig{
-	Id: "claim-assessment",
+var claimAssessment = bl.NewDecisionExpression[claimVars, claimOutputs](bl.DecisionExpressionConfig{
+	Id: "claim-assessment-calculation",
 	Entries: bl.Entries{
 		"eligible":   `active and incident>=start and incident<=end and covered`,
 		"capped":     `clamp(raw,0,100)`,
@@ -1860,6 +2023,29 @@ var claimDecision = bl.NewDecisionExpression[claimVars, claimOutputs](bl.Decisio
 		"outcome":    `if not(eligible) then "Rejected: damage not covered" else if net=0 then "Valid, no payment" else if net>25000 then "Senior assessor referral" else "Offer issued"`,
 	},
 })
+
+var claimDecision = bl.NewDecisionTask[claimVars, claimOutputs](bl.DecisionTaskConfig{
+	Id:   "claim-assessment",
+	Name: "Claim assessment",
+})
+
+var _ = claimDecision.Graph(
+	bl.Edge(claimDecision.In.Active, claimAssessment.In.Active),
+	bl.Edge(claimDecision.In.Incident, claimAssessment.In.Incident),
+	bl.Edge(claimDecision.In.Start, claimAssessment.In.Start),
+	bl.Edge(claimDecision.In.End, claimAssessment.In.End),
+	bl.Edge(claimDecision.In.Covered, claimAssessment.In.Covered),
+	bl.Edge(claimDecision.In.Raw, claimAssessment.In.Raw),
+	bl.Edge(claimDecision.In.Value, claimAssessment.In.Value),
+	bl.Edge(claimDecision.In.Excess, claimAssessment.In.Excess),
+	bl.Edge(claimAssessment.Out.Eligible, claimDecision.Out.Eligible),
+	bl.Edge(claimAssessment.Out.Capped, claimDecision.Out.Capped),
+	bl.Edge(claimAssessment.Out.Severity, claimDecision.Out.Severity),
+	bl.Edge(claimAssessment.Out.Percentage, claimDecision.Out.Percentage),
+	bl.Edge(claimAssessment.Out.Gross, claimDecision.Out.Gross),
+	bl.Edge(claimAssessment.Out.Net, claimDecision.Out.Net),
+	bl.Edge(claimAssessment.Out.Outcome, claimDecision.Out.Outcome),
+)
 
 var damageScores = map[string]int{"third_party_vehicle": 20, "third_party_property": 15, "fire": 40, "theft": 50, "collision": 30, "weather": 15, "vandalism": 20}
 
@@ -2036,8 +2222,8 @@ For C-003, four rules match — R1 (5%), R6 (12%), R7 (8%), R8 (6%). The highest
 
 ## Implementation
 
-Define the order boundary and the decision table's typed input and output
-contracts.
+Define the order boundary and the typed contracts used by the decision task and
+its nodes.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -2082,17 +2268,29 @@ A collect/max policy evaluates every row and retains the largest percentage.
 ``` { .go .blkit-example title="main.go" }
 var maxAggregation = bl.AggregationMax
 var discountTable = bl.NewDecisionTable[discountVars, discountOut](bl.DecisionTableConfig{
-	Id: "customer-discount", HitPolicy: bl.HitPolicyCollect, Aggregation: &maxAggregation,
+	Id: "discount-rules", HitPolicy: bl.HitPolicyCollect, Aggregation: &maxAggregation,
 	Columns: []bl.Column{
-		{Label: "Tier", Expr: `tier`, Type: bl.TypeString}, {Label: "Age", Expr: `age`, Type: bl.TypeNumber},
-		{Label: "Subtotal", Expr: `subtotal`, Type: bl.TypeNumber}, {Label: "Items", Expr: `items`, Type: bl.TypeNumber},
-		{Label: "Category", Expr: `category`, Type: bl.TypeString}, {Label: "Code", Expr: `code`, Type: bl.TypeString}, {Label: "Month", Expr: `month`, Type: bl.TypeString},
+		{Label: "Tier", Expr: `tier`, Type: bl.TypeString},
+		{Label: "Age", Expr: `age`, Type: bl.TypeNumber},
+		{Label: "Subtotal", Expr: `subtotal`, Type: bl.TypeNumber},
+		{Label: "Items", Expr: `items`, Type: bl.TypeNumber},
+		{Label: "Category", Expr: `category`, Type: bl.TypeString},
+		{Label: "Code", Expr: `code`, Type: bl.TypeString},
+		{Label: "Month", Expr: `month`, Type: bl.TypeString},
 	},
 	Rules: bl.Rules{
-		{`R1`, `"Silver"`, `>= 12`, `-`, `-`, `-`, `-`, `-`, `5`}, {`R2`, `"Gold"`, `>= 12`, `-`, `-`, `-`, `-`, `-`, `10`}, {`R3`, `"Platinum"`, `>= 12`, `-`, `-`, `-`, `-`, `-`, `15`},
-		{`R4`, `-`, `< 3`, `-`, `-`, `-`, `-`, `-`, `10`}, {`R5`, `-`, `-`, `-`, `[10..25)`, `-`, `-`, `-`, `5`}, {`R6`, `-`, `-`, `-`, `>= 25`, `-`, `-`, `-`, `12`},
-		{`R7`, `-`, `-`, `> 500`, `-`, `-`, `-`, `-`, `8`}, {`R8`, `-`, `-`, `-`, `-`, `"Furniture"`, `-`, `-`, `6`}, {`R9`, `-`, `-`, `-`, `-`, `-`, `-`, `"January", "July"`, `20`},
-		{`R10`, `-`, `-`, `-`, `-`, `-`, `"WELCOME20"`, `-`, `20`}, {`R11`, `"Gold", "Platinum"`, `-`, `-`, `-`, `-`, `"LOYAL10"`, `-`, `10`}, {`R12`, `-`, `-`, `-`, `>= 10`, `-`, `"BULK15"`, `-`, `15`},
+		{`R1`,  `"Silver"`,           `>= 12`, `-`,     `-`,        `-`,           `-`,           `-`,                 `5`},
+		{`R2`,  `"Gold"`,             `>= 12`, `-`,     `-`,        `-`,           `-`,           `-`,                 `10`},
+		{`R3`,  `"Platinum"`,         `>= 12`, `-`,     `-`,        `-`,           `-`,           `-`,                 `15`},
+		{`R4`,  `-`,                  `< 3`,   `-`,     `-`,        `-`,           `-`,           `-`,                 `10`},
+		{`R5`,  `-`,                  `-`,     `-`,     `[10..25)`, `-`,           `-`,           `-`,                 `5`},
+		{`R6`,  `-`,                  `-`,     `-`,     `>= 25`,    `-`,           `-`,           `-`,                 `12`},
+		{`R7`,  `-`,                  `-`,     `> 500`, `-`,        `-`,           `-`,           `-`,                 `8`},
+		{`R8`,  `-`,                  `-`,     `-`,     `-`,        `"Furniture"`, `-`,           `-`,                 `6`},
+		{`R9`,  `-`,                  `-`,     `-`,     `-`,        `-`,           `-`,           `"January", "July"`, `20`},
+		{`R10`, `-`,                  `-`,     `-`,     `-`,        `-`,           `"WELCOME20"`, `-`,                 `20`},
+		{`R11`, `"Gold", "Platinum"`, `-`,     `-`,     `-`,        `-`,           `"LOYAL10"`,   `-`,                 `10`},
+		{`R12`, `-`,                  `-`,     `-`,     `>= 10`,    `-`,           `"BULK15"`,    `-`,                 `15`},
 	},
 })
 
@@ -2104,17 +2302,43 @@ type totalOutputs struct {
 	Amount bl.Handle[bl.BlNumber] `expr:"amount"`
 	Total  bl.Handle[bl.BlNumber] `expr:"total"`
 }
+type discountOutputs struct {
+	Discount bl.Handle[bl.BlNumber] `expr:"discount"`
+	Amount   bl.Handle[bl.BlNumber] `expr:"amount"`
+	Total    bl.Handle[bl.BlNumber] `expr:"total"`
+}
 
-var totalDecision = bl.NewDecisionExpression[totalVars, totalOutputs](bl.DecisionExpressionConfig{
+var totalCalculation = bl.NewDecisionExpression[totalVars, totalOutputs](bl.DecisionExpressionConfig{
 	Id: "discount-totals",
 	Entries: bl.Entries{
 		"amount": `subtotal * discount / 100`,
 		"total":  `subtotal - amount`,
 	},
 })
+
+var customerDiscount = bl.NewDecisionTask[discountVars, discountOutputs](bl.DecisionTaskConfig{
+	Id:   "customer-discount",
+	Name: "Customer discount",
+})
+
+var _ = customerDiscount.Graph(
+	bl.Edge(customerDiscount.In.Tier, discountTable.In.Tier),
+	bl.Edge(customerDiscount.In.Age, discountTable.In.Age),
+	bl.Edge(customerDiscount.In.Subtotal, discountTable.In.Subtotal),
+	bl.Edge(customerDiscount.In.Items, discountTable.In.Items),
+	bl.Edge(customerDiscount.In.Category, discountTable.In.Category),
+	bl.Edge(customerDiscount.In.Code, discountTable.In.Code),
+	bl.Edge(customerDiscount.In.Month, discountTable.In.Month),
+	bl.Edge(customerDiscount.In.Subtotal, totalCalculation.In.Subtotal),
+	bl.Edge(discountTable.Out.Discount, totalCalculation.In.Discount),
+	bl.Edge(discountTable.Out.Discount, customerDiscount.Out.Discount),
+	bl.Edge(totalCalculation.Out.Amount, customerDiscount.Out.Amount),
+	bl.Edge(totalCalculation.Out.Total, customerDiscount.Out.Total),
+)
 ```
 
-Evaluate the table, then pass its result into the monetary decision.
+The decision task wires the table output into the monetary calculation and is
+evaluated as one reusable decision.
 
 ``` { .go .blkit-example title="main.go" }
 func CalculateDiscount(input DiscountInput) (DiscountResult, error) {
@@ -2128,16 +2352,19 @@ func CalculateDiscount(input DiscountInput) (DiscountResult, error) {
 	category, _ := bl.String(input.Category)
 	code, _ := bl.String(input.PromoCode)
 	month, _ := bl.String(input.Month)
-	selected, err := discountTable.Evaluate(discountVars{bl.NewHandle(tier), bl.NewHandle(age), bl.NewHandle(subtotal), bl.NewHandle(items), bl.NewHandle(category), bl.NewHandle(code), bl.NewHandle(month)})
+	result, err := customerDiscount.Evaluate(discountVars{
+		Tier:     bl.NewHandle(tier),
+		Age:      bl.NewHandle(age),
+		Subtotal: bl.NewHandle(subtotal),
+		Items:    bl.NewHandle(items),
+		Category: bl.NewHandle(category),
+		Code:     bl.NewHandle(code),
+		Month:    bl.NewHandle(month),
+	})
 	if err != nil {
 		return DiscountResult{}, err
 	}
-	discount := selected.Discount.Get()
-	totals, err := totalDecision.Evaluate(totalVars{bl.NewHandle(subtotal), bl.NewHandle(discount)})
-	if err != nil {
-		return DiscountResult{}, err
-	}
-	return DiscountResult{discount.String(), totals.Amount.Get().String(), totals.Total.Get().String()}, nil
+	return DiscountResult{result.Discount.Get().String(), result.Amount.Get().String(), result.Total.Get().String()}, nil
 }
 func main() {
 	var input DiscountInput
@@ -2312,7 +2539,7 @@ issued at 110% = **£385**.
 ## Implementation
 
 The eligibility, refund, and resolution logic can already be composed as one
-typed `DecisionExpression`.
+typed `DecisionTask` containing a `DecisionExpression`.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -2374,8 +2601,8 @@ type returnOutputs struct {
 Sequential entries make each decision visible and reusable by later entries.
 
 ``` { .go .blkit-example title="main.go" }
-var returnDecision = bl.NewDecisionExpression[returnVars, returnOutputs](bl.DecisionExpressionConfig{
-	Id: "product-return",
+var returnExpression = bl.NewDecisionExpression[returnVars, returnOutputs](bl.DecisionExpressionConfig{
+	Id: "product-return-calculation",
 	Entries: bl.Entries{
 		"within_request_window": `request-delivery <= dtDuration("P30D")`,
 		"received_in_time":      `received-issued <= dtDuration("P14D")`,
@@ -2386,6 +2613,33 @@ var returnDecision = bl.NewDecisionExpression[returnVars, returnOutputs](bl.Deci
 		"resolution":            `if refund_percent=0 then "Declined" else if preferred="replacement" and stock then "Replacement dispatched" else if preferred="store_credit" then "Store credit" else if refund_percent=100 then "Full refund" else "Partial refund"`,
 	},
 })
+
+var returnDecision = bl.NewDecisionTask[returnVars, returnOutputs](bl.DecisionTaskConfig{
+	Id:   "product-return",
+	Name: "Product return",
+})
+
+var _ = returnDecision.Graph(
+	bl.Edge(returnDecision.In.Delivery, returnExpression.In.Delivery),
+	bl.Edge(returnDecision.In.Request, returnExpression.In.Request),
+	bl.Edge(returnDecision.In.Issued, returnExpression.In.Issued),
+	bl.Edge(returnDecision.In.Received, returnExpression.In.Received),
+	bl.Edge(returnDecision.In.Returnable, returnExpression.In.Returnable),
+	bl.Edge(returnDecision.In.Quantity, returnExpression.In.Quantity),
+	bl.Edge(returnDecision.In.Purchased, returnExpression.In.Purchased),
+	bl.Edge(returnDecision.In.Reason, returnExpression.In.Reason),
+	bl.Edge(returnDecision.In.Grade, returnExpression.In.Grade),
+	bl.Edge(returnDecision.In.Preferred, returnExpression.In.Preferred),
+	bl.Edge(returnDecision.In.Stock, returnExpression.In.Stock),
+	bl.Edge(returnDecision.In.Price, returnExpression.In.Price),
+	bl.Edge(returnExpression.Out.WithinRequestWindow, returnDecision.Out.WithinRequestWindow),
+	bl.Edge(returnExpression.Out.ReceivedInTime, returnDecision.Out.ReceivedInTime),
+	bl.Edge(returnExpression.Out.Eligible, returnDecision.Out.Eligible),
+	bl.Edge(returnExpression.Out.RefundPercent, returnDecision.Out.RefundPercent),
+	bl.Edge(returnExpression.Out.RefundAmount, returnDecision.Out.RefundAmount),
+	bl.Edge(returnExpression.Out.ResolutionAmount, returnDecision.Out.ResolutionAmount),
+	bl.Edge(returnExpression.Out.Resolution, returnDecision.Out.Resolution),
+)
 
 func CalculateReturn(in ReturnInput) (ReturnResult, error) {
 	delivery, e := bl.Date(in.DeliveryDate)
@@ -2627,9 +2881,10 @@ $200,000 taxable income:
 
 ## Implementation
 
-The liability schedules can be compiled into one typed `DecisionExpression` and
-reused for many returns. This application accepts taxable income after the assessable-income
-and deduction calculation described above.
+The liability schedules can be compiled into a `DecisionTask` containing one
+typed `DecisionExpression` and reused for many returns. This application accepts
+taxable income after the assessable-income and deduction calculation described
+above.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -2718,14 +2973,39 @@ type incomeOutputs struct {
 	Taxable        bl.Handle[bl.BlNumber] `expr:"taxable"`
 }
 
-var incomeDecision = bl.NewDecisionExpression[incomeVars, incomeOutputs](bl.DecisionExpressionConfig{
-	Id: "taxable-income",
+var incomeExpression = bl.NewDecisionExpression[incomeVars, incomeOutputs](bl.DecisionExpressionConfig{
+	Id: "taxable-income-calculation",
 	Entries: bl.Entries{
 		"net_capital_gain": `max([0,gains-current_losses-prior_losses])*(if discount then 0.5 else 1)`,
 		"assessable":       `salary+interest+unfranked+franked_cash+franking+rental+business+foreign+trust+net_capital_gain`,
 		"taxable":          `max([0,assessable-deductions])`,
 	},
 })
+
+var incomeDecision = bl.NewDecisionTask[incomeVars, incomeOutputs](bl.DecisionTaskConfig{
+	Id:   "taxable-income",
+	Name: "Taxable income",
+})
+
+var _ = incomeDecision.Graph(
+	bl.Edge(incomeDecision.In.Salary, incomeExpression.In.Salary),
+	bl.Edge(incomeDecision.In.Interest, incomeExpression.In.Interest),
+	bl.Edge(incomeDecision.In.Unfranked, incomeExpression.In.Unfranked),
+	bl.Edge(incomeDecision.In.FrankedCash, incomeExpression.In.FrankedCash),
+	bl.Edge(incomeDecision.In.Franking, incomeExpression.In.Franking),
+	bl.Edge(incomeDecision.In.Rental, incomeExpression.In.Rental),
+	bl.Edge(incomeDecision.In.Business, incomeExpression.In.Business),
+	bl.Edge(incomeDecision.In.Foreign, incomeExpression.In.Foreign),
+	bl.Edge(incomeDecision.In.Trust, incomeExpression.In.Trust),
+	bl.Edge(incomeDecision.In.Gains, incomeExpression.In.Gains),
+	bl.Edge(incomeDecision.In.CurrentLosses, incomeExpression.In.CurrentLosses),
+	bl.Edge(incomeDecision.In.PriorLosses, incomeExpression.In.PriorLosses),
+	bl.Edge(incomeDecision.In.Deductions, incomeExpression.In.Deductions),
+	bl.Edge(incomeDecision.In.Discount, incomeExpression.In.Discount),
+	bl.Edge(incomeExpression.Out.NetCapitalGain, incomeDecision.Out.NetCapitalGain),
+	bl.Edge(incomeExpression.Out.Assessable, incomeDecision.Out.Assessable),
+	bl.Edge(incomeExpression.Out.Taxable, incomeDecision.Out.Taxable),
+)
 
 func BuildTaxableIncome(in IncomeInput) (string, string, error) {
 	values := []string{in.Salary, in.Interest, in.UnfrankedDividends, in.FrankedCash, in.FrankingCredits, in.NetRental, in.BusinessIncome, in.ForeignIncome, in.TrustDistributions, in.GrossCapitalGains, in.CurrentCapitalLosses, in.PriorCapitalLosses, in.Deductions}
@@ -2760,8 +3040,8 @@ HELP/HECS, then reconciliation. Final tax is rounded to whole dollars, matching
 the annual return examples.
 
 ``` { .go .blkit-example title="main.go" }
-var taxDecision = bl.NewDecisionExpression[taxVars, taxOutputs](bl.DecisionExpressionConfig{
-	Id: "income-tax",
+var taxExpression = bl.NewDecisionExpression[taxVars, taxOutputs](bl.DecisionExpressionConfig{
+	Id: "income-tax-calculation",
 	Entries: bl.Entries{
 		"base_tax":   `if residency="foreign" then (if income<=135000 then income*0.30 else if income<=190000 then 40500+(income-135000)*0.37 else 60850+(income-190000)*0.45) else if residency="working_holiday" then (if income<=45000 then income*0.15 else if income<=135000 then 6750+(income-45000)*0.30 else if income<=190000 then 33750+(income-135000)*0.37 else 54100+(income-190000)*0.45) else (if income<=18200 then 0 else if income<=45000 then (income-18200)*0.16 else if income<=135000 then 4288+(income-45000)*0.30 else if income<=190000 then 31288+(income-135000)*0.37 else 51638+(income-190000)*0.45)`,
 		"lito":       `if residency!="resident" then 0 else if income<=37500 then 700 else if income<=45000 then 700-(income-37500)*0.05 else if income<=66667 then 325-(income-45000)*0.015 else 0`,
@@ -2776,6 +3056,33 @@ var taxDecision = bl.NewDecisionExpression[taxVars, taxOutputs](bl.DecisionExpre
 		"outcome":    `if balance<0 then "refund" else if balance>0 then "payable" else "settled"`,
 	},
 })
+
+var taxDecision = bl.NewDecisionTask[taxVars, taxOutputs](bl.DecisionTaskConfig{
+	Id:   "income-tax",
+	Name: "Income tax",
+})
+
+var _ = taxDecision.Graph(
+	bl.Edge(taxDecision.In.Income, taxExpression.In.Income),
+	bl.Edge(taxDecision.In.Residency, taxExpression.In.Residency),
+	bl.Edge(taxDecision.In.Age, taxExpression.In.Age),
+	bl.Edge(taxDecision.In.Private, taxExpression.In.Private),
+	bl.Edge(taxDecision.In.Family, taxExpression.In.Family),
+	bl.Edge(taxDecision.In.Debt, taxExpression.In.Debt),
+	bl.Edge(taxDecision.In.PAYG, taxExpression.In.PAYG),
+	bl.Edge(taxDecision.In.Franking, taxExpression.In.Franking),
+	bl.Edge(taxExpression.Out.BaseTax, taxDecision.Out.BaseTax),
+	bl.Edge(taxExpression.Out.LITO, taxDecision.Out.LITO),
+	bl.Edge(taxExpression.Out.SAPTO, taxDecision.Out.SAPTO),
+	bl.Edge(taxExpression.Out.IncomeTax, taxDecision.Out.IncomeTax),
+	bl.Edge(taxExpression.Out.Medicare, taxDecision.Out.Medicare),
+	bl.Edge(taxExpression.Out.MLS, taxDecision.Out.MLS),
+	bl.Edge(taxExpression.Out.HELPRate, taxDecision.Out.HELPRate),
+	bl.Edge(taxExpression.Out.HELP, taxDecision.Out.HELP),
+	bl.Edge(taxExpression.Out.TotalTax, taxDecision.Out.TotalTax),
+	bl.Edge(taxExpression.Out.Balance, taxDecision.Out.Balance),
+	bl.Edge(taxExpression.Out.Outcome, taxDecision.Out.Outcome),
+)
 ```
 
 ``` { .go .blkit-example title="main.go" }

@@ -76,6 +76,10 @@ The discount amount shown on the invoice is:
 
 ---
 
+## Implementation
+
+The executable example represents discount selection and application as one [`DecisionTask`](../decision-tasks/decision-task.spec.md). The graph wires the collect/max decision table's selected percentage into the monetary decision expression and exposes the percentage, amount, and final total as task outputs.
+
 ## Outcomes
 
 | Applied Discount | Outcome |

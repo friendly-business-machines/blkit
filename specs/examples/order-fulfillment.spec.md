@@ -62,6 +62,10 @@ StartEvent("start")
                 → EndEvent("end-backorder",  "Order Backordered")
 ```
 
+## Implementation
+
+The executable portion represents gateway route selection as a [`DecisionTask`](../decision-tasks/decision-task.spec.md) containing one decision expression. Order validation remains at the application boundary; inventory, payment, compensation, and notification activities require the unfinished process engine.
+
 ## Scenarios and Expected Paths
 
 | Scenario | `stock_available` | `payment_ok` | Terminal node | Description |

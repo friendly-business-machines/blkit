@@ -17,8 +17,8 @@ outbound parcel. The cost depends on:
 - **Fuel surcharge** — a flat 8% applied to the pre-surcharge total.
 
 Unlike most examples here, this one needs no `DecisionTable` or `Process`. A
-`DecisionExpression` gives the calculation typed inputs, named intermediate
-outputs, and a reusable compiled definition.
+`DecisionTask` containing one `DecisionExpression` gives the calculation typed
+inputs, named intermediate outputs, and a reusable compiled definition.
 
 ### Inputs
 
@@ -131,9 +131,9 @@ type shippingOutputs struct {
 	Total            bl.Handle[bl.BlNumber] `expr:"total"`
 }
 
-var shippingDecision = bl.NewDecisionExpression[shippingVariables, shippingOutputs](bl.DecisionExpressionConfig{
-	Id:   "shipping-rate",
-	Name: "Shipping rate",
+var shippingCalculation = bl.NewDecisionExpression[shippingVariables, shippingOutputs](bl.DecisionExpressionConfig{
+	Id:   "shipping-rate-calculation",
+	Name: "Shipping rate calculation",
 	Entries: bl.Entries{
 		"volumetric_weight": `length_cm * width_cm * height_cm / 5000`,
 		"billable_weight":   `max([actual_weight_kg, volumetric_weight])`,
@@ -146,11 +146,33 @@ var shippingDecision = bl.NewDecisionExpression[shippingVariables, shippingOutpu
 	},
 })
 
+var shippingDecision = bl.NewDecisionTask[shippingVariables, shippingOutputs](bl.DecisionTaskConfig{
+	Id:   "shipping-rate",
+	Name: "Shipping rate",
+})
+
+var _ = shippingDecision.Graph(
+	bl.Edge(shippingDecision.In.ActualWeightKG, shippingCalculation.In.ActualWeightKG),
+	bl.Edge(shippingDecision.In.LengthCM, shippingCalculation.In.LengthCM),
+	bl.Edge(shippingDecision.In.WidthCM, shippingCalculation.In.WidthCM),
+	bl.Edge(shippingDecision.In.HeightCM, shippingCalculation.In.HeightCM),
+	bl.Edge(shippingDecision.In.DestinationZone, shippingCalculation.In.DestinationZone),
+	bl.Edge(shippingDecision.In.SpeedTier, shippingCalculation.In.SpeedTier),
+	bl.Edge(shippingCalculation.Out.VolumetricWeight, shippingDecision.Out.VolumetricWeight),
+	bl.Edge(shippingCalculation.Out.BillableWeight, shippingDecision.Out.BillableWeight),
+	bl.Edge(shippingCalculation.Out.BaseRate, shippingDecision.Out.BaseRate),
+	bl.Edge(shippingCalculation.Out.PerKGRate, shippingDecision.Out.PerKGRate),
+	bl.Edge(shippingCalculation.Out.SpeedMultiplier, shippingDecision.Out.SpeedMultiplier),
+	bl.Edge(shippingCalculation.Out.Subtotal, shippingDecision.Out.Subtotal),
+	bl.Edge(shippingCalculation.Out.FuelSurcharge, shippingDecision.Out.FuelSurcharge),
+	bl.Edge(shippingCalculation.Out.Total, shippingDecision.Out.Total),
+)
+
 func number(value string) (bl.BlNumber, error) { return bl.Number(value) }
 ```
 
 `CalculateShipping` converts the application boundary, evaluates the reusable
-decision, and projects its typed outputs.
+decision task, and projects its typed outputs.
 
 ``` { .go .blkit-example title="main.go" }
 func CalculateShipping(input ShippingInput) (ShippingQuote, error) {
@@ -222,8 +244,8 @@ func main() {
 
 ## Notes
 
-- The decision definition is built once and evaluated many times with different
-  typed inputs.
+- The decision task is built once and evaluated many times with different typed
+  inputs.
 - Prefer `bl.Number()` (arbitrary-precision decimal) over native floating point
   for monetary arithmetic — it avoids the rounding drift that float math
   introduces in financial calculations.

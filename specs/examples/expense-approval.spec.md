@@ -56,6 +56,12 @@ The claim is sent to the employee's direct line manager for review. The manager 
 
 The claim is escalated to the Finance Director. The Finance Director may approve or reject the claim. The employee is notified of the outcome.
 
+## Implementation
+
+The executable example represents route selection as a [`DecisionTask`](../decision-tasks/decision-task.spec.md) whose graph contains the expense-route decision table. The command-line boundary converts incoming JSON fields to the task's typed handle contract, evaluates the task rather than the table directly, and converts the task output back to JSON.
+
+The selected route will eventually feed an approval process. Until process execution is implemented, the example evaluates the decision task standalone and does not implement the review, notification, or reimbursement steps.
+
 ## Outcomes
 
 | Outcome | Meaning |

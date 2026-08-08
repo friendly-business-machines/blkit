@@ -79,6 +79,10 @@ The process advances only when all three workstreams are marked complete. If all
 
 ---
 
+## Implementation
+
+The executable portion represents deadline and completion-state calculation as a [`DecisionTask`](../decision-tasks/decision-task.spec.md) containing one decision expression. The eventual parallel workstreams, join, timer race, and notifications remain process-layer behaviour and are not implemented in the example yet.
+
 ## Outcomes
 
 | Condition | Outcome |
