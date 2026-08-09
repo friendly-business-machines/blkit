@@ -108,6 +108,38 @@ in stock, and the customer's preferred resolution.
 | 50% | Yes or No | Store credit | Store credit at 50% of unit price |
 | 0% | Any | Any | Request declined; item returned to customer or disposed of if declined |
 
+### Business process map
+
+```mermaid
+flowchart TD
+    requested([Return requested]) --> eligibility[Assess eligibility]
+    eligibility --> eligible{Eligible?}
+
+    eligible -->|No| reject[Reject return request]
+    reject --> rejected([No RMA issued])
+
+    eligible -->|Yes| rma[Issue RMA and prepaid label]
+    rma --> wait[Wait for warehouse receipt]
+    wait --> received{Received within 14 days?}
+    received -->|No| expire[Expire authorisation]
+    expire --> expired([No refund issued])
+
+    received -->|Yes| inspect[Assess item condition]
+    inspect --> calculate[Calculate refund]
+    calculate --> resolve[Determine resolution]
+    resolve --> resolution{Resolution}
+
+    resolution -->|Replacement| replacement[Dispatch replacement]
+    resolution -->|Refund| refund[Issue monetary refund]
+    resolution -->|Store credit| credit[Issue store credit]
+    resolution -->|Declined| decline[Return or dispose of item]
+
+    replacement --> completed([Return completed])
+    refund --> completed
+    credit --> completed
+    decline --> completed
+```
+
 ### Outcomes
 
 | Condition | Outcome |
@@ -140,8 +172,13 @@ issued at 110% = **£385**.
 
 ## Implementation
 
-The eligibility, refund, and resolution logic can already be composed as one
-typed `DecisionTask` containing a `DecisionExpression`.
+!!! warning "Implementation in progress"
+
+    This section is a partial implementation and is subject to change as blkit's
+    process engine is completed. The code currently covers eligibility, receipt
+    timing, refund calculation, and resolution selection. It does not yet create
+    an RMA, wait for warehouse receipt or timer expiry, or perform payment,
+    credit, return, or dispatch side effects.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -306,10 +343,6 @@ func main() {
 	}
 }
 ```
-
-RMA creation, waiting for warehouse receipt, timer expiry, and dispatch/payment
-side effects require the unfinished process engine, so no Go source for those
-steps is shown yet.
 
 ## Notes
 

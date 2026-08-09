@@ -56,6 +56,30 @@ The claim is sent to the employee's direct line manager for review. The manager 
 
 The claim is escalated to the Finance Director. The Finance Director may approve or reject the claim. The employee is notified of the outcome.
 
+## Business Process Map
+
+```mermaid
+flowchart TD
+    submitted([Expense submitted]) --> route[Determine approval route]
+    route --> routeType{Approval route}
+
+    routeType -->|Automatic| approve[Approve expense]
+    routeType -->|Manager| manager[Manager review]
+    routeType -->|Finance Director| finance[Finance Director review]
+
+    manager --> reviewed{Approved?}
+    finance --> reviewed
+    reviewed -->|Yes| approve
+    reviewed -->|No| reject[Reject expense]
+
+    approve --> notifyApproved[Notify employee]
+    notifyApproved --> reimburse[Start reimbursement]
+    reimburse --> approved([Expense approved])
+
+    reject --> notifyRejected[Notify employee with reason]
+    notifyRejected --> rejected([Expense rejected])
+```
+
 ## Implementation
 
 The executable example represents route selection as a [`DecisionTask`](../decision-tasks/decision-task.spec.md) whose graph contains the expense-route decision table. The command-line boundary converts incoming JSON fields to the task's typed handle contract, evaluates the task rather than the table directly, and converts the task output back to JSON.

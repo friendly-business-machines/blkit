@@ -42,24 +42,29 @@ When a customer places an order on an e-commerce platform, the fulfilment system
 | `payment_error` | Charge Payment | Error message if payment failed |
 | `shipment_id` | Ship Order | Carrier tracking reference |
 
-## Process Graph
+## Business Process Map
 
-```
-StartEvent("start")
-  → Activity("validate-order",    "Validate Order")
-  → xor("stock-check",            "In stock?",          on: stock_available)
-        true  → Activity("reserve-inventory", "Reserve Inventory")
-                → Activity("charge-payment",  "Charge Payment")
-                → xor("payment-check",        "Payment OK?",   on: payment_ok)
-                      true  → Activity("pick-and-pack",  "Pick and Pack")
-                              → Activity("ship-order",    "Ship Order")
-                              → Activity("send-confirm",  "Send Confirmation")
-                              → EndEvent("end-success",   "Order Fulfilled")
-                      false → Activity("release-stock",  "Release Inventory")
-                              → Activity("notify-payment-failed", "Notify Payment Failure")
-                              → EndEvent("end-payment-error", kind=ERROR, "Payment Failed")
-        false → Activity("notify-backorder", "Notify Backorder")
-                → EndEvent("end-backorder",  "Order Backordered")
+```mermaid
+flowchart TD
+    placed([Order placed]) --> validate[Validate order]
+    validate --> checkStock[Check stock]
+    checkStock --> stockAvailable{Stock available?}
+
+    stockAvailable -->|No| notifyBackorder[Notify customer of backorder]
+    notifyBackorder --> backordered([Order backordered])
+
+    stockAvailable -->|Yes| reserve[Reserve inventory]
+    reserve --> charge[Charge payment]
+    charge --> paymentSuccessful{Payment successful?}
+
+    paymentSuccessful -->|No| release[Release reserved inventory]
+    release --> notifyFailure[Notify customer of payment failure]
+    notifyFailure --> paymentFailed([Payment failed])
+
+    paymentSuccessful -->|Yes| pickPack[Pick and pack]
+    pickPack --> ship[Ship order]
+    ship --> confirm[Send confirmation]
+    confirm --> fulfilled([Order fulfilled])
 ```
 
 ## Implementation

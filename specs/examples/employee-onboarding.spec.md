@@ -79,6 +79,30 @@ The process advances only when all three workstreams are marked complete. If all
 
 ---
 
+## Business Process Map
+
+```mermaid
+flowchart TD
+    confirmed([Hire confirmed])
+    confirmed --> it[Complete IT setup]
+    confirmed --> hr[Complete HR setup]
+    confirmed --> facilities[Complete Facilities setup]
+
+    it --> ready{All three workstreams complete?}
+    hr --> ready
+    facilities --> ready
+    ready -->|Yes, within five business days| welcome[Send welcome pack]
+    welcome --> complete([Onboarding complete])
+
+    confirmed --> deadline[Five-business-day deadline]
+    deadline --> outstanding{Any workstream outstanding?}
+    outstanding -->|Yes| escalate[Escalate to HR Business Partner]
+    escalate --> open([Onboarding remains open])
+    outstanding -->|No| complete
+```
+
+---
+
 ## Implementation
 
 The executable portion represents deadline and completion-state calculation as a [`DecisionTask`](../decision-tasks/decision-task.spec.md) containing one decision expression. The eventual parallel workstreams, join, timer race, and notifications remain process-layer behaviour and are not implemented in the example yet.

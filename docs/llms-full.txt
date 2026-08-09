@@ -696,24 +696,29 @@ system must:
 | `payment_error` | Charge Payment | Error message if payment failed |
 | `shipment_id` | Ship Order | Carrier tracking reference |
 
-### Process graph
+### Business process map
 
-```text
-StartEvent("start")
-  → Activity("validate-order",    "Validate Order")
-  → xor("stock-check",            "In stock?",          on: stock_available)
-        true  → Activity("reserve-inventory", "Reserve Inventory")
-                → Activity("charge-payment",  "Charge Payment")
-                → xor("payment-check",        "Payment OK?",   on: payment_ok)
-                      true  → Activity("pick-and-pack",  "Pick and Pack")
-                              → Activity("ship-order",    "Ship Order")
-                              → Activity("send-confirm",  "Send Confirmation")
-                              → EndEvent("end-success",   "Order Fulfilled")
-                      false → Activity("release-stock",  "Release Inventory")
-                              → Activity("notify-payment-failed", "Notify Payment Failure")
-                              → EndEvent("end-payment-error", kind=ERROR, "Payment Failed")
-        false → Activity("notify-backorder", "Notify Backorder")
-                → EndEvent("end-backorder",  "Order Backordered")
+```mermaid
+flowchart TD
+    placed([Order placed]) --> validate[Validate order]
+    validate --> checkStock[Check stock]
+    checkStock --> stockAvailable{Stock available?}
+
+    stockAvailable -->|No| notifyBackorder[Notify customer of backorder]
+    notifyBackorder --> backordered([Order backordered])
+
+    stockAvailable -->|Yes| reserve[Reserve inventory]
+    reserve --> charge[Charge payment]
+    charge --> paymentSuccessful{Payment successful?}
+
+    paymentSuccessful -->|No| release[Release reserved inventory]
+    release --> notifyFailure[Notify customer of payment failure]
+    notifyFailure --> paymentFailed([Payment failed])
+
+    paymentSuccessful -->|Yes| pickPack[Pick and pack]
+    pickPack --> ship[Ship order]
+    ship --> confirm[Send confirmation]
+    confirm --> fulfilled([Order fulfilled])
 ```
 
 ### Scenarios and expected paths
@@ -726,8 +731,14 @@ StartEvent("start")
 
 ## Implementation
 
-The process engine is not available yet, but order validation and both gateway
-decisions can be implemented and tested today.
+!!! warning "Implementation in progress"
+
+    This section is a partial implementation and is subject to change as blkit's
+    process engine is completed. The code currently covers order validation and
+    gateway route selection. It does not yet implement the task sequence,
+    inventory and payment side effects, compensation, persisted process state,
+    or end-event traversal; the completed example will use the process APIs for
+    those parts.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -847,10 +858,6 @@ func main() {
 }
 ```
 
-The actual task sequence, inventory/payment side effects, compensation, process
-state, and end-event traversal require the unfinished process engine, so no Go
-source for them is shown yet.
-
 ## Notes
 
 - The two gateways branch on boolean variables (`stock_available`, `payment_ok`)
@@ -914,6 +921,30 @@ Finance Director regardless of category or employee level.
 - **Finance Director review** — escalated to the Finance Director, who may
   approve or reject. The employee is notified.
 
+### Business process map
+
+```mermaid
+flowchart TD
+    submitted([Expense submitted]) --> route[Determine approval route]
+    route --> routeType{Approval route}
+
+    routeType -->|Automatic| approve[Approve expense]
+    routeType -->|Manager| manager[Manager review]
+    routeType -->|Finance Director| finance[Finance Director review]
+
+    manager --> reviewed{Approved?}
+    finance --> reviewed
+    reviewed -->|Yes| approve
+    reviewed -->|No| reject[Reject expense]
+
+    approve --> notifyApproved[Notify employee]
+    notifyApproved --> reimburse[Start reimbursement]
+    reimburse --> approved([Expense approved])
+
+    reject --> notifyRejected[Notify employee with reason]
+    notifyRejected --> rejected([Expense rejected])
+```
+
 ### Outcomes
 
 | Outcome | Meaning |
@@ -933,8 +964,14 @@ Finance Director regardless of category or employee level.
 
 ## Implementation
 
-The approval route is available today as a decision task containing one decision
-table. Define the JSON transport types and typed decision contract first.
+!!! warning "Implementation in progress"
+
+    This section is a partial implementation and is subject to change as blkit's
+    process engine is completed. The code currently selects the approval route.
+    It does not yet run manager or Finance Director review, record approval or
+    rejection, notify the employee, or start reimbursement.
+
+Define the JSON transport types and typed decision contract first.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -1046,13 +1083,6 @@ func main() {
 	}
 }
 ```
-
-### What cannot be shown yet
-
-The selected route will eventually feed a blkit process that waits for manager or
-Finance Director input, records approval/rejection, notifies the employee, and
-starts reimbursement. Process execution is not implemented yet, so no Go source
-for those steps is shown.
 
 ## Notes
 
@@ -1418,6 +1448,34 @@ manager rejects the invoice, it is returned to the vendor as disputed.
 Approved invoices are submitted to the payment system for the next payment run on
 or before the due date, and a payment batch reference is recorded.
 
+### Business process map
+
+```mermaid
+flowchart TD
+    received([Invoice received])
+    received --> duplicate[Check for duplicates]
+    received --> vendor[Verify vendor]
+    received --> lines[Validate line items]
+
+    duplicate --> checks{All validation checks passed?}
+    vendor --> checks
+    lines --> checks
+
+    checks -->|No| reject[Reject invoice]
+    reject --> notify[Notify vendor with all failure reasons]
+    notify --> rejected([Invoice rejected])
+
+    checks -->|Yes| assign[Assign GL codes]
+    assign --> approval{Amount above 10,000?}
+    approval -->|No| schedule[Schedule payment]
+    approval -->|Yes| review[Manager review]
+    review --> approved{Approved?}
+    approved -->|Yes| schedule
+    approved -->|No| dispute[Return invoice as disputed]
+    dispute --> disputed([Invoice rejected])
+    schedule --> scheduled([Payment scheduled])
+```
+
 ### Outcomes
 
 | Outcome | Meaning |
@@ -1437,8 +1495,13 @@ or before the due date, and a payment batch reference is recorded.
 
 ## Implementation
 
-The validations, arithmetic, GL mapping, and approval decision can be implemented
-without the process engine.
+!!! warning "Implementation in progress"
+
+    This section is a partial implementation and is subject to change as blkit's
+    process engine is completed. The code currently covers line arithmetic, GL
+    mapping, validation results, and the amount-based approval decision. It does
+    not yet run the validation checks in parallel, wait for manager input, notify
+    the vendor, or schedule payment.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -1591,9 +1654,6 @@ func main() {
 }
 ```
 
-Parallel fork/join execution, waiting for manager input, vendor notification, and
-payment scheduling require the process engine and are not shown as Go yet.
-
 ## Notes
 
 - The three validation checks fork on receipt and join before the outcome is
@@ -1682,6 +1742,28 @@ incomplete after five business days from the hire confirmation date, an
 escalation notification is sent to the HR Business Partner listing which
 workstreams are outstanding.
 
+### Business process map
+
+```mermaid
+flowchart TD
+    confirmed([Hire confirmed])
+    confirmed --> it[Complete IT setup]
+    confirmed --> hr[Complete HR setup]
+    confirmed --> facilities[Complete Facilities setup]
+
+    it --> ready{All three workstreams complete?}
+    hr --> ready
+    facilities --> ready
+    ready -->|Yes, within five business days| welcome[Send welcome pack]
+    welcome --> complete([Onboarding complete])
+
+    confirmed --> deadline[Five-business-day deadline]
+    deadline --> outstanding{Any workstream outstanding?}
+    outstanding -->|Yes| escalate[Escalate to HR Business Partner]
+    escalate --> open([Onboarding remains open])
+    outstanding -->|No| complete
+```
+
 ### Outcomes
 
 | Condition | Outcome |
@@ -1706,8 +1788,13 @@ instructions, and the HR portal link.
 
 ## Implementation
 
-Business-day arithmetic and the completion/escalation decision are available
-today, even though parallel process execution is not.
+!!! warning "Implementation in progress"
+
+    This section is a partial implementation and is subject to change as blkit's
+    process engine is completed. The code currently covers business-day deadline
+    calculation and the completion-or-escalation decision. It does not yet run
+    the parallel workstreams, join their completion signals, race them against a
+    boundary timer, send notifications, or persist an open onboarding process.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -1811,10 +1898,6 @@ func main() {
 	}
 }
 ```
-
-Parallel workstream execution, AND-join token handling, a live boundary-timer
-race, notifications, and persisted open process state require the process engine
-and are not shown as Go yet.
 
 ## Notes
 
@@ -2506,6 +2589,38 @@ in stock, and the customer's preferred resolution.
 | 50% | Yes or No | Store credit | Store credit at 50% of unit price |
 | 0% | Any | Any | Request declined; item returned to customer or disposed of if declined |
 
+### Business process map
+
+```mermaid
+flowchart TD
+    requested([Return requested]) --> eligibility[Assess eligibility]
+    eligibility --> eligible{Eligible?}
+
+    eligible -->|No| reject[Reject return request]
+    reject --> rejected([No RMA issued])
+
+    eligible -->|Yes| rma[Issue RMA and prepaid label]
+    rma --> wait[Wait for warehouse receipt]
+    wait --> received{Received within 14 days?}
+    received -->|No| expire[Expire authorisation]
+    expire --> expired([No refund issued])
+
+    received -->|Yes| inspect[Assess item condition]
+    inspect --> calculate[Calculate refund]
+    calculate --> resolve[Determine resolution]
+    resolve --> resolution{Resolution}
+
+    resolution -->|Replacement| replacement[Dispatch replacement]
+    resolution -->|Refund| refund[Issue monetary refund]
+    resolution -->|Store credit| credit[Issue store credit]
+    resolution -->|Declined| decline[Return or dispose of item]
+
+    replacement --> completed([Return completed])
+    refund --> completed
+    credit --> completed
+    decline --> completed
+```
+
 ### Outcomes
 
 | Condition | Outcome |
@@ -2538,8 +2653,13 @@ issued at 110% = **£385**.
 
 ## Implementation
 
-The eligibility, refund, and resolution logic can already be composed as one
-typed `DecisionTask` containing a `DecisionExpression`.
+!!! warning "Implementation in progress"
+
+    This section is a partial implementation and is subject to change as blkit's
+    process engine is completed. The code currently covers eligibility, receipt
+    timing, refund calculation, and resolution selection. It does not yet create
+    an RMA, wait for warehouse receipt or timer expiry, or perform payment,
+    credit, return, or dispatch side effects.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -2704,10 +2824,6 @@ func main() {
 	}
 }
 ```
-
-RMA creation, waiting for warehouse receipt, timer expiry, and dispatch/payment
-side effects require the unfinished process engine, so no Go source for those
-steps is shown yet.
 
 ## Notes
 

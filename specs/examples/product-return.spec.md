@@ -118,6 +118,40 @@ The actual resolution issued depends on the refund percentage, whether a replace
 
 ---
 
+## Business Process Map
+
+```mermaid
+flowchart TD
+    requested([Return requested]) --> eligibility[Assess eligibility]
+    eligibility --> eligible{Eligible?}
+
+    eligible -->|No| reject[Reject return request]
+    reject --> rejected([No RMA issued])
+
+    eligible -->|Yes| rma[Issue RMA and prepaid label]
+    rma --> wait[Wait for warehouse receipt]
+    wait --> received{Received within 14 days?}
+    received -->|No| expire[Expire authorisation]
+    expire --> expired([No refund issued])
+
+    received -->|Yes| inspect[Assess item condition]
+    inspect --> calculate[Calculate refund]
+    calculate --> resolve[Determine resolution]
+    resolve --> resolution{Resolution}
+
+    resolution -->|Replacement| replacement[Dispatch replacement]
+    resolution -->|Refund| refund[Issue monetary refund]
+    resolution -->|Store credit| credit[Issue store credit]
+    resolution -->|Declined| decline[Return or dispose of item]
+
+    replacement --> completed([Return completed])
+    refund --> completed
+    credit --> completed
+    decline --> completed
+```
+
+---
+
 ## Implementation
 
 The executable portion represents eligibility, refund, and resolution calculation as a [`DecisionTask`](../decision-tasks/decision-task.spec.md) containing one decision expression. RMA creation, warehouse receipt, expiry, and payment or dispatch side effects remain process-layer behaviour and are not implemented yet.

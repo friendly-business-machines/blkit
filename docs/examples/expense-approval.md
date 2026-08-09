@@ -48,6 +48,30 @@ Finance Director regardless of category or employee level.
 - **Finance Director review** — escalated to the Finance Director, who may
   approve or reject. The employee is notified.
 
+### Business process map
+
+```mermaid
+flowchart TD
+    submitted([Expense submitted]) --> route[Determine approval route]
+    route --> routeType{Approval route}
+
+    routeType -->|Automatic| approve[Approve expense]
+    routeType -->|Manager| manager[Manager review]
+    routeType -->|Finance Director| finance[Finance Director review]
+
+    manager --> reviewed{Approved?}
+    finance --> reviewed
+    reviewed -->|Yes| approve
+    reviewed -->|No| reject[Reject expense]
+
+    approve --> notifyApproved[Notify employee]
+    notifyApproved --> reimburse[Start reimbursement]
+    reimburse --> approved([Expense approved])
+
+    reject --> notifyRejected[Notify employee with reason]
+    notifyRejected --> rejected([Expense rejected])
+```
+
 ### Outcomes
 
 | Outcome | Meaning |
@@ -67,8 +91,14 @@ Finance Director regardless of category or employee level.
 
 ## Implementation
 
-The approval route is available today as a decision task containing one decision
-table. Define the JSON transport types and typed decision contract first.
+!!! warning "Implementation in progress"
+
+    This section is a partial implementation and is subject to change as blkit's
+    process engine is completed. The code currently selects the approval route.
+    It does not yet run manager or Finance Director review, record approval or
+    rejection, notify the employee, or start reimbursement.
+
+Define the JSON transport types and typed decision contract first.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -180,13 +210,6 @@ func main() {
 	}
 }
 ```
-
-### What cannot be shown yet
-
-The selected route will eventually feed a blkit process that waits for manager or
-Finance Director input, records approval/rejection, notifies the employee, and
-starts reimbursement. Process execution is not implemented yet, so no Go source
-for those steps is shown.
 
 ## Notes
 

@@ -57,6 +57,34 @@ manager rejects the invoice, it is returned to the vendor as disputed.
 Approved invoices are submitted to the payment system for the next payment run on
 or before the due date, and a payment batch reference is recorded.
 
+### Business process map
+
+```mermaid
+flowchart TD
+    received([Invoice received])
+    received --> duplicate[Check for duplicates]
+    received --> vendor[Verify vendor]
+    received --> lines[Validate line items]
+
+    duplicate --> checks{All validation checks passed?}
+    vendor --> checks
+    lines --> checks
+
+    checks -->|No| reject[Reject invoice]
+    reject --> notify[Notify vendor with all failure reasons]
+    notify --> rejected([Invoice rejected])
+
+    checks -->|Yes| assign[Assign GL codes]
+    assign --> approval{Amount above 10,000?}
+    approval -->|No| schedule[Schedule payment]
+    approval -->|Yes| review[Manager review]
+    review --> approved{Approved?}
+    approved -->|Yes| schedule
+    approved -->|No| dispute[Return invoice as disputed]
+    dispute --> disputed([Invoice rejected])
+    schedule --> scheduled([Payment scheduled])
+```
+
 ### Outcomes
 
 | Outcome | Meaning |
@@ -76,8 +104,13 @@ or before the due date, and a payment batch reference is recorded.
 
 ## Implementation
 
-The validations, arithmetic, GL mapping, and approval decision can be implemented
-without the process engine.
+!!! warning "Implementation in progress"
+
+    This section is a partial implementation and is subject to change as blkit's
+    process engine is completed. The code currently covers line arithmetic, GL
+    mapping, validation results, and the amount-based approval decision. It does
+    not yet run the validation checks in parallel, wait for manager input, notify
+    the vendor, or schedule payment.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -229,9 +262,6 @@ func main() {
 	}
 }
 ```
-
-Parallel fork/join execution, waiting for manager input, vendor notification, and
-payment scheduling require the process engine and are not shown as Go yet.
 
 ## Notes
 

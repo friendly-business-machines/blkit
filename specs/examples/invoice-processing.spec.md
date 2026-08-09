@@ -62,6 +62,34 @@ If the manager rejects the invoice, it is returned to the vendor as disputed wit
 
 Approved invoices are submitted to the payment system to be included in the next payment run on or before the due date. A payment batch reference is recorded against the invoice.
 
+## Business Process Map
+
+```mermaid
+flowchart TD
+    received([Invoice received])
+    received --> duplicate[Check for duplicates]
+    received --> vendor[Verify vendor]
+    received --> lines[Validate line items]
+
+    duplicate --> checks{All validation checks passed?}
+    vendor --> checks
+    lines --> checks
+
+    checks -->|No| reject[Reject invoice]
+    reject --> notify[Notify vendor with all failure reasons]
+    notify --> rejected([Invoice rejected])
+
+    checks -->|Yes| assign[Assign GL codes]
+    assign --> approval{Amount above 10,000?}
+    approval -->|No| schedule[Schedule payment]
+    approval -->|Yes| review[Manager review]
+    review --> approved{Approved?}
+    approved -->|Yes| schedule
+    approved -->|No| dispute[Return invoice as disputed]
+    dispute --> disputed([Invoice rejected])
+    schedule --> scheduled([Payment scheduled])
+```
+
 ## Implementation
 
 The executable example evaluates reusable [`DecisionTask`](../decision-tasks/decision-task.spec.md) definitions for line-total calculation and invoice-level arithmetic checks. Iteration over invoice lines and collection of validation messages remain at the application boundary until the process layer can model the complete workflow.

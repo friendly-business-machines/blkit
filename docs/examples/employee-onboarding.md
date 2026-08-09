@@ -74,6 +74,28 @@ incomplete after five business days from the hire confirmation date, an
 escalation notification is sent to the HR Business Partner listing which
 workstreams are outstanding.
 
+### Business process map
+
+```mermaid
+flowchart TD
+    confirmed([Hire confirmed])
+    confirmed --> it[Complete IT setup]
+    confirmed --> hr[Complete HR setup]
+    confirmed --> facilities[Complete Facilities setup]
+
+    it --> ready{All three workstreams complete?}
+    hr --> ready
+    facilities --> ready
+    ready -->|Yes, within five business days| welcome[Send welcome pack]
+    welcome --> complete([Onboarding complete])
+
+    confirmed --> deadline[Five-business-day deadline]
+    deadline --> outstanding{Any workstream outstanding?}
+    outstanding -->|Yes| escalate[Escalate to HR Business Partner]
+    escalate --> open([Onboarding remains open])
+    outstanding -->|No| complete
+```
+
 ### Outcomes
 
 | Condition | Outcome |
@@ -98,8 +120,13 @@ instructions, and the HR portal link.
 
 ## Implementation
 
-Business-day arithmetic and the completion/escalation decision are available
-today, even though parallel process execution is not.
+!!! warning "Implementation in progress"
+
+    This section is a partial implementation and is subject to change as blkit's
+    process engine is completed. The code currently covers business-day deadline
+    calculation and the completion-or-escalation decision. It does not yet run
+    the parallel workstreams, join their completion signals, race them against a
+    boundary timer, send notifications, or persist an open onboarding process.
 
 ``` { .go .blkit-example title="main.go" }
 package main
@@ -203,10 +230,6 @@ func main() {
 	}
 }
 ```
-
-Parallel workstream execution, AND-join token handling, a live boundary-timer
-race, notifications, and persisted open process state require the process engine
-and are not shown as Go yet.
 
 ## Notes
 
