@@ -1,0 +1,20 @@
+{
+  "packages": [
+    "npm:@dietrichgebert/ponytail@4.10.0",
+    "npm:@lll9p/pi-better-compaction@0.7.1",
+    "npm:pi-subagents@0.71.0",
+    "npm:pi-web-access@0.31.0",
+    "npm:@latentminds/pi-quotas@0.5.0",
+    "git:github.com/obra/superpowers@5bf4e78011075bcfc0dc295f0724994cd123ee71",
+    "npm:pi-keep-going@1.1.0"
+  ],
+  "subagents": {
+    "agentOverrides": {
+      "worker": {
+        "skills": [
+          "ponytail"
+        ]
+      }
+    }
+  }
+}
