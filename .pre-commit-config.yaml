@@ -1,0 +1,53 @@
+repos:
+  - repo: https://github.com/trufflesecurity/trufflehog
+    rev: v3.90.8
+    hooks:
+      - id: trufflehog
+
+  - repo: local
+    hooks:
+      - id: markdownlint
+        name: Markdownlint
+        entry: markdownlint-cli2
+        language: system
+        types: [markdown]
+      - id: hadolint
+        name: Hadolint
+        entry: hadolint
+        language: system
+        types: [dockerfile]
+      - id: docker-build
+        name: Build modified Dockerfiles
+        entry: scripts/check-docker-build.sh
+        language: system
+        types: [dockerfile]
+      - id: check-devcontainer
+        name: Validate devcontainer.json
+        entry: scripts/check-jsonc-schema.py
+        language: system
+        files: ^\.devcontainer/devcontainer\.json$
+        types: [json]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=2048]
+
+  - repo: https://github.com/python-jsonschema/check-jsonschema
+    rev: 0.33.3
+    hooks:
+      - id: check-metaschema
+        files: \.schema\.json$
+      - id: check-jsonschema
+        name: Validate OpenSpec configuration
+        args: [--schemafile, schemas/openspec-config.schema.json]
+        files: ^openspec/config\.yaml$
+        types: [yaml]

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OpenSpec project configuration",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "spec-driven"
+    },
+    "context": {
+      "type": "string"
+    },
+    "rules": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    },
+    "operations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "guidance": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schema"],
+  "additionalProperties": false
+}
