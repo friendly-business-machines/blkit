@@ -121,6 +121,18 @@ RUN arch="$(dpkg --print-architecture)" \
     && sha256sum -c --strict "${hadolint_bin}.sha256" \
     && install -m 0755 "${hadolint_bin}" /usr/local/bin/hadolint \
     && rm -f "${hadolint_bin}" "${hadolint_bin}.sha256"
+
+# Preinstall TruffleHog for the system-language pre-commit hook. Otherwise
+# pre-commit builds every package in its Go repository on first use.
+ARG TRUFFLEHOG_VERSION=3.90.8
+RUN test "$(dpkg --print-architecture)" = amd64 \
+    && asset="trufflehog_${TRUFFLEHOG_VERSION}_linux_amd64.tar.gz" \
+    && curl -fsSLO "https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/${asset}" \
+    && printf '%s  %s\n' aa2258dc4e76d93518730331e69ca01a638c365ab862a828c566e025f6c8150c "${asset}" | sha256sum -c --strict - \
+    && tar -xzf "${asset}" trufflehog \
+    && install -m 0755 trufflehog /usr/local/bin/trufflehog \
+    && /usr/local/bin/trufflehog --version \
+    && rm -f "${asset}" trufflehog
 WORKDIR /
 
 # Install the pi coding agent globally so the `pi` command is available to the

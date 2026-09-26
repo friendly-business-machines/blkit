@@ -3,6 +3,8 @@ repos:
     rev: v3.90.8
     hooks:
       - id: trufflehog
+        language: system
+        args: [--no-update]
 
   - repo: local
     hooks:
