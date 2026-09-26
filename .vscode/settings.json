@@ -6,5 +6,6 @@
       "path": "/usr/bin/fish"
     }
   },
-  "terminal.integrated.defaultProfile.linux": "fish"
+  "terminal.integrated.defaultProfile.linux": "fish",
+  "window.menuBarVisibility": "visible"
 }
