@@ -47,6 +47,7 @@ ARG USER_GID=${USER_UID}
 #
 # Language/toolchain package rationale:
 # - golang: Go compiler/toolchain (`go`).
+# - rustc and cargo: Rust compiler and package manager for the `.bl` transpiler.
 #
 # Package versions are pinned to what's currently available in the Ubuntu
 # 26.04 archive (per apt-cache madison) for reproducible builds. Ubuntu's
@@ -72,6 +73,8 @@ RUN apt-get update \
         pass=1.7.4-8 \
         pinentry-tty=1.3.2-3ubuntu1 \
         pre-commit=4.5.1-1 \
+        rustc=1.93.1ubuntu1 \
+        cargo=1.93.1ubuntu1 \
         sudo=1.9.17p2-1ubuntu3.1 \
         wget=1.25.0-2ubuntu4.4 \
     && rm -rf /var/lib/apt/lists/*
@@ -253,3 +256,9 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 # (pre-commit is installed above from Ubuntu's archive.)
 RUN uv tool install zensical \
     && uv tool install check-jsonschema
+
+# The host Podman socket's group is known only after it is mounted. Run this
+# before the VS Code server starts; devcontainer.json preserves the entrypoint.
+COPY --chmod=0755 .devcontainer/grant-podman-socket.sh /usr/local/bin/grant-podman-socket.sh
+ENTRYPOINT ["/usr/local/bin/grant-podman-socket.sh"]
+CMD ["sleep", "infinity"]

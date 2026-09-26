@@ -58,6 +58,10 @@
     "source=${localEnv:XDG_RUNTIME_DIR}/podman/podman.sock,target=/var/run/docker.sock,type=bind"
   ],
 
+  // Keep the image ENTRYPOINT: it grants vscode access to the mounted socket
+  // before VS Code starts its server. The image CMD keeps the container alive.
+  "overrideCommand": false,
+
   // Runs on the HOST before the container starts, on every start. Dev Containers
   // forwards the host's keyboxd socket (where public keys live) but only pipes the
   // socket — it never launches the daemon, which the host starts on demand. If the
