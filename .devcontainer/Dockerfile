@@ -216,6 +216,10 @@ RUN groupadd --gid ${USER_GID} ${USERNAME} \
 # The mounted Podman API implements Docker's socket-compatible API.
 ENV DOCKER_HOST=unix:///var/run/docker.sock
 
+# Set system-wide Git pull behavior for all users in the container.
+RUN git config --system pull.rebase false \
+    && git config --system pull.ff true
+
 # Default runtime user for VS Code terminals/tasks inside the container.
 USER ${USERNAME}
 
