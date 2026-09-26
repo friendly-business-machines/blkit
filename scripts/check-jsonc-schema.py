@@ -68,7 +68,7 @@ def main() -> int:
             [
                 "check-jsonschema",
                 "--schemafile",
-                "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json",
+                "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.base.schema.json",
                 str(cleaned),
             ],
             check=False,
