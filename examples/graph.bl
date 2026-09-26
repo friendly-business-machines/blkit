@@ -1,0 +1,52 @@
+namespace orders
+version "1.0"
+
+type Order:
+  total: Number
+
+type Pair:
+  left: Number
+  right: Number
+
+enum Decision:
+  approved
+  review
+
+task total(input: Order) -> Number:
+  return input.total
+
+task approve(input: Order) -> Decision:
+  return Decision.approved
+
+task review(input: Order) -> Decision:
+  return Decision.review
+
+process decide(input: Order) -> Decision:
+  run amount = total(input)
+  xor:
+    when amount > 1000:
+      run high = review(input)
+    else:
+      run low = approve(input)
+  join result
+  return result
+
+process parallel(input: Order) -> Pair:
+  and:
+    branch left:
+      run a = total(input)
+    branch right:
+      run b = total(input)
+  join both: Pair
+  return both
+
+process offers(input: Order) -> List<Number>:
+  or:
+    when input.total > 500:
+      run first = total(input)
+    when input.total > 1000:
+      run second = total(input)
+    else:
+      run fallback = total(input)
+  join results
+  return results
