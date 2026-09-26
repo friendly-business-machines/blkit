@@ -47,5 +47,8 @@ approval as permission for a changed commit.
    run relevant checks before committing; do not use an automatic merge commit.
    If reconciliation would affect unrelated work, stop and ask first.
 
-Report commit hashes and push outcome. Do not claim a push succeeded until
-Git confirms it.
+**Final response gate:** After committing, do not report completion until
+`git push` has been attempted. Report commit hashes and the push outcome:
+`Push: confirmed` (upstream) only when Git confirms it, or `Push: blocked`
+(reason) and ask how to proceed. If there was nothing to commit, report that
+without pushing.
