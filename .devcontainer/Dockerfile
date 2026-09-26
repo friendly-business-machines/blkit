@@ -125,7 +125,7 @@ WORKDIR /
 
 # Install the pi coding agent globally so the `pi` command is available to the
 # non-root development user. Keep the version explicit for reproducible builds.
-ARG PI_CODING_AGENT_VERSION=0.86.1
+ARG PI_CODING_AGENT_VERSION=0.87.1
 ARG PI_BETTER_COMPACTION_VERSION=0.7.1
 ARG PI_KEEP_GOING_VERSION=1.1.0
 ARG PI_QUOTAS_VERSION=0.5.0
