@@ -1,0 +1,16 @@
+namespace orders
+version "1.0"
+
+type Order:
+  total: Number
+  blocked: Bool
+
+enum Decision:
+  approved
+  review
+
+process approve(input: Order) -> Decision:
+  if input.total > 1000 and not input.blocked:
+    return Decision.review
+  else:
+    return Decision.approved
