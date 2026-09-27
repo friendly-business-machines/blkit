@@ -40,6 +40,9 @@
   // Must match a user that exists in the built image.
   "remoteUser": "vscode",
 
+  // Podman publishes Testcontainers ports on the host, not the container's loopback.
+  "containerEnv": { "BLKIT_TESTCONTAINERS_HOST": "host.containers.internal" },
+
   // On container start, Dev Containers may update remoteUser UID/GID to match host.
   // Goal: avoid bind-mount file permission issues when host and container IDs differ.
   // Most impactful on Linux/macOS hosts; typically low/no-op impact on Windows hosts.

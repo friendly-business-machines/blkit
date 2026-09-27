@@ -48,6 +48,7 @@ ARG USER_GID=${USER_UID}
 # Language/toolchain package rationale:
 # - golang: Go compiler/toolchain (`go`).
 # - rustc and cargo: Rust compiler and package manager for the `.bl` transpiler.
+# - rustfmt: `cargo fmt --check` for the Rust implementation tasks.
 #
 # Package versions are pinned to what's currently available in the Ubuntu
 # 26.04 archive (per apt-cache madison) for reproducible builds. Ubuntu's
@@ -75,6 +76,7 @@ RUN apt-get update \
         pre-commit=4.5.1-1 \
         rustc=1.93.1ubuntu1 \
         cargo=1.93.1ubuntu1 \
+        rustfmt=1.93.1ubuntu1 \
         sudo=1.9.17p2-1ubuntu3.1 \
         wget=1.25.0-2ubuntu4.4 \
     && rm -rf /var/lib/apt/lists/*

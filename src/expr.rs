@@ -84,7 +84,10 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
                 return Err("unterminated string expression".into());
             }
         } else if ch.is_ascii_alphanumeric() || ch == '_' {
-            while chars.peek().is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_') {
+            while chars
+                .peek()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
+            {
                 token.push(chars.next().unwrap());
             }
             if ch.is_ascii_digit() && chars.peek() == Some(&'.') {
@@ -161,7 +164,10 @@ impl Parser {
                 Expr::String(first[1..first.len() - 1].into())
             }
             _ if first.chars().next().is_some_and(|c| c.is_ascii_digit())
-                && first.chars().all(|c| c.is_ascii_digit() || c == '.') => Expr::Number(first),
+                && first.chars().all(|c| c.is_ascii_digit() || c == '.') =>
+            {
+                Expr::Number(first)
+            }
             _ if super::identifier(&first) => Expr::Name(first),
             _ => return Err(format!("invalid expression token: {first}")),
         };
@@ -193,10 +199,16 @@ impl Parser {
 }
 
 pub fn expression(text: &str) -> Result<Expr, String> {
-    let mut parser = Parser { tokens: lex(text)?, index: 0 };
+    let mut parser = Parser {
+        tokens: lex(text)?,
+        index: 0,
+    };
     let result = parser.parse(0)?;
     if parser.peek().is_some() {
-        return Err(format!("unexpected token in expression: {}", parser.peek().unwrap()));
+        return Err(format!(
+            "unexpected token in expression: {}",
+            parser.peek().unwrap()
+        ));
     }
     Ok(result)
 }

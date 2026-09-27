@@ -22,31 +22,48 @@ task review(input: Order) -> Decision:
   return Decision.review
 
 process decide(input: Order) -> Decision:
-  run amount = total(input)
-  xor:
-    when amount > 1000:
-      run high = review(input)
-    else:
-      run low = approve(input)
-  join result
-  return result
+  node start = start
+  node amount = task total(input)
+  node route = xor_split
+  node high = task review(input)
+  node low = task approve(input)
+  node chosen = xor_join(route)
+  node done = end
+  link start -> amount
+  link amount -> route
+  link route -> high when amount > 1000
+  link route -> low else
+  link high -> chosen(high)
+  link low -> chosen(low)
+  link chosen -> done(chosen)
 
 process parallel(input: Order) -> Pair:
-  and:
-    branch left:
-      run a = total(input)
-    branch right:
-      run b = total(input)
-  join both: Pair
-  return both
+  node start = start
+  node fork = and_split
+  node left = task total(input)
+  node right = task total(input)
+  node both = and_join(fork): Pair
+  node done = end
+  link start -> fork
+  link fork -> left as left
+  link fork -> right as right
+  link left -> both(left)
+  link right -> both(right)
+  link both -> done(both)
 
 process offers(input: Order) -> List<Number>:
-  or:
-    when input.total > 500:
-      run first = total(input)
-    when input.total > 1000:
-      run second = total(input)
-    else:
-      run fallback = total(input)
-  join results
-  return results
+  node start = start
+  node fork = or_split
+  node first = task total(input)
+  node second = task total(input)
+  node fallback = task total(input)
+  node results = or_join(fork)
+  node done = end
+  link start -> fork
+  link fork -> first when input.total > 500
+  link fork -> second when input.total > 1000
+  link fork -> fallback else
+  link first -> results(first)
+  link second -> results(second)
+  link fallback -> results(fallback)
+  link results -> done(results)

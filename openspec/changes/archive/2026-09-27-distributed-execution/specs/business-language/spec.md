@@ -1,51 +1,38 @@
-# business-language Specification
+# Spec Delta
 
-## Purpose
+## ADDED Requirements
 
-Defines the initial `.bl` language capability for writing closed-world, type-safe business processes that can be validated and transpiled to Rust.
+### Requirement: Processes declare bounded retry policy in source
+A `.bl` process SHALL optionally declare `max retries` (additional attempts after the initial execution), `retry for` (a duration measured from the first execution failure), `retry delay` (minimum wait before the first retry), and exponential backoff. Absence of a retry declaration SHALL mean no retries. Both the attempt limit and time window SHALL bound retries; later delays SHALL grow exponentially from the declared minimum. The compiler SHALL reject invalid or unbounded declarations.
 
-## Requirements
+#### Scenario: Bounded policy is compiled
+- **WHEN** a process declares three additional retries, a ten-minute retry window, a one-second minimum delay, and exponential backoff
+- **THEN** validation accepts the policy and the compiled process definition carries all four parameters
 
-### Requirement: Source files declare namespace and version
-A `.bl` source file SHALL declare a namespace and version before process declarations so generated processes can be identified for change management.
+#### Scenario: No retry declaration
+- **WHEN** a process declares no retry policy
+- **THEN** its compiled definition permits no additional attempts
 
-#### Scenario: Valid namespace and version
-- **WHEN** a source file declares `namespace orders` and `version "1.0"`
-- **THEN** the language front end accepts those declarations as the process identity context
+#### Scenario: Invalid policy
+- **WHEN** a retry declaration supplies a negative limit, nonpositive duration, or missing required parameter
+- **THEN** validation fails before Rust is emitted
 
-#### Scenario: Missing namespace or version
-- **WHEN** a source file omits either the namespace or the version declaration
-- **THEN** validation fails with a diagnostic identifying the missing declaration
+### Requirement: Process graphs end in named terminal nodes
+A process graph SHALL connect via explicit links to named terminal nodes of kind `end`, `error`, `cancel`, or `terminate`. A normal `end` SHALL receive a value of the process's declared output type; a named `error` node SHALL itself identify the business error and SHALL require no payload. `cancel` and `terminate` SHALL require no output. These terminal events apply to the whole instance without boundary catches, subprocess scope, or transaction compensation.
 
-### Requirement: Domain types are declared in source
-The language SHALL support business-domain record declarations, enum declarations, and typed list values using only `.bl` source-defined domain types and built-in types.
+#### Scenario: Normal typed end
+- **WHEN** a valid route links a `Decision` value into a named `end` node in a process returning `Decision`
+- **THEN** validation accepts the typed output
 
-#### Scenario: Valid domain declarations
-- **WHEN** a source declares a record type, an enum type, and a `List<T>` field
-- **THEN** validation accepts the declarations when all referenced types exist
+#### Scenario: Modeled business error
+- **WHEN** a route links to a named `error` node
+- **THEN** validation accepts the error node without requiring a process output value on that route
 
-#### Scenario: Unknown type reference
-- **WHEN** a declaration references a type that is neither built in nor declared in the input `.bl` file
-- **THEN** validation fails with a diagnostic identifying the unknown type
+#### Scenario: Incompatible normal end
+- **WHEN** a route sends `Bool` to an `end` node of a process returning `Decision`
+- **THEN** validation rejects the link
 
-### Requirement: MVP built-in types are fixed
-The MVP type system SHALL provide exactly these built-in user-facing types: `Bool`, `String`, `Number`, and `List<T>`.
-
-#### Scenario: Number literal typing
-- **WHEN** source uses numeric literals such as `1`, `1000`, or `12.50`
-- **THEN** validation treats those literals as `Number` values without requiring an integer type
-
-#### Scenario: Typed list literal
-- **WHEN** a value of type `List<Number>` is supplied as `[1, 2.5]`
-- **THEN** validation accepts both elements as `Number` values
-
-#### Scenario: List element type mismatch
-- **WHEN** a value of type `List<Number>` is supplied as `[1, "two"]`
-- **THEN** validation fails with a diagnostic identifying the incompatible element
-
-#### Scenario: Unsupported built-in type
-- **WHEN** source uses an unsupported built-in type such as `Table<T>`, `Date`, `Time`, `DateTime`, `Range`, `Any`, or `Optional<T>`
-- **THEN** validation fails with a diagnostic identifying the unsupported type
+## MODIFIED Requirements
 
 ### Requirement: Processes have typed input and output
 A process declaration SHALL define a name, exactly one typed input parameter, and one output type for normal `end` nodes. Routes ending at `error`, `cancel`, or `terminate` SHALL NOT need to produce that normal output type.
@@ -144,33 +131,3 @@ After successful validation, the compiler SHALL emit Rust representing `.bl`-def
 #### Scenario: Worker advertises compiled identities
 - **WHEN** a worker starts with generated process definitions linked into its binary
 - **THEN** it can advertise those definitions' namespace, version, and process names without compiling `.bl` at runtime
-
-### Requirement: Processes declare bounded retry policy in source
-A `.bl` process SHALL optionally declare `max retries` (additional attempts after the initial execution), `retry for` (a duration measured from the first execution failure), `retry delay` (minimum wait before the first retry), and exponential backoff. Absence of a retry declaration SHALL mean no retries. Both the attempt limit and time window SHALL bound retries; later delays SHALL grow exponentially from the declared minimum. The compiler SHALL reject invalid or unbounded declarations.
-
-#### Scenario: Bounded policy is compiled
-- **WHEN** a process declares three additional retries, a ten-minute retry window, a one-second minimum delay, and exponential backoff
-- **THEN** validation accepts the policy and the compiled process definition carries all four parameters
-
-#### Scenario: No retry declaration
-- **WHEN** a process declares no retry policy
-- **THEN** its compiled definition permits no additional attempts
-
-#### Scenario: Invalid policy
-- **WHEN** a retry declaration supplies a negative limit, nonpositive duration, or missing required parameter
-- **THEN** validation fails before Rust is emitted
-
-### Requirement: Process graphs end in named terminal nodes
-A process graph SHALL connect via explicit links to named terminal nodes of kind `end`, `error`, `cancel`, or `terminate`. A normal `end` SHALL receive a value of the process's declared output type; a named `error` node SHALL itself identify the business error and SHALL require no payload. `cancel` and `terminate` SHALL require no output. These terminal events apply to the whole instance without boundary catches, subprocess scope, or transaction compensation.
-
-#### Scenario: Normal typed end
-- **WHEN** a valid route links a `Decision` value into a named `end` node in a process returning `Decision`
-- **THEN** validation accepts the typed output
-
-#### Scenario: Modeled business error
-- **WHEN** a route links to a named `error` node
-- **THEN** validation accepts the error node without requiring a process output value on that route
-
-#### Scenario: Incompatible normal end
-- **WHEN** a route sends `Bool` to an `end` node of a process returning `Decision`
-- **THEN** validation rejects the link

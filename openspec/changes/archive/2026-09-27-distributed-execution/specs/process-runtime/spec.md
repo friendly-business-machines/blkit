@@ -1,21 +1,34 @@
-# process-runtime Specification
+# Spec Delta
 
-## Purpose
+## ADDED Requirements
 
-Defines the single-node execution and control contract for versioned, compiled business processes, including durable instance state, graph task scheduling, cancellation, and a development REST API.
+### Requirement: Local development honors source-defined recovery
+The local single-node development server SHALL execute the same compiled named graph, terminal nodes, checkpoints, and source-declared retry policy as distributed mode. It SHALL persist enough process state to resume from the last committed checkpoint after a restart, counting interrupted work as an execution failure; it SHALL NOT replay completed tasks. The local store SHALL NOT require PostgreSQL.
 
-## Requirements
+#### Scenario: Dev-server restart with retry
+- **WHEN** the local server stops while a task is in progress after an earlier task was checkpointed and retry limits permit
+- **THEN** restart retains the earlier task's output and schedules only unfinished work after the configured delay
 
-### Requirement: Registered processes have stable identities
-The runtime SHALL register compiler-emitted `.bl` process graphs by namespace, version, and name, and SHALL reject duplicate identities. It SHALL consume the compiled graph rather than construct the process map from separately registered tasks. A start request SHALL identify exactly one registered process and provide an input valid for its declared type.
+#### Scenario: Dev-server restart without retry
+- **WHEN** the local server restarts while an instance was running and its policy permits no retry
+- **THEN** the instance is marked terminally failed with an interruption reason and its committed checkpoint remains inspectable
 
-#### Scenario: Start a registered process
-- **WHEN** a client starts `orders` version `1.0` process `approve` with valid input
-- **THEN** the runtime creates a new instance with a unique ID associated with that exact process identity
+### Requirement: Terminal events and execution failures have distinct outcomes
+When a compiled graph reaches a normal `end`, the instance SHALL complete with its typed output. Reaching a named `error` SHALL produce a business-error terminal outcome with the node's name, distinct from execution failure; `cancel` SHALL produce a cancelled outcome and `terminate` SHALL produce a terminated outcome. `error`, `cancel`, and `terminate` SHALL stop process advancement, signal in-flight sibling tasks, and SHALL NOT consume or schedule execution retries. An `end` SHALL complete only when the graph's active work has satisfied its required joins. External cancellation SHALL continue to result in cancelled status.
 
-#### Scenario: Unknown process or invalid input
-- **WHEN** a client names an unregistered identity or supplies input incompatible with its declared input type
-- **THEN** no instance starts and the client receives an actionable error
+#### Scenario: Named business error
+- **WHEN** routing reaches a named `error` node while another branch is active
+- **THEN** the instance records the business-error node name, signals in-flight siblings, and does not retry
+
+#### Scenario: Termination halts parallel work
+- **WHEN** a graph reaches a `terminate` node while a sibling task is in flight
+- **THEN** no successor starts, the sibling receives a cancellation request, and the instance becomes terminated
+
+#### Scenario: Normal end needs joined work
+- **WHEN** a branch finishes but another activated branch required by its join is still running
+- **THEN** the instance does not complete until the join and typed `end` are reached
+
+## MODIFIED Requirements
 
 ### Requirement: Each instance has a persisted lifecycle
 The runtime SHALL persist an instance's identity, process identity, input, status, current owner when applicable, committed graph checkpoint, retry/attempt metadata, and available terminal result or failure. Status SHALL distinguish pending, running, retry-waiting, cancelling, completed, business-error, failed, cancelled, and terminated instances. A status lookup SHALL return the recorded state, named business-error node when applicable, and terminal outcome when one exists. A failed attempt while retry remains SHALL NOT be reported as a terminally failed instance.
@@ -59,25 +72,6 @@ The runtime SHALL execute the compiler-emitted explicit graph by advancing named
 - **WHEN** one parallel task's result commits before another task fails
 - **THEN** the first task's output remains in the checkpoint and that task is not rerun on retry
 
-### Requirement: Cancellation halts graph advancement and signals running tasks
-The runtime SHALL accept a cancellation request for a pending, running, or cancelling instance. On acceptance it SHALL persist the cancellation state before any further task dispatch or gateway advancement, prevent further graph token advancement, and invoke cancellation on all `.bl` task nodes already in flight. Task completions received after acceptance SHALL NOT dispatch successors or turn the instance into completed. Cancellation is cooperative and does not guarantee rollback of work already performed by a task.
-
-#### Scenario: Cancel before dispatch
-- **WHEN** a pending instance is cancelled
-- **THEN** it becomes cancelled and none of its tasks start
-
-#### Scenario: Cancel during parallel tasks
-- **WHEN** an instance with two in-flight tasks is cancelled
-- **THEN** both receive cancellation calls, no further tasks are dispatched, and the instance resolves to cancelled
-
-#### Scenario: Completion races with cancellation
-- **WHEN** a task completes as a cancellation request is accepted
-- **THEN** serialized state ordering decides which event is first; after cancellation wins, that completion cannot advance a token or overwrite cancelled status
-
-#### Scenario: Repeated or terminal cancellation
-- **WHEN** cancellation is repeated for an already cancelling/cancelled instance, or requested for an already completed/failed instance
-- **THEN** repeated cancellation is safe and terminal completion/failure is not overwritten
-
 ### Requirement: Development server exposes process control over REST
 The single-node development binary and distributed REST service SHALL provide JSON endpoints to start a registered process, inspect an instance, and request cancellation. They SHALL distinguish successful acceptance, invalid input, unknown identities, conflicting terminal states, waiting retries, completed results, modeled business errors, and execution failures with appropriate HTTP responses and status fields. Both binaries SHALL bind locally by default; distributed remote access SHALL require an operator-managed authenticated ingress.
 
@@ -96,29 +90,3 @@ The single-node development binary and distributed REST service SHALL provide JS
 #### Scenario: Distinct business and execution errors
 - **WHEN** one instance reaches a named business-error node and another exhausts execution retries
 - **THEN** status reports the first as a business error with its node name and the second as failed with an execution reason
-
-### Requirement: Local development honors source-defined recovery
-The local single-node development server SHALL execute the same compiled named graph, terminal nodes, checkpoints, and source-declared retry policy as distributed mode. It SHALL persist enough process state to resume from the last committed checkpoint after a restart, counting interrupted work as an execution failure; it SHALL NOT replay completed tasks. The local store SHALL NOT require PostgreSQL.
-
-#### Scenario: Dev-server restart with retry
-- **WHEN** the local server stops while a task is in progress after an earlier task was checkpointed and retry limits permit
-- **THEN** restart retains the earlier task's output and schedules only unfinished work after the configured delay
-
-#### Scenario: Dev-server restart without retry
-- **WHEN** the local server restarts while an instance was running and its policy permits no retry
-- **THEN** the instance is marked terminally failed with an interruption reason and its committed checkpoint remains inspectable
-
-### Requirement: Terminal events and execution failures have distinct outcomes
-When a compiled graph reaches a normal `end`, the instance SHALL complete with its typed output. Reaching a named `error` SHALL produce a business-error terminal outcome with the node's name, distinct from execution failure; `cancel` SHALL produce a cancelled outcome and `terminate` SHALL produce a terminated outcome. `error`, `cancel`, and `terminate` SHALL stop process advancement, signal in-flight sibling tasks, and SHALL NOT consume or schedule execution retries. An `end` SHALL complete only when the graph's active work has satisfied its required joins. External cancellation SHALL continue to result in cancelled status.
-
-#### Scenario: Named business error
-- **WHEN** routing reaches a named `error` node while another branch is active
-- **THEN** the instance records the business-error node name, signals in-flight siblings, and does not retry
-
-#### Scenario: Termination halts parallel work
-- **WHEN** a graph reaches a `terminate` node while a sibling task is in flight
-- **THEN** no successor starts, the sibling receives a cancellation request, and the instance becomes terminated
-
-#### Scenario: Normal end needs joined work
-- **WHEN** a branch finishes but another activated branch required by its join is still running
-- **THEN** the instance does not complete until the join and typed `end` are reached

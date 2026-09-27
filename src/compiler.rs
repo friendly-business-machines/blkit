@@ -1,4 +1,5 @@
 use crate::{codegen, expr, graph, semantic};
+use std::time::Duration;
 
 pub fn transpile(source: &str) -> Result<String, String> {
     let program = parse(source)?;
@@ -33,6 +34,14 @@ pub struct Enum {
     pub variants: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryPolicy {
+    pub max_retries: u32,
+    pub retry_for: Duration,
+    pub retry_delay: Duration,
+    pub backoff: &'static str,
+}
+
 #[derive(Debug)]
 pub struct Process {
     pub name: String,
@@ -41,6 +50,8 @@ pub struct Process {
     pub output: Type,
     pub body: Vec<expr::Stmt>,
     pub graph: Vec<graph::GraphStmt>,
+    pub named_graph: Option<graph::NamedGraph>,
+    pub retry: Option<RetryPolicy>,
 }
 
 #[derive(Debug)]
@@ -69,7 +80,9 @@ pub(crate) fn type_ref(text: &str) -> Result<Type, String> {
 
 pub(crate) fn identifier(name: &str) -> bool {
     let mut chars = name.chars();
-    chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -129,8 +142,14 @@ pub fn parse(source: &str) -> Result<Program, String> {
                 output: type_ref(output)?,
                 body: Vec::new(),
                 graph: Vec::new(),
+                named_graph: None,
+                retry: None,
             };
-            if kind == "task" { program.tasks.push(process); } else { program.processes.push(process); }
+            if kind == "task" {
+                program.tasks.push(process);
+            } else {
+                program.processes.push(process);
+            }
         } else {
             let name = name
                 .strip_suffix(':')
@@ -168,25 +187,49 @@ pub fn parse(source: &str) -> Result<Program, String> {
                     if !identifier(field) {
                         return Err(format!("invalid field: {line}"));
                     }
-                    program.records.last_mut().unwrap().fields.push((field.into(), type_ref(ty)?));
+                    program
+                        .records
+                        .last_mut()
+                        .unwrap()
+                        .fields
+                        .push((field.into(), type_ref(ty)?));
                 }
                 "enum" => {
                     let variant = &line[2..];
                     if !identifier(variant) {
                         return Err(format!("invalid variant: {line}"));
                     }
-                    program.enums.last_mut().unwrap().variants.push(variant.into());
+                    program
+                        .enums
+                        .last_mut()
+                        .unwrap()
+                        .variants
+                        .push(variant.into());
                 }
                 _ => {
                     // Process blocks are parsed together to preserve nested indentation.
-                },
+                }
             }
         }
         if kind == "process" || kind == "task" {
             let body: Vec<String> = lines[start..i].iter().map(|line| (*line).into()).collect();
-            let item = if kind == "task" { program.tasks.last_mut().unwrap() } else { program.processes.last_mut().unwrap() };
-            if kind == "process" && (body[0].starts_with("  run ") || ["  and:", "  or:", "  xor:"].contains(&body[0].as_str())) {
-                item.graph = graph::parse(&body)?;
+            let item = if kind == "task" {
+                program.tasks.last_mut().unwrap()
+            } else {
+                program.processes.last_mut().unwrap()
+            };
+            if kind == "process"
+                && (body[0].starts_with("  node ")
+                    || body[0].starts_with("  link ")
+                    || body[0].starts_with("  retry "))
+            {
+                let (named_graph, retry) = graph::parse_named(&body)?;
+                item.named_graph = Some(named_graph);
+                item.retry = retry;
+            } else if kind == "process" {
+                return Err(format!(
+                    "process {name} requires explicit named nodes, links, and a terminal; task return remains valid"
+                ));
             } else {
                 item.body = expr::body(&body)?;
             }

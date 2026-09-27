@@ -3,38 +3,73 @@ use blkit::{parse, validate};
 const HEADER: &str = "namespace orders\nversion \"1.0\"\n";
 
 #[test]
-fn documented_graph_parses_alongside_legacy_example() {
-    let graph = parse(include_str!("../examples/graph.bl")).unwrap();
-    assert!(!graph.processes[0].graph.is_empty());
-    validate(&graph).unwrap();
-    assert!(parse(include_str!("../examples/approve.bl")).unwrap().processes[0].graph.is_empty());
-}
-
-#[test]
-fn parses_source_defined_tasks_and_nested_gateways() {
-    let source = format!("{HEADER}task echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> Number:\n  run base = echo(input)\n  and:\n    branch left:\n      run a = echo(base)\n    branch right:\n      xor:\n        when input > 10:\n          run b = echo(base)\n        else:\n          run c = echo(input)\n      join chosen\n  join pair: Pair\n  return pair.left\ntype Pair:\n  left: Number\n  right: Number\n");
+fn parses_explicit_nodes_links_and_retry_policy() {
+    let source = format!(
+        "{HEADER}task echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> Number:\n  retry max_retries 3 retry_for \"10m\" retry_delay \"1s\" backoff exponential\n  node start = start\n  node fork = xor_split\n  node high = task echo(input)\n  node low = task echo(input)\n  node joined = xor_join(fork)\n  node done = end\n  node bad = error\n  node stop = cancel\n  node halt = terminate\n  link start -> fork\n  link fork -> high when input > 10\n  link fork -> low else\n  link high -> joined(high)\n  link low -> joined(low)\n  link joined -> done(joined)\n"
+    );
     let program = parse(&source).unwrap();
-    assert_eq!(program.tasks.len(), 1);
-    assert_eq!(program.processes[0].graph.len(), 3);
+    let graph = program.processes[0].named_graph.as_ref().unwrap();
+    assert_eq!(graph.nodes.len(), 9);
+    assert_eq!(graph.links.len(), 6);
+    assert_eq!(graph.links[1].source, "fork");
+    assert_eq!(graph.links[2].target, "low");
+    assert!(graph.links[1].condition.is_some());
+    assert!(graph.links[2].fallback);
+    let retry = program.processes[0].retry.as_ref().unwrap();
+    assert_eq!(retry.max_retries, 3);
+    assert_eq!(retry.retry_for.as_secs(), 600);
+    assert_eq!(retry.retry_delay.as_secs(), 1);
+    assert_eq!(program.tasks[0].body.len(), 1);
 }
 
 #[test]
-fn parses_or_with_conditions_and_fallback() {
-    let source = format!("{HEADER}task echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> List<Number>:\n  or:\n    when input > 10:\n      run a = echo(input)\n    when input > 20:\n      run b = echo(input)\n    else:\n      run c = echo(input)\n  join result\n  return result\n");
-    let program = parse(&source).unwrap();
-    assert_eq!(program.processes[0].graph.len(), 2);
+fn parses_and_or_joins_and_labeled_links() {
+    let source = format!(
+        "{HEADER}type Pair:\n  left: Number\n  right: Number\nprocess route(input: Number) -> Pair:\n  node start = start\n  node split = and_split\n  node left = or_split\n  node right = task echo(input)\n  node or_joined = or_join(left)\n  node joined = and_join(split): Pair\n  node done = end\n  link start -> split\n  link split -> left as left\n  link split -> right as right\n  link left -> or_joined(input) else\n  link right -> joined(right)\n  link or_joined -> joined(or_joined)\n  link joined -> done(joined)\n"
+    );
+    let graph = parse(&source)
+        .unwrap()
+        .processes
+        .remove(0)
+        .named_graph
+        .unwrap();
+    assert_eq!(graph.nodes.len(), 7);
+    assert_eq!(graph.links[1].label.as_deref(), Some("left"));
+    assert_eq!(graph.links[2].label.as_deref(), Some("right"));
+    assert!(graph.links[3].fallback);
 }
 
 #[test]
-fn rejects_missing_fallback_and_malformed_gateway_conditions() {
-    let source = format!("{HEADER}process route(input: Number) -> Number:\n  xor:\n    when input > 10:\n      run a = echo(input)\n    else:\n      run b = echo(input)\n  join choice\n  return choice\n");
-    assert!(parse(&source.replace("    else:\n      run b = echo(input)\n", "")).unwrap_err().contains("fallback"));
-    assert!(parse(&source.replace("when input > 10:", "when input >:" )).unwrap_err().contains("expression"));
-    assert!(parse(&source.replace("run a = echo(input)", "run a = echo(input" )).unwrap_err().contains("task call"));
+fn documented_graph_and_approval_use_explicit_links() {
+    for source in [
+        include_str!("../examples/graph.bl"),
+        include_str!("../examples/approve.bl"),
+    ] {
+        let program = parse(source).unwrap();
+        validate(&program).unwrap();
+        assert!(
+            program
+                .processes
+                .iter()
+                .all(|process| process.named_graph.is_some())
+        );
+    }
 }
 
 #[test]
-fn rejects_gateway_with_only_fallback() {
-    let source = format!("{HEADER}process route(input: Number) -> Number:\n  xor:\n    else:\n      run a = echo(input)\n  join choice\n  return choice\n");
-    assert!(parse(&source).unwrap_err().contains("condition"));
+fn explicit_graph_rejects_missing_fallback_and_invalid_conditions() {
+    let source = format!(
+        "{HEADER}task echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> Number:\n  node start = start\n  node gate = xor_split\n  node a = task echo(input)\n  node b = task echo(input)\n  node chosen = xor_join(gate)\n  node done = end\n  link start -> gate\n  link gate -> a when input > 10\n  link gate -> b else\n  link a -> chosen(a)\n  link b -> chosen(b)\n  link chosen -> done(chosen)\n"
+    );
+    let missing = source.replace("  link gate -> b else", "  link gate -> b when input > 20");
+    assert!(
+        validate(&parse(&missing).unwrap())
+            .unwrap_err()
+            .contains("fallback")
+    );
+    assert!(
+        parse(&source.replace("when input > 10", "when input >"))
+            .unwrap_err()
+            .contains("expression")
+    );
 }

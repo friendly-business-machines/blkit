@@ -9,8 +9,15 @@ enum Decision:
   approved
   review
 
-process approve(input: Order) -> Decision:
+task decide(input: Order) -> Decision:
   if input.total > 1000 and not input.blocked:
     return Decision.review
   else:
     return Decision.approved
+
+process approve(input: Order) -> Decision:
+  node start = start
+  node decision = task decide(input)
+  node done = end
+  link start -> decision
+  link decision -> done(decision)

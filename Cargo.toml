@@ -13,9 +13,11 @@ turso = { version = "=0.7.2", default-features = false }
 futures-util = "0.3"
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }
+tokio-postgres = "0.7.18"
 
 [build-dependencies]
 rust_decimal = "1.39"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+testcontainers-modules = { version = "=0.15.0", features = ["postgres"] }
