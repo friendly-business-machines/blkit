@@ -16,6 +16,182 @@ fn declarations_and_typed_process_parse() {
 }
 
 #[test]
+fn decision_model_parses_literal_context_dependencies_and_knowledge() {
+    let source = format!(
+        "{HEADER}decision price(input: Number) -> Number:\n  knowledge add(a: Number, b: Number) -> Number = a\n  node base: Number = literal input\n  node final: Number = context\n    entry subtotal: Number = base\n    result subtotal\n  link base -> final\n  output final\n"
+    );
+    let model = &parse(&source).unwrap().decisions[0];
+    assert_eq!(model.name, "price");
+    assert_eq!(model.nodes.len(), 2);
+    assert_eq!(model.knowledge.len(), 1);
+    assert_eq!(model.links, vec![("base".into(), "final".into())]);
+    assert_eq!(model.output_node, "final");
+}
+
+#[test]
+fn malformed_decision_declarations_fail_during_parsing() {
+    let source = format!(
+        "{HEADER}decision price(input: Number) -> Number:\n  node value: Number = context\n    result input\n  output value\n"
+    );
+    for broken in [
+        source.replace("    result input", "   result input"),
+        source.replace("  output value", "  output value extra"),
+        source.replace(
+            "  node value: Number = context",
+            "  node value: Number = mystery",
+        ),
+    ] {
+        assert!(parse(&broken).is_err(), "accepted: {broken}");
+    }
+}
+
+#[test]
+fn decision_models_validate_dependent_types_and_knowledge_calls() {
+    let source = format!(
+        "{HEADER}decision price(input: Number) -> Number:\n  knowledge fee(amount: Number) -> Number = amount\n  node base: Number = literal input\n  node outcome: Number = context\n    entry subtotal: Number = fee(base)\n    result subtotal\n  link base -> outcome\n  output outcome\n"
+    );
+    validate(&parse(&source).unwrap()).unwrap();
+    for (broken, expected) in [
+        (
+            source.replace("fee(base)", "fee(true)"),
+            "knowledge argument",
+        ),
+        (
+            source.replace("fee(base)", "unknown(base)"),
+            "unknown knowledge",
+        ),
+        (
+            source.replace("entry subtotal: Number", "entry subtotal: Bool"),
+            "decision result type",
+        ),
+        (
+            source.replace("entry subtotal: Number", "entry subtotal: Mystery"),
+            "unknown type",
+        ),
+        (
+            source.replace("  link base -> outcome\n", ""),
+            "unknown name",
+        ),
+        (
+            source.replace(
+                "knowledge fee(amount: Number) -> Number = amount",
+                "knowledge fee(amount: Number) -> Number = fee(amount)",
+            ),
+            "knowledge cycle",
+        ),
+        (
+            source.replace("link base -> outcome", "link unknown -> outcome"),
+            "unknown decision node",
+        ),
+        (
+            source.replace(
+                "  output outcome",
+                "  link outcome -> base\n  output outcome",
+            ),
+            "decision cycle",
+        ),
+        (
+            source.replace("result subtotal", "result missing"),
+            "unknown name",
+        ),
+        (
+            source.replace("node outcome: Number", "node outcome: Bool"),
+            "decision result type",
+        ),
+        (
+            source.replace(
+                "  output outcome",
+                "  node base: Number = literal input\n  output outcome",
+            ),
+            "duplicate",
+        ),
+    ] {
+        let error = validate(&parse(&broken).unwrap()).unwrap_err();
+        assert!(error.contains(expected), "{broken}: {error}");
+    }
+}
+
+#[test]
+fn knowledge_calls_are_scoped_to_their_decision_model() {
+    let source = format!(
+        "{HEADER}decision first(input: Number) -> Number:\n  knowledge fee(amount: Number) -> Number = amount\n  node result: Number = literal fee(input)\n  output result\ndecision second(input: Bool) -> Bool:\n  knowledge fee(amount: Bool) -> Bool = amount\n  node result: Bool = literal fee(input)\n  output result\n"
+    );
+    validate(&parse(&source).unwrap()).unwrap();
+    let outside = format!("{source}task misuse(input: Number) -> Number:\n  return fee(input)\n");
+    assert!(
+        validate(&parse(&outside).unwrap())
+            .unwrap_err()
+            .contains("unknown knowledge")
+    );
+}
+
+#[test]
+fn decision_tables_parse_expressions_multiple_outputs_and_defaults() {
+    let source = format!(
+        "{HEADER}type Quote:\n  price: Number\n  tier: String\ndecision quote(input: Number) -> Quote:\n  node result: Quote = table PRIORITY\n    input amount: Number = input\n    output price: Number\n    output tier: String\n    priority 5, \"express\"\n    priority 2, \"regular\"\n    rule amount > 100 -> 5, \"express\"\n    rule amount <= 100 -> 2, \"regular\"\n    default 0, \"none\"\n  output result\n"
+    );
+    let program = parse(&source).unwrap();
+    validate(&program).unwrap();
+    assert_eq!(program.decisions[0].nodes.len(), 1);
+    for (broken, expected) in [
+        (
+            source.replace("priority 2, \"regular\"", "priority 2"),
+            "priority",
+        ),
+        (
+            source.replace(
+                "rule amount > 100 -> 5, \"express\"",
+                "rule amount > 100 -> 5",
+            ),
+            "output",
+        ),
+        (
+            source.replace("table PRIORITY", "table COLLECT SUM"),
+            "aggregation",
+        ),
+        (
+            source.replace("    priority 2, \"regular\"", "    priority 5, \"express\""),
+            "duplicate priority",
+        ),
+    ] {
+        let err = parse(&broken)
+            .and_then(|program| validate(&program))
+            .unwrap_err();
+        assert!(err.contains(expected), "{broken}: {err}");
+    }
+}
+
+#[test]
+fn datetime_comparisons_and_wait_expressions_are_typed() {
+    let source = format!(
+        "{HEADER}type Window:\n  opens: DateTime\n  closes: DateTime\ntask early(input: Window) -> Bool:\n  return input.opens < input.closes\nprocess later(input: Window) -> Window:\n  node start = start\n  node delay = pause_for \"10m\"\n  node until = pause_until input.closes\n  node done = end\n  link start -> delay\n  link delay -> until\n  link until -> done(input)\n"
+    );
+    validate(&parse(&source).unwrap()).unwrap();
+    for (broken, expected) in [
+        (
+            source.replace("pause_until input.closes", "pause_until true"),
+            "DateTime",
+        ),
+        (
+            source.replace("pause_for \"10m\"", "pause_for \"0s\""),
+            "duration",
+        ),
+        (
+            source.replace(
+                "return input.opens < input.closes",
+                "return input.opens < true",
+            ),
+            "matching types",
+        ),
+    ] {
+        let error = parse(&broken)
+            .and_then(|program| validate(&program))
+            .unwrap_err();
+        assert!(error.contains(expected), "{broken}: {error}");
+    }
+}
+
+#[test]
 fn missing_header_is_reported() {
     assert!(
         parse("version \"1.0\"\n")

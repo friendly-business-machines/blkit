@@ -1,4 +1,4 @@
-use crate::{codegen, expr, graph, semantic};
+use crate::{codegen, decision, expr, graph, semantic};
 use std::time::Duration;
 
 pub fn transpile(source: &str) -> Result<String, String> {
@@ -43,6 +43,12 @@ pub struct RetryPolicy {
 }
 
 #[derive(Debug)]
+pub struct DeadlinePolicy {
+    pub origin: &'static str,
+    pub duration: Duration,
+}
+
+#[derive(Debug)]
 pub struct Process {
     pub name: String,
     pub input: String,
@@ -52,6 +58,7 @@ pub struct Process {
     pub graph: Vec<graph::GraphStmt>,
     pub named_graph: Option<graph::NamedGraph>,
     pub retry: Option<RetryPolicy>,
+    pub deadline: Option<DeadlinePolicy>,
 }
 
 #[derive(Debug)]
@@ -62,6 +69,7 @@ pub struct Program {
     pub enums: Vec<Enum>,
     pub processes: Vec<Process>,
     pub tasks: Vec<Process>,
+    pub decisions: Vec<decision::DecisionModel>,
 }
 
 pub(crate) fn type_ref(text: &str) -> Result<Type, String> {
@@ -112,6 +120,7 @@ pub fn parse(source: &str) -> Result<Program, String> {
         enums: Vec::new(),
         processes: Vec::new(),
         tasks: Vec::new(),
+        decisions: Vec::new(),
     };
     let mut i = 2;
     while i < lines.len() {
@@ -119,7 +128,9 @@ pub fn parse(source: &str) -> Result<Program, String> {
         let (kind, name) = header
             .split_once(' ')
             .ok_or_else(|| format!("invalid declaration: {header}"))?;
-        if kind == "process" || kind == "task" {
+        if kind == "decision" {
+            // The signature and body are parsed together below.
+        } else if kind == "process" || kind == "task" {
             let (name, rest) = name
                 .split_once('(')
                 .ok_or_else(|| format!("invalid process signature: {header}"))?;
@@ -144,6 +155,7 @@ pub fn parse(source: &str) -> Result<Program, String> {
                 graph: Vec::new(),
                 named_graph: None,
                 retry: None,
+                deadline: None,
             };
             if kind == "task" {
                 program.tasks.push(process);
@@ -211,7 +223,10 @@ pub fn parse(source: &str) -> Result<Program, String> {
                 }
             }
         }
-        if kind == "process" || kind == "task" {
+        if kind == "decision" {
+            let body: Vec<String> = lines[start..i].iter().map(|line| (*line).into()).collect();
+            program.decisions.push(decision::parse(name, &body)?);
+        } else if kind == "process" || kind == "task" {
             let body: Vec<String> = lines[start..i].iter().map(|line| (*line).into()).collect();
             let item = if kind == "task" {
                 program.tasks.last_mut().unwrap()
@@ -221,11 +236,13 @@ pub fn parse(source: &str) -> Result<Program, String> {
             if kind == "process"
                 && (body[0].starts_with("  node ")
                     || body[0].starts_with("  link ")
-                    || body[0].starts_with("  retry "))
+                    || body[0].starts_with("  retry ")
+                    || body[0].starts_with("  deadline "))
             {
-                let (named_graph, retry) = graph::parse_named(&body)?;
+                let (named_graph, retry, deadline) = graph::parse_named(&body)?;
                 item.named_graph = Some(named_graph);
                 item.retry = retry;
+                item.deadline = deadline;
             } else if kind == "process" {
                 return Err(format!(
                     "process {name} requires explicit named nodes, links, and a terminal; task return remains valid"

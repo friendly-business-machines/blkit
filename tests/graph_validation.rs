@@ -5,6 +5,152 @@ const EXPLICIT: &str = "namespace orders\nversion \"1.0\"\ntask echo(input: Numb
 const TYPED_XOR: &str = "namespace orders\nversion \"1.0\"\ntask echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> Number:\n  node start = start\n  node gate = xor_split\n  node high = task echo(input)\n  node low = task echo(input)\n  node chosen = xor_join(gate)\n  node done = end\n  link start -> gate\n  link gate -> high when input > 10\n  link gate -> low else\n  link high -> chosen(high)\n  link low -> chosen(low)\n  link chosen -> done(chosen)\n";
 
 #[test]
+fn deadlines_validate_origin_bounds_and_reserved_timeout_name() {
+    for origin in ["queued", "first_claimed"] {
+        let source = EXPLICIT.replace(
+            "  node start = start",
+            &format!("  deadline {origin} \"5h\"\n  node start = start"),
+        );
+        validate(&parse(&source).unwrap()).unwrap();
+        let repeated = source.replace(
+            "  node start = start",
+            "  deadline queued \"5h\"\n  node start = start",
+        );
+        assert!(parse(&repeated).is_err());
+    }
+    for clause in [
+        "deadline queued \"0s\"",
+        "deadline first_claimed \"nope\"",
+        "deadline unknown \"5h\"",
+    ] {
+        assert!(
+            parse(&EXPLICIT.replace(
+                "  node start = start",
+                &format!("  {clause}\n  node start = start")
+            ))
+            .is_err(),
+            "{clause}"
+        );
+    }
+    assert!(
+        validate(
+            &parse(&EXPLICIT.replace("node done = end", "node timeout = error\n  node done = end"))
+                .unwrap()
+        )
+        .unwrap_err()
+        .contains("reserved")
+    );
+    let cycle = EXPLICIT.replace(
+        "  link first -> done(first)",
+        "  link first -> first\n  link first -> done(first)",
+    );
+    assert!(
+        validate(&parse(&cycle).unwrap())
+            .unwrap_err()
+            .contains("deadline")
+    );
+}
+
+const CYCLIC: &str = "namespace orders\nversion \"1.0\"\ntask echo(input: Number) -> Number:\n  return input\nprocess repeat(input: Number) -> Number:\n  deadline queued \"1s\"\n  node start = start\n  node gate = xor_split\n  node work = task echo(input)\n  node joined = xor_join(gate)\n  node stop = error\n  link start -> gate\n  link gate -> work when input > 0\n  link gate -> stop else\n  link work -> joined(work)\n  link joined -> gate\n";
+
+#[test]
+fn cyclic_routes_require_deadlines_reachable_exits_and_definite_values() {
+    validate(&parse(CYCLIC).unwrap()).unwrap();
+    assert!(transpile(CYCLIC).is_ok());
+    assert!(
+        validate(&parse(&CYCLIC.replace("  deadline queued \"1s\"\n", "")).unwrap())
+            .unwrap_err()
+            .contains("deadline")
+    );
+    let no_exit = CYCLIC
+        .replace("  node stop = error\n", "  node skip = task echo(input)\n")
+        .replace("link gate -> stop else", "link gate -> skip else")
+        .replace(
+            "link joined -> gate",
+            "link skip -> joined(skip)\n  link joined -> gate",
+        );
+    assert!(
+        validate(&parse(&no_exit).unwrap())
+            .unwrap_err()
+            .contains("exit")
+    );
+    let uninitialized = CYCLIC.replace("when input > 0", "when work > 0");
+    assert!(
+        validate(&parse(&uninitialized).unwrap())
+            .unwrap_err()
+            .contains("unknown name")
+    );
+    let invalid_join = CYCLIC.replace(
+        "link work -> joined(work)",
+        "link start -> joined(input)\n  link work -> joined(work)",
+    );
+    assert!(validate(&parse(&invalid_join).unwrap()).is_err());
+}
+
+#[test]
+fn task_free_cycle_with_deadline_is_a_valid_graph() {
+    let source = "namespace example\nversion \"1\"\nprocess spin(input: Number) -> Number:\n  deadline queued \"1s\"\n  node start = start\n  node gate = xor_split\n  node joined = xor_join(gate)\n  node failed = error\n  link start -> gate\n  link gate -> joined(input) when input > 0\n  link gate -> failed else\n  link joined -> gate\n";
+    validate(&parse(source).unwrap()).unwrap();
+}
+
+#[test]
+fn task_loop_bounds_conditions_and_initial_values_are_typed() {
+    let post = EXPLICIT.replace(
+        "task echo(input)",
+        "task echo(input) repeat_post(first < 3) max_iterations 3",
+    );
+    validate(&parse(&post).unwrap()).unwrap();
+    let pre = EXPLICIT.replace(
+        "task echo(input)",
+        "task echo(input) repeat_pre(first < 3) max_duration \"1m\" initial 0",
+    );
+    validate(&parse(&pre).unwrap()).unwrap();
+    for invalid in [
+        "task echo(input) repeat_post(first < 3) max_iterations 0",
+        "task echo(input) repeat_post(first < 3)",
+        "task echo(input) repeat_pre(first < 3) max_iterations 3",
+        "task echo(input) repeat_pre(1) max_iterations 3 initial 0",
+        "task echo(input) repeat_pre(first < 3) max_iterations 3 initial true",
+    ] {
+        let source = EXPLICIT.replace("task echo(input)", invalid);
+        assert!(
+            parse(&source)
+                .and_then(|program| validate(&program))
+                .is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn multi_instance_tasks_require_typed_lists_and_known_mode() {
+    let source = "namespace orders\nversion \"1\"\ntask echo(input: Number) -> Number:\n  return input\nprocess group(input: List<Number>) -> List<Number>:\n  node start = start\n  node batch = task echo each input sequential\n  node done = end\n  link start -> batch\n  link batch -> done(batch)\n";
+    validate(&parse(source).unwrap()).unwrap();
+    validate(&parse(&source.replace("sequential", "parallel")).unwrap()).unwrap();
+    assert!(parse(&source.replace("sequential", "random")).is_err());
+    assert!(
+        validate(
+            &parse(&source.replace(
+                "List<Number>) -> List<Number>",
+                "List<Bool>) -> List<Number>"
+            ))
+            .unwrap()
+        )
+        .is_err()
+    );
+    assert!(
+        validate(
+            &parse(&source.replace(
+                "process group(input: List<Number>)",
+                "process group(input: Number)"
+            ))
+            .unwrap()
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn explicit_links_validate_types_and_path_availability() {
     validate(&parse(TYPED_XOR).unwrap()).unwrap();
     let invalid = |text: &str| validate(&parse(text).unwrap()).unwrap_err();

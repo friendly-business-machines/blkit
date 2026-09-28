@@ -23,6 +23,22 @@ fn parses_explicit_nodes_links_and_retry_policy() {
 }
 
 #[test]
+fn business_rule_node_is_typed_and_exposes_its_result() {
+    let source = format!(
+        "{HEADER}decision price(input: Number) -> Number:\n  node result: Number = literal input\n  output result\nprocess route(input: Number) -> Number:\n  node start = start\n  node quote = business_rule price(input)\n  node done = end\n  link start -> quote\n  link quote -> done(quote)\n"
+    );
+    validate(&parse(&source).unwrap()).unwrap();
+    assert!(
+        validate(
+            &parse(&source.replace("business_rule price(input)", "business_rule price(true)"))
+                .unwrap()
+        )
+        .unwrap_err()
+        .contains("input type mismatch")
+    );
+}
+
+#[test]
 fn parses_and_or_joins_and_labeled_links() {
     let source = format!(
         "{HEADER}type Pair:\n  left: Number\n  right: Number\nprocess route(input: Number) -> Pair:\n  node start = start\n  node split = and_split\n  node left = or_split\n  node right = task echo(input)\n  node or_joined = or_join(left)\n  node joined = and_join(split): Pair\n  node done = end\n  link start -> split\n  link split -> left as left\n  link split -> right as right\n  link left -> or_joined(input) else\n  link right -> joined(right)\n  link or_joined -> joined(or_joined)\n  link joined -> done(joined)\n"
@@ -44,6 +60,7 @@ fn documented_graph_and_approval_use_explicit_links() {
     for source in [
         include_str!("../examples/graph.bl"),
         include_str!("../examples/approve.bl"),
+        include_str!("../examples/pricing.bl"),
     ] {
         let program = parse(source).unwrap();
         validate(&program).unwrap();

@@ -1,5 +1,6 @@
 mod codegen;
 mod compiler;
+pub mod decision;
 pub mod distributed;
 pub mod expr;
 pub mod graph;
@@ -10,6 +11,8 @@ mod semantic;
 pub mod server;
 mod store;
 
-pub use compiler::{Enum, Process, Program, Record, RetryPolicy, Type, parse, transpile};
+pub use compiler::{
+    DeadlinePolicy, Enum, Process, Program, Record, RetryPolicy, Type, parse, transpile,
+};
 pub(crate) use compiler::{identifier, type_ref};
 pub use semantic::validate;

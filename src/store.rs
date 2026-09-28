@@ -39,9 +39,31 @@ pub struct Instance {
     pub terminal_name: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub queued_at_ms: i64,
+    pub first_claim_at_ms: Option<i64>,
+    #[serde(rename = "wake_at")]
+    pub wake_at_ms: Option<i64>,
+    pub deadline_origin: Option<String>,
+    pub deadline_duration_ms: Option<i64>,
+    pub deadline_at_ms: Option<i64>,
 }
 
 impl Instance {
+    pub fn with_deadline(&mut self, policy: &crate::DeadlinePolicy) -> Result<(), String> {
+        let duration = i64::try_from(policy.duration.as_millis())
+            .map_err(|_| "deadline duration too large")?;
+        self.deadline_origin = Some(policy.origin.into());
+        self.deadline_duration_ms = Some(duration);
+        if policy.origin == "queued" {
+            self.deadline_at_ms = Some(
+                self.queued_at_ms
+                    .checked_add(duration)
+                    .ok_or("deadline overflow")?,
+            );
+        }
+        Ok(())
+    }
+
     pub fn new(id: &str, namespace: &str, version: &str, process: &str, input: Value) -> Self {
         Self {
             id: id.into(),
@@ -59,6 +81,12 @@ impl Instance {
             terminal_name: None,
             created_at: now(),
             updated_at: now(),
+            queued_at_ms: now_ms(),
+            first_claim_at_ms: None,
+            wake_at_ms: None,
+            deadline_origin: None,
+            deadline_duration_ms: None,
+            deadline_at_ms: None,
         }
     }
 }
@@ -90,6 +118,12 @@ impl Store {
             ("first_failure_at", "INTEGER"),
             ("next_eligible_at", "INTEGER"),
             ("terminal_name", "TEXT"),
+            ("queued_at_ms", "INTEGER"),
+            ("first_claim_at_ms", "INTEGER"),
+            ("wake_at_ms", "INTEGER"),
+            ("deadline_origin", "TEXT"),
+            ("deadline_duration_ms", "INTEGER"),
+            ("deadline_at_ms", "INTEGER"),
         ] {
             if !existing.contains(name) {
                 conn.execute(
@@ -100,6 +134,12 @@ impl Store {
                 .map_err(|e| e.to_string())?;
             }
         }
+        conn.execute(
+            "UPDATE instances SET queued_at_ms=created_at*1000 WHERE queued_at_ms IS NULL",
+            (),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         Ok(Self(Arc::new(db)))
     }
 
@@ -113,7 +153,7 @@ impl Store {
         let mut conn = self.0.connect().map_err(|e| e.to_string())?;
         let tx = conn.transaction().await.map_err(|e| e.to_string())?;
         tx.execute(
-            "INSERT INTO instances (id, namespace, version, process, input, status, result, error, created_at, updated_at, checkpoint, attempt, first_failure_at, next_eligible_at, terminal_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT INTO instances (id, namespace, version, process, input, status, result, error, created_at, updated_at, checkpoint, attempt, first_failure_at, next_eligible_at, terminal_name, queued_at_ms, first_claim_at_ms, wake_at_ms, deadline_origin, deadline_duration_ms, deadline_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
             turso::params![
                 instance.id.as_str(),
                 instance.namespace.as_str(),
@@ -129,7 +169,13 @@ impl Store {
                 i64::from(instance.attempt),
                 instance.first_failure_at,
                 instance.next_eligible_at,
-                instance.terminal_name.as_deref()
+                instance.terminal_name.as_deref(),
+                instance.queued_at_ms,
+                instance.first_claim_at_ms,
+                instance.wake_at_ms,
+                instance.deadline_origin.as_deref(),
+                instance.deadline_duration_ms,
+                instance.deadline_at_ms
             ],
         )
         .await
@@ -145,17 +191,51 @@ impl Store {
         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
         let mut conn = self.0.connect().map_err(|e| e.to_string())?;
         let tx = conn.transaction().await.map_err(|e| e.to_string())?;
-        let affected = tx.execute("UPDATE instances SET checkpoint=?1, updated_at=?2 WHERE id=?3 AND status IN ('pending', 'running')", turso::params![value, now(), id]).await.map_err(|e| e.to_string())?;
+        let affected = tx.execute("UPDATE instances SET checkpoint=?1, updated_at=?2 WHERE id=?3 AND status IN ('pending', 'running') AND (deadline_at_ms IS NULL OR deadline_at_ms>?4)", turso::params![value, now(), id, now_ms()]).await.map_err(|e| e.to_string())?;
         if affected != 1 {
             return Err(format!("instance not active: {id}"));
         }
         tx.commit().await.map_err(|e| e.to_string())
     }
 
+    pub async fn set_wait(
+        &self,
+        id: &str,
+        checkpoint: &GraphCheckpoint,
+        wake_at_ms: i64,
+    ) -> Result<(), String> {
+        let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
+        let conn = self.0.connect().map_err(|e| e.to_string())?;
+        let changed = conn.execute("UPDATE instances SET status='waiting', checkpoint=?2, wake_at_ms=?3, updated_at=?4 WHERE id=?1 AND status IN ('pending','running') AND (deadline_at_ms IS NULL OR deadline_at_ms>?5)", turso::params![id, value, wake_at_ms, now(), now_ms()]).await.map_err(|e| e.to_string())?;
+        if changed != 1 {
+            return Err(format!("instance not active: {id}"));
+        }
+        Ok(())
+    }
+
+    pub async fn resume_wait(
+        &self,
+        id: &str,
+        checkpoint: &GraphCheckpoint,
+    ) -> Result<Option<&'static str>, String> {
+        let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
+        let conn = self.0.connect().map_err(|e| e.to_string())?;
+        let changed = conn.execute("UPDATE instances SET status=CASE WHEN attempt>0 THEN 'running' ELSE 'pending' END, checkpoint=?2, wake_at_ms=NULL, updated_at=?3 WHERE id=?1 AND status='waiting' AND wake_at_ms<=?4 AND (deadline_at_ms IS NULL OR deadline_at_ms>?4)", turso::params![id, value, now(), now_ms()]).await.map_err(|e| e.to_string())?;
+        if changed != 1 {
+            return Ok(None);
+        }
+        let state = self.get(id).await?.ok_or("missing resumed wait")?;
+        Ok(Some(if state.status == "pending" {
+            "pending"
+        } else {
+            "running"
+        }))
+    }
+
     pub async fn begin_attempt(&self, id: &str) -> Result<(), String> {
         let mut conn = self.0.connect().map_err(|e| e.to_string())?;
         let tx = conn.transaction().await.map_err(|e| e.to_string())?;
-        let affected = tx.execute("UPDATE instances SET attempt=attempt+1, status='running', next_eligible_at=NULL, updated_at=?1 WHERE id=?2 AND (status='pending' OR (status='retry-waiting' AND next_eligible_at<=?3))", turso::params![now(), id, now_ms()]).await.map_err(|e| e.to_string())?;
+        let affected = tx.execute("UPDATE instances SET attempt=attempt+1, status='running', next_eligible_at=NULL, first_claim_at_ms=COALESCE(first_claim_at_ms, ?3), deadline_at_ms=CASE WHEN deadline_origin='first_claimed' THEN COALESCE(deadline_at_ms, ?3+deadline_duration_ms) ELSE deadline_at_ms END, updated_at=?1 WHERE id=?2 AND (status='pending' OR (status='retry-waiting' AND next_eligible_at<=?3)) AND (deadline_at_ms IS NULL OR deadline_at_ms>?3)", turso::params![now(), id, now_ms()]).await.map_err(|e| e.to_string())?;
         if affected != 1 {
             return Err(format!("instance not eligible: {id}"));
         }
@@ -177,7 +257,7 @@ impl Store {
         };
         let mut conn = self.0.connect().map_err(|e| e.to_string())?;
         let tx = conn.transaction().await.map_err(|e| e.to_string())?;
-        let affected = tx.execute("UPDATE instances SET attempt=?1, first_failure_at=?2, next_eligible_at=?3, status=?4, error=?5, updated_at=?6 WHERE id=?7 AND status IN ('pending', 'running', 'retry-waiting')", turso::params![i64::from(attempt), first_failure_at, next_eligible_at, status, error, now(), id]).await.map_err(|e| e.to_string())?;
+        let affected = tx.execute("UPDATE instances SET attempt=?1, first_failure_at=?2, next_eligible_at=?3, status=?4, error=?5, updated_at=?6 WHERE id=?7 AND status IN ('pending', 'running', 'retry-waiting') AND (deadline_at_ms IS NULL OR deadline_at_ms>?8)", turso::params![i64::from(attempt), first_failure_at, next_eligible_at, status, error, now(), id, now_ms()]).await.map_err(|e| e.to_string())?;
         if affected != 1 {
             return Err(format!("instance not active: {id}"));
         }
@@ -219,13 +299,13 @@ impl Store {
         let tx = conn.transaction().await.map_err(|e| e.to_string())?;
         let affected = tx
             .execute(
-                "UPDATE instances SET status=?1, result=?2, error=?3, terminal_name=?4, updated_at=?5 WHERE id=?6",
-                turso::params![status, result.map(|v| v.to_string()), error, terminal_name, now(), id],
+                "UPDATE instances SET status=?1, result=?2, error=?3, terminal_name=?4, updated_at=?5 WHERE id=?6 AND status IN ('pending','running','retry-waiting','waiting','cancelling') AND (deadline_at_ms IS NULL OR deadline_at_ms>?7 OR status='cancelling')",
+                turso::params![status, result.map(|v| v.to_string()), error, terminal_name, now(), id, now_ms()],
             )
             .await
             .map_err(|e| e.to_string())?;
         if affected != 1 {
-            return Err(format!("unknown instance: {id}"));
+            return Err(format!("instance not active: {id}"));
         }
         tx.commit().await.map_err(|e| e.to_string())
     }
@@ -242,7 +322,7 @@ impl Store {
 
     pub async fn incomplete(&self) -> Result<Vec<Instance>, String> {
         let conn = self.0.connect().map_err(|e| e.to_string())?;
-        let mut rows = conn.query("SELECT id FROM instances WHERE checkpoint IS NOT NULL AND status IN ('pending', 'running', 'retry-waiting')", ()).await.map_err(|e| e.to_string())?;
+        let mut rows = conn.query("SELECT id FROM instances WHERE checkpoint IS NOT NULL AND status IN ('pending', 'running', 'retry-waiting', 'waiting')", ()).await.map_err(|e| e.to_string())?;
         let mut ids = Vec::new();
         while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
             ids.push(row.get::<String>(0).map_err(|e| e.to_string())?);
@@ -257,9 +337,50 @@ impl Store {
         Ok(instances)
     }
 
+    pub async fn expire_due(&self, at_ms: i64) -> Result<Vec<String>, String> {
+        let conn = self.0.connect().map_err(|e| e.to_string())?;
+        let mut rows = conn.query("SELECT id FROM instances WHERE deadline_at_ms IS NOT NULL AND deadline_at_ms<=?1 AND status IN ('pending','running','retry-waiting','waiting')", [at_ms]).await.map_err(|e| e.to_string())?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
+            ids.push(row.get::<String>(0).map_err(|e| e.to_string())?);
+        }
+        drop(rows);
+        let mut expired = Vec::new();
+        for id in ids {
+            let changed = conn.execute("UPDATE instances SET status='business-error', terminal_name='timeout', wake_at_ms=NULL, updated_at=?3 WHERE id=?1 AND deadline_at_ms<=?2 AND status IN ('pending','running','retry-waiting','waiting')", turso::params![id.as_str(), at_ms, now()]).await.map_err(|e| e.to_string())?;
+            if changed == 1 {
+                expired.push(id);
+            }
+        }
+        Ok(expired)
+    }
+
+    pub async fn due_waits(&self, at_ms: i64) -> Result<Vec<Instance>, String> {
+        let conn = self.0.connect().map_err(|e| e.to_string())?;
+        let mut rows = conn
+            .query(
+                "SELECT id FROM instances WHERE status='waiting' AND wake_at_ms<=?1",
+                [at_ms],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
+            ids.push(row.get::<String>(0).map_err(|e| e.to_string())?);
+        }
+        drop(rows);
+        let mut due = Vec::new();
+        for id in ids {
+            if let Some(item) = self.get(&id).await? {
+                due.push(item);
+            }
+        }
+        Ok(due)
+    }
+
     pub async fn get(&self, id: &str) -> Result<Option<Instance>, String> {
         let conn = self.0.connect().map_err(|e| e.to_string())?;
-        let mut rows = conn.query("SELECT id, namespace, version, process, input, status, result, error, created_at, updated_at, checkpoint, attempt, first_failure_at, next_eligible_at, terminal_name FROM instances WHERE id=?1", [id])
+        let mut rows = conn.query("SELECT id, namespace, version, process, input, status, result, error, created_at, updated_at, checkpoint, attempt, first_failure_at, next_eligible_at, terminal_name, queued_at_ms, first_claim_at_ms, wake_at_ms, deadline_origin, deadline_duration_ms, deadline_at_ms FROM instances WHERE id=?1", [id])
             .await.map_err(|e| e.to_string())?;
         let Some(row) = rows.next().await.map_err(|e| e.to_string())? else {
             return Ok(None);
@@ -290,6 +411,12 @@ impl Store {
             terminal_name: row.get(14).map_err(|e| e.to_string())?,
             created_at: row.get(8).map_err(|e| e.to_string())?,
             updated_at: row.get(9).map_err(|e| e.to_string())?,
+            queued_at_ms: row.get(15).map_err(|e| e.to_string())?,
+            first_claim_at_ms: row.get(16).map_err(|e| e.to_string())?,
+            wake_at_ms: row.get(17).map_err(|e| e.to_string())?,
+            deadline_origin: row.get(18).map_err(|e| e.to_string())?,
+            deadline_duration_ms: row.get(19).map_err(|e| e.to_string())?,
+            deadline_at_ms: row.get(20).map_err(|e| e.to_string())?,
         }))
     }
 }

@@ -4,6 +4,8 @@
 mod codegen;
 #[path = "src/compiler.rs"]
 mod compiler;
+#[path = "src/decision.rs"]
+mod decision;
 #[path = "src/expr.rs"]
 mod expr;
 #[path = "src/graph.rs"]
@@ -16,6 +18,7 @@ fn main() {
     for file in [
         "examples/graph.bl",
         "src/compiler.rs",
+        "src/decision.rs",
         "src/expr.rs",
         "src/graph.rs",
         "src/semantic.rs",

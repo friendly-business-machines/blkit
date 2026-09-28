@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     Program, Type,
+    decision::{DecisionKind, DecisionModel, DecisionTable},
     expr::{Expr, Stmt},
     graph::{GraphStmt, NodeKind},
     semantic,
@@ -13,6 +14,13 @@ fn emit_expr(expr: &Expr, program: &Program) -> String {
         Expr::String(value) => format!("String::from({value:?})"),
         Expr::Bool(value) => value.to_string(),
         Expr::Name(name) => name.clone(),
+        Expr::Call(name, args) => format!(
+            "{name}({})",
+            args.iter()
+                .map(|arg| emit_expr(arg, program))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         Expr::Field(base, field) => {
             if let Expr::Name(name) = base.as_ref()
                 && program.enums.iter().any(|item| item.name == *name)
@@ -169,11 +177,241 @@ fn emit_graph_steps(
     Ok((format!("vec![{}]", steps.join(", ")), last))
 }
 
+fn table_item(table: &DecisionTable, values: &[Expr], result: &Type, program: &Program) -> String {
+    if table.outputs.len() == 1 {
+        emit_expr(&values[0], program)
+    } else {
+        let Type::Named(name) = (if matches!(result, Type::Generic(_, _)) {
+            match result {
+                Type::Generic(_, inner) => inner.as_ref(),
+                _ => unreachable!(),
+            }
+        } else {
+            result
+        }) else {
+            unreachable!()
+        };
+        format!(
+            "{name} {{ {} }}",
+            table
+                .outputs
+                .iter()
+                .zip(values)
+                .map(|((field, _), expr)| format!("{field}: {}", emit_expr(expr, program)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+fn emit_table(table: &DecisionTable, result: &Type, program: &Program) -> String {
+    let mut code = String::from("{\n");
+    for (name, ty, expression) in &table.inputs {
+        code.push_str(&format!(
+            "let {name}: {} = {};\n",
+            rust_type(ty),
+            emit_expr(expression, program)
+        ));
+    }
+    let item_type = if matches!(
+        table.policy.as_str(),
+        "RULE_ORDER" | "OUTPUT_ORDER" | "COLLECT"
+    ) && table.aggregation.is_none()
+    {
+        if let Type::Generic(_, inner) = result {
+            rust_type(inner)
+        } else {
+            rust_type(result)
+        }
+    } else if table.aggregation.as_deref() == Some("COUNT") {
+        "()".into()
+    } else {
+        rust_type(result)
+    };
+    code.push_str(&format!(
+        "let mut __bl_matches: Vec<{item_type}> = Vec::new();\n"
+    ));
+    for (condition, values) in &table.rules {
+        code.push_str(&format!(
+            "if {} {{ __bl_matches.push({}); }}\n",
+            emit_expr(condition, program),
+            if table.aggregation.as_deref() == Some("COUNT") {
+                "()".into()
+            } else {
+                table_item(table, values, result, program)
+            }
+        ));
+    }
+    let fallback = table
+        .default
+        .as_ref()
+        .map(|values| table_item(table, values, result, program));
+    let absent = fallback
+        .map(|value| format!("Ok({value})"))
+        .unwrap_or_else(|| "Err(String::from(\"no matching decision rule\"))".into());
+    let result_expr = match (table.policy.as_str(), table.aggregation.as_deref()) {
+        ("UNIQUE", _) => format!(
+            "if __bl_matches.len() > 1 {{ Err(String::from(\"UNIQUE policy violation\")) }} else {{ __bl_matches.pop().map(Ok).unwrap_or_else(|| {absent}) }}"
+        ),
+        ("ANY", _) => format!(
+            "if __bl_matches.windows(2).any(|pair| pair[0] != pair[1]) {{ Err(String::from(\"ANY policy violation\")) }} else {{ __bl_matches.pop().map(Ok).unwrap_or_else(|| {absent}) }}"
+        ),
+        ("FIRST", _) => format!(
+            "if __bl_matches.is_empty() {{ {absent} }} else {{ Ok(__bl_matches.remove(0)) }}"
+        ),
+        ("PRIORITY" | "OUTPUT_ORDER", _) => {
+            let priority = table
+                .priorities
+                .iter()
+                .map(|row| table_item(table, row, result, program))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut expression = format!(
+                "let __bl_priorities = vec![{priority}]; let mut __bl_ranked = __bl_matches.into_iter().enumerate().map(|(position, value)| __bl_priorities.iter().position(|ranked| *ranked == value).map(|rank| (rank, position, value)).ok_or_else(|| String::from(\"unranked decision output\"))).collect::<Result<Vec<_>, String>>()?; __bl_ranked.sort_by_key(|(rank, position, _)| (*rank, *position));"
+            );
+            if table.policy == "PRIORITY" {
+                expression.push_str(&format!(" if __bl_ranked.is_empty() {{ {absent} }} else {{ Ok(__bl_ranked.remove(0).2) }}"));
+            } else {
+                let absent = table
+                    .default
+                    .as_ref()
+                    .map(|values| format!("vec![{}]", table_item(table, values, result, program)))
+                    .unwrap_or_else(|| "vec![]".into());
+                expression.push_str(&format!(" if __bl_ranked.is_empty() {{ Ok({absent}) }} else {{ Ok(__bl_ranked.into_iter().map(|(_, _, value)| value).collect()) }}"));
+            }
+            expression
+        }
+        ("RULE_ORDER" | "COLLECT", None) => {
+            let absent = table
+                .default
+                .as_ref()
+                .map(|values| format!("vec![{}]", table_item(table, values, result, program)))
+                .unwrap_or_else(|| "vec![]".into());
+            format!("if __bl_matches.is_empty() {{ Ok({absent}) }} else {{ Ok(__bl_matches) }}")
+        }
+        ("COLLECT", Some("COUNT")) => {
+            let absent = table
+                .default
+                .as_ref()
+                .map(|values| emit_expr(&values[0], program))
+                .unwrap_or_else(|| "Number::ZERO".into());
+            format!(
+                "if __bl_matches.is_empty() {{ Ok({absent}) }} else {{ Ok(Number::from(__bl_matches.len() as u64)) }}"
+            )
+        }
+        ("COLLECT", Some("SUM" | "MIN" | "MAX")) => {
+            let operation = match table.aggregation.as_deref().unwrap() {
+                "SUM" => "sum::<Number>()",
+                "MIN" => "min().unwrap()",
+                _ => "max().unwrap()",
+            };
+            format!(
+                "if __bl_matches.is_empty() {{ {absent} }} else {{ Ok(__bl_matches.into_iter().{operation}) }}"
+            )
+        }
+        _ => unreachable!(),
+    };
+    code.push_str(&result_expr);
+    code.push_str("\n}");
+    code
+}
+
+fn emit_decision(model: &DecisionModel, program: &Program, out: &mut String) {
+    out.push_str(&format!(
+        "pub fn {}({}: {}) -> Result<{}, String> {{\n",
+        model.name,
+        model.input,
+        rust_type(&model.input_type),
+        rust_type(&model.output)
+    ));
+    for item in &model.knowledge {
+        out.push_str(&format!(
+            "fn {}({}) -> {} {{ {} }}\n",
+            item.name,
+            item.params
+                .iter()
+                .map(|(name, ty)| format!("{name}: {}", rust_type(ty)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            rust_type(&item.output),
+            emit_expr(&item.body, program)
+        ));
+    }
+    let mut emitted = std::collections::HashSet::new();
+    while emitted.len() < model.nodes.len() {
+        for node in &model.nodes {
+            if emitted.contains(&node.name)
+                || model
+                    .links
+                    .iter()
+                    .any(|(from, to)| to == &node.name && !emitted.contains(from))
+            {
+                continue;
+            }
+            let value = match &node.kind {
+                DecisionKind::Literal(expr) => emit_expr(expr, program),
+                DecisionKind::Context { entries, result } => format!(
+                    "{{ {} {} }}",
+                    entries
+                        .iter()
+                        .map(|(name, ty, expr)| format!(
+                            "let {name}: {} = {};",
+                            rust_type(ty),
+                            emit_expr(expr, program)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    emit_expr(result, program)
+                ),
+                DecisionKind::Table(table) => format!(
+                    "(|| -> Result<{}, String> {{ {} }})()?",
+                    rust_type(&node.output),
+                    emit_table(table, &node.output, program)
+                ),
+            };
+            out.push_str(&format!(
+                "let {}: {} = {value};\n",
+                node.name,
+                rust_type(&node.output)
+            ));
+            emitted.insert(&node.name);
+        }
+    }
+    out.push_str(&format!("Ok({})\n}}\n", model.output_node));
+}
+
 pub fn generate(program: &Program) -> Result<String, String> {
     let mut out = format!(
         "pub type Number = rust_decimal::Decimal;\npub const NAMESPACE: &str = {:?};\npub const VERSION: &str = {:?};\n",
         program.namespace, program.version,
     );
+    fn datetime(ty: &Type) -> bool {
+        match ty {
+            Type::Named(name) => name == "DateTime",
+            Type::Generic(_, inner) => datetime(inner),
+        }
+    }
+    if program
+        .records
+        .iter()
+        .flat_map(|r| &r.fields)
+        .any(|(_, ty)| datetime(ty))
+        || program
+            .processes
+            .iter()
+            .chain(&program.tasks)
+            .any(|item| datetime(&item.input_type) || datetime(&item.output))
+        || program.decisions.iter().any(|item| {
+            datetime(&item.input_type)
+                || datetime(&item.output)
+                || item.nodes.iter().any(|node| datetime(&node.output))
+        })
+    {
+        out.push_str("pub type DateTime = chrono::DateTime<chrono::FixedOffset>;\n");
+    }
+    for model in &program.decisions {
+        emit_decision(model, program, &mut out);
+    }
     let has_legacy = program.processes.iter().any(|item| !item.graph.is_empty());
     let has_named = program
         .processes
@@ -252,10 +490,37 @@ pub fn generate(program: &Program) -> Result<String, String> {
             let graph = process.named_graph.as_ref().unwrap();
             let scopes = semantic::named_scopes(graph, process, program)?;
             let retry = process.retry.as_ref().map_or("None".into(), |policy| format!("Some(blkit::RetryPolicy {{ max_retries: {}, retry_for: std::time::Duration::from_millis({}), retry_delay: std::time::Duration::from_millis({}), backoff: {:?} }})", policy.max_retries, policy.retry_for.as_millis(), policy.retry_delay.as_millis(), policy.backoff));
-            out.push_str(&format!("blkit::named_runtime::GraphDefinition {{ namespace: NAMESPACE, version: VERSION, name: {:?}, retry: {retry}, decode_input: Box::new(|value| {{ let typed: {} = serde_json::from_value(value).map_err(|e| e.to_string())?; serde_json::to_value(typed).map_err(|e| e.to_string()) }}), nodes: vec![\n", process.name, rust_type(&process.input_type)));
+            let deadline = process.deadline.as_ref().map_or("None".into(), |policy| format!("Some(blkit::DeadlinePolicy {{ origin: {:?}, duration: std::time::Duration::from_millis({}) }})", policy.origin, policy.duration.as_millis()));
+            out.push_str(&format!("blkit::named_runtime::GraphDefinition {{ namespace: NAMESPACE, version: VERSION, name: {:?}, retry: {retry}, deadline: {deadline}, decode_input: Box::new(|value| {{ let typed: {} = serde_json::from_value(value).map_err(|e| e.to_string())?; serde_json::to_value(typed).map_err(|e| e.to_string()) }}), nodes: vec![\n", process.name, rust_type(&process.input_type)));
             for node in &graph.nodes {
                 let kind = match &node.kind {
                     NodeKind::Start => "blkit::named_runtime::GraphNodeKind::Start".into(),
+                    NodeKind::PauseFor(duration) => format!(
+                        "blkit::named_runtime::GraphNodeKind::PauseFor(std::time::Duration::from_millis({}))",
+                        duration.as_millis()
+                    ),
+                    NodeKind::PauseUntil(expression) => format!(
+                        "blkit::named_runtime::GraphNodeKind::PauseUntil({})",
+                        graph_closure(
+                            emit_expr(expression, program),
+                            &scopes[node.name.as_str()],
+                            &process.input,
+                            &process.input_type
+                        )
+                    ),
+                    NodeKind::BusinessRule {
+                        model,
+                        input: argument,
+                    } => {
+                        let mut env = scopes[node.name.as_str()].clone();
+                        env.remove(&node.name);
+                        let expression =
+                            format!("self::{model}({})?", emit_expr(argument, program));
+                        format!(
+                            "blkit::named_runtime::GraphNodeKind::Task({})",
+                            graph_closure(expression, &env, &process.input, &process.input_type)
+                        )
+                    }
                     NodeKind::Task {
                         task,
                         input: argument,
@@ -266,6 +531,80 @@ pub fn generate(program: &Program) -> Result<String, String> {
                         format!(
                             "blkit::named_runtime::GraphNodeKind::Task({})",
                             graph_closure(expression, &env, &process.input, &process.input_type)
+                        )
+                    }
+                    NodeKind::MultiInstance {
+                        task,
+                        items,
+                        parallel,
+                    } => {
+                        let definition = program
+                            .tasks
+                            .iter()
+                            .find(|item| item.name == *task)
+                            .ok_or_else(|| format!("unknown task: {task}"))?;
+                        let mut env = scopes[node.name.as_str()].clone();
+                        env.remove(&node.name);
+                        let items = graph_closure(
+                            emit_expr(items, program),
+                            &env,
+                            &process.input,
+                            &process.input_type,
+                        );
+                        format!(
+                            "blkit::named_runtime::GraphNodeKind::MultiInstance {{ task: std::sync::Arc::new(|item, _| {{ let typed: {} = serde_json::from_value(item.clone()).map_err(|e| e.to_string())?; serde_json::to_value(self::{task}(typed)).map_err(|e| e.to_string()) }}), items: {items}, parallel: {parallel} }}",
+                            rust_type(&definition.input_type)
+                        )
+                    }
+                    NodeKind::TaskLoop {
+                        task,
+                        input: argument,
+                        condition,
+                        before,
+                        initial,
+                        max_iterations,
+                        max_duration,
+                    } => {
+                        let mut initial_env = scopes[node.name.as_str()].clone();
+                        initial_env.remove(&node.name);
+                        let argument_env = if *before {
+                            &scopes[node.name.as_str()]
+                        } else {
+                            &initial_env
+                        };
+                        let call = graph_closure(
+                            format!("self::{task}({})", emit_expr(argument, program)),
+                            argument_env,
+                            &process.input,
+                            &process.input_type,
+                        );
+                        let condition = graph_closure(
+                            emit_expr(condition, program),
+                            &scopes[node.name.as_str()],
+                            &process.input,
+                            &process.input_type,
+                        );
+                        let initial = initial.as_ref().map_or("None".into(), |value| {
+                            format!(
+                                "Some({})",
+                                graph_closure(
+                                    emit_expr(value, program),
+                                    &initial_env,
+                                    &process.input,
+                                    &process.input_type
+                                )
+                            )
+                        });
+                        let max_iterations =
+                            max_iterations.map_or("None".into(), |count| format!("Some({count})"));
+                        let max_duration = max_duration.map_or("None".into(), |duration| {
+                            format!(
+                                "Some(std::time::Duration::from_millis({}))",
+                                duration.as_millis()
+                            )
+                        });
+                        format!(
+                            "blkit::named_runtime::GraphNodeKind::TaskLoop({call}, blkit::named_runtime::LoopPolicy {{ condition: {condition}, initial: {initial}, before: {before}, max_iterations: {max_iterations}, max_duration: {max_duration} }})"
                         )
                     }
                     NodeKind::Split(kind) => {

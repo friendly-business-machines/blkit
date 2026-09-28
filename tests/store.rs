@@ -5,6 +5,175 @@ use blkit::{
 use serde_json::json;
 
 #[tokio::test]
+async fn local_cancel_timeout_race_has_one_terminal_winner() {
+    let path = std::env::temp_dir().join(format!("blkit-timeout-race-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    for (id, deadline) in [("expired", now - 100), ("cancelled", now + 500)] {
+        let mut item = Instance::new(id, "test", "1", "process", json!(null));
+        item.deadline_at_ms = Some(deadline);
+        store.create(&item).await.unwrap();
+    }
+    let (timeout, cancel) = tokio::join!(
+        store.expire_due(now),
+        store.finish("expired", "cancelled", None, None)
+    );
+    assert_eq!(timeout.unwrap(), vec!["expired"]);
+    assert!(cancel.is_err());
+    assert_eq!(
+        store
+            .get("expired")
+            .await
+            .unwrap()
+            .unwrap()
+            .terminal_name
+            .as_deref(),
+        Some("timeout")
+    );
+    store
+        .finish("cancelled", "cancelled", None, None)
+        .await
+        .unwrap();
+    assert!(store.expire_due(i64::MAX).await.unwrap().is_empty());
+    assert_eq!(
+        store.get("cancelled").await.unwrap().unwrap().status,
+        "cancelled"
+    );
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn expired_deadline_wins_over_late_completion_and_cancellation() {
+    let path = std::env::temp_dir().join(format!("blkit-timeout-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    for (id, status) in [
+        ("queued", "pending"),
+        ("waiting", "waiting"),
+        ("running", "running"),
+        ("retry", "retry-waiting"),
+    ] {
+        let mut item = Instance::new(id, "test", "1", "process", json!(null));
+        item.status = status.into();
+        item.deadline_origin = Some("queued".into());
+        item.deadline_duration_ms = Some(5);
+        item.deadline_at_ms = Some(100);
+        store.create(&item).await.unwrap();
+    }
+    assert!(store.expire_due(99).await.unwrap().is_empty());
+    assert_eq!(store.expire_due(100).await.unwrap().len(), 4);
+    assert!(store.expire_due(101).await.unwrap().is_empty());
+    for id in ["queued", "waiting", "running", "retry"] {
+        assert_eq!(
+            store.get(id).await.unwrap().unwrap().status,
+            "business-error"
+        );
+        assert_eq!(
+            store
+                .get(id)
+                .await
+                .unwrap()
+                .unwrap()
+                .terminal_name
+                .as_deref(),
+            Some("timeout")
+        );
+        assert!(
+            store
+                .finish(id, "completed", Some(json!(1)), None)
+                .await
+                .is_err()
+        );
+        assert!(store.finish(id, "cancelled", None, None).await.is_err());
+        assert_eq!(
+            store.get(id).await.unwrap().unwrap().status,
+            "business-error"
+        );
+    }
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn wake_and_deadline_metadata_survive_reopen_and_due_selection() {
+    let path = std::env::temp_dir().join(format!("blkit-wake-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let mut item = Instance::new("due", "orders", "1", "route", json!(1));
+    item.status = "waiting".into();
+    item.wake_at_ms = Some(100);
+    item.first_claim_at_ms = Some(25);
+    item.deadline_origin = Some("queued".into());
+    item.deadline_duration_ms = Some(300_000);
+    item.deadline_at_ms = Some(item.queued_at_ms + 300_000);
+    store.create(&item).await.unwrap();
+    assert!(store.due_waits(99).await.unwrap().is_empty());
+    drop(store);
+    let store = Store::open(&path).await.unwrap();
+    let loaded = store.get("due").await.unwrap().unwrap();
+    assert_eq!(loaded.wake_at_ms, Some(100));
+    assert_eq!(loaded.first_claim_at_ms, Some(25));
+    assert_eq!(loaded.deadline_origin.as_deref(), Some("queued"));
+    assert_eq!(loaded.deadline_at_ms, item.deadline_at_ms);
+    assert_eq!(store.due_waits(100).await.unwrap()[0].id, "due");
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn local_first_claim_deadline_is_not_reset_by_retry() {
+    let path = std::env::temp_dir().join(format!("blkit-first-claim-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let mut item = Instance::new("job", "orders", "1", "route", json!(1));
+    item.deadline_origin = Some("first_claimed".into());
+    item.deadline_duration_ms = Some(300_000);
+    store.create(&item).await.unwrap();
+    store.begin_attempt("job").await.unwrap();
+    let first = store.get("job").await.unwrap().unwrap();
+    let start = first.first_claim_at_ms.unwrap();
+    assert_eq!(first.deadline_at_ms, Some(start + 300_000));
+    store
+        .record_retry("job", 1, 100, Some(1), "retry")
+        .await
+        .unwrap();
+    store.begin_attempt("job").await.unwrap();
+    let second = store.get("job").await.unwrap().unwrap();
+    assert_eq!(second.first_claim_at_ms, Some(start));
+    assert_eq!(second.deadline_at_ms, Some(start + 300_000));
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn legacy_checkpoint_bytes_survive_store_upgrade_without_losing_committed_results() {
+    let path =
+        std::env::temp_dir().join(format!("blkit-legacy-checkpoint-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let mut item = Instance::new("legacy", "test", "1", "work", json!(null));
+    item.checkpoint = Some(
+        serde_json::from_value(json!({
+            "ready": [{"node":"remaining", "path":[]}], "completed":{"finished":4},
+            "selected":{}, "progress":{}, "outcome":null, "terminal":null
+        }))
+        .unwrap(),
+    );
+    store.create(&item).await.unwrap();
+    drop(store);
+    let store = Store::open(&path).await.unwrap();
+    let saved = store.get("legacy").await.unwrap().unwrap();
+    assert_eq!(saved.checkpoint.unwrap().completed["finished"], json!(4));
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
 async fn checkpoint_retry_metadata_and_named_terminal_survive_reopen() {
     let path = std::env::temp_dir().join(format!("blkit-checkpoint-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
@@ -73,6 +242,8 @@ async fn upgrading_an_old_store_keeps_terminal_records_and_adds_checkpoint_colum
     assert_eq!(old.attempt, 0);
     assert!(old.checkpoint.is_none());
     assert!(old.terminal_name.is_none());
+    assert_eq!(old.queued_at_ms, 10_000);
+    assert!(old.first_claim_at_ms.is_none());
     store
         .create(&Instance::new("new", "orders", "1.0", "decide", json!(8)))
         .await

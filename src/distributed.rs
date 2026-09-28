@@ -37,7 +37,18 @@ impl DistributedControl {
             (graph.decode_input)(input).map_err(|error| format!("invalid input: {error}"))?;
         let id = uuid::Uuid::new_v4().to_string();
         let mut instance = Instance::new(&id, namespace, version, name, input);
-        instance.checkpoint = Some(graph.checkpoint(&instance.input)?);
+        if let Some(policy) = &graph.deadline {
+            instance.with_deadline(policy)?;
+        }
+        let mut checkpoint = graph.checkpoint(&instance.input)?;
+        graph.resume_due(&instance.input, &mut checkpoint, crate::store::now_ms())?;
+        if graph.ready(&checkpoint).is_empty() && !graph.has_pending(&checkpoint) {
+            if let Some(wake) = graph.waiting_until(&checkpoint) {
+                instance.status = "waiting".into();
+                instance.wake_at_ms = Some(wake);
+            }
+        }
+        instance.checkpoint = Some(checkpoint);
         self.store
             .create_with_policy(&instance, graph.retry.as_ref())
             .await?;
@@ -49,11 +60,13 @@ impl DistributedControl {
     }
 
     pub async fn cancel(&self, id: &str) -> Result<(), String> {
+        self.store.expire_due().await?;
         self.store.cancel(id).await
     }
 
     pub async fn reconcile_once(&self) -> Result<usize, String> {
-        let mut reconciled = 0;
+        let mut reconciled = self.store.expire_due().await?.len();
+        reconciled += self.store.resume_due_waits().await? as usize;
         for expired in self.store.expired_claims().await? {
             let graph = self.registry.get_named(
                 &expired.instance.namespace,
@@ -160,6 +173,8 @@ impl DistributedWorker {
                 )
                 .await?;
         }
+        self.store.expire_due().await?;
+        self.store.resume_due_waits().await?;
         let claimed = self
             .store
             .claim(&self.id, self.limit, self.lease_ms)

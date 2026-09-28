@@ -68,6 +68,151 @@ async fn wait_http_status(app: &axum::Router, id: &str, expected: &str) -> Value
 }
 
 #[tokio::test]
+async fn http_reports_intermediate_wait_and_accepts_cancellation() {
+    let path = std::env::temp_dir().join(format!("blkit-http-pause-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let graph = GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "pause",
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "delay",
+                kind: GraphNodeKind::PauseFor(Duration::from_millis(200)),
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            GraphLink {
+                source: "start",
+                target: "delay",
+                value: None,
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+            GraphLink {
+                source: "delay",
+                target: "done",
+                value: Some(Arc::new(|input, _| Ok(input.clone()))),
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+        ],
+    };
+    let app = router(Arc::new(
+        Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 1).unwrap(),
+    ));
+    let id = http_start(&app, "pause").await;
+    let item = http_status(&app, &id).await;
+    assert_eq!(item["status"], "waiting");
+    assert!(item["wake_at"].as_i64().is_some());
+    let reply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/instances/{id}/cancel"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.status(), StatusCode::ACCEPTED);
+    tokio::time::sleep(Duration::from_millis(220)).await;
+    assert_eq!(http_status(&app, &id).await["status"], "cancelled");
+    drop(app);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn http_exposes_deadline_timeout_and_rejects_late_cancellation() {
+    let path = std::env::temp_dir().join(format!("blkit-http-timeout-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let graph = GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "timeout",
+        retry: None,
+        deadline: Some(blkit::DeadlinePolicy {
+            origin: "queued",
+            duration: Duration::from_millis(50),
+        }),
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "pause",
+                kind: GraphNodeKind::PauseFor(Duration::from_millis(200)),
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            GraphLink {
+                source: "start",
+                target: "pause",
+                value: None,
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+            GraphLink {
+                source: "pause",
+                target: "done",
+                value: Some(Arc::new(|input, _| Ok(input.clone()))),
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+        ],
+    };
+    let app = router(Arc::new(
+        Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 1).unwrap(),
+    ));
+    let id = http_start(&app, "timeout").await;
+    let initial = http_status(&app, &id).await;
+    assert_eq!(initial["status"], "waiting");
+    assert!(initial["deadline_at_ms"].as_i64().unwrap() < initial["wake_at"].as_i64().unwrap());
+    let timed_out = wait_http_status(&app, &id, "business-error").await;
+    assert_eq!(timed_out["terminal_name"], "timeout");
+    let reply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/instances/{id}/cancel"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.status(), StatusCode::CONFLICT);
+    drop(app);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
 async fn http_reports_retry_waiting_business_failure_termination_and_cancel_while_waiting() {
     let path = std::env::temp_dir().join(format!("blkit-http-outcomes-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
@@ -100,6 +245,7 @@ async fn http_reports_retry_waiting_business_failure_termination_and_cancel_whil
                 version: "1",
                 name,
                 retry,
+                deadline: None,
                 decode_input: Box::new(Ok::<Value, String>),
                 nodes: vec![
                     GraphNode {

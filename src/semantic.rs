@@ -5,12 +5,15 @@ use rust_decimal::Decimal;
 
 use crate::{
     Program, Type,
+    decision::{DecisionKind, DecisionModel, DecisionTable, Knowledge},
     expr::{Expr, Stmt},
     graph::{GraphStmt, NamedGraph, NodeKind},
 };
 
 pub fn validate(program: &Program) -> Result<(), String> {
-    let mut names: HashSet<&str> = ["Bool", "String", "Number", "List"].into_iter().collect();
+    let mut names: HashSet<&str> = ["Bool", "String", "Number", "DateTime", "List"]
+        .into_iter()
+        .collect();
     let has_graph = program
         .processes
         .iter()
@@ -22,6 +25,7 @@ pub fn validate(program: &Program) -> Result<(), String> {
         .chain(program.enums.iter().map(|e| e.name.as_str()))
         .chain(program.processes.iter().map(|p| p.name.as_str()))
         .chain(program.tasks.iter().map(|t| t.name.as_str()))
+        .chain(program.decisions.iter().map(|d| d.name.as_str()))
     {
         check_name(name)?;
         if matches!(name, "Vec" | "NAMESPACE" | "VERSION" | "rust_decimal")
@@ -61,6 +65,9 @@ pub fn validate(program: &Program) -> Result<(), String> {
             }
         }
     }
+    for model in &program.decisions {
+        check_decision(model, program, &names)?;
+    }
     for process in program.tasks.iter().chain(&program.processes) {
         if let Some(retry) = &process.retry {
             if retry.retry_for.is_zero() {
@@ -74,7 +81,7 @@ pub fn validate(program: &Program) -> Result<(), String> {
         resolve(&process.input_type, &names)?;
         resolve(&process.output, &names)?;
         if let Some(graph) = &process.named_graph {
-            check_named_graph(graph)?;
+            check_named_graph(graph, process.deadline.is_some())?;
             named_scopes(graph, process, program)?;
         } else if process.graph.is_empty() {
             check_block(
@@ -95,10 +102,354 @@ pub fn validate(program: &Program) -> Result<(), String> {
     Ok(())
 }
 
-fn check_named_graph(graph: &NamedGraph) -> Result<(), String> {
+fn check_decision(
+    model: &DecisionModel,
+    program: &Program,
+    types: &HashSet<&str>,
+) -> Result<(), String> {
+    check_name(&model.input)?;
+    resolve(&model.input_type, types)?;
+    resolve(&model.output, types)?;
+    let mut names = HashSet::from([model.input.as_str()]);
+    for knowledge in &model.knowledge {
+        check_name(&knowledge.name)?;
+        if !names.insert(&knowledge.name) {
+            return Err(format!("duplicate knowledge model: {}", knowledge.name));
+        }
+        resolve(&knowledge.output, types)?;
+        let mut env = HashMap::new();
+        for (param, ty) in &knowledge.params {
+            check_name(param)?;
+            resolve(ty, types)?;
+            if env.insert(param.clone(), ty.clone()).is_some() {
+                return Err(format!("duplicate knowledge parameter: {param}"));
+            }
+        }
+        let result = infer_with(
+            &knowledge.body,
+            Some(&knowledge.output),
+            &env,
+            program,
+            &model.knowledge,
+        )?;
+        if result != knowledge.output {
+            return Err(format!(
+                "knowledge result type mismatch: {}",
+                knowledge.name
+            ));
+        }
+    }
+    for node in &model.nodes {
+        check_name(&node.name)?;
+        resolve(&node.output, types)?;
+        if !names.insert(&node.name) {
+            return Err(format!("duplicate decision node: {}", node.name));
+        }
+    }
+    for (source, target) in &model.links {
+        if !model.nodes.iter().any(|n| n.name == *source)
+            || !model.nodes.iter().any(|n| n.name == *target)
+        {
+            return Err(format!(
+                "unknown decision node in link: {source} -> {target}"
+            ));
+        }
+    }
+    let knowledge_names: HashSet<_> = model
+        .knowledge
+        .iter()
+        .map(|item| item.name.as_str())
+        .collect();
+    fn calls<'a>(expr: &'a Expr, found: &mut Vec<&'a str>) {
+        match expr {
+            Expr::Call(name, args) => {
+                found.push(name);
+                for arg in args {
+                    calls(arg, found);
+                }
+            }
+            Expr::Field(base, _) | Expr::Not(base) => calls(base, found),
+            Expr::Binary(left, _, right) => {
+                calls(left, found);
+                calls(right, found);
+            }
+            Expr::List(items) => {
+                for item in items {
+                    calls(item, found);
+                }
+            }
+            _ => {}
+        }
+    }
+    for item in &model.knowledge {
+        let mut found = vec![];
+        calls(&item.body, &mut found);
+        for name in found {
+            if !knowledge_names.contains(name) {
+                return Err(format!("unknown knowledge model: {name}"));
+            }
+        }
+    }
+    fn visit_knowledge<'a>(
+        name: &'a str,
+        model: &'a DecisionModel,
+        active: &mut HashSet<&'a str>,
+        done: &mut HashSet<&'a str>,
+    ) -> Result<(), String> {
+        if done.contains(name) {
+            return Ok(());
+        }
+        if !active.insert(name) {
+            return Err(format!("knowledge cycle at {name}"));
+        }
+        let item = model
+            .knowledge
+            .iter()
+            .find(|item| item.name == name)
+            .ok_or("unknown knowledge model")?;
+        let mut deps = vec![];
+        calls(&item.body, &mut deps);
+        for dep in deps {
+            visit_knowledge(dep, model, active, done)?;
+        }
+        active.remove(name);
+        done.insert(name);
+        Ok(())
+    }
+    let mut knowledge_done = HashSet::new();
+    for item in &model.knowledge {
+        visit_knowledge(&item.name, model, &mut HashSet::new(), &mut knowledge_done)?;
+    }
+    fn visit<'a>(
+        name: &'a str,
+        model: &'a DecisionModel,
+        program: &Program,
+        types: &HashSet<&str>,
+        knowledge_names: &HashSet<&str>,
+        active: &mut HashSet<&'a str>,
+        done: &mut HashMap<String, Type>,
+    ) -> Result<(), String> {
+        if done.contains_key(name) {
+            return Ok(());
+        }
+        if !active.insert(name) {
+            return Err(format!("decision cycle at {name}"));
+        }
+        let node = model
+            .nodes
+            .iter()
+            .find(|n| n.name == name)
+            .ok_or_else(|| format!("unknown decision node: {name}"))?;
+        let mut env = HashMap::from([(model.input.clone(), model.input_type.clone())]);
+        for (source, target) in &model.links {
+            if target == name {
+                visit(source, model, program, types, knowledge_names, active, done)?;
+                env.insert(source.clone(), done[source].clone());
+            }
+        }
+        let check = |expression: &Expr,
+                     expected: &Type,
+                     env: &HashMap<String, Type>|
+         -> Result<(), String> {
+            let mut called = vec![];
+            calls(expression, &mut called);
+            for name in called {
+                if !knowledge_names.contains(name) {
+                    return Err(format!("unknown knowledge model: {name}"));
+                }
+            }
+            let actual = infer_with(expression, Some(expected), env, program, &model.knowledge)?;
+            if actual != *expected {
+                return Err(format!(
+                    "decision result type mismatch for {}: expected {expected}, got {actual}",
+                    node.name
+                ));
+            }
+            Ok(())
+        };
+        match &node.kind {
+            DecisionKind::Literal(expr) => check(expr, &node.output, &env)?,
+            DecisionKind::Context { entries, result } => {
+                for (key, ty, expr) in entries {
+                    check_name(key)?;
+                    resolve(ty, types)?;
+                    if env.contains_key(key) {
+                        return Err(format!("duplicate context entry: {key}"));
+                    }
+                    check(expr, ty, &env)?;
+                    env.insert(key.clone(), ty.clone());
+                }
+                check(result, &node.output, &env)?;
+            }
+            DecisionKind::Table(table) => {
+                check_table(table, &node.output, &mut env, model, program, types)?
+            }
+        }
+        active.remove(name);
+        done.insert(name.into(), node.output.clone());
+        Ok(())
+    }
+    let mut done = HashMap::new();
+    for node in &model.nodes {
+        visit(
+            &node.name,
+            model,
+            program,
+            types,
+            &knowledge_names,
+            &mut HashSet::new(),
+            &mut done,
+        )?;
+    }
+    let actual = done
+        .get(&model.output_node)
+        .ok_or_else(|| format!("unknown decision node: {}", model.output_node))?;
+    if actual != &model.output {
+        return Err(format!("decision result type mismatch for {}", model.name));
+    }
+    Ok(())
+}
+
+fn check_table(
+    table: &DecisionTable,
+    result: &Type,
+    env: &mut HashMap<String, Type>,
+    model: &DecisionModel,
+    program: &Program,
+    types: &HashSet<&str>,
+) -> Result<(), String> {
+    if table.inputs.is_empty() || table.outputs.is_empty() || table.rules.is_empty() {
+        return Err("table requires input, output, and rules".into());
+    }
+    let collected = matches!(
+        table.policy.as_str(),
+        "RULE_ORDER" | "OUTPUT_ORDER" | "COLLECT"
+    ) && table.aggregation.is_none();
+    if let Some(aggregation) = table.aggregation.as_deref() {
+        if table.policy != "COLLECT" || !matches!(aggregation, "SUM" | "MIN" | "MAX" | "COUNT") {
+            return Err("invalid table aggregation policy".into());
+        }
+        if aggregation != "COUNT"
+            && (table.outputs.len() != 1 || table.outputs[0].1 != Type::Named("Number".into()))
+        {
+            return Err("table aggregation requires one Number output".into());
+        }
+    }
+    if matches!(table.policy.as_str(), "PRIORITY" | "OUTPUT_ORDER") {
+        if table.priorities.is_empty() {
+            return Err("table priority order required".into());
+        }
+    } else if !table.priorities.is_empty() {
+        return Err("priority requires PRIORITY or OUTPUT_ORDER policy".into());
+    }
+    let item = if table.aggregation.as_deref() == Some("COUNT") {
+        Type::Named("Number".into())
+    } else if table.outputs.len() == 1 {
+        table.outputs[0].1.clone()
+    } else {
+        let Type::Named(name) = (if collected {
+            match result {
+                Type::Generic(kind, inner) if kind == "List" => inner.as_ref(),
+                _ => return Err("table outputs require a List<record> result".into()),
+            }
+        } else {
+            result
+        }) else {
+            return Err("table outputs require a record result".into());
+        };
+        let record = program
+            .records
+            .iter()
+            .find(|r| r.name == *name)
+            .ok_or("unknown table output record")?;
+        if record.fields != table.outputs {
+            return Err("table output columns do not match result record".into());
+        }
+        Type::Named(name.clone())
+    };
+    let expected = if table.aggregation.is_some() {
+        Type::Named("Number".into())
+    } else if collected {
+        Type::Generic("List".into(), Box::new(item))
+    } else {
+        item
+    };
+    if &expected != result {
+        return Err(format!(
+            "table result type mismatch: expected {expected}, got {result}"
+        ));
+    }
+    for (name, ty, expression) in &table.inputs {
+        check_name(name)?;
+        resolve(ty, types)?;
+        if env.contains_key(name) {
+            return Err(format!("duplicate table input: {name}"));
+        }
+        let actual = infer_with(expression, Some(ty), env, program, &model.knowledge)?;
+        if &actual != ty {
+            return Err(format!("table input type mismatch: {name}"));
+        }
+        env.insert(name.clone(), ty.clone());
+    }
+    let mut outputs = HashSet::new();
+    for (name, ty) in &table.outputs {
+        check_name(name)?;
+        resolve(ty, types)?;
+        if !outputs.insert(name) {
+            return Err(format!("duplicate table output: {name}"));
+        }
+    }
+    let row = |values: &[Expr], location: &str| -> Result<(), String> {
+        if values.len() != table.outputs.len() {
+            return Err(format!(
+                "{location} output count does not match table columns"
+            ));
+        }
+        for (expression, (_, ty)) in values.iter().zip(&table.outputs) {
+            let actual = infer_with(expression, Some(ty), env, program, &model.knowledge)?;
+            if &actual != ty {
+                return Err(format!(
+                    "{location} output type mismatch: expected {ty}, got {actual}"
+                ));
+            }
+        }
+        Ok(())
+    };
+    for (condition, values) in &table.rules {
+        if infer_with(condition, None, env, program, &model.knowledge)?
+            != Type::Named("Bool".into())
+        {
+            return Err("table rule condition must be Bool".into());
+        }
+        row(values, "rule")?;
+    }
+    for (index, values) in table.priorities.iter().enumerate() {
+        row(values, "priority")?;
+        if table.priorities[..index].contains(values) {
+            return Err("duplicate priority value".into());
+        }
+    }
+    if let Some(values) = &table.default {
+        if table.aggregation.as_deref() == Some("COUNT") {
+            if values.len() != 1
+                || infer_with(&values[0], Some(result), env, program, &model.knowledge)? != *result
+            {
+                return Err("COUNT default must be Number".into());
+            }
+        } else {
+            row(values, "default")?;
+        }
+    }
+    Ok(())
+}
+
+fn check_named_graph(graph: &NamedGraph, has_deadline: bool) -> Result<(), String> {
     let mut nodes = HashMap::new();
     let mut start = None;
     for node in &graph.nodes {
+        if node.name == "timeout" || node.name == "task_iteration_limit" {
+            return Err(format!("reserved process node name: {}", node.name));
+        }
         check_name(&node.name)?;
         if nodes.insert(node.name.as_str(), &node.kind).is_some() {
             return Err(format!("duplicate node: {}", node.name));
@@ -134,9 +485,14 @@ fn check_named_graph(graph: &NamedGraph) -> Result<(), String> {
         links: &HashMap<&str, Vec<&'a str>>,
         active: &mut HashSet<&'a str>,
         seen: &mut HashSet<&'a str>,
+        has_deadline: bool,
     ) -> Result<(), String> {
         if active.contains(name) {
-            return Err(format!("cycle at node: {name}"));
+            return if has_deadline {
+                Ok(())
+            } else {
+                Err(format!("process cycle requires deadline at node: {name}"))
+            };
         }
         if seen.contains(name) {
             return Ok(());
@@ -144,7 +500,7 @@ fn check_named_graph(graph: &NamedGraph) -> Result<(), String> {
         active.insert(name);
         if let Some(targets) = links.get(name) {
             for target in targets {
-                visit(target, links, active, seen)?;
+                visit(target, links, active, seen, has_deadline)?;
             }
         }
         active.remove(name);
@@ -153,7 +509,7 @@ fn check_named_graph(graph: &NamedGraph) -> Result<(), String> {
     }
     let mut seen = HashSet::new();
     for name in nodes.keys() {
-        visit(name, &links, &mut HashSet::new(), &mut seen)?;
+        visit(name, &links, &mut HashSet::new(), &mut seen, has_deadline)?;
     }
     for node in &graph.nodes {
         if !matches!(
@@ -165,14 +521,48 @@ fn check_named_graph(graph: &NamedGraph) -> Result<(), String> {
         }
     }
     let mut reachable = HashSet::new();
-    visit(start, &links, &mut HashSet::new(), &mut reachable)?;
+    visit(
+        start,
+        &links,
+        &mut HashSet::new(),
+        &mut reachable,
+        has_deadline,
+    )?;
     if let Some(name) = nodes.keys().find(|name| !reachable.contains(**name)) {
         return Err(format!("unreachable node: {name}"));
+    }
+    let mut can_exit: HashSet<&str> = nodes
+        .iter()
+        .filter_map(|(name, kind)| {
+            matches!(
+                kind,
+                NodeKind::End | NodeKind::Error | NodeKind::Cancel | NodeKind::Terminate
+            )
+            .then_some(*name)
+        })
+        .collect();
+    let mut pending: Vec<_> = can_exit.iter().copied().collect();
+    while let Some(target) = pending.pop() {
+        for link in graph.links.iter().filter(|link| link.target == target) {
+            if can_exit.insert(&link.source) {
+                pending.push(&link.source);
+            }
+        }
+    }
+    if let Some(name) = nodes.keys().find(|name| !can_exit.contains(**name)) {
+        return Err(format!("node {name} has no reachable exit"));
     }
     for node in &graph.nodes {
         if matches!(
             node.kind,
-            NodeKind::Start | NodeKind::Task { .. } | NodeKind::Join { .. }
+            NodeKind::Start
+                | NodeKind::Task { .. }
+                | NodeKind::TaskLoop { .. }
+                | NodeKind::MultiInstance { .. }
+                | NodeKind::BusinessRule { .. }
+                | NodeKind::PauseFor(_)
+                | NodeKind::PauseUntil(_)
+                | NodeKind::Join { .. }
         ) && links
             .get(node.name.as_str())
             .is_some_and(|outgoing| outgoing.len() != 1)
@@ -284,11 +674,90 @@ pub(crate) fn named_scopes<'a>(
     process: &crate::compiler::Process,
     program: &Program,
 ) -> Result<HashMap<&'a str, HashMap<String, Type>>, String> {
-    let mut scopes: HashMap<&str, HashMap<String, Type>> = HashMap::new();
-    while scopes.len() < graph.nodes.len() {
-        let mut progressed = false;
+    let input = HashMap::from([(process.input.clone(), process.input_type.clone())]);
+    let mut universe = input.clone();
+    for node in &graph.nodes {
+        match &node.kind {
+            NodeKind::Task { task, .. }
+            | NodeKind::TaskLoop { task, .. }
+            | NodeKind::MultiInstance { task, .. } => {
+                let definition = program
+                    .tasks
+                    .iter()
+                    .find(|item| item.name == *task)
+                    .ok_or_else(|| format!("unknown task: {task}"))?;
+                let output = if matches!(node.kind, NodeKind::MultiInstance { .. }) {
+                    Type::Generic("List".into(), Box::new(definition.output.clone()))
+                } else {
+                    definition.output.clone()
+                };
+                universe.insert(node.name.clone(), output);
+            }
+            NodeKind::BusinessRule { model, .. } => {
+                let definition = program
+                    .decisions
+                    .iter()
+                    .find(|item| item.name == *model)
+                    .ok_or_else(|| format!("unknown decision model: {model}"))?;
+                universe.insert(node.name.clone(), definition.output.clone());
+            }
+            NodeKind::Join {
+                kind,
+                output: Some(output),
+                ..
+            } if kind == "and" => {
+                universe.insert(node.name.clone(), output.clone());
+            }
+            _ => {}
+        }
+    }
+    let mut unresolved: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|node| matches!(&node.kind, NodeKind::Join { kind, .. } if kind != "and"))
+        .collect();
+    while !unresolved.is_empty() {
+        let before = unresolved.len();
+        unresolved.retain(|node| {
+            let Some(link) = graph.links.iter().find(|link| link.target == node.name) else {
+                return true;
+            };
+            let Some(value) = &link.value else {
+                return true;
+            };
+            let Ok(ty) = infer(value, None, &universe, program) else {
+                return true;
+            };
+            let ty = if matches!(&node.kind, NodeKind::Join { kind, .. } if kind == "or") {
+                Type::Generic("List".into(), Box::new(ty))
+            } else {
+                ty
+            };
+            universe.insert(node.name.clone(), ty);
+            false
+        });
+        if unresolved.len() == before {
+            break;
+        }
+    }
+    let mut scopes: HashMap<&str, HashMap<String, Type>> = graph
+        .nodes
+        .iter()
+        .map(|node| {
+            (
+                node.name.as_str(),
+                if matches!(node.kind, NodeKind::Start) {
+                    input.clone()
+                } else {
+                    universe.clone()
+                },
+            )
+        })
+        .collect();
+    loop {
+        let mut changed = false;
         for node in &graph.nodes {
-            if scopes.contains_key(node.name.as_str()) {
+            if matches!(node.kind, NodeKind::Start) {
                 continue;
             }
             let incoming: Vec<_> = graph
@@ -296,211 +765,299 @@ pub(crate) fn named_scopes<'a>(
                 .iter()
                 .filter(|link| link.target == node.name)
                 .collect();
-            if !incoming
-                .iter()
-                .all(|link| scopes.contains_key(link.source.as_str()))
-            {
-                continue;
-            }
-            let mut env = if let Some(first) = incoming.first() {
-                scopes[first.source.as_str()].clone()
-            } else {
-                HashMap::from([(process.input.clone(), process.input_type.clone())])
-            };
+            let mut env = incoming.first().map_or_else(
+                || input.clone(),
+                |link| scopes[link.source.as_str()].clone(),
+            );
             env.retain(|name, ty| {
                 incoming
                     .iter()
                     .all(|link| scopes[link.source.as_str()].get(name) == Some(ty))
             });
-            match &node.kind {
-                NodeKind::Start => {}
-                NodeKind::Task { task, input } => {
-                    let definition = program
-                        .tasks
-                        .iter()
-                        .find(|item| item.name == *task)
-                        .ok_or_else(|| format!("unknown task: {task}"))?;
-                    let actual = infer(input, Some(&definition.input_type), &env, program)?;
-                    if actual != definition.input_type {
+            if let Some(ty) = universe.get(&node.name) {
+                env.insert(node.name.clone(), ty.clone());
+            }
+            if scopes[node.name.as_str()] != env {
+                scopes.insert(node.name.as_str(), env);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for node in &graph.nodes {
+        let incoming: Vec<_> = graph
+            .links
+            .iter()
+            .filter(|link| link.target == node.name)
+            .collect();
+        let mut env = scopes[node.name.as_str()].clone();
+        match &node.kind {
+            NodeKind::Start => {}
+            NodeKind::PauseFor(_) => {}
+            NodeKind::PauseUntil(value) => {
+                let actual = infer(value, Some(&Type::Named("DateTime".into())), &env, program)?;
+                if actual != Type::Named("DateTime".into()) {
+                    return Err(format!("pause_until requires DateTime, got {actual}"));
+                }
+            }
+            NodeKind::BusinessRule { model, input } => {
+                let definition = program
+                    .decisions
+                    .iter()
+                    .find(|item| item.name == *model)
+                    .ok_or_else(|| format!("unknown decision model: {model}"))?;
+                let mut before = env.clone();
+                before.remove(&node.name);
+                let actual = infer(input, Some(&definition.input_type), &before, program)?;
+                if actual != definition.input_type {
+                    return Err(format!(
+                        "business rule input type mismatch for {model}: expected {}, got {actual}",
+                        definition.input_type
+                    ));
+                }
+                env.insert(node.name.clone(), definition.output.clone());
+            }
+            NodeKind::Task { task, input } => {
+                let definition = program
+                    .tasks
+                    .iter()
+                    .find(|item| item.name == *task)
+                    .ok_or_else(|| format!("unknown task: {task}"))?;
+                let mut before = env.clone();
+                before.remove(&node.name);
+                let actual = infer(input, Some(&definition.input_type), &before, program)?;
+                if actual != definition.input_type {
+                    return Err(format!(
+                        "task input type mismatch for {task}: expected {}, got {actual}",
+                        definition.input_type
+                    ));
+                }
+                env.insert(node.name.clone(), definition.output.clone());
+            }
+            NodeKind::MultiInstance { task, items, .. } => {
+                let definition = program
+                    .tasks
+                    .iter()
+                    .find(|item| item.name == *task)
+                    .ok_or_else(|| format!("unknown task: {task}"))?;
+                let expected =
+                    Type::Generic("List".into(), Box::new(definition.input_type.clone()));
+                let mut before = env.clone();
+                before.remove(&node.name);
+                let actual = infer(items, Some(&expected), &before, program)?;
+                if actual != expected {
+                    return Err(format!(
+                        "multi-instance input type mismatch: expected {expected}, got {actual}"
+                    ));
+                }
+                env.insert(
+                    node.name.clone(),
+                    Type::Generic("List".into(), Box::new(definition.output.clone())),
+                );
+            }
+            NodeKind::TaskLoop {
+                task,
+                input,
+                condition,
+                before,
+                initial,
+                ..
+            } => {
+                let definition = program
+                    .tasks
+                    .iter()
+                    .find(|item| item.name == *task)
+                    .ok_or_else(|| format!("unknown task: {task}"))?;
+                let mut initial_env = env.clone();
+                initial_env.remove(&node.name);
+                if let Some(initial) = initial {
+                    let actual = infer(initial, Some(&definition.output), &initial_env, program)?;
+                    if actual != definition.output {
                         return Err(format!(
-                            "task input type mismatch for {task}: expected {}, got {actual}",
-                            definition.input_type
+                            "task loop initial result type mismatch: expected {}, got {actual}",
+                            definition.output
                         ));
                     }
-                    env.insert(node.name.clone(), definition.output.clone());
                 }
-                NodeKind::Join { kind, output, .. } => {
-                    let results: Vec<Type> = incoming
-                        .iter()
-                        .map(|link| {
-                            let value = link
-                                .value
-                                .as_ref()
-                                .ok_or_else(|| format!("join {} requires a value", node.name))?;
-                            infer(value, None, &scopes[link.source.as_str()], program)
-                        })
-                        .collect::<Result<_, _>>()?;
-                    let first = results
-                        .first()
-                        .ok_or_else(|| format!("join {} has no inputs", node.name))?;
-                    let ty = if kind == "and" {
-                        let declared = output
-                            .as_ref()
-                            .ok_or_else(|| format!("AND join {} needs a record type", node.name))?;
-                        let Type::Named(record_name) = declared else {
-                            return Err("AND join requires a record type".into());
-                        };
-                        let record = program
-                            .records
-                            .iter()
-                            .find(|record| record.name == *record_name)
-                            .ok_or_else(|| format!("unknown AND join record: {record_name}"))?;
-                        let NodeKind::Join { split, .. } = &node.kind else {
-                            unreachable!()
-                        };
-                        let branches: Vec<_> = graph
-                            .links
-                            .iter()
-                            .filter(|link| link.source == *split)
-                            .collect();
-                        let mut fields = HashSet::new();
-                        if record.fields.len() != incoming.len() || branches.len() != incoming.len()
-                        {
-                            return Err(format!(
-                                "AND join {} branch count does not match record {record_name}",
-                                node.name
-                            ));
-                        }
-                        for (link, actual) in incoming.iter().zip(&results) {
-                            let matching: Vec<_> = branches
-                                .iter()
-                                .filter(|branch| {
-                                    let mut pending = vec![branch.target.as_str()];
-                                    let mut visited = HashSet::new();
-                                    while let Some(at) = pending.pop() {
-                                        if at == link.source {
-                                            return true;
-                                        }
-                                        if visited.insert(at) && at != node.name {
-                                            pending.extend(
-                                                graph
-                                                    .links
-                                                    .iter()
-                                                    .filter(|edge| edge.source == at)
-                                                    .map(|edge| edge.target.as_str()),
-                                            );
-                                        }
-                                    }
-                                    false
-                                })
-                                .collect();
-                            if matching.len() != 1 {
-                                return Err(format!(
-                                    "AND join {} has ambiguous branch route",
-                                    node.name
-                                ));
-                            }
-                            let label = matching[0]
-                                .label
-                                .as_ref()
-                                .ok_or("missing AND branch label")?;
-                            if !fields.insert(label)
-                                || !record
-                                    .fields
-                                    .iter()
-                                    .any(|(field, ty)| field == label && ty == actual)
-                            {
-                                return Err(format!(
-                                    "AND join {} branch {label} does not match record {record_name}",
-                                    node.name
-                                ));
-                            }
-                        }
-                        declared.clone()
-                    } else {
-                        if output.is_some() || results.iter().any(|ty| ty != first) {
-                            return Err(format!(
-                                "{kind} join {} requires matching branch types",
-                                node.name
-                            ));
-                        }
-                        if kind == "or" {
-                            Type::Generic("List".into(), Box::new(first.clone()))
-                        } else {
-                            first.clone()
-                        }
-                    };
-                    env.insert(node.name.clone(), ty);
+                let argument_env = if *before { &env } else { &initial_env };
+                let actual = infer(input, Some(&definition.input_type), argument_env, program)?;
+                if actual != definition.input_type {
+                    return Err(format!(
+                        "task loop input type mismatch for {task}: expected {}, got {actual}",
+                        definition.input_type
+                    ));
                 }
-                NodeKind::End => {
-                    for link in &incoming {
+                let actual = infer(condition, Some(&Type::Named("Bool".into())), &env, program)?;
+                if actual != Type::Named("Bool".into()) {
+                    return Err(format!("task loop condition must be Bool, got {actual}"));
+                }
+                env.insert(node.name.clone(), definition.output.clone());
+            }
+            NodeKind::Join { kind, output, .. } => {
+                let results: Vec<Type> = incoming
+                    .iter()
+                    .map(|link| {
                         let value = link
                             .value
                             .as_ref()
-                            .ok_or_else(|| format!("end {} requires an output", node.name))?;
-                        let actual = infer(
-                            value,
-                            Some(&process.output),
-                            &scopes[link.source.as_str()],
-                            program,
-                        )?;
-                        if actual != process.output {
+                            .ok_or_else(|| format!("join {} requires a value", node.name))?;
+                        infer(value, None, &scopes[link.source.as_str()], program)
+                    })
+                    .collect::<Result<_, _>>()?;
+                let first = results
+                    .first()
+                    .ok_or_else(|| format!("join {} has no inputs", node.name))?;
+                let ty = if kind == "and" {
+                    let declared = output
+                        .as_ref()
+                        .ok_or_else(|| format!("AND join {} needs a record type", node.name))?;
+                    let Type::Named(record_name) = declared else {
+                        return Err("AND join requires a record type".into());
+                    };
+                    let record = program
+                        .records
+                        .iter()
+                        .find(|record| record.name == *record_name)
+                        .ok_or_else(|| format!("unknown AND join record: {record_name}"))?;
+                    let NodeKind::Join { split, .. } = &node.kind else {
+                        unreachable!()
+                    };
+                    let branches: Vec<_> = graph
+                        .links
+                        .iter()
+                        .filter(|link| link.source == *split)
+                        .collect();
+                    let mut fields = HashSet::new();
+                    if record.fields.len() != incoming.len() || branches.len() != incoming.len() {
+                        return Err(format!(
+                            "AND join {} branch count does not match record {record_name}",
+                            node.name
+                        ));
+                    }
+                    for (link, actual) in incoming.iter().zip(&results) {
+                        let matching: Vec<_> = branches
+                            .iter()
+                            .filter(|branch| {
+                                let mut pending = vec![branch.target.as_str()];
+                                let mut visited = HashSet::new();
+                                while let Some(at) = pending.pop() {
+                                    if at == link.source {
+                                        return true;
+                                    }
+                                    if visited.insert(at) && at != node.name {
+                                        pending.extend(
+                                            graph
+                                                .links
+                                                .iter()
+                                                .filter(|edge| edge.source == at)
+                                                .map(|edge| edge.target.as_str()),
+                                        );
+                                    }
+                                }
+                                false
+                            })
+                            .collect();
+                        if matching.len() != 1 {
                             return Err(format!(
-                                "end output type mismatch: expected {}, got {actual}",
-                                process.output
+                                "AND join {} has ambiguous branch route",
+                                node.name
+                            ));
+                        }
+                        let label = matching[0]
+                            .label
+                            .as_ref()
+                            .ok_or("missing AND branch label")?;
+                        if !fields.insert(label)
+                            || !record
+                                .fields
+                                .iter()
+                                .any(|(field, ty)| field == label && ty == actual)
+                        {
+                            return Err(format!(
+                                "AND join {} branch {label} does not match record {record_name}",
+                                node.name
                             ));
                         }
                     }
-                }
-                NodeKind::Split(_) | NodeKind::Error | NodeKind::Cancel | NodeKind::Terminate => {}
-            }
-            for link in graph.links.iter().filter(|link| link.source == node.name) {
-                let target = &graph
-                    .nodes
-                    .iter()
-                    .find(|target| target.name == link.target)
-                    .unwrap()
-                    .kind;
-                if link.value.is_some() && !matches!(target, NodeKind::Join { .. } | NodeKind::End)
-                {
-                    if matches!(
-                        target,
-                        NodeKind::Error | NodeKind::Cancel | NodeKind::Terminate
-                    ) {
+                    declared.clone()
+                } else {
+                    if output.is_some() || results.iter().any(|ty| ty != first) {
                         return Err(format!(
-                            "exceptional terminal {} cannot receive a payload",
-                            link.target
+                            "{kind} join {} requires matching branch types",
+                            node.name
                         ));
                     }
-                    return Err(format!("link to {} cannot carry a value", link.target));
-                }
-                if link.label.is_some()
-                    && !matches!(node.kind, NodeKind::Split(ref kind) if kind == "and")
-                {
-                    return Err(format!("branch label requires AND split: {}", node.name));
-                }
-                if link.fallback && !matches!(node.kind, NodeKind::Split(ref kind) if kind != "and")
-                {
-                    return Err(format!("fallback requires XOR or OR split: {}", node.name));
-                }
-                if let Some(condition) = &link.condition {
-                    if !matches!(node.kind, NodeKind::Split(ref kind) if kind != "and") {
-                        return Err(format!("condition requires XOR or OR split: {}", node.name));
+                    if kind == "or" {
+                        Type::Generic("List".into(), Box::new(first.clone()))
+                    } else {
+                        first.clone()
                     }
-                    let actual = infer(condition, None, &env, program)?;
-                    if actual != Type::Named("Bool".into()) {
-                        return Err(format!("gateway condition must be Bool, got {actual}"));
+                };
+                env.insert(node.name.clone(), ty);
+            }
+            NodeKind::End => {
+                for link in &incoming {
+                    let value = link
+                        .value
+                        .as_ref()
+                        .ok_or_else(|| format!("end {} requires an output", node.name))?;
+                    let actual = infer(
+                        value,
+                        Some(&process.output),
+                        &scopes[link.source.as_str()],
+                        program,
+                    )?;
+                    if actual != process.output {
+                        return Err(format!(
+                            "end output type mismatch: expected {}, got {actual}",
+                            process.output
+                        ));
                     }
-                }
-                if let Some(value) = &link.value {
-                    infer(value, None, &env, program)?;
                 }
             }
-            scopes.insert(node.name.as_str(), env);
-            progressed = true;
+            NodeKind::Split(_) | NodeKind::Error | NodeKind::Cancel | NodeKind::Terminate => {}
         }
-        if !progressed {
-            return Err("graph cannot resolve node dependencies".into());
+        for link in graph.links.iter().filter(|link| link.source == node.name) {
+            let target = &graph
+                .nodes
+                .iter()
+                .find(|target| target.name == link.target)
+                .unwrap()
+                .kind;
+            if link.value.is_some() && !matches!(target, NodeKind::Join { .. } | NodeKind::End) {
+                if matches!(
+                    target,
+                    NodeKind::Error | NodeKind::Cancel | NodeKind::Terminate
+                ) {
+                    return Err(format!(
+                        "exceptional terminal {} cannot receive a payload",
+                        link.target
+                    ));
+                }
+                return Err(format!("link to {} cannot carry a value", link.target));
+            }
+            if link.label.is_some()
+                && !matches!(node.kind, NodeKind::Split(ref kind) if kind == "and")
+            {
+                return Err(format!("branch label requires AND split: {}", node.name));
+            }
+            if link.fallback && !matches!(node.kind, NodeKind::Split(ref kind) if kind != "and") {
+                return Err(format!("fallback requires XOR or OR split: {}", node.name));
+            }
+            if let Some(condition) = &link.condition {
+                if !matches!(node.kind, NodeKind::Split(ref kind) if kind != "and") {
+                    return Err(format!("condition requires XOR or OR split: {}", node.name));
+                }
+                let actual = infer(condition, None, &env, program)?;
+                if actual != Type::Named("Bool".into()) {
+                    return Err(format!("gateway condition must be Bool, got {actual}"));
+                }
+            }
+            if let Some(value) = &link.value {
+                infer(value, None, &env, program)?;
+            }
         }
     }
     Ok(scopes)
@@ -761,6 +1318,16 @@ fn infer(
     env: &HashMap<String, Type>,
     program: &Program,
 ) -> Result<Type, String> {
+    infer_with(expr, expected, env, program, &[])
+}
+
+fn infer_with(
+    expr: &Expr,
+    expected: Option<&Type>,
+    env: &HashMap<String, Type>,
+    program: &Program,
+    knowledge: &[Knowledge],
+) -> Result<Type, String> {
     use Expr::*;
     let named = |name: &str| Type::Named(name.into());
     match expr {
@@ -774,6 +1341,24 @@ fn infer(
             .get(name)
             .cloned()
             .ok_or_else(|| format!("unknown name: {name}")),
+        Call(name, args) => {
+            let definition = knowledge
+                .iter()
+                .find(|item| item.name == *name)
+                .ok_or_else(|| format!("unknown knowledge model: {name}"))?;
+            if args.len() != definition.params.len() {
+                return Err(format!("knowledge argument count for {name}"));
+            }
+            for (arg, (_, ty)) in args.iter().zip(&definition.params) {
+                let actual = infer_with(arg, Some(ty), env, program, knowledge)?;
+                if actual != *ty {
+                    return Err(format!(
+                        "knowledge argument type for {name}: expected {ty}, got {actual}"
+                    ));
+                }
+            }
+            Ok(definition.output.clone())
+        }
         Field(base, field) => {
             if let Name(name) = base.as_ref()
                 && let Some(item) = program.enums.iter().find(|item| item.name == *name)
@@ -784,7 +1369,7 @@ fn infer(
                     Err(format!("unknown enum variant: {name}.{field}"))
                 };
             }
-            let ty = infer(base, None, env, program)?;
+            let ty = infer_with(base, None, env, program, knowledge)?;
             if let Type::Named(name) = ty
                 && let Some(record) = program.records.iter().find(|item| item.name == name)
             {
@@ -811,11 +1396,11 @@ fn infer(
                 .or_else(|| {
                     elements
                         .first()
-                        .and_then(|element| infer(element, None, env, program).ok())
+                        .and_then(|element| infer_with(element, None, env, program, knowledge).ok())
                 })
                 .ok_or("cannot infer empty list type")?;
             for element in elements {
-                let actual = infer(element, Some(&element_type), env, program)?;
+                let actual = infer_with(element, Some(&element_type), env, program, knowledge)?;
                 if actual != element_type {
                     return Err(format!("List<{element_type}> element has type {actual}"));
                 }
@@ -823,7 +1408,7 @@ fn infer(
             Ok(Type::Generic("List".into(), Box::new(element_type)))
         }
         Not(value) => {
-            let ty = infer(value, None, env, program)?;
+            let ty = infer_with(value, None, env, program, knowledge)?;
             if ty != named("Bool") {
                 return Err(format!("not requires Bool, got {ty}"));
             }
@@ -831,19 +1416,23 @@ fn infer(
         }
         Binary(left, op, right) => {
             let lhs = if matches!(left.as_ref(), List(elements) if elements.is_empty()) {
-                let other = infer(right, None, env, program)?;
-                infer(left, Some(&other), env, program)?
+                let other = infer_with(right, None, env, program, knowledge)?;
+                infer_with(left, Some(&other), env, program, knowledge)?
             } else {
-                infer(left, None, env, program)?
+                infer_with(left, None, env, program, knowledge)?
             };
-            let rhs = infer(right, Some(&lhs), env, program)?;
+            let rhs = infer_with(right, Some(&lhs), env, program, knowledge)?;
             if lhs != rhs {
                 return Err(format!("{op} requires matching types, got {lhs} and {rhs}"));
             }
             match op.as_str() {
                 "and" | "or" if lhs == named("Bool") => Ok(named("Bool")),
                 "==" | "!=" => Ok(named("Bool")),
-                ">" | ">=" | "<" | "<=" if lhs == named("Number") || lhs == named("String") => {
+                ">" | ">=" | "<" | "<="
+                    if lhs == named("Number")
+                        || lhs == named("String")
+                        || lhs == named("DateTime") =>
+                {
                     Ok(named("Bool"))
                 }
                 _ => Err(format!(

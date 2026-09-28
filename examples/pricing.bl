@@ -1,0 +1,17 @@
+namespace pricing
+version "1.0"
+
+decision price(input: Number) -> Number:
+  node result: Number = table FIRST
+    input amount: Number = input
+    output price: Number
+    rule amount > 100 -> 5
+    default 2
+  output result
+
+process quote(input: Number) -> Number:
+  node start = start
+  node decision = business_rule price(input)
+  node done = end
+  link start -> decision
+  link decision -> done(decision)

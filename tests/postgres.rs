@@ -7,7 +7,7 @@ use blkit::{
     distributed::{DistributedControl, DistributedWorker},
     named_runtime::{GraphCheckpoint, GraphDefinition, GraphLink, GraphNode, GraphNodeKind},
     postgres_store::PostgresStore,
-    runtime::Instance,
+    runtime::{Evaluate, Instance},
     server::router_distributed,
 };
 use serde_json::json;
@@ -24,6 +24,1096 @@ use testcontainers_modules::{
     testcontainers::{ImageExt, runners::AsyncRunner},
 };
 use tower::ServiceExt;
+
+fn distributed_batch_graph(task: Evaluate) -> GraphDefinition {
+    GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "batch",
+        retry: Some(RetryPolicy {
+            max_retries: 1,
+            retry_for: Duration::from_secs(2),
+            retry_delay: Duration::from_millis(10),
+            backoff: "exponential",
+        }),
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "items",
+                kind: GraphNodeKind::MultiInstance {
+                    task,
+                    items: Arc::new(|input, _| Ok(input.clone())),
+                    parallel: false,
+                },
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            GraphLink {
+                source: "start",
+                target: "items",
+                value: None,
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+            GraphLink {
+                source: "items",
+                target: "done",
+                value: Some(Arc::new(|_, values| Ok(values["items"].clone()))),
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+        ],
+    }
+}
+
+#[tokio::test]
+async fn distributed_takeover_resumes_uncommitted_multi_instance_item() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let visits = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let slow: Evaluate = {
+        let (visits, entered, release) = (visits.clone(), entered.clone(), release.clone());
+        Arc::new(move |item, _| {
+            visits.lock().unwrap().push(item.as_i64().unwrap());
+            if item == 2 {
+                entered.store(true, Ordering::SeqCst);
+                while !release.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            Ok(item.clone())
+        })
+    };
+    let fast: Evaluate = {
+        let visits = visits.clone();
+        Arc::new(move |item, _| {
+            visits.lock().unwrap().push(item.as_i64().unwrap());
+            Ok(item.clone())
+        })
+    };
+    let control =
+        DistributedControl::new(store.clone(), vec![distributed_batch_graph(fast.clone())])
+            .unwrap();
+    let first = DistributedWorker::new(
+        store.clone(),
+        "batch-first",
+        vec![distributed_batch_graph(slow)],
+        1,
+        120,
+    )
+    .unwrap();
+    first.advertise().await.unwrap();
+    let id = control
+        .start("test", "1", "batch", json!([1, 2, 3]))
+        .await
+        .unwrap();
+    let owner = tokio::spawn(async move { first.run_once().await });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let item = control.status(&id).await.unwrap().unwrap();
+            let checkpoint = serde_json::to_value(item.instance.checkpoint).unwrap();
+            if entered.load(Ordering::SeqCst)
+                && checkpoint["multi"]
+                    .as_object()
+                    .is_some_and(|batches| batches.values().any(|batch| batch["results"][0] == 1))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    owner.abort();
+    release.store(true, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(control.reconcile_once().await.unwrap(), 1);
+    let second = DistributedWorker::new(
+        store.clone(),
+        "batch-second",
+        vec![distributed_batch_graph(fast)],
+        1,
+        5000,
+    )
+    .unwrap();
+    second.advertise().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(15)).await;
+    assert_eq!(second.run_once().await.unwrap(), 1);
+    let result = control.status(&id).await.unwrap().unwrap();
+    assert_eq!(result.instance.status, "completed");
+    assert_eq!(result.instance.result, Some(json!([1, 2, 3])));
+    assert_eq!(*visits.lock().unwrap(), vec![1, 2, 2, 3]);
+    drop(node);
+}
+
+fn distributed_cycle_graph(task: Evaluate) -> GraphDefinition {
+    GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "cycle",
+        retry: Some(RetryPolicy {
+            max_retries: 1,
+            retry_for: Duration::from_secs(2),
+            retry_delay: Duration::from_millis(10),
+            backoff: "exponential",
+        }),
+        deadline: Some(blkit::DeadlinePolicy {
+            origin: "queued",
+            duration: Duration::from_secs(2),
+        }),
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "gate",
+                kind: GraphNodeKind::Split("xor"),
+            },
+            GraphNode {
+                name: "work",
+                kind: GraphNodeKind::Task(task),
+            },
+            GraphNode {
+                name: "joined",
+                kind: GraphNodeKind::Join {
+                    kind: "xor",
+                    split: "gate",
+                },
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::Error,
+            },
+        ],
+        links: vec![
+            GraphLink {
+                source: "start",
+                target: "gate",
+                value: None,
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+            GraphLink {
+                source: "gate",
+                target: "work",
+                value: None,
+                condition: Some(Arc::new(|_, values| {
+                    Ok(json!(
+                        values.get("joined").and_then(|v| v.as_i64()).unwrap_or(0) < 2
+                    ))
+                })),
+                fallback: false,
+                label: None,
+            },
+            GraphLink {
+                source: "gate",
+                target: "done",
+                value: None,
+                condition: None,
+                fallback: true,
+                label: None,
+            },
+            GraphLink {
+                source: "work",
+                target: "joined",
+                value: Some(Arc::new(|_, values| Ok(values["work"].clone()))),
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+            GraphLink {
+                source: "joined",
+                target: "gate",
+                value: None,
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+        ],
+    }
+}
+
+#[tokio::test]
+async fn distributed_takeover_keeps_prior_cycle_activation_committed() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let visited = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let slow: Evaluate = {
+        let (visited, entered, release) = (visited.clone(), entered.clone(), release.clone());
+        Arc::new(move |_, values| {
+            let number = values.get("joined").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
+            visited.lock().unwrap().push(number);
+            if number == 2 {
+                entered.store(true, Ordering::SeqCst);
+                while !release.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            Ok(json!(number))
+        })
+    };
+    let fast: Evaluate = {
+        let visited = visited.clone();
+        Arc::new(move |_, values| {
+            let number = values.get("joined").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
+            visited.lock().unwrap().push(number);
+            Ok(json!(number))
+        })
+    };
+    let control =
+        DistributedControl::new(store.clone(), vec![distributed_cycle_graph(fast.clone())])
+            .unwrap();
+    let first = DistributedWorker::new(
+        store.clone(),
+        "cycle-first",
+        vec![distributed_cycle_graph(slow)],
+        1,
+        120,
+    )
+    .unwrap();
+    first.advertise().await.unwrap();
+    let id = control
+        .start("test", "1", "cycle", json!(null))
+        .await
+        .unwrap();
+    let owner = tokio::spawn(async move { first.run_once().await });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let item = control.status(&id).await.unwrap().unwrap();
+            if entered.load(Ordering::SeqCst)
+                && item
+                    .instance
+                    .checkpoint
+                    .as_ref()
+                    .is_some_and(|checkpoint| checkpoint.completed["work"] == json!(1))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    owner.abort();
+    release.store(true, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(control.reconcile_once().await.unwrap(), 1);
+    let second = DistributedWorker::new(
+        store.clone(),
+        "cycle-second",
+        vec![distributed_cycle_graph(fast)],
+        1,
+        5000,
+    )
+    .unwrap();
+    second.advertise().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(15)).await;
+    assert_eq!(second.run_once().await.unwrap(), 1);
+    let result = control.status(&id).await.unwrap().unwrap();
+    assert_eq!(result.instance.status, "business-error");
+    assert_eq!(result.instance.terminal_name.as_deref(), Some("done"));
+    assert_eq!(*visited.lock().unwrap(), vec![1, 2, 2]);
+    drop(node);
+}
+
+#[tokio::test]
+async fn distributed_pending_branch_is_claimed_despite_parallel_wait() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let graph = || {
+        let hits = hits.clone();
+        let mut nodes = vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "fork",
+                kind: GraphNodeKind::Split("and"),
+            },
+            GraphNode {
+                name: "pause",
+                kind: GraphNodeKind::PauseFor(Duration::from_millis(500)),
+            },
+            GraphNode {
+                name: "task",
+                kind: GraphNodeKind::Task(Arc::new(move |input, _| {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Ok(input.clone())
+                })),
+            },
+            GraphNode {
+                name: "joined",
+                kind: GraphNodeKind::Join {
+                    kind: "and",
+                    split: "fork",
+                },
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ];
+        let value: Evaluate = Arc::new(|input, _| Ok(input.clone()));
+        let edge = |source, target, value, label| GraphLink {
+            source,
+            target,
+            value,
+            condition: None,
+            fallback: false,
+            label,
+        };
+        let mut links = vec![
+            edge("start", "fork", None, None),
+            edge("fork", "pause", None, Some("left")),
+            edge("pause", "joined", Some(value.clone()), None),
+            edge("fork", "split_0", None, Some("right")),
+            edge("task", "joined", Some(value.clone()), None),
+            edge(
+                "joined",
+                "done",
+                Some(Arc::new(
+                    |_: &serde_json::Value, values: &blkit::runtime::Values| {
+                        Ok(values["joined"].clone())
+                    },
+                )),
+                None,
+            ),
+        ];
+        for i in 0..40 {
+            let split: &'static str = Box::leak(format!("split_{i}").into_boxed_str());
+            let join: &'static str = Box::leak(format!("join_{i}").into_boxed_str());
+            let next: &'static str = if i == 39 {
+                "task"
+            } else {
+                Box::leak(format!("split_{}", i + 1).into_boxed_str())
+            };
+            nodes.push(GraphNode {
+                name: split,
+                kind: GraphNodeKind::Split("and"),
+            });
+            nodes.push(GraphNode {
+                name: join,
+                kind: GraphNodeKind::Join { kind: "and", split },
+            });
+            links.push(edge(split, join, Some(value.clone()), Some("only")));
+            links.push(edge(join, next, None, None));
+        }
+        GraphDefinition {
+            namespace: "test",
+            version: "1",
+            name: "pending_wait",
+            retry: None,
+            deadline: Some(blkit::DeadlinePolicy {
+                origin: "first_claimed",
+                duration: Duration::from_secs(1),
+            }),
+            decode_input: Box::new(Ok),
+            nodes,
+            links,
+        }
+    };
+    let control = DistributedControl::new(store.clone(), vec![graph()]).unwrap();
+    let id = control
+        .start("test", "1", "pending_wait", json!(5))
+        .await
+        .unwrap();
+    assert_eq!(
+        control.status(&id).await.unwrap().unwrap().instance.status,
+        "pending"
+    );
+    let worker =
+        DistributedWorker::new(store.clone(), "pending-worker", vec![graph()], 2, 5000).unwrap();
+    worker.advertise().await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), worker.run_once())
+            .await
+            .unwrap()
+            .unwrap(),
+        1
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let waiting = control.status(&id).await.unwrap().unwrap();
+    assert_eq!(waiting.instance.status, "waiting");
+    assert!(waiting.instance.first_claim_at_ms.is_some());
+    control.cancel(&id).await.unwrap();
+    drop(node);
+}
+
+#[tokio::test]
+async fn distributed_task_free_cycle_starts_before_first_claim_deadline() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let graph = || GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "task_free",
+        retry: None,
+        deadline: Some(blkit::DeadlinePolicy {
+            origin: "first_claimed",
+            duration: Duration::from_millis(80),
+        }),
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "gate",
+                kind: GraphNodeKind::Split("xor"),
+            },
+            GraphNode {
+                name: "joined",
+                kind: GraphNodeKind::Join {
+                    kind: "xor",
+                    split: "gate",
+                },
+            },
+            GraphNode {
+                name: "stop",
+                kind: GraphNodeKind::Error,
+            },
+        ],
+        links: vec![
+            GraphLink {
+                source: "start",
+                target: "gate",
+                value: None,
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+            GraphLink {
+                source: "gate",
+                target: "joined",
+                value: Some(Arc::new(|input, _| Ok(input.clone()))),
+                condition: Some(Arc::new(|input, _| Ok(json!(input.as_i64().unwrap() > 0)))),
+                fallback: false,
+                label: None,
+            },
+            GraphLink {
+                source: "gate",
+                target: "stop",
+                value: None,
+                condition: None,
+                fallback: true,
+                label: None,
+            },
+            GraphLink {
+                source: "joined",
+                target: "gate",
+                value: None,
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+        ],
+    };
+    let control = DistributedControl::new(store.clone(), vec![graph()]).unwrap();
+    let id = control
+        .start("test", "1", "task_free", json!(1))
+        .await
+        .unwrap();
+    assert!(
+        control
+            .status(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .instance
+            .deadline_at_ms
+            .is_none()
+    );
+    let worker =
+        DistributedWorker::new(store.clone(), "task-free-worker", vec![graph()], 1, 300).unwrap();
+    worker.advertise().await.unwrap();
+    let running = tokio::spawn(async move { worker.run_once().await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while control
+            .status(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .instance
+            .first_claim_at_ms
+            .is_none()
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    control.reconcile_once().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), running)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let saved = control.status(&id).await.unwrap().unwrap().instance;
+    assert_eq!(saved.status, "business-error");
+    assert_eq!(saved.terminal_name.as_deref(), Some("timeout"));
+    drop(node);
+}
+
+#[tokio::test]
+async fn distributed_deadline_precedes_iteration_bound_and_late_claim_writes() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let task: Evaluate = {
+        let (entered, release) = (entered.clone(), release.clone());
+        Arc::new(move |_, _| {
+            entered.store(true, Ordering::SeqCst);
+            while !release.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(json!(1))
+        })
+    };
+    let graph = |name: &'static str, duration: Duration| {
+        let mut graph = distributed_cycle_graph(task.clone());
+        graph.name = name;
+        graph.deadline = Some(blkit::DeadlinePolicy {
+            origin: "queued",
+            duration,
+        });
+        graph.nodes[2].kind = GraphNodeKind::TaskLoop(
+            task.clone(),
+            blkit::named_runtime::LoopPolicy {
+                condition: Arc::new(|_, _| Ok(json!(true))),
+                initial: None,
+                before: false,
+                max_iterations: Some(1),
+                max_duration: None,
+            },
+        );
+        graph
+    };
+    let control = DistributedControl::new(
+        store.clone(),
+        vec![
+            graph("short", Duration::from_millis(100)),
+            graph("long", Duration::from_secs(2)),
+        ],
+    )
+    .unwrap();
+    let worker = Arc::new(
+        DistributedWorker::new(
+            store.clone(),
+            "bound-worker",
+            vec![
+                graph("short", Duration::from_millis(100)),
+                graph("long", Duration::from_secs(2)),
+            ],
+            1,
+            5000,
+        )
+        .unwrap(),
+    );
+    worker.advertise().await.unwrap();
+    let short = control
+        .start("test", "1", "short", json!(null))
+        .await
+        .unwrap();
+    let running = {
+        let worker = worker.clone();
+        tokio::spawn(async move { worker.run_once().await })
+    };
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !entered.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(125)).await;
+    control.reconcile_once().await.unwrap();
+    release.store(true, Ordering::SeqCst);
+    running.await.unwrap().unwrap();
+    let result = control.status(&short).await.unwrap().unwrap();
+    assert_eq!(result.instance.status, "business-error");
+    assert_eq!(result.instance.terminal_name.as_deref(), Some("timeout"));
+    assert!(
+        result
+            .instance
+            .checkpoint
+            .unwrap()
+            .completed
+            .get("work")
+            .is_none()
+    );
+    let long = control
+        .start("test", "1", "long", json!(null))
+        .await
+        .unwrap();
+    assert_eq!(worker.run_once().await.unwrap(), 1);
+    let result = control.status(&long).await.unwrap().unwrap();
+    assert_eq!(result.instance.status, "business-error");
+    assert_eq!(
+        result.instance.terminal_name.as_deref(),
+        Some("task-iteration-limit")
+    );
+    assert_eq!(result.instance.attempt, 1);
+    drop(node);
+}
+
+#[tokio::test]
+async fn distributed_queued_and_first_claim_deadlines_expire_without_retrying_late_results() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let graph = |origin: &'static str| GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: origin,
+        retry: None,
+        deadline: Some(blkit::DeadlinePolicy {
+            origin,
+            duration: Duration::from_millis(50),
+        }),
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "wait",
+                kind: GraphNodeKind::PauseFor(Duration::from_millis(80)),
+            },
+            GraphNode {
+                name: "slow",
+                kind: GraphNodeKind::Task(Arc::new(|input, _| {
+                    std::thread::sleep(Duration::from_millis(180));
+                    Ok(input.clone())
+                })),
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: [("start", "wait"), ("wait", "slow"), ("slow", "done")]
+            .into_iter()
+            .map(|(source, target)| GraphLink {
+                source,
+                target,
+                value: if target == "done" {
+                    Some(
+                        Arc::new(|_: &serde_json::Value, values: &blkit::runtime::Values| {
+                            Ok(values["slow"].clone())
+                        }) as blkit::runtime::Evaluate,
+                    )
+                } else {
+                    None
+                },
+                condition: None,
+                fallback: false,
+                label: None,
+            })
+            .collect(),
+    };
+    let control =
+        DistributedControl::new(store.clone(), vec![graph("queued"), graph("first_claimed")])
+            .unwrap();
+    let queued = control
+        .start("test", "1", "queued", json!(1))
+        .await
+        .unwrap();
+    let claimed = control
+        .start("test", "1", "first_claimed", json!(2))
+        .await
+        .unwrap();
+    assert!(
+        control
+            .status(&claimed)
+            .await
+            .unwrap()
+            .unwrap()
+            .instance
+            .deadline_at_ms
+            .is_none()
+    );
+    tokio::time::sleep(Duration::from_millis(95)).await;
+    control.reconcile_once().await.unwrap();
+    let timed_out = control.status(&queued).await.unwrap().unwrap();
+    assert_eq!(timed_out.instance.status, "business-error");
+    assert_eq!(timed_out.instance.terminal_name.as_deref(), Some("timeout"));
+    let worker = DistributedWorker::new(
+        store.clone(),
+        "deadline-worker",
+        vec![graph("queued"), graph("first_claimed")],
+        1,
+        5000,
+    )
+    .unwrap();
+    worker.advertise().await.unwrap();
+    let running = tokio::spawn(async move { worker.run_once().await });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while control
+            .status(&claimed)
+            .await
+            .unwrap()
+            .unwrap()
+            .instance
+            .status
+            != "running"
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let before = control.status(&claimed).await.unwrap().unwrap().instance;
+    assert!(before.first_claim_at_ms.is_some());
+    assert_eq!(
+        before.deadline_at_ms,
+        Some(before.first_claim_at_ms.unwrap() + 50)
+    );
+    tokio::time::sleep(Duration::from_millis(65)).await;
+    control.reconcile_once().await.unwrap();
+    let result = control.status(&claimed).await.unwrap().unwrap().instance;
+    assert_eq!(result.status, "business-error");
+    assert_eq!(result.terminal_name.as_deref(), Some("timeout"));
+    running.await.unwrap().unwrap();
+    assert_eq!(
+        control
+            .status(&claimed)
+            .await
+            .unwrap()
+            .unwrap()
+            .instance
+            .status,
+        "business-error"
+    );
+    drop(node);
+}
+
+#[tokio::test]
+async fn postgres_deadline_terminalizes_unclaimed_wait_and_fences_late_claim() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let mut item = Instance::new("timeout", "test", "1", "pause", json!(null));
+    item.status = "waiting".into();
+    item.wake_at_ms = Some(1);
+    item.deadline_at_ms = Some(100);
+    item.deadline_origin = Some("queued".into());
+    item.deadline_duration_ms = Some(10);
+    store.create(&item).await.unwrap();
+    for (id, status) in [
+        ("queued", "pending"),
+        ("retry", "retry-waiting"),
+        ("executing", "running"),
+    ] {
+        let mut additional = Instance::new(id, "test", "1", "pause", json!(null));
+        additional.status = status.into();
+        additional.deadline_origin = Some("queued".into());
+        additional.deadline_duration_ms = Some(10);
+        additional.deadline_at_ms = Some(100);
+        store.create(&additional).await.unwrap();
+    }
+    let mut expired = store.expire_due().await.unwrap();
+    expired.sort();
+    assert_eq!(expired, vec!["executing", "queued", "retry", "timeout"]);
+    assert!(store.expire_due().await.unwrap().is_empty());
+    let saved = store.get("timeout").await.unwrap().unwrap();
+    assert_eq!(saved.instance.status, "business-error");
+    assert_eq!(saved.instance.terminal_name.as_deref(), Some("timeout"));
+    assert_eq!(store.resume_due_waits().await.unwrap(), 0);
+    assert_eq!(
+        store.cancel("timeout").await.unwrap_err(),
+        "instance already terminal"
+    );
+    drop(node);
+}
+
+#[tokio::test]
+async fn distributed_wait_releases_claim_and_resumes_on_another_worker() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let graph = || {
+        let hits = hits.clone();
+        GraphDefinition {
+            namespace: "test",
+            version: "1",
+            name: "pause",
+            retry: None,
+            deadline: None,
+            decode_input: Box::new(Ok),
+            nodes: vec![
+                GraphNode {
+                    name: "start",
+                    kind: GraphNodeKind::Start,
+                },
+                GraphNode {
+                    name: "before",
+                    kind: GraphNodeKind::Task(Arc::new(move |input, _| {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        Ok(input.clone())
+                    })),
+                },
+                GraphNode {
+                    name: "pause",
+                    kind: GraphNodeKind::PauseFor(Duration::from_millis(150)),
+                },
+                GraphNode {
+                    name: "after",
+                    kind: GraphNodeKind::Task(Arc::new(|input, _| Ok(input.clone()))),
+                },
+                GraphNode {
+                    name: "done",
+                    kind: GraphNodeKind::End,
+                },
+            ],
+            links: [
+                ("start", "before"),
+                ("before", "pause"),
+                ("pause", "after"),
+                ("after", "done"),
+            ]
+            .into_iter()
+            .map(|(source, target)| GraphLink {
+                source,
+                target,
+                value: if target == "done" {
+                    Some(
+                        Arc::new(|_: &serde_json::Value, values: &blkit::runtime::Values| {
+                            Ok(values["after"].clone())
+                        }) as blkit::runtime::Evaluate,
+                    )
+                } else {
+                    None
+                },
+                condition: None,
+                fallback: false,
+                label: None,
+            })
+            .collect(),
+        }
+    };
+    let control = DistributedControl::new(store.clone(), vec![graph()]).unwrap();
+    let first = DistributedWorker::new(store.clone(), "w1", vec![graph()], 2, 5000).unwrap();
+    first.advertise().await.unwrap();
+    let id = control.start("test", "1", "pause", json!(9)).await.unwrap();
+    assert_eq!(first.run_once().await.unwrap(), 1);
+    let waiting = control.status(&id).await.unwrap().unwrap();
+    assert_eq!(waiting.instance.status, "waiting");
+    assert!(waiting.owner_id.is_none());
+    let wake = waiting.instance.wake_at_ms.unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    drop(first);
+    let second = DistributedWorker::new(store.clone(), "w2", vec![graph()], 2, 5000).unwrap();
+    second.advertise().await.unwrap();
+    assert_eq!(second.run_once().await.unwrap(), 0);
+    tokio::time::sleep(Duration::from_millis(170)).await;
+    assert_eq!(
+        control
+            .status(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .instance
+            .wake_at_ms,
+        Some(wake)
+    );
+    assert_eq!(second.run_once().await.unwrap(), 1);
+    let result = control.status(&id).await.unwrap().unwrap();
+    assert_eq!(result.instance.status, "completed");
+    assert_eq!(result.instance.result, Some(json!(9)));
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    drop(node);
+}
+
+#[tokio::test]
+async fn postgres_preserves_wake_and_first_claim_deadline_across_reclaim() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let mut waiting = Instance::new("waiting", "orders", "1", "route", json!(null));
+    waiting.status = "waiting".into();
+    waiting.wake_at_ms = Some(100);
+    store.create(&waiting).await.unwrap();
+    assert!(store.due_waits(99).await.unwrap().is_empty());
+    assert_eq!(
+        store.due_waits(100).await.unwrap()[0].instance.id,
+        "waiting"
+    );
+    let mut job = Instance::new("job", "orders", "1", "route", json!(null));
+    job.deadline_origin = Some("first_claimed".into());
+    job.deadline_duration_ms = Some(300_000);
+    store.create(&job).await.unwrap();
+    store
+        .register_worker("worker", &[("orders", "1", "route")])
+        .await
+        .unwrap();
+    let first = store
+        .claim("worker", 1, 10_000)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let start = first.instance.first_claim_at_ms.unwrap();
+    assert_eq!(first.instance.deadline_at_ms, Some(start + 300_000));
+    let retry = RetryPolicy {
+        max_retries: 1,
+        retry_for: Duration::from_secs(10),
+        retry_delay: Duration::from_millis(1),
+        backoff: "exponential",
+    };
+    store
+        .fail_owned("job", "worker", first.generation, Some(&retry), "try again")
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let second = store
+        .claim("worker", 1, 10_000)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(second.instance.first_claim_at_ms, Some(start));
+    assert_eq!(second.instance.deadline_at_ms, Some(start + 300_000));
+    let mut takeover = Instance::new("takeover", "orders", "1", "route", json!(null));
+    takeover.deadline_origin = Some("first_claimed".into());
+    takeover.deadline_duration_ms = Some(300_000);
+    store.create(&takeover).await.unwrap();
+    let first_owner = store.claim("worker", 1, 40).await.unwrap().pop().unwrap();
+    let started = first_owner.instance.first_claim_at_ms.unwrap();
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert_eq!(
+        store
+            .reconcile_expired("takeover", Some(&retry))
+            .await
+            .unwrap(),
+        Some("retry-waiting")
+    );
+    store
+        .register_worker("other", &[("orders", "1", "route")])
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let resumed = store
+        .claim("other", 1, 10_000)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(resumed.instance.id, "takeover");
+    assert_eq!(resumed.instance.first_claim_at_ms, Some(started));
+    assert_eq!(resumed.instance.deadline_at_ms, Some(started + 300_000));
+    drop(node);
+}
 
 #[tokio::test]
 async fn postgres_store_reopens_queued_checkpoint_retry_and_worker_capabilities() {
@@ -444,6 +1534,7 @@ async fn worker_advertises_linked_identity_and_runs_multiple_instances_under_bou
         version: "1.0",
         name: "decide",
         retry: None,
+        deadline: None,
         decode_input: Box::new(Ok::<serde_json::Value, String>),
         nodes: vec![
             GraphNode {
@@ -561,6 +1652,7 @@ async fn worker_execution_error_releases_claim_for_retry_without_losing_checkpoi
         namespace: "orders",
         version: "1.0",
         name: "decide",
+        deadline: None,
         retry: Some(RetryPolicy {
             max_retries: 1,
             retry_for: Duration::from_secs(2),
@@ -743,6 +1835,7 @@ fn versioned_graph(
         version,
         name: "decide",
         retry,
+        deadline: None,
         decode_input: Box::new(Ok::<serde_json::Value, String>),
         nodes: vec![
             GraphNode {
@@ -1223,6 +2316,7 @@ fn crash_test_graph(
         namespace: "orders",
         version: "1.0",
         name: "parallel",
+        deadline: None,
         retry: Some(RetryPolicy {
             max_retries: 1,
             retry_for: Duration::from_secs(5),

@@ -1,10 +1,11 @@
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Number(String),
     String(String),
     Bool(bool),
     Name(String),
     Field(Box<Expr>, String),
+    Call(String, Vec<Expr>),
     List(Vec<Expr>),
     Not(Box<Expr>),
     Binary(Box<Expr>, String, Box<Expr>),
@@ -172,6 +173,25 @@ impl Parser {
             _ => return Err(format!("invalid expression token: {first}")),
         };
         loop {
+            if self.peek() == Some("(") {
+                let Expr::Name(name) = left else {
+                    return Err("call requires a function name".into());
+                };
+                self.take();
+                let mut args = Vec::new();
+                if self.peek() != Some(")") {
+                    loop {
+                        args.push(self.parse(0)?);
+                        if self.peek() != Some(",") {
+                            break;
+                        }
+                        self.take();
+                    }
+                }
+                self.expect(")")?;
+                left = Expr::Call(name, args);
+                continue;
+            }
             if self.peek() == Some(".") {
                 self.take();
                 let field = self.take().ok_or("expected field in expression")?;

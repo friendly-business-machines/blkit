@@ -1,0 +1,25 @@
+namespace workflows
+version "1"
+
+task echo(input: Number) -> Number:
+  return input
+
+process repeat_until_timeout(input: Number) -> Number:
+  deadline queued "2s"
+  node start = start
+  node gate = xor_split
+  node work = task echo(input)
+  node joined = xor_join(gate)
+  node stop = error
+  link start -> gate
+  link gate -> work when input > 0
+  link gate -> stop else
+  link work -> joined(work)
+  link joined -> gate
+
+process gather(input: List<Number>) -> List<Number>:
+  node start = start
+  node batch = task echo each input parallel
+  node done = end
+  link start -> batch
+  link batch -> done(batch)

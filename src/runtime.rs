@@ -337,6 +337,25 @@ impl Definition {
     }
 }
 
+async fn expire_local_deadlines(
+    store: &Store,
+    active: &Arc<Mutex<HashMap<String, Context>>>,
+) -> Result<(), String> {
+    for id in store.expire_due(crate::store::now_ms()).await? {
+        let Some(context) = active.lock().await.get(&id).cloned() else {
+            continue;
+        };
+        let mut state = context.state.lock().await;
+        state.status = "business-error";
+        let hooks: Vec<_> = state.in_flight.drain().map(|(_, hook)| hook).collect();
+        drop(state);
+        for hook in hooks {
+            hook();
+        }
+    }
+    Ok(())
+}
+
 pub struct Engine {
     registry: Registry,
     store: Store,
@@ -358,6 +377,7 @@ impl Engine {
     }
 
     pub async fn recover(&self) -> Result<(), String> {
+        expire_local_deadlines(&self.store, &self.active).await?;
         self.store.recover_interrupted().await?;
         for mut instance in self.store.incomplete().await? {
             if self.active.lock().await.contains_key(&instance.id) {
@@ -397,7 +417,10 @@ impl Engine {
                     .await?
                     .ok_or("missing instance")?;
             }
-            if matches!(instance.status.as_str(), "pending" | "retry-waiting") {
+            if matches!(
+                instance.status.as_str(),
+                "pending" | "retry-waiting" | "waiting"
+            ) {
                 self.spawn_named(graph, instance).await;
             }
         }
@@ -405,10 +428,10 @@ impl Engine {
     }
 
     async fn spawn_named(&self, graph: Arc<GraphDefinition>, instance: Instance) {
-        let status = if instance.status == "retry-waiting" {
-            "retry-waiting"
-        } else {
-            "pending"
+        let status = match instance.status.as_str() {
+            "retry-waiting" => "retry-waiting",
+            "waiting" => "waiting",
+            _ => "pending",
         };
         let context = Context {
             state: Arc::new(Mutex::new(Running {
@@ -424,6 +447,33 @@ impl Engine {
             .lock()
             .await
             .insert(instance.id.clone(), context.clone());
+        if instance.deadline_origin.is_some() {
+            let store = self.store.clone();
+            let active = self.active.clone();
+            let id = instance.id.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok(Some(item)) = store.get(&id).await else {
+                        break;
+                    };
+                    if !matches!(
+                        item.status.as_str(),
+                        "pending" | "running" | "retry-waiting" | "waiting"
+                    ) {
+                        break;
+                    }
+                    if let Some(at) = item.deadline_at_ms {
+                        tokio::time::sleep(Duration::from_millis(
+                            at.saturating_sub(crate::store::now_ms()).max(0) as u64,
+                        ))
+                        .await;
+                        let _ = expire_local_deadlines(&store, &active).await;
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            });
+        }
         let permits = self.permits.clone();
         let active = self.active.clone();
         tokio::spawn(async move {
@@ -453,7 +503,18 @@ impl Engine {
         let id = uuid::Uuid::new_v4().to_string();
         let mut instance = Instance::new(&id, namespace, version, name, input.clone());
         if let Some(graph) = &named {
-            instance.checkpoint = Some(graph.checkpoint(&input)?);
+            if let Some(policy) = &graph.deadline {
+                instance.with_deadline(policy)?;
+            }
+            let mut checkpoint = graph.checkpoint(&input)?;
+            graph.resume_due(&input, &mut checkpoint, crate::store::now_ms())?;
+            if graph.ready(&checkpoint).is_empty() && !graph.has_pending(&checkpoint) {
+                if let Some(at_ms) = graph.waiting_until(&checkpoint) {
+                    instance.status = "waiting".into();
+                    instance.wake_at_ms = Some(at_ms);
+                }
+            }
+            instance.checkpoint = Some(checkpoint);
         }
         self.store.create(&instance).await?;
         if let Some(graph) = named {
@@ -491,10 +552,12 @@ impl Engine {
     }
 
     pub async fn status(&self, id: &str) -> Result<Option<Instance>, String> {
+        expire_local_deadlines(&self.store, &self.active).await?;
         self.store.get(id).await
     }
 
     pub async fn cancel(&self, id: &str) -> Result<(), String> {
+        expire_local_deadlines(&self.store, &self.active).await?;
         let context = self.active.lock().await.get(id).cloned();
         let Some(context) = context else {
             return match self.store.get(id).await? {
@@ -507,7 +570,10 @@ impl Engine {
         if matches!(state.status, "cancelled" | "cancelling") {
             return Ok(());
         }
-        if !matches!(state.status, "pending" | "running" | "retry-waiting") {
+        if !matches!(
+            state.status,
+            "pending" | "running" | "retry-waiting" | "waiting"
+        ) {
             return Err("instance already terminal".into());
         }
         self.store.finish(id, "cancelling", None, None).await?;
@@ -527,6 +593,7 @@ impl Engine {
 enum NamedOutcome {
     Completed(Value),
     Terminal(GraphTerminal),
+    Waiting(i64),
 }
 
 pub(crate) async fn execute_claimed(
@@ -588,6 +655,7 @@ pub(crate) async fn execute_claimed(
     match outcome {
         Ok(NamedOutcome::Completed(value)) => context.complete(value).await,
         Ok(NamedOutcome::Terminal(terminal)) => context.named_terminal(&terminal).await,
+        Ok(NamedOutcome::Waiting(_)) => Ok(()),
         Err(error) => {
             if store
                 .get(&context.id)
@@ -616,7 +684,45 @@ async fn run_named(
         return;
     };
     let mut next_eligible_at = instance.next_eligible_at;
+    let mut wake_at_ms = instance.wake_at_ms;
     loop {
+        if let Some(wake) = wake_at_ms.take() {
+            tokio::time::sleep(Duration::from_millis(
+                wake.saturating_sub(crate::store::now_ms()).max(0) as u64,
+            ))
+            .await;
+            let mut status = context.state.lock().await;
+            let Ok(Some(saved)) = context.store.as_ref().unwrap().get(&instance.id).await else {
+                break;
+            };
+            if saved.status != "waiting" {
+                break;
+            }
+            let Some(mut next) = saved.checkpoint else {
+                break;
+            };
+            if graph
+                .resume_due(&instance.input, &mut next, crate::store::now_ms())
+                .is_err()
+            {
+                break;
+            }
+            let Ok(Some(resumed)) = context
+                .store
+                .as_ref()
+                .unwrap()
+                .resume_wait(&instance.id, &next)
+                .await
+            else {
+                break;
+            };
+            *status = Running {
+                status: resumed,
+                next: status.next,
+                in_flight: HashMap::new(),
+            };
+            checkpoint = next;
+        }
         if let Some(next) = next_eligible_at.take() {
             tokio::time::sleep(Duration::from_millis(
                 next.saturating_sub(crate::store::now_ms()).max(0) as u64,
@@ -650,6 +756,18 @@ async fn run_named(
                 let _ = context.named_terminal(&terminal).await;
                 break;
             }
+            Ok(NamedOutcome::Waiting(wake)) => {
+                context.state.lock().await.status = "waiting";
+                let Ok(Some(saved)) = context.store.as_ref().unwrap().get(&instance.id).await
+                else {
+                    break;
+                };
+                let Some(next) = saved.checkpoint else {
+                    break;
+                };
+                checkpoint = next;
+                wake_at_ms = Some(wake);
+            }
             Err(error) => {
                 let Ok(Some(next)) = context.fail_attempt(graph.retry.as_ref(), &error).await
                 else {
@@ -661,6 +779,31 @@ async fn run_named(
     }
 }
 
+async fn save_wait(
+    context: &Context,
+    checkpoint: &crate::named_runtime::GraphCheckpoint,
+    wake: i64,
+) -> Result<(), String> {
+    if let Some(claim) = &context.claim {
+        if !claim
+            .store
+            .release_wait_owned(
+                &context.id,
+                &claim.worker_id,
+                claim.generation,
+                checkpoint,
+                wake,
+            )
+            .await?
+        {
+            return Err("lost claim before wait checkpoint".into());
+        }
+    } else if let Some(store) = &context.store {
+        store.set_wait(&context.id, checkpoint, wake).await?;
+    }
+    Ok(())
+}
+
 async fn execute_named(
     graph: &GraphDefinition,
     input: &Value,
@@ -668,26 +811,61 @@ async fn execute_named(
     permits: &Arc<Semaphore>,
     context: &Context,
 ) -> Result<NamedOutcome, String> {
+    graph.migrate_checkpoint(&mut checkpoint);
     let mut tasks = JoinSet::new();
     let mut in_flight = HashSet::new();
     loop {
+        graph.check_loop_bounds(&mut checkpoint, crate::store::now_ms());
         if let Some(terminal) = &checkpoint.terminal {
             return Ok(NamedOutcome::Terminal(terminal.clone()));
         }
         if let Some(result) = &checkpoint.outcome {
             return Ok(NamedOutcome::Completed(result.clone()));
         }
-        for name in graph.ready(&checkpoint) {
-            if in_flight.contains(name) {
+        if graph
+            .waiting_until(&checkpoint)
+            .is_some_and(|at| at <= crate::store::now_ms())
+        {
+            let mut next = checkpoint.clone();
+            graph.resume_due(input, &mut next, crate::store::now_ms())?;
+            if let Some(claim) = &context.claim {
+                if !claim
+                    .store
+                    .commit_checkpoint(&context.id, &claim.worker_id, claim.generation, &next)
+                    .await?
+                {
+                    return Err("lost claim before checkpoint".into());
+                }
+            } else if let Some(store) = &context.store {
+                store.commit_checkpoint(&context.id, &next).await?;
+            }
+            checkpoint = next;
+            continue;
+        }
+        if tasks.is_empty()
+            && graph.ready(&checkpoint).is_empty()
+            && !graph.has_pending(&checkpoint)
+        {
+            if let Some(wake) = graph.waiting_until(&checkpoint) {
+                save_wait(context, &checkpoint, wake).await?;
+                return Ok(NamedOutcome::Waiting(wake));
+            }
+        }
+        for (activation, name) in graph.ready_activations(&checkpoint) {
+            if in_flight.contains(&activation) {
                 continue;
             }
             let permit = match permits.clone().try_acquire_owned() {
                 Ok(permit) => permit,
-                Err(tokio::sync::TryAcquireError::NoPermits) if tasks.is_empty() => permits
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(|error| error.to_string())?,
+                Err(tokio::sync::TryAcquireError::NoPermits)
+                    if tasks.is_empty() && !graph.has_pending(&checkpoint) =>
+                {
+                    permits
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .map_err(|error| error.to_string())?
+                }
                 Err(tokio::sync::TryAcquireError::NoPermits) => break,
                 Err(error) => return Err(error.to_string()),
             };
@@ -697,7 +875,10 @@ async fn execute_named(
                 .find(|node| node.name == name)
                 .ok_or("unknown task node")?;
             let (call, cancel) = match &node.kind {
-                GraphNodeKind::Task(call) => (call, Arc::new(|| {}) as Cancel),
+                GraphNodeKind::Task(call) | GraphNodeKind::TaskLoop(call, _) => {
+                    (call, Arc::new(|| {}) as Cancel)
+                }
+                GraphNodeKind::MultiInstance { task, .. } => (task, Arc::new(|| {}) as Cancel),
                 GraphNodeKind::TaskWithCancel(call, cancel) => (call, cancel.clone()),
                 _ => return Err("ready node is not a task".into()),
             };
@@ -716,21 +897,51 @@ async fn execute_named(
             state.in_flight.insert(key, cancel);
             drop(state);
             let call = call.clone();
-            let source = input.clone();
-            let values = checkpoint.completed.clone();
-            let name = name.to_string();
-            in_flight.insert(name.clone());
+            let source = graph.activation_input(&checkpoint, activation, input)?;
+            let values = graph.activation_values(&checkpoint, activation)?;
+            in_flight.insert(activation);
             tasks.spawn_blocking(move || {
                 let _permit = permit;
-                (key, name, call(&source, &values))
+                (key, activation, call(&source, &values))
             });
         }
-        let (key, name, result) = tasks
-            .join_next()
-            .await
-            .ok_or("graph has no ready tasks")?
-            .map_err(|error| error.to_string())?;
-        in_flight.remove(&name);
+        let completed = if graph.has_pending(&checkpoint) {
+            if let Some(done) = tasks.try_join_next() {
+                done
+            } else {
+                let mut state = context.state.lock().await;
+                if !matches!(state.status, "pending" | "running" | "retry-waiting") {
+                    return Err("instance cancelled".into());
+                }
+                if matches!(state.status, "pending" | "retry-waiting") {
+                    if let Some(store) = &context.store {
+                        store.begin_attempt(&context.id).await?;
+                    }
+                    state.status = "running";
+                }
+                let mut next = checkpoint.clone();
+                graph.resume_pending(input, &mut next)?;
+                if let Some(claim) = &context.claim {
+                    if !claim
+                        .store
+                        .commit_checkpoint(&context.id, &claim.worker_id, claim.generation, &next)
+                        .await?
+                    {
+                        return Err("lost claim before checkpoint".into());
+                    }
+                } else if let Some(store) = &context.store {
+                    store.commit_checkpoint(&context.id, &next).await?;
+                }
+                checkpoint = next;
+                drop(state);
+                tokio::task::yield_now().await;
+                continue;
+            }
+        } else {
+            tasks.join_next().await.ok_or("graph has no ready tasks")?
+        };
+        let (key, activation, result) = completed.map_err(|error| error.to_string())?;
+        in_flight.remove(&activation);
         let mut state = context.state.lock().await;
         state.in_flight.remove(&key);
         if state.status != "running" {
@@ -741,7 +952,13 @@ async fn execute_named(
             Err(error) => return Err(error),
         };
         let mut next = checkpoint.clone();
-        graph.complete(input, &mut next, &name, result)?;
+        graph.complete_activation(input, &mut next, activation, result)?;
+        if tasks.is_empty() && graph.ready(&next).is_empty() && !graph.has_pending(&next) {
+            if let Some(wake) = graph.waiting_until(&next) {
+                save_wait(context, &next, wake).await?;
+                return Ok(NamedOutcome::Waiting(wake));
+            }
+        }
         if let Some(claim) = &context.claim {
             if !claim
                 .store
@@ -834,6 +1051,7 @@ mod tests {
             version: "1",
             name: "work",
             retry: None,
+            deadline: None,
             decode_input: Box::new(Ok::<Value, String>),
             nodes: vec![
                 GraphNode {

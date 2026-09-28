@@ -174,6 +174,26 @@ pub enum NodeKind {
         task: String,
         input: Expr,
     },
+    MultiInstance {
+        task: String,
+        items: Expr,
+        parallel: bool,
+    },
+    TaskLoop {
+        task: String,
+        input: Expr,
+        condition: Expr,
+        before: bool,
+        initial: Option<Expr>,
+        max_iterations: Option<u32>,
+        max_duration: Option<std::time::Duration>,
+    },
+    BusinessRule {
+        model: String,
+        input: Expr,
+    },
+    PauseFor(std::time::Duration),
+    PauseUntil(Expr),
     Split(String),
     Join {
         kind: String,
@@ -196,7 +216,7 @@ pub struct Link {
     pub label: Option<String>,
 }
 
-fn duration(value: &str) -> Result<std::time::Duration, String> {
+pub(crate) fn duration(value: &str) -> Result<std::time::Duration, String> {
     let value = value
         .strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
@@ -222,18 +242,44 @@ fn duration(value: &str) -> Result<std::time::Duration, String> {
 
 pub fn parse_named(
     lines: &[String],
-) -> Result<(NamedGraph, Option<crate::compiler::RetryPolicy>), String> {
+) -> Result<
+    (
+        NamedGraph,
+        Option<crate::compiler::RetryPolicy>,
+        Option<crate::compiler::DeadlinePolicy>,
+    ),
+    String,
+> {
     let mut graph = NamedGraph {
         nodes: Vec::new(),
         links: Vec::new(),
     };
     let mut retry = None;
+    let mut deadline = None;
     for line in lines {
         let statement = line
             .strip_prefix("  ")
             .filter(|text| !text.starts_with(' '))
             .ok_or_else(|| format!("unexpected indentation: {line}"))?;
-        if let Some(text) = statement.strip_prefix("retry ") {
+        if let Some(text) = statement.strip_prefix("deadline ") {
+            let (origin, span) = text.split_once(' ').ok_or("invalid deadline declaration")?;
+            let origin = match origin {
+                "queued" => "queued",
+                "first_claimed" => "first_claimed",
+                _ => return Err(format!("invalid deadline origin: {origin}")),
+            };
+            let duration = duration(span)?;
+            if duration.is_zero()
+                || deadline.is_some()
+                || !graph.nodes.is_empty()
+                || !graph.links.is_empty()
+            {
+                return Err(
+                    "deadline must be declared once with positive duration before nodes".into(),
+                );
+            }
+            deadline = Some(crate::compiler::DeadlinePolicy { origin, duration });
+        } else if let Some(text) = statement.strip_prefix("retry ") {
             let fields: Vec<_> = text.split_whitespace().collect();
             let [
                 "max_retries",
@@ -275,8 +321,57 @@ pub fn parse_named(
                 "and_split" | "or_split" | "xor_split" => {
                     NodeKind::Split(declaration.trim_end_matches("_split").into())
                 }
+                _ if declaration.starts_with("pause_for ") => {
+                    let duration = duration(declaration.strip_prefix("pause_for ").unwrap())?;
+                    if duration.is_zero() {
+                        return Err("pause_for duration must be positive".into());
+                    }
+                    NodeKind::PauseFor(duration)
+                }
+                _ if declaration.starts_with("pause_until ") => NodeKind::PauseUntil(
+                    expr::expression(declaration.strip_prefix("pause_until ").unwrap())?,
+                ),
+                _ if declaration.starts_with("business_rule ") => {
+                    let call = declaration.strip_prefix("business_rule ").unwrap();
+                    let (model, argument) = call
+                        .split_once('(')
+                        .ok_or_else(|| format!("invalid business rule node: {line}"))?;
+                    let argument = argument
+                        .strip_suffix(')')
+                        .ok_or_else(|| format!("invalid business rule node: {line}"))?;
+                    if !super::identifier(model) {
+                        return Err(format!("invalid business rule node: {line}"));
+                    }
+                    NodeKind::BusinessRule {
+                        model: model.into(),
+                        input: expr::expression(argument)?,
+                    }
+                }
+                _ if declaration.starts_with("task ") && declaration.contains(" each ") => {
+                    let call = declaration.strip_prefix("task ").unwrap();
+                    let (task, items) = call
+                        .split_once(" each ")
+                        .ok_or_else(|| format!("invalid multi-instance node: {line}"))?;
+                    let (items, mode) = items
+                        .rsplit_once(' ')
+                        .ok_or_else(|| format!("invalid multi-instance mode: {line}"))?;
+                    if !super::identifier(task) || !matches!(mode, "sequential" | "parallel") {
+                        return Err(format!("invalid multi-instance node: {line}"));
+                    }
+                    NodeKind::MultiInstance {
+                        task: task.into(),
+                        items: expr::expression(items)?,
+                        parallel: mode == "parallel",
+                    }
+                }
                 _ if declaration.starts_with("task ") => {
                     let call = declaration.strip_prefix("task ").unwrap();
+                    let (call, repeat) = if let Some((call, repeat)) = call.rsplit_once(") repeat_")
+                    {
+                        (format!("{call})"), Some(repeat))
+                    } else {
+                        (call.to_owned(), None)
+                    };
                     let (task, argument) = call
                         .split_once('(')
                         .ok_or_else(|| format!("invalid task node: {line}"))?;
@@ -286,9 +381,71 @@ pub fn parse_named(
                     if !super::identifier(task) {
                         return Err(format!("invalid task node: {line}"));
                     }
-                    NodeKind::Task {
-                        task: task.into(),
-                        input: expr::expression(argument)?,
+                    let input = expr::expression(argument)?;
+                    if let Some(repeat) = repeat {
+                        let (before, body) = if let Some(body) = repeat.strip_prefix("pre(") {
+                            (true, body)
+                        } else if let Some(body) = repeat.strip_prefix("post(") {
+                            (false, body)
+                        } else {
+                            return Err(format!("invalid task loop: {line}"));
+                        };
+                        let (condition, bounds) = body.split_once(") max_").ok_or_else(|| {
+                            format!("task loop requires a positive bound: {line}")
+                        })?;
+                        let bounds = format!("max_{bounds}");
+                        let (bounds, initial) =
+                            if let Some((bounds, initial)) = bounds.split_once(" initial ") {
+                                (bounds, Some(expr::expression(initial)?))
+                            } else {
+                                (bounds.as_str(), None)
+                            };
+                        if before != initial.is_some() {
+                            return Err("pre-check task loop requires a typed initial result; post-check forbids one".into());
+                        }
+                        let words: Vec<_> = bounds.split_whitespace().collect();
+                        if words.len() == 0 || words.len() > 4 || words.len() % 2 != 0 {
+                            return Err(format!("invalid task loop bounds: {line}"));
+                        }
+                        let (mut max_iterations, mut max_duration) = (None, None);
+                        for pair in words.chunks_exact(2) {
+                            match pair[0] {
+                                "max_iterations" if max_iterations.is_none() => {
+                                    let count: u32 = pair[1].parse().map_err(|_| {
+                                        format!("invalid max_iterations: {}", pair[1])
+                                    })?;
+                                    if count == 0 {
+                                        return Err("max_iterations must be positive".into());
+                                    }
+                                    max_iterations = Some(count);
+                                }
+                                "max_duration" if max_duration.is_none() => {
+                                    let span = duration(pair[1])?;
+                                    if span.is_zero() || i64::try_from(span.as_millis()).is_err() {
+                                        return Err(
+                                            "max_duration must be positive and fit milliseconds"
+                                                .into(),
+                                        );
+                                    }
+                                    max_duration = Some(span);
+                                }
+                                _ => return Err(format!("invalid task loop bounds: {line}")),
+                            }
+                        }
+                        NodeKind::TaskLoop {
+                            task: task.into(),
+                            input,
+                            condition: expr::expression(condition)?,
+                            before,
+                            initial,
+                            max_iterations,
+                            max_duration,
+                        }
+                    } else {
+                        NodeKind::Task {
+                            task: task.into(),
+                            input,
+                        }
                     }
                 }
                 _ => {
@@ -368,5 +525,5 @@ pub fn parse_named(
     if graph.nodes.is_empty() {
         return Err("missing process graph nodes".into());
     }
-    Ok((graph, retry))
+    Ok((graph, retry, deadline))
 }
