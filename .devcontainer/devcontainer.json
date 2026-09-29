@@ -43,15 +43,15 @@
   // Podman publishes Testcontainers ports on the host, not the container's loopback.
   "containerEnv": { "BLKIT_TESTCONTAINERS_HOST": "host.containers.internal" },
 
-  // On container start, Dev Containers may update remoteUser UID/GID to match host.
-  // Goal: avoid bind-mount file permission issues when host and container IDs differ.
-  // Most impactful on Linux/macOS hosts; typically low/no-op impact on Windows hosts.
-  "updateRemoteUserUID": true,
+  // Dev Containers commonly changes the remote user's UID/GID to match the
+  // host and avoid bind-mount permission problems. That cannot work when the
+  // host UID (e.g. 1000) already belongs to another image user (ubuntu here).
+  // Keep vscode at 1001:1001 and let rootless Podman map the host user to it.
+  "updateRemoteUserUID": false,
 
-  // Preserve the host user's UID/GID in rootless Podman. This allows the vscode
-  // user to access the mounted Podman API socket and keeps workspace files owned
-  // by the host user.
-  "runArgs": ["--userns=keep-id"],
+  // In rootless Podman, map each contributor's host UID/GID to vscode's 1001:1001.
+  // Bind-mounted workspace files then remain owned by that contributor on the host.
+  "runArgs": ["--userns=keep-id:uid=1001,gid=1001"],
 
   // Bind-mount the host's rootless Podman API socket at Docker's conventional
   // socket path. The Docker-compatible API lets the Docker CLI in the container
