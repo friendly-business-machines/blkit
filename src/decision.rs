@@ -234,9 +234,17 @@ pub fn parse(header: &str, lines: &[String]) -> Result<DecisionModel, String> {
                     } else if let Some(text) = nested.strip_prefix("rule ") {
                         let (condition, values) =
                             text.split_once(" -> ").ok_or("invalid table rule")?;
-                        table
-                            .rules
-                            .push((expr::expression(condition)?, expressions(values)?));
+                        table.rules.push((
+                            expr::table_condition(
+                                condition,
+                                &table
+                                    .inputs
+                                    .iter()
+                                    .map(|(name, _, _)| name.clone())
+                                    .collect::<Vec<_>>(),
+                            )?,
+                            expressions(values)?,
+                        ));
                     } else if let Some(text) = nested.strip_prefix("priority ") {
                         table.priorities.push(expressions(text)?);
                     } else if let Some(text) = nested.strip_prefix("default ") {

@@ -2,22 +2,84 @@ use std::collections::HashMap;
 
 use crate::{
     Program, Type,
-    decision::{DecisionKind, DecisionModel, DecisionTable},
+    decision::{DecisionKind, DecisionModel, DecisionTable, Knowledge},
     expr::{Expr, Stmt},
     graph::{GraphStmt, NodeKind},
     semantic,
 };
 
 fn emit_expr(expr: &Expr, program: &Program) -> String {
+    emit_expr_with(expr, program, &[])
+}
+
+fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> String {
     match expr {
         Expr::Number(value) => format!("Number::from_str_exact({value:?}).unwrap()"),
         Expr::String(value) => format!("String::from({value:?})"),
         Expr::Bool(value) => value.to_string(),
         Expr::Name(name) => name.clone(),
+        Expr::Call(name, args)
+            if matches!(name.as_str(), "date" | "time" | "dateTime")
+                && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let Expr::String(value) = &args[0] else {
+                unreachable!()
+            };
+            match name.as_str() {
+                "date" => format!("{value:?}.parse::<Date>().unwrap()"),
+                "time" => format!(
+                    "Time(chrono::NaiveTime::parse_from_str({value:?}, \"%H:%M:%S%.f\").unwrap())"
+                ),
+                _ => format!("chrono::DateTime::parse_from_rfc3339({value:?}).unwrap()"),
+            }
+        }
+        Expr::Call(name, args)
+            if matches!(
+                name.as_str(),
+                "before"
+                    | "after"
+                    | "meets"
+                    | "metBy"
+                    | "overlaps"
+                    | "overlapsBefore"
+                    | "overlapsAfter"
+                    | "includes"
+                    | "during"
+                    | "starts"
+                    | "startedBy"
+                    | "finishes"
+                    | "finishedBy"
+                    | "coincides"
+            ) && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let a = emit_expr_with(&args[0], program, knowledge);
+            let b = emit_expr_with(&args[1], program, knowledge);
+            match name.as_str() {
+                "before" | "meets" | "overlaps" | "overlapsBefore" => {
+                    format!("({a}).{name}(&({b}))")
+                }
+                "after" => format!("({b}).before(&({a}))"),
+                "metBy" => format!("({b}).meets(&({a}))"),
+                "overlapsAfter" => format!("({b}).overlapsBefore(&({a}))"),
+                "coincides" => format!("({a}) == ({b})"),
+                "includes" | "startedBy" | "finishedBy" => {
+                    let method = match name.as_str() {
+                        "includes" => "contains",
+                        "startedBy" => "starts",
+                        _ => "finishes",
+                    };
+                    format!("({a}).{method}(&({b}))")
+                }
+                _ => format!(
+                    "({b}).{}(&({a}))",
+                    if name == "during" { "contains" } else { name }
+                ),
+            }
+        }
         Expr::Call(name, args) => format!(
             "{name}({})",
             args.iter()
-                .map(|arg| emit_expr(arg, program))
+                .map(|arg| emit_expr_with(arg, program, knowledge))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -27,18 +89,40 @@ fn emit_expr(expr: &Expr, program: &Program) -> String {
             {
                 return format!("{name}::{field}");
             }
-            format!("({}.{}).clone()", emit_expr(base, program), field)
+            format!(
+                "({}.{}).clone()",
+                emit_expr_with(base, program, knowledge),
+                field
+            )
         }
+        Expr::Range(lower, upper, include_lower, include_upper) => format!(
+            "BlRange {{ lower: {}, upper: {}, include_lower: {include_lower}, include_upper: {include_upper} }}",
+            lower.as_ref().map_or("None".into(), |value| format!(
+                "Some({})",
+                emit_expr_with(value, program, knowledge)
+            )),
+            upper.as_ref().map_or("None".into(), |value| format!(
+                "Some({})",
+                emit_expr_with(value, program, knowledge)
+            ))
+        ),
         Expr::List(elements) => format!(
             "vec![{}]",
             elements
                 .iter()
-                .map(|item| emit_expr(item, program))
+                .map(|item| emit_expr_with(item, program, knowledge))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        Expr::Not(value) => format!("(!{})", emit_expr(value, program)),
+        Expr::Not(value) => format!("(!{})", emit_expr_with(value, program, knowledge)),
         Expr::Binary(left, op, right) => {
+            if op == "in" {
+                return format!(
+                    "({}).contains(&({}))",
+                    emit_expr_with(right, program, knowledge),
+                    emit_expr_with(left, program, knowledge)
+                );
+            }
             let operator = match op.as_str() {
                 "and" => "&&",
                 "or" => "||",
@@ -46,8 +130,8 @@ fn emit_expr(expr: &Expr, program: &Program) -> String {
             };
             format!(
                 "({} {operator} {})",
-                emit_expr(left, program),
-                emit_expr(right, program)
+                emit_expr_with(left, program, knowledge),
+                emit_expr_with(right, program, knowledge)
             )
         }
     }
@@ -177,9 +261,15 @@ fn emit_graph_steps(
     Ok((format!("vec![{}]", steps.join(", ")), last))
 }
 
-fn table_item(table: &DecisionTable, values: &[Expr], result: &Type, program: &Program) -> String {
+fn table_item(
+    table: &DecisionTable,
+    values: &[Expr],
+    result: &Type,
+    program: &Program,
+    knowledge: &[Knowledge],
+) -> String {
     if table.outputs.len() == 1 {
-        emit_expr(&values[0], program)
+        emit_expr_with(&values[0], program, knowledge)
     } else {
         let Type::Named(name) = (if matches!(result, Type::Generic(_, _)) {
             match result {
@@ -197,20 +287,28 @@ fn table_item(table: &DecisionTable, values: &[Expr], result: &Type, program: &P
                 .outputs
                 .iter()
                 .zip(values)
-                .map(|((field, _), expr)| format!("{field}: {}", emit_expr(expr, program)))
+                .map(|((field, _), expr)| format!(
+                    "{field}: {}",
+                    emit_expr_with(expr, program, knowledge)
+                ))
                 .collect::<Vec<_>>()
                 .join(", ")
         )
     }
 }
 
-fn emit_table(table: &DecisionTable, result: &Type, program: &Program) -> String {
+fn emit_table(
+    table: &DecisionTable,
+    result: &Type,
+    program: &Program,
+    knowledge: &[Knowledge],
+) -> String {
     let mut code = String::from("{\n");
     for (name, ty, expression) in &table.inputs {
         code.push_str(&format!(
             "let {name}: {} = {};\n",
             rust_type(ty),
-            emit_expr(expression, program)
+            emit_expr_with(expression, program, knowledge)
         ));
     }
     let item_type = if matches!(
@@ -234,18 +332,18 @@ fn emit_table(table: &DecisionTable, result: &Type, program: &Program) -> String
     for (condition, values) in &table.rules {
         code.push_str(&format!(
             "if {} {{ __bl_matches.push({}); }}\n",
-            emit_expr(condition, program),
+            emit_expr_with(condition, program, knowledge),
             if table.aggregation.as_deref() == Some("COUNT") {
                 "()".into()
             } else {
-                table_item(table, values, result, program)
+                table_item(table, values, result, program, knowledge)
             }
         ));
     }
     let fallback = table
         .default
         .as_ref()
-        .map(|values| table_item(table, values, result, program));
+        .map(|values| table_item(table, values, result, program, knowledge));
     let absent = fallback
         .map(|value| format!("Ok({value})"))
         .unwrap_or_else(|| "Err(String::from(\"no matching decision rule\"))".into());
@@ -263,7 +361,7 @@ fn emit_table(table: &DecisionTable, result: &Type, program: &Program) -> String
             let priority = table
                 .priorities
                 .iter()
-                .map(|row| table_item(table, row, result, program))
+                .map(|row| table_item(table, row, result, program, knowledge))
                 .collect::<Vec<_>>()
                 .join(", ");
             let mut expression = format!(
@@ -275,7 +373,12 @@ fn emit_table(table: &DecisionTable, result: &Type, program: &Program) -> String
                 let absent = table
                     .default
                     .as_ref()
-                    .map(|values| format!("vec![{}]", table_item(table, values, result, program)))
+                    .map(|values| {
+                        format!(
+                            "vec![{}]",
+                            table_item(table, values, result, program, knowledge)
+                        )
+                    })
                     .unwrap_or_else(|| "vec![]".into());
                 expression.push_str(&format!(" if __bl_ranked.is_empty() {{ Ok({absent}) }} else {{ Ok(__bl_ranked.into_iter().map(|(_, _, value)| value).collect()) }}"));
             }
@@ -285,7 +388,12 @@ fn emit_table(table: &DecisionTable, result: &Type, program: &Program) -> String
             let absent = table
                 .default
                 .as_ref()
-                .map(|values| format!("vec![{}]", table_item(table, values, result, program)))
+                .map(|values| {
+                    format!(
+                        "vec![{}]",
+                        table_item(table, values, result, program, knowledge)
+                    )
+                })
                 .unwrap_or_else(|| "vec![]".into());
             format!("if __bl_matches.is_empty() {{ Ok({absent}) }} else {{ Ok(__bl_matches) }}")
         }
@@ -293,7 +401,7 @@ fn emit_table(table: &DecisionTable, result: &Type, program: &Program) -> String
             let absent = table
                 .default
                 .as_ref()
-                .map(|values| emit_expr(&values[0], program))
+                .map(|values| emit_expr_with(&values[0], program, knowledge))
                 .unwrap_or_else(|| "Number::ZERO".into());
             format!(
                 "if __bl_matches.is_empty() {{ Ok({absent}) }} else {{ Ok(Number::from(__bl_matches.len() as u64)) }}"
@@ -334,7 +442,7 @@ fn emit_decision(model: &DecisionModel, program: &Program, out: &mut String) {
                 .collect::<Vec<_>>()
                 .join(", "),
             rust_type(&item.output),
-            emit_expr(&item.body, program)
+            emit_expr_with(&item.body, program, &model.knowledge)
         ));
     }
     let mut emitted = std::collections::HashSet::new();
@@ -349,7 +457,7 @@ fn emit_decision(model: &DecisionModel, program: &Program, out: &mut String) {
                 continue;
             }
             let value = match &node.kind {
-                DecisionKind::Literal(expr) => emit_expr(expr, program),
+                DecisionKind::Literal(expr) => emit_expr_with(expr, program, &model.knowledge),
                 DecisionKind::Context { entries, result } => format!(
                     "{{ {} {} }}",
                     entries
@@ -357,16 +465,16 @@ fn emit_decision(model: &DecisionModel, program: &Program, out: &mut String) {
                         .map(|(name, ty, expr)| format!(
                             "let {name}: {} = {};",
                             rust_type(ty),
-                            emit_expr(expr, program)
+                            emit_expr_with(expr, program, &model.knowledge)
                         ))
                         .collect::<Vec<_>>()
                         .join(" "),
-                    emit_expr(result, program)
+                    emit_expr_with(result, program, &model.knowledge)
                 ),
                 DecisionKind::Table(table) => format!(
                     "(|| -> Result<{}, String> {{ {} }})()?",
                     rust_type(&node.output),
-                    emit_table(table, &node.output, program)
+                    emit_table(table, &node.output, program, &model.knowledge)
                 ),
             };
             out.push_str(&format!(
@@ -404,7 +512,22 @@ pub fn generate(program: &Program) -> Result<String, String> {
         || program.decisions.iter().any(|item| {
             datetime(&item.input_type)
                 || datetime(&item.output)
-                || item.nodes.iter().any(|node| datetime(&node.output))
+                || item.knowledge.iter().any(|model| {
+                    datetime(&model.output) || model.params.iter().any(|(_, ty)| datetime(ty))
+                })
+                || item.nodes.iter().any(|node| {
+                    datetime(&node.output)
+                        || match &node.kind {
+                            DecisionKind::Table(table) => {
+                                table.inputs.iter().any(|(_, ty, _)| datetime(ty))
+                                    || table.outputs.iter().any(|(_, ty)| datetime(ty))
+                            }
+                            DecisionKind::Context { entries, .. } => {
+                                entries.iter().any(|(_, ty, _)| datetime(ty))
+                            }
+                            DecisionKind::Literal(_) => false,
+                        }
+                })
         })
     {
         out.push_str("pub type DateTime = chrono::DateTime<chrono::FixedOffset>;\n");
@@ -653,6 +776,203 @@ pub fn generate(program: &Program) -> Result<String, String> {
             out.push_str("] },\n");
         }
         out.push_str("] }\n");
+    }
+    if out.contains("BlRange { lower:") {
+        for name in program
+            .records
+            .iter()
+            .map(|item| item.name.as_str())
+            .chain(program.enums.iter().map(|item| item.name.as_str()))
+            .chain(
+                program
+                    .tasks
+                    .iter()
+                    .chain(&program.processes)
+                    .map(|item| item.name.as_str()),
+            )
+            .chain(program.decisions.iter().map(|item| item.name.as_str()))
+        {
+            if matches!(name, "BlRange" | "BlRangeValue" | "lower_cmp" | "upper_cmp") {
+                return Err(format!("reserved generated name: {name}"));
+            }
+        }
+        out.push_str(r#"
+trait BlRangeValue: Ord + Clone {
+    fn adjacent(&self, _next: &Self) -> bool { false }
+}
+impl BlRangeValue for Number {}
+impl BlRangeValue for chrono::DateTime<chrono::FixedOffset> {}
+#[derive(Debug, Clone)]
+struct BlRange<T> { lower: Option<T>, upper: Option<T>, include_lower: bool, include_upper: bool }
+impl<T: BlRangeValue> BlRange<T> {
+    fn empty(&self) -> bool {
+        self.lower.as_ref().zip(self.upper.as_ref()).is_some_and(|(a, b)|
+            a > b || (a == b && !(self.include_lower && self.include_upper))
+                || (!self.include_lower && !self.include_upper && a.adjacent(b)))
+    }
+    fn contains(&self, value: &T) -> bool {
+        !self.empty() && self.lower.as_ref().is_none_or(|a| if self.include_lower { value >= a } else { value > a })
+            && self.upper.as_ref().is_none_or(|b| if self.include_upper { value <= b } else { value < b })
+    }
+    fn starts(&self, value: &T) -> bool {
+        !self.empty() && self.include_lower && self.lower.as_ref() == Some(value)
+    }
+    fn finishes(&self, value: &T) -> bool {
+        !self.empty() && self.include_upper && self.upper.as_ref() == Some(value)
+    }
+    fn before(&self, other: &Self) -> bool {
+        !self.empty() && !other.empty() && self.upper.as_ref().zip(other.lower.as_ref()).is_some_and(|(a, b)| a < b)
+    }
+    fn meets(&self, other: &Self) -> bool {
+        !self.empty() && !other.empty() && self.upper.as_ref().zip(other.lower.as_ref()).is_some_and(|(a, b)| a == b)
+    }
+    fn overlapsBefore(&self, other: &Self) -> bool {
+        !self.empty() && !other.empty()
+            && lower_cmp(self.lower.as_ref(), other.lower.as_ref()).is_lt()
+            && self.upper.as_ref().is_some_and(|end| other.lower.as_ref().is_none_or(|start| start < end))
+            && upper_cmp(self.upper.as_ref(), other.upper.as_ref()).is_lt()
+    }
+    fn overlaps(&self, other: &Self) -> bool {
+        if self.empty() || other.empty() { return false; }
+        let (lower, include_lower) = match (self.lower.as_ref(), other.lower.as_ref()) {
+            (None, None) => (None, false),
+            (Some(a), None) => (Some(a.clone()), self.include_lower),
+            (None, Some(b)) => (Some(b.clone()), other.include_lower),
+            (Some(a), Some(b)) if a > b => (Some(a.clone()), self.include_lower),
+            (Some(a), Some(b)) if b > a => (Some(b.clone()), other.include_lower),
+            (Some(a), Some(_)) => (Some(a.clone()), self.include_lower && other.include_lower),
+        };
+        let (upper, include_upper) = match (self.upper.as_ref(), other.upper.as_ref()) {
+            (None, None) => (None, false),
+            (Some(a), None) => (Some(a.clone()), self.include_upper),
+            (None, Some(b)) => (Some(b.clone()), other.include_upper),
+            (Some(a), Some(b)) if a < b => (Some(a.clone()), self.include_upper),
+            (Some(a), Some(b)) if b < a => (Some(b.clone()), other.include_upper),
+            (Some(a), Some(_)) => (Some(a.clone()), self.include_upper && other.include_upper),
+        };
+        !Self { lower, upper, include_lower, include_upper }.empty()
+    }
+}
+fn lower_cmp<T: Ord>(a: Option<&T>, b: Option<&T>) -> std::cmp::Ordering {
+    match (a, b) { (None, None) => std::cmp::Ordering::Equal, (None, _) => std::cmp::Ordering::Less, (_, None) => std::cmp::Ordering::Greater, (Some(a), Some(b)) => a.cmp(b) }
+}
+fn upper_cmp<T: Ord>(a: Option<&T>, b: Option<&T>) -> std::cmp::Ordering {
+    match (a, b) { (None, None) => std::cmp::Ordering::Equal, (None, _) => std::cmp::Ordering::Greater, (_, None) => std::cmp::Ordering::Less, (Some(a), Some(b)) => a.cmp(b) }
+}
+impl<T: BlRangeValue> PartialEq for BlRange<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.lower == other.lower && self.upper == other.upper
+            && (self.lower.is_none() || self.include_lower == other.include_lower)
+            && (self.upper.is_none() || self.include_upper == other.include_upper)
+    }
+}
+"#);
+    }
+    fn date(ty: &Type) -> bool {
+        match ty {
+            Type::Named(name) => name == "Date",
+            Type::Generic(_, inner) => date(inner),
+        }
+    }
+    if out.contains(".parse::<Date>()")
+        || program
+            .records
+            .iter()
+            .flat_map(|r| &r.fields)
+            .any(|(_, ty)| date(ty))
+        || program
+            .processes
+            .iter()
+            .chain(&program.tasks)
+            .any(|item| date(&item.input_type) || date(&item.output))
+        || program.decisions.iter().any(|item| {
+            date(&item.input_type)
+                || date(&item.output)
+                || item
+                    .knowledge
+                    .iter()
+                    .any(|model| date(&model.output) || model.params.iter().any(|(_, ty)| date(ty)))
+                || item.nodes.iter().any(|node| {
+                    date(&node.output)
+                        || match &node.kind {
+                            DecisionKind::Table(table) => {
+                                table.inputs.iter().any(|(_, ty, _)| date(ty))
+                                    || table.outputs.iter().any(|(_, ty)| date(ty))
+                            }
+                            DecisionKind::Context { entries, .. } => {
+                                entries.iter().any(|(_, ty, _)| date(ty))
+                            }
+                            DecisionKind::Literal(_) => false,
+                        }
+                })
+        })
+    {
+        if out.contains("struct BlRange<T>") {
+            out.push_str("impl BlRangeValue for Date { fn adjacent(&self, next: &Self) -> bool { self.0.succ_opt() == Some(next.0) } }\n");
+        }
+        out.push_str(
+            r#"
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Date(pub chrono::NaiveDate);
+impl std::str::FromStr for Date {
+    type Err = String;
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let value = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").map_err(|e| e.to_string())?;
+        if text.len() != 10 || value.format("%Y-%m-%d").to_string() != text {
+            return Err(String::from("expected YYYY-MM-DD"));
+        }
+        Ok(Self(value))
+    }
+}
+impl serde::Serialize for Date {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0.format("%Y-%m-%d").to_string())
+    }
+}
+impl<'de> serde::Deserialize<'de> for Date {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+"#,
+        );
+    }
+    if out.contains("Time(")
+        || out.contains(": Time")
+        || out.contains("-> Time")
+        || out.contains("<Time>")
+    {
+        if out.contains("struct BlRange<T>") {
+            out.push_str("impl BlRangeValue for Time {}\n");
+        }
+        out.push_str(
+            r#"
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Time(pub chrono::NaiveTime);
+impl serde::Serialize for Time {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
+impl<'de> serde::Deserialize<'de> for Time {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+        let b = text.as_bytes();
+        if b.len() < 8 || b[2] != b':' || b[5] != b':' || ![0, 1, 3, 4, 6, 7].iter().all(|&i| b[i].is_ascii_digit())
+            || !(b.len() == 8 || (b.len() > 9 && b[8] == b'.' && b[9..].iter().all(u8::is_ascii_digit))) {
+            return Err(serde::de::Error::custom("expected HH:MM:SS[.fraction]"));
+        }
+        let time = chrono::NaiveTime::parse_from_str(&text, "%H:%M:%S%.f")
+            .map_err(serde::de::Error::custom)?;
+        if chrono::Timelike::nanosecond(&time) >= 1_000_000_000 {
+            return Err(serde::de::Error::custom("leap seconds are not supported"));
+        }
+        Ok(Self(time))
+    }
+}
+"#,
+        );
     }
     Ok(out)
 }

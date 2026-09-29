@@ -192,6 +192,145 @@ fn datetime_comparisons_and_wait_expressions_are_typed() {
 }
 
 #[test]
+fn temporal_types_and_literal_constructors_validate() {
+    let source = format!(
+        "{HEADER}type Clock:\n  day: Date\n  time: Time\n  instant: DateTime\ntask valid(input: Clock) -> Bool:\n  return input.day < date(\"2026-10-02\") and input.time <= time(\"09:30:00.250\") and input.instant == dateTime(\"2026-10-02T09:30:00+02:00\")\n"
+    );
+    transpile(&source).unwrap();
+    for (from, to) in [
+        ("2026-10-02", "2026-02-30"),
+        ("2026-10-02", "2026-1-2"),
+        ("09:30:00.250", "24:00:00"),
+        ("09:30:00.250", "9:30:00"),
+        ("09:30:00.250", "09:30:00+02:00"),
+        ("2026-10-02T09:30:00+02:00", "2026-10-02T09:30:00"),
+        ("date(\"2026-10-02\")", "date(input.day)"),
+    ] {
+        assert!(
+            transpile(&source.replace(from, to)).is_err(),
+            "accepted {to}"
+        );
+    }
+}
+
+#[test]
+fn ranges_parse_boundaries_and_infer_temporal_types() {
+    for expr in [
+        "input in [1..5]",
+        "input in (1..5)",
+        "input in [1..5)",
+        "input in (1..5]",
+        "input in [null..5]",
+        "input in (1..null)",
+        "input in (null..null)",
+        "input between 1 and 5",
+        "input in [1.25..2.50]",
+        "input in ([1..5])",
+        "[1..5] == [1..5]",
+        "[1..2.0] == [1..2.0]",
+        "input in (null..null) == true",
+    ] {
+        let source = format!("{HEADER}task check(input: Number) -> Bool:\n  return {expr}\n");
+        transpile(&source).unwrap_or_else(|e| panic!("{expr}: {e}"));
+    }
+    for (ty, literal) in [
+        ("Date", "date(\"2026-10-02\")"),
+        ("DateTime", "dateTime(\"2026-10-02T09:30:00Z\")"),
+        ("Time", "time(\"09:30:00\")"),
+    ] {
+        let source = format!(
+            "{HEADER}task check(input: {ty}) -> Bool:\n  return input in [{literal}..null)\n"
+        );
+        transpile(&source).unwrap_or_else(|e| panic!("{ty}: {e}"));
+    }
+    for expr in [
+        "input in [1..date(\"2026-10-02\")]",
+        "input in [\"a\"..\"z\"]",
+        "input in [5..1]",
+        "null == null",
+        "[null..null] == [null..null]",
+    ] {
+        let source = format!("{HEADER}task check(input: Number) -> Bool:\n  return {expr}\n");
+        assert!(transpile(&source).is_err(), "accepted: {expr}");
+    }
+    for expr in ["[1, 2.5]", "[1.25, 2.50]"] {
+        let source =
+            format!("{HEADER}task items(input: Number) -> List<Number>:\n  return {expr}\n");
+        transpile(&source).unwrap();
+    }
+}
+
+#[test]
+fn range_relations_reject_mismatched_and_non_range_arguments() {
+    for (expr, valid) in [
+        ("before([1..2], [3..4])", true),
+        ("after([3..4], [1..2])", true),
+        ("meets([1..2], [2..3])", true),
+        ("metBy([2..3], [1..2])", true),
+        ("overlaps([1..2], [2..3])", true),
+        ("overlapsBefore([1..3], [2..4])", true),
+        ("overlapsAfter([2..4], [1..3])", true),
+        ("includes([1..3], input)", true),
+        ("during(input, [1..3])", true),
+        ("starts(input, [1..3])", true),
+        ("startedBy([1..3], input)", true),
+        ("finishes(input, [1..3])", true),
+        ("finishedBy([1..3], input)", true),
+        ("coincides([1..3], [1..3])", true),
+        ("before([1..2], [date(\"2026-01-01\")..null))", false),
+        ("during(input, [date(\"2026-01-01\")..null))", false),
+        ("includes(input, input)", false),
+        ("starts(input, [null..null])", true),
+    ] {
+        let source = format!("{HEADER}task check(input: Number) -> Bool:\n  return {expr}\n");
+        assert_eq!(transpile(&source).is_ok(), valid, "{expr}");
+    }
+}
+
+#[test]
+fn decision_table_unary_tests_are_typed_and_table_only() {
+    let base = format!(
+        "{HEADER}decision price(input: Number) -> Number:\n  node result: Number = table FIRST\n    input amount: Number = input\n    output price: Number\n    rule amount matches (< 10, [20..30]) or amount > 100 -> 5\n    default 0\n  output result\n"
+    );
+    transpile(&base).unwrap();
+    for broken in [
+        base.replace("(< 10, [20..30])", "()"),
+        base.replace("(< 10, [20..30])", "(< 10, [date(\"2026-01-01\")..null))"),
+        base.replace("amount matches", "unknown matches"),
+        base.replace("(< 10, [20..30])", "(< 10, >= date(\"2026-01-01\"))"),
+    ] {
+        assert!(transpile(&broken).is_err(), "accepted: {broken}");
+    }
+    let outside = format!(
+        "{HEADER}task test(input: Number) -> Bool:\n  return input matches (< 10, [20..30])\n"
+    );
+    assert!(transpile(&outside).is_err());
+    for (ty, literal) in [
+        ("Date", "date(\"2026-01-01\")"),
+        ("DateTime", "dateTime(\"2026-01-01T00:00:00Z\")"),
+        ("Time", "time(\"09:00:00\")"),
+    ] {
+        let source = format!(
+            "{HEADER}decision eligible(input: {ty}) -> Bool:\n  node result: Bool = table FIRST\n    input value: {ty} = input\n    output approved: Bool\n    rule value matches ([{literal}..null), >= {literal}) -> true\n    default false\n  output result\n"
+        );
+        transpile(&source).unwrap_or_else(|e| panic!("{ty}: {e}"));
+    }
+}
+
+#[test]
+fn generated_range_helpers_cannot_collide_with_declarations() {
+    for name in ["BlRange", "BlRangeValue", "lower_cmp", "upper_cmp"] {
+        let source = format!(
+            "{HEADER}type {name}:\n  value: Number\ntask check(input: {name}) -> Bool:\n  return input.value in [1..2]\n"
+        );
+        assert!(
+            transpile(&source).is_err(),
+            "generated Rust would collide with {name}"
+        );
+    }
+}
+
+#[test]
 fn missing_header_is_reported() {
     assert!(
         parse("version \"1.0\"\n")

@@ -15,7 +15,7 @@ fn compile_and_test(source: &str, assertion: &str) {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(directory.join("src")).unwrap();
-    fs::write(directory.join("Cargo.toml"), "[package]\nname = \"blkit_generated_test\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nrust_decimal = \"1.39\"\nchrono = { version = \"0.4\", features = [\"serde\"] }\nserde_json = \"1\"\n").unwrap();
+    fs::write(directory.join("Cargo.toml"), "[package]\nname = \"blkit_generated_test\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nrust_decimal = \"1.39\"\nchrono = { version = \"0.4\", features = [\"serde\"] }\nserde = \"1\"\nserde_json = \"1\"\n").unwrap();
     fs::write(directory.join("src/lib.rs"), format!("{generated}\n#[cfg(test)] mod generated_checks {{ use super::*; #[test] fn behavior() {{ {assertion} }} }}")).unwrap();
     let result = Command::new("cargo")
         .args(["test", "--offline", "--manifest-path"])
@@ -37,6 +37,50 @@ fn generated_datetime_inputs_require_offset_and_compare_instants() {
     compile_and_test(
         "namespace timing\nversion \"1\"\ntype Window:\n  opens: DateTime\n  closes: DateTime\ntask before(input: Window) -> Bool:\n  return input.opens < input.closes\n",
         "let opens: DateTime = serde_json::from_value(serde_json::json!(\"2026-10-02T09:30:00+02:00\")).unwrap(); let closes: DateTime = serde_json::from_value(serde_json::json!(\"2026-10-02T08:31:00+01:00\")).unwrap(); assert!(before(Window { opens, closes })); assert!(serde_json::from_value::<DateTime>(serde_json::json!(\"2026-10-02T09:30:00\")).is_err());",
+    );
+}
+
+#[test]
+fn generated_temporal_values_roundtrip_and_order() {
+    compile_and_test(
+        "namespace timing\nversion \"1\"\ntype Clock:\n  day: Date\n  time: Time\n  instant: DateTime\ntask day(input: Clock) -> Date:\n  return input.day\ntask time_of(input: Clock) -> Time:\n  return input.time\ntask later(input: Clock) -> Bool:\n  return input.day < date(\"2026-10-03\") and input.time < time(\"12:00:00\") and input.instant == dateTime(\"2026-10-02T08:30:00Z\")\n",
+        "let day_value: Date = serde_json::from_value(serde_json::json!(\"2026-10-02\")).unwrap(); let time: Time = serde_json::from_value(serde_json::json!(\"09:30:00.250\")).unwrap(); let instant: DateTime = serde_json::from_value(serde_json::json!(\"2026-10-02T09:30:00+01:00\")).unwrap(); let input = Clock { day: day_value, time, instant }; assert_eq!(serde_json::to_value(day(input.clone())).unwrap(), serde_json::json!(\"2026-10-02\")); assert_eq!(serde_json::to_value(time_of(input.clone())).unwrap(), serde_json::json!(\"09:30:00.250\")); assert!(later(input)); for invalid in [\"2026-02-30\", \"not-a-date\", \"2026-1-2\"] { assert!(serde_json::from_value::<Date>(serde_json::json!(invalid)).is_err()); } for invalid in [\"24:00:00\", \"09:30:00+02:00\", \"23:59:60\", \"9:30:00\"] { assert!(serde_json::from_value::<Time>(serde_json::json!(invalid)).is_err(), \"{invalid}\"); } assert!(serde_json::from_value::<DateTime>(serde_json::json!(\"2026-10-02T09:30:00\")).is_err());",
+    );
+}
+
+#[test]
+fn generated_ranges_obey_boundaries_and_dynamic_empty_semantics() {
+    compile_and_test(
+        "namespace ranges\nversion \"1\"\ntype Bounds:\n  low: Number\n  high: Number\ntask inclusive(input: Number) -> Bool:\n  return input in [1..5]\ntask exclusive(input: Number) -> Bool:\n  return input in (1..5)\ntask left_open(input: Number) -> Bool:\n  return input in (1..5]\ntask right_open(input: Number) -> Bool:\n  return input in [1..5)\ntask upper_open(input: Number) -> Bool:\n  return input in [1..null)\ntask lower_open(input: Number) -> Bool:\n  return input in (null..0)\ntask all(input: Number) -> Bool:\n  return input in (null..null)\ntask between(input: Number) -> Bool:\n  return input between 1 and 5\ntask same(input: Number) -> Bool:\n  return [1..5] == [1..5] and [1..5] != [1..5)\ntask dynamic(input: Bounds) -> Bool:\n  return input.low in [input.low..input.high]\ntask singleton(input: Number) -> Bool:\n  return input in [1..1] and not (input in (1..1])\ntask instant(input: DateTime) -> Bool:\n  return input in [dateTime(\"2026-10-02T09:00:00+01:00\")..null)\n",
+        "let n = |text: &str| text.parse::<Number>().unwrap(); assert!(inclusive(n(\"1\"))); assert!(inclusive(n(\"5\"))); assert!(!exclusive(n(\"1\"))); assert!(exclusive(n(\"3\"))); assert!(!exclusive(n(\"5\"))); assert!(!left_open(n(\"1\"))); assert!(left_open(n(\"5\"))); assert!(right_open(n(\"1\"))); assert!(!right_open(n(\"5\"))); assert!(upper_open(n(\"100\"))); assert!(lower_open(n(\"-1\"))); assert!(!lower_open(n(\"0\"))); assert!(all(n(\"0\"))); assert!(between(n(\"5\"))); assert!(same(n(\"0\"))); assert!(singleton(n(\"1\"))); assert!(!dynamic(Bounds { low: n(\"5\"), high: n(\"1\") })); assert!(instant(\"2026-10-02T08:30:00Z\".parse().unwrap()));",
+    );
+}
+
+#[test]
+fn generated_interval_relations_handle_open_empty_and_adjacent_dates() {
+    compile_and_test(
+        "namespace relations\nversion \"1\"\ntask ordered(input: Number) -> Bool:\n  return before([1..2], [3..4]) and after([3..4], [1..2]) and meets([1..2], [2..3]) and metBy([2..3], [1..2])\ntask intersection(input: Number) -> Bool:\n  return overlaps([5..10], [1..6]) and overlapsBefore([1..5], [4..10]) and overlapsAfter([4..10], [1..5]) and not (overlaps([1..2), [2..3])) and not (overlaps([input..1], [1..2]))\ntask points(input: Number) -> Bool:\n  return includes([1..10], 5) and during(5, [1..10]) and starts(1, [1..5]) and startedBy([1..5], 1) and finishes(5, [1..5]) and finishedBy([1..5], 5) and coincides([1..5], [1..5])\ntask open(input: Number) -> Bool:\n  return not (starts(1, (1..5])) and not (finishes(5, [1..5))) and not (starts(1, (null..5])) and overlaps((null..5), [4..null))\ntask adjacent(input: Date) -> Bool:\n  return not (overlaps((date(\"2026-01-01\")..date(\"2026-01-03\")), [date(\"2026-01-03\")..null))) and not (overlaps((date(\"2026-01-01\")..date(\"2026-01-02\")), [date(\"2026-01-01\")..date(\"2026-01-02\")]))\n",
+        "assert!(ordered(Number::ZERO)); assert!(intersection(Number::from(5))); assert!(points(Number::ZERO)); assert!(open(Number::ZERO)); assert!(adjacent(\"2026-01-01\".parse().unwrap()));",
+    );
+}
+
+#[test]
+fn generated_table_unary_tests_preserve_outputs_and_hit_policies() {
+    compile_and_test(
+        "namespace pricing\nversion \"1\"\ntype Quote:\n  price: Number\n  tier: String\ndecision quotes(input: Number) -> List<Quote>:\n  node result: List<Quote> = table RULE_ORDER\n    input amount: Number = input\n    output price: Number\n    output tier: String\n    rule amount matches ([2..5], (2..5]) -> 1, \"range\"\n    rule amount matches (< 10, [20..30]) and amount > 3 -> 2, \"mixed\"\n    default 0, \"none\"\n  output result\n",
+        "let n = |value: &str| value.parse::<Number>().unwrap(); let two = quotes(n(\"2\")).unwrap(); assert_eq!(two.len(), 1); assert_eq!(two[0].tier, \"range\"); let five = quotes(n(\"5\")).unwrap(); assert_eq!(five.len(), 2); assert_eq!(five[0].tier, \"range\"); assert_eq!(five[1].tier, \"mixed\"); assert_eq!(quotes(n(\"6\")).unwrap()[0].tier, \"mixed\"); assert_eq!(quotes(n(\"25\")).unwrap()[0].tier, \"mixed\"); assert_eq!(quotes(n(\"15\")).unwrap()[0].tier, \"none\");",
+    );
+    compile_and_test(
+        "namespace dates\nversion \"1\"\ndecision in_season(input: Date) -> Bool:\n  node result: Bool = table FIRST\n    input day: Date = input\n    output approved: Bool\n    rule day matches ([date(\"2026-01-01\")..date(\"2026-01-31\")], >= date(\"2026-12-01\")) -> true\n    default false\n  output result\n",
+        "for (date, expected) in [(\"2026-01-15\", true), (\"2026-12-01\", true), (\"2026-02-01\", false)] { assert_eq!(in_season(date.parse().unwrap()).unwrap(), expected); }",
+    );
+}
+
+#[test]
+fn knowledge_names_can_coexist_with_range_builtins_and_date_parameters() {
+    compile_and_test(
+        "namespace compatibility\nversion \"1\"\ndecision earlier(input: Number) -> Bool:\n  knowledge before(a: Number, b: Number) -> Bool = a < b\n  node result: Bool = literal before(input, 10)\n  output result\ndecision daylight(input: Number) -> Bool:\n  knowledge check(day: Date) -> Bool = day in [day..day]\n  knowledge datetime_check(at: DateTime) -> Bool = at == at\n  node result: Bool = literal true\n  output result\ndecision intervals(input: Number) -> Bool:\n  node result: Bool = literal before([1..2], [3..4])\n  output result\n",
+        "assert!(earlier(Number::ONE).unwrap()); assert!(!earlier(Number::from(11)).unwrap()); assert!(daylight(Number::ZERO).unwrap()); assert!(intervals(Number::ZERO).unwrap());",
     );
 }
 
@@ -226,6 +270,18 @@ fn documented_example_compiles() {
     compile_and_test_graph(
         include_str!("../examples/approve.bl"),
         "let graph = named_graph_definitions().remove(0); let input = serde_json::json!({\"total\":\"1250\",\"blocked\":false}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(\"review\"));",
+    );
+}
+
+#[test]
+fn pricing_and_iteration_examples_compile_and_execute() {
+    compile_and_test_graph(
+        include_str!("../examples/pricing.bl"),
+        "let graph = named_graph_definitions().remove(0); for (amount, expected) in [(\"200\", \"5\"), (\"10\", \"2\")] { let input = serde_json::json!(amount); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(expected)); }",
+    );
+    compile_and_test_graph(
+        include_str!("../examples/iteration.bl"),
+        "let graph = named_graph_definitions(); let gather = graph.iter().find(|item| item.name == \"gather\").unwrap(); let input = serde_json::json!([\"3\", \"1\"]); let mut state = gather.checkpoint(&input).unwrap(); assert_eq!(gather.run(&input, &mut state).unwrap(), input); let repeat = graph.iter().find(|item| item.name == \"repeat_until_timeout\").unwrap(); assert_eq!(repeat.deadline.as_ref().unwrap().duration.as_secs(), 2);",
     );
 }
 

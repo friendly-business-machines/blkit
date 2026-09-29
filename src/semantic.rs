@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
+use chrono::{DateTime, NaiveDate, NaiveTime, Timelike};
 use rust_decimal::Decimal;
 
 use crate::{
@@ -11,9 +12,11 @@ use crate::{
 };
 
 pub fn validate(program: &Program) -> Result<(), String> {
-    let mut names: HashSet<&str> = ["Bool", "String", "Number", "DateTime", "List"]
-        .into_iter()
-        .collect();
+    let mut names: HashSet<&str> = [
+        "Bool", "String", "Number", "Date", "DateTime", "Time", "List",
+    ]
+    .into_iter()
+    .collect();
     let has_graph = program
         .processes
         .iter()
@@ -178,6 +181,11 @@ fn check_decision(
                     calls(item, found);
                 }
             }
+            Expr::Range(lower, upper, _, _) => {
+                for bound in lower.iter().chain(upper.iter()) {
+                    calls(bound, found);
+                }
+            }
             _ => {}
         }
     }
@@ -185,7 +193,10 @@ fn check_decision(
         let mut found = vec![];
         calls(&item.body, &mut found);
         for name in found {
-            if !knowledge_names.contains(name) {
+            if !knowledge_names.contains(name)
+                && !range_relation(name)
+                && !matches!(name, "date" | "time" | "dateTime")
+            {
                 return Err(format!("unknown knowledge model: {name}"));
             }
         }
@@ -210,7 +221,9 @@ fn check_decision(
         let mut deps = vec![];
         calls(&item.body, &mut deps);
         for dep in deps {
-            visit_knowledge(dep, model, active, done)?;
+            if model.knowledge.iter().any(|item| item.name == dep) {
+                visit_knowledge(dep, model, active, done)?;
+            }
         }
         active.remove(name);
         done.insert(name);
@@ -254,7 +267,10 @@ fn check_decision(
             let mut called = vec![];
             calls(expression, &mut called);
             for name in called {
-                if !knowledge_names.contains(name) {
+                if !knowledge_names.contains(name)
+                    && !range_relation(name)
+                    && !matches!(name, "date" | "time" | "dateTime")
+                {
                     return Err(format!("unknown knowledge model: {name}"));
                 }
             }
@@ -1342,22 +1358,79 @@ fn infer_with(
             .cloned()
             .ok_or_else(|| format!("unknown name: {name}")),
         Call(name, args) => {
-            let definition = knowledge
-                .iter()
-                .find(|item| item.name == *name)
-                .ok_or_else(|| format!("unknown knowledge model: {name}"))?;
-            if args.len() != definition.params.len() {
-                return Err(format!("knowledge argument count for {name}"));
-            }
-            for (arg, (_, ty)) in args.iter().zip(&definition.params) {
-                let actual = infer_with(arg, Some(ty), env, program, knowledge)?;
-                if actual != *ty {
-                    return Err(format!(
-                        "knowledge argument type for {name}: expected {ty}, got {actual}"
-                    ));
+            if let Some(definition) = knowledge.iter().find(|item| item.name == *name) {
+                if args.len() != definition.params.len() {
+                    return Err(format!("knowledge argument count for {name}"));
                 }
+                for (arg, (_, ty)) in args.iter().zip(&definition.params) {
+                    let actual = infer_with(arg, Some(ty), env, program, knowledge)?;
+                    if actual != *ty {
+                        return Err(format!(
+                            "knowledge argument type for {name}: expected {ty}, got {actual}"
+                        ));
+                    }
+                }
+                return Ok(definition.output.clone());
             }
-            Ok(definition.output.clone())
+            if range_relation(name) {
+                let [first, second] = args.as_slice() else {
+                    return Err(format!("{name} requires two arguments"));
+                };
+                let (value, range) =
+                    if matches!(name.as_str(), "includes" | "startedBy" | "finishedBy") {
+                        (second, first)
+                    } else {
+                        (first, second)
+                    };
+                if matches!(
+                    name.as_str(),
+                    "includes" | "during" | "starts" | "startedBy" | "finishes" | "finishedBy"
+                ) {
+                    let ty = infer_with(value, None, env, program, knowledge)?;
+                    let expected = Type::Generic("Range".into(), Box::new(ty));
+                    let actual = infer_with(range, Some(&expected), env, program, knowledge)?;
+                    if actual != expected {
+                        return Err(format!("{name} requires matching scalar and range types"));
+                    }
+                } else {
+                    let ty = if matches!(first, Range(None, None, _, _)) {
+                        infer_with(second, None, env, program, knowledge)?
+                    } else {
+                        infer_with(first, None, env, program, knowledge)?
+                    };
+                    let first_ty = infer_with(first, Some(&ty), env, program, knowledge)?;
+                    let second_ty = infer_with(second, Some(&ty), env, program, knowledge)?;
+                    if first_ty != second_ty
+                        || !matches!(ty, Type::Generic(ref name, _) if name == "Range")
+                    {
+                        return Err(format!("{name} requires matching range types"));
+                    }
+                }
+                return Ok(named("Bool"));
+            }
+            if matches!(name.as_str(), "date" | "time" | "dateTime") {
+                let [Expr::String(value)] = args.as_slice() else {
+                    return Err(format!("{name} requires a string literal"));
+                };
+                let valid = match name.as_str() {
+                    "date" => NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok(),
+                    "time" => {
+                        valid_time_format(value)
+                            && NaiveTime::parse_from_str(value, "%H:%M:%S%.f")
+                                .is_ok_and(|time| time.nanosecond() < 1_000_000_000)
+                    }
+                    _ => DateTime::parse_from_rfc3339(value).is_ok(),
+                };
+                if !valid {
+                    return Err(format!("invalid {name} literal: {value}"));
+                }
+                return Ok(named(match name.as_str() {
+                    "date" => "Date",
+                    "time" => "Time",
+                    _ => "DateTime",
+                }));
+            }
+            Err(format!("unknown knowledge model: {name}"))
         }
         Field(base, field) => {
             if let Name(name) = base.as_ref()
@@ -1381,6 +1454,35 @@ fn infer_with(
                     .ok_or_else(|| format!("unknown field: {name}.{field}"));
             }
             Err(format!("unknown field: {field}"))
+        }
+        Range(lower, upper, _, _) => {
+            let context = match expected {
+                Some(Type::Generic(name, inner)) if name == "Range" => Some(inner.as_ref().clone()),
+                _ => None,
+            };
+            let ty = if let Some(bound) = lower.as_ref().or(upper.as_ref()) {
+                infer_with(bound, context.as_ref(), env, program, knowledge)?
+            } else {
+                context.ok_or("cannot infer unbounded range type")?
+            };
+            if !matches!(&ty, Type::Named(name) if matches!(name.as_str(), "Number" | "Date" | "DateTime" | "Time"))
+            {
+                return Err(format!("unsupported range bound type: {ty}"));
+            }
+            for bound in lower.iter().chain(upper.iter()) {
+                let actual = infer_with(bound, Some(&ty), env, program, knowledge)?;
+                if actual != ty {
+                    return Err(format!(
+                        "range bounds require matching types, got {ty} and {actual}"
+                    ));
+                }
+            }
+            if let (Some(a), Some(b)) = (lower, upper)
+                && reversed_constants(a, b, &ty)
+            {
+                return Err("inverted range bounds".into());
+            }
+            Ok(Type::Generic("Range".into(), Box::new(ty)))
         }
         List(elements) => {
             let element_type = if let Some(Type::Generic(name, inner)) = expected {
@@ -1415,7 +1517,19 @@ fn infer_with(
             Ok(named("Bool"))
         }
         Binary(left, op, right) => {
-            let lhs = if matches!(left.as_ref(), List(elements) if elements.is_empty()) {
+            if op == "in" {
+                let lhs = infer_with(left, None, env, program, knowledge)?;
+                let expected = Type::Generic("Range".into(), Box::new(lhs.clone()));
+                let rhs = infer_with(right, Some(&expected), env, program, knowledge)?;
+                if rhs != expected {
+                    return Err(format!("in requires a range of {lhs}, got {rhs}"));
+                }
+                return Ok(named("Bool"));
+            }
+            let lhs = if matches!(left.as_ref(), Range(None, None, _, _)) {
+                let other = infer_with(right, None, env, program, knowledge)?;
+                infer_with(left, Some(&other), env, program, knowledge)?
+            } else if matches!(left.as_ref(), List(elements) if elements.is_empty()) {
                 let other = infer_with(right, None, env, program, knowledge)?;
                 infer_with(left, Some(&other), env, program, knowledge)?
             } else {
@@ -1431,7 +1545,9 @@ fn infer_with(
                 ">" | ">=" | "<" | "<="
                     if lhs == named("Number")
                         || lhs == named("String")
-                        || lhs == named("DateTime") =>
+                        || lhs == named("DateTime")
+                        || lhs == named("Date")
+                        || lhs == named("Time") =>
                 {
                     Ok(named("Bool"))
                 }
@@ -1440,6 +1556,67 @@ fn infer_with(
                 )),
             }
         }
+    }
+}
+
+fn valid_time_format(value: &str) -> bool {
+    let b = value.as_bytes();
+    b.len() >= 8
+        && b[2] == b':'
+        && b[5] == b':'
+        && [0, 1, 3, 4, 6, 7].iter().all(|&i| b[i].is_ascii_digit())
+        && (b.len() == 8 || (b.len() > 9 && b[8] == b'.' && b[9..].iter().all(u8::is_ascii_digit)))
+}
+
+fn range_relation(name: &str) -> bool {
+    matches!(
+        name,
+        "before"
+            | "after"
+            | "meets"
+            | "metBy"
+            | "overlaps"
+            | "overlapsBefore"
+            | "overlapsAfter"
+            | "includes"
+            | "during"
+            | "starts"
+            | "startedBy"
+            | "finishes"
+            | "finishedBy"
+            | "coincides"
+    )
+}
+
+fn reversed_constants(a: &Expr, b: &Expr, ty: &Type) -> bool {
+    match (a, b, ty) {
+        (Expr::Number(a), Expr::Number(b), Type::Named(name)) if name == "Number" => {
+            Decimal::from_str(a)
+                .ok()
+                .zip(Decimal::from_str(b).ok())
+                .is_some_and(|(a, b)| a > b)
+        }
+        (Expr::Call(a_name, a), Expr::Call(b_name, b), Type::Named(name)) if a_name == b_name => {
+            let ([Expr::String(a)], [Expr::String(b)]) = (a.as_slice(), b.as_slice()) else {
+                return false;
+            };
+            match name.as_str() {
+                "Date" => NaiveDate::parse_from_str(a, "%Y-%m-%d")
+                    .ok()
+                    .zip(NaiveDate::parse_from_str(b, "%Y-%m-%d").ok())
+                    .is_some_and(|(a, b)| a > b),
+                "Time" => NaiveTime::parse_from_str(a, "%H:%M:%S%.f")
+                    .ok()
+                    .zip(NaiveTime::parse_from_str(b, "%H:%M:%S%.f").ok())
+                    .is_some_and(|(a, b)| a > b),
+                "DateTime" => DateTime::parse_from_rfc3339(a)
+                    .ok()
+                    .zip(DateTime::parse_from_rfc3339(b).ok())
+                    .is_some_and(|(a, b)| a > b),
+                _ => false,
+            }
+        }
+        _ => false,
     }
 }
 
