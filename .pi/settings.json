@@ -1,4 +1,7 @@
 {
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-6-sol",
+  "defaultThinkingLevel": "high",
   "packages": [
     "npm:@dietrichgebert/ponytail@4.10.0",
     "npm:@lll9p/pi-better-compaction@0.7.1",
