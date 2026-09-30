@@ -195,6 +195,19 @@ fn graph_closure(
     )
 }
 
+fn external_graph_closure(
+    task: &str,
+    external: &crate::compiler::ExternalTask,
+    input: String,
+) -> Result<String, String> {
+    let (provider, _) = task.split_once('.').ok_or("invalid qualified task")?;
+    let output = rust_type(&external.output);
+    Ok(format!(
+        "std::sync::Arc::new(|source: serde_json::Value, values: blkit::runtime::Values| {{ let argument: blkit::runtime::Evaluate = {input}; Box::pin(async move {{ let value = argument(&source, &values)?; let result = {provider}::{}(value).await?; let typed: {output} = serde_json::from_value(result).map_err(|e| e.to_string())?; serde_json::to_value(typed).map_err(|e| e.to_string()) }}) }})",
+        external.function
+    ))
+}
+
 fn emit_graph_steps(
     body: &[GraphStmt],
     env: &mut HashMap<String, Type>,
@@ -650,22 +663,36 @@ pub fn generate(program: &Program) -> Result<String, String> {
                     } => {
                         let mut env = scopes[node.name.as_str()].clone();
                         env.remove(&node.name);
-                        let expression = format!("self::{task}({})", emit_expr(argument, program));
-                        format!(
-                            "blkit::named_runtime::GraphNodeKind::Task({})",
-                            graph_closure(expression, &env, &process.input, &process.input_type)
-                        )
+                        if let Some(external) = program.external_tasks.get(task) {
+                            let input = graph_closure(
+                                emit_expr(argument, program),
+                                &env,
+                                &process.input,
+                                &process.input_type,
+                            );
+                            format!(
+                                "blkit::named_runtime::GraphNodeKind::AsyncTask({})",
+                                external_graph_closure(task, external, input)?
+                            )
+                        } else {
+                            let expression =
+                                format!("self::{task}({})", emit_expr(argument, program));
+                            format!(
+                                "blkit::named_runtime::GraphNodeKind::Task({})",
+                                graph_closure(
+                                    expression,
+                                    &env,
+                                    &process.input,
+                                    &process.input_type
+                                )
+                            )
+                        }
                     }
                     NodeKind::MultiInstance {
                         task,
                         items,
                         parallel,
                     } => {
-                        let definition = program
-                            .tasks
-                            .iter()
-                            .find(|item| item.name == *task)
-                            .ok_or_else(|| format!("unknown task: {task}"))?;
                         let mut env = scopes[node.name.as_str()].clone();
                         env.remove(&node.name);
                         let items = graph_closure(
@@ -674,10 +701,26 @@ pub fn generate(program: &Program) -> Result<String, String> {
                             &process.input,
                             &process.input_type,
                         );
-                        format!(
-                            "blkit::named_runtime::GraphNodeKind::MultiInstance {{ task: std::sync::Arc::new(|item, _| {{ let typed: {} = serde_json::from_value(item.clone()).map_err(|e| e.to_string())?; serde_json::to_value(self::{task}(typed)).map_err(|e| e.to_string()) }}), items: {items}, parallel: {parallel} }}",
-                            rust_type(&definition.input_type)
-                        )
+                        if let Some(external) = program.external_tasks.get(task) {
+                            let argument = format!(
+                                "std::sync::Arc::new(|item, _| {{ let typed: {} = serde_json::from_value(item.clone()).map_err(|e| e.to_string())?; serde_json::to_value(typed).map_err(|e| e.to_string()) }})",
+                                rust_type(&external.input)
+                            );
+                            let call = external_graph_closure(task, external, argument)?;
+                            format!(
+                                "blkit::named_runtime::GraphNodeKind::AsyncMultiInstance {{ task: {call}, items: {items}, parallel: {parallel} }}"
+                            )
+                        } else {
+                            let definition = program
+                                .tasks
+                                .iter()
+                                .find(|item| item.name == *task)
+                                .ok_or_else(|| format!("unknown task: {task}"))?;
+                            format!(
+                                "blkit::named_runtime::GraphNodeKind::MultiInstance {{ task: std::sync::Arc::new(|item, _| {{ let typed: {} = serde_json::from_value(item.clone()).map_err(|e| e.to_string())?; serde_json::to_value(self::{task}(typed)).map_err(|e| e.to_string()) }}), items: {items}, parallel: {parallel} }}",
+                                rust_type(&definition.input_type)
+                            )
+                        }
                     }
                     NodeKind::TaskLoop {
                         task,
@@ -695,12 +738,29 @@ pub fn generate(program: &Program) -> Result<String, String> {
                         } else {
                             &initial_env
                         };
-                        let call = graph_closure(
-                            format!("self::{task}({})", emit_expr(argument, program)),
-                            argument_env,
-                            &process.input,
-                            &process.input_type,
-                        );
+                        let (kind, call) = if let Some(external) = program.external_tasks.get(task)
+                        {
+                            let input = graph_closure(
+                                emit_expr(argument, program),
+                                argument_env,
+                                &process.input,
+                                &process.input_type,
+                            );
+                            (
+                                "AsyncTaskLoop",
+                                external_graph_closure(task, external, input)?,
+                            )
+                        } else {
+                            (
+                                "TaskLoop",
+                                graph_closure(
+                                    format!("self::{task}({})", emit_expr(argument, program)),
+                                    argument_env,
+                                    &process.input,
+                                    &process.input_type,
+                                ),
+                            )
+                        };
                         let condition = graph_closure(
                             emit_expr(condition, program),
                             &scopes[node.name.as_str()],
@@ -727,7 +787,7 @@ pub fn generate(program: &Program) -> Result<String, String> {
                             )
                         });
                         format!(
-                            "blkit::named_runtime::GraphNodeKind::TaskLoop({call}, blkit::named_runtime::LoopPolicy {{ condition: {condition}, initial: {initial}, before: {before}, max_iterations: {max_iterations}, max_duration: {max_duration} }})"
+                            "blkit::named_runtime::GraphNodeKind::{kind}({call}, blkit::named_runtime::LoopPolicy {{ condition: {condition}, initial: {initial}, before: {before}, max_iterations: {max_iterations}, max_duration: {max_duration} }})"
                         )
                     }
                     NodeKind::Split(kind) => {

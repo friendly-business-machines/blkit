@@ -31,12 +31,19 @@ pub struct LoopPolicy {
 pub enum GraphNodeKind {
     Start,
     Task(Evaluate),
+    AsyncTask(crate::runtime::AsyncEvaluate),
     MultiInstance {
         task: Evaluate,
         items: Evaluate,
         parallel: bool,
     },
+    AsyncMultiInstance {
+        task: crate::runtime::AsyncEvaluate,
+        items: Evaluate,
+        parallel: bool,
+    },
     TaskLoop(Evaluate, LoopPolicy),
+    AsyncTaskLoop(crate::runtime::AsyncEvaluate, LoopPolicy),
     TaskWithCancel(Evaluate, crate::runtime::Cancel),
     PauseFor(Duration),
     PauseUntil(Evaluate),
@@ -203,6 +210,11 @@ impl GraphDefinition {
                 | GraphNodeKind::TaskWithCancel(call, _)
                 | GraphNodeKind::TaskLoop(call, _) => call,
                 GraphNodeKind::MultiInstance { task, .. } => task,
+                GraphNodeKind::AsyncTask(_)
+                | GraphNodeKind::AsyncMultiInstance { .. }
+                | GraphNodeKind::AsyncTaskLoop(_, _) => {
+                    return Err("async task requires async executor".into());
+                }
                 _ => return Err(format!("not a task: {name}")),
             };
             let output = call(
@@ -286,7 +298,7 @@ impl GraphDefinition {
         if state.terminal.is_some() || state.outcome.is_some() {
             return;
         }
-        if state.ready.iter().any(|token| self.nodes.iter().any(|node| node.name == token.node && matches!(&node.kind, GraphNodeKind::TaskLoop(_, policy) if Self::loop_bound_reached(policy, token, now_ms)))) {
+        if state.ready.iter().any(|token| self.nodes.iter().any(|node| node.name == token.node && matches!(&node.kind, GraphNodeKind::TaskLoop(_, policy) | GraphNodeKind::AsyncTaskLoop(_, policy) if Self::loop_bound_reached(policy, token, now_ms)))) {
             state.terminal = Some(GraphTerminal::Error("task-iteration-limit".into()));
         }
     }
@@ -495,11 +507,15 @@ impl GraphDefinition {
             return Ok(());
         }
         next.completed.insert(token.node.clone(), value.clone());
-        if let Some(GraphNodeKind::TaskLoop(_, policy)) = self
-            .nodes
-            .iter()
-            .find(|node| node.name == token.node)
-            .map(|node| &node.kind)
+        if let Some(policy) =
+            self.nodes
+                .iter()
+                .find(|node| node.name == token.node)
+                .and_then(|node| match &node.kind {
+                    GraphNodeKind::TaskLoop(_, policy)
+                    | GraphNodeKind::AsyncTaskLoop(_, policy) => Some(policy),
+                    _ => None,
+                })
         {
             token.iterations = token
                 .iterations
@@ -654,12 +670,17 @@ impl GraphDefinition {
             .ok_or_else(|| format!("unknown node: {}", link.target))?;
         match &node.kind {
             GraphNodeKind::Start => Err("link into start".into()),
-            GraphNodeKind::Task(_) | GraphNodeKind::TaskWithCancel(_, _) => {
+            GraphNodeKind::Task(_)
+            | GraphNodeKind::TaskWithCancel(_, _)
+            | GraphNodeKind::AsyncTask(_) => {
                 let token = Self::activation(state, node.name, path, generations, values);
                 state.ready.push(token);
                 Ok(())
             }
             GraphNodeKind::MultiInstance {
+                items, parallel, ..
+            }
+            | GraphNodeKind::AsyncMultiInstance {
                 items, parallel, ..
             } => {
                 let entries = items(input, &values)?
@@ -712,7 +733,7 @@ impl GraphDefinition {
                 }
                 Ok(())
             }
-            GraphNodeKind::TaskLoop(_, policy) => {
+            GraphNodeKind::TaskLoop(_, policy) | GraphNodeKind::AsyncTaskLoop(_, policy) => {
                 let mut values = values;
                 if policy.before {
                     let initial = (policy

@@ -6,6 +6,7 @@ pub mod expr;
 pub mod graph;
 pub mod named_runtime;
 pub mod postgres_store;
+pub mod project;
 pub mod runtime;
 mod semantic;
 pub mod server;

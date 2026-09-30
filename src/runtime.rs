@@ -22,6 +22,11 @@ pub use crate::store::{Instance, Store};
 
 pub type Values = HashMap<String, Value>;
 pub type Evaluate = Arc<dyn Fn(&Value, &Values) -> Result<Value, String> + Send + Sync>;
+pub type AsyncEvaluate = Arc<
+    dyn Fn(Value, Values) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>>
+        + Send
+        + Sync,
+>;
 pub type Cancel = Arc<dyn Fn() + Send + Sync>;
 
 pub fn next_retry_at(
@@ -874,12 +879,21 @@ async fn execute_named(
                 .iter()
                 .find(|node| node.name == name)
                 .ok_or("unknown task node")?;
-            let (call, cancel) = match &node.kind {
+            let (call, async_call, cancel) = match &node.kind {
                 GraphNodeKind::Task(call) | GraphNodeKind::TaskLoop(call, _) => {
-                    (call, Arc::new(|| {}) as Cancel)
+                    (Some(call.clone()), None, Arc::new(|| {}) as Cancel)
                 }
-                GraphNodeKind::MultiInstance { task, .. } => (task, Arc::new(|| {}) as Cancel),
-                GraphNodeKind::TaskWithCancel(call, cancel) => (call, cancel.clone()),
+                GraphNodeKind::MultiInstance { task, .. } => {
+                    (Some(task.clone()), None, Arc::new(|| {}) as Cancel)
+                }
+                GraphNodeKind::TaskWithCancel(call, cancel) => {
+                    (Some(call.clone()), None, cancel.clone())
+                }
+                GraphNodeKind::AsyncTask(call)
+                | GraphNodeKind::AsyncTaskLoop(call, _)
+                | GraphNodeKind::AsyncMultiInstance { task: call, .. } => {
+                    (None, Some(call.clone()), Arc::new(|| {}) as Cancel)
+                }
                 _ => return Err("ready node is not a task".into()),
             };
             let mut state = context.state.lock().await;
@@ -896,14 +910,28 @@ async fn execute_named(
             state.next += 1;
             state.in_flight.insert(key, cancel);
             drop(state);
-            let call = call.clone();
             let source = graph.activation_input(&checkpoint, activation, input)?;
             let values = graph.activation_values(&checkpoint, activation)?;
             in_flight.insert(activation);
-            tasks.spawn_blocking(move || {
-                let _permit = permit;
-                (key, activation, call(&source, &values))
-            });
+            if let Some(call) = async_call {
+                let handle = tasks.spawn(async move {
+                    let _permit = permit;
+                    (key, activation, call(source, values).await)
+                });
+                let abort: Cancel = Arc::new(move || handle.abort());
+                let mut state = context.state.lock().await;
+                if state.status == "running" {
+                    state.in_flight.insert(key, abort);
+                } else {
+                    abort();
+                }
+            } else {
+                let call = call.ok_or("missing task call")?;
+                tasks.spawn_blocking(move || {
+                    let _permit = permit;
+                    (key, activation, call(&source, &values))
+                });
+            }
         }
         let completed = if graph.has_pending(&checkpoint) {
             if let Some(done) = tasks.try_join_next() {

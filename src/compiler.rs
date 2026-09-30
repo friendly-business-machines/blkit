@@ -1,5 +1,5 @@
 use crate::{codegen, decision, expr, graph, semantic};
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 pub fn transpile(source: &str) -> Result<String, String> {
     let program = parse(source)?;
@@ -61,6 +61,13 @@ pub struct Process {
     pub deadline: Option<DeadlinePolicy>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ExternalTask {
+    pub function: String,
+    pub input: Type,
+    pub output: Type,
+}
+
 #[derive(Debug)]
 pub struct Program {
     pub namespace: String,
@@ -70,6 +77,7 @@ pub struct Program {
     pub processes: Vec<Process>,
     pub tasks: Vec<Process>,
     pub decisions: Vec<decision::DecisionModel>,
+    pub external_tasks: BTreeMap<String, ExternalTask>,
 }
 
 pub(crate) fn type_ref(text: &str) -> Result<Type, String> {
@@ -121,6 +129,7 @@ pub fn parse(source: &str) -> Result<Program, String> {
         processes: Vec::new(),
         tasks: Vec::new(),
         decisions: Vec::new(),
+        external_tasks: BTreeMap::new(),
     };
     let mut i = 2;
     while i < lines.len() {

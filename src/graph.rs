@@ -216,6 +216,13 @@ pub struct Link {
     pub label: Option<String>,
 }
 
+fn task_reference(value: &str) -> bool {
+    super::identifier(value)
+        || value
+            .split_once('.')
+            .is_some_and(|(provider, task)| super::identifier(provider) && super::identifier(task))
+}
+
 pub(crate) fn duration(value: &str) -> Result<std::time::Duration, String> {
     let value = value
         .strip_prefix('"')
@@ -355,7 +362,7 @@ pub fn parse_named(
                     let (items, mode) = items
                         .rsplit_once(' ')
                         .ok_or_else(|| format!("invalid multi-instance mode: {line}"))?;
-                    if !super::identifier(task) || !matches!(mode, "sequential" | "parallel") {
+                    if !task_reference(task) || !matches!(mode, "sequential" | "parallel") {
                         return Err(format!("invalid multi-instance node: {line}"));
                     }
                     NodeKind::MultiInstance {
@@ -378,7 +385,7 @@ pub fn parse_named(
                     let argument = argument
                         .strip_suffix(')')
                         .ok_or_else(|| format!("invalid task node: {line}"))?;
-                    if !super::identifier(task) {
+                    if !task_reference(task) {
                         return Err(format!("invalid task node: {line}"));
                     }
                     let input = expr::expression(argument)?;

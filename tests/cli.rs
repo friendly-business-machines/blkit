@@ -44,6 +44,52 @@ fn valid_source_writes_rust() {
 }
 
 #[test]
+fn build_command_reports_invalid_project_manifest() {
+    let directory = std::env::temp_dir().join(format!("blkit-cli-project-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("blkit.toml"),
+        "[project]\nname = \"demo\"\nblkit = \"0.1.0\"\nbuild_target = \"invalid\"\n",
+    )
+    .unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
+        .arg("build")
+        .arg(&directory)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8(result.stderr)
+            .unwrap()
+            .contains("build_target")
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn update_command_reports_invalid_project_manifest() {
+    let directory = std::env::temp_dir().join(format!("blkit-cli-update-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("blkit.toml"),
+        "[project]\nname = \"demo\"\nblkit = \"0.1.0\"\nbuild_target = \"invalid\"\n",
+    )
+    .unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
+        .arg("update")
+        .arg(&directory)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8(result.stderr)
+            .unwrap()
+            .contains("build_target")
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn invalid_source_produces_diagnostic_without_output() {
     for (case, source, error) in [
         ("parse", "namespace orders\n", "version"),

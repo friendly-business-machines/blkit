@@ -40,6 +40,10 @@ pub fn validate(program: &Program) -> Result<(), String> {
             return Err(format!("duplicate declaration: {name}"));
         }
     }
+    for (task, definition) in &program.external_tasks {
+        resolve(&definition.input, &names).map_err(|e| format!("{task}: {e}"))?;
+        resolve(&definition.output, &names).map_err(|e| format!("{task}: {e}"))?;
+    }
     for record in &program.records {
         let mut fields = HashSet::new();
         for (name, ty) in &record.fields {
@@ -685,6 +689,17 @@ fn check_named_graph(graph: &NamedGraph, has_deadline: bool) -> Result<(), Strin
     Ok(())
 }
 
+fn task_types<'a>(program: &'a Program, task: &str) -> Result<(&'a Type, &'a Type), String> {
+    if let Some(source) = program.tasks.iter().find(|item| item.name == task) {
+        return Ok((&source.input_type, &source.output));
+    }
+    program
+        .external_tasks
+        .get(task)
+        .map(|ext| (&ext.input, &ext.output))
+        .ok_or_else(|| format!("unknown task: {task}"))
+}
+
 pub(crate) fn named_scopes<'a>(
     graph: &'a NamedGraph,
     process: &crate::compiler::Process,
@@ -697,15 +712,11 @@ pub(crate) fn named_scopes<'a>(
             NodeKind::Task { task, .. }
             | NodeKind::TaskLoop { task, .. }
             | NodeKind::MultiInstance { task, .. } => {
-                let definition = program
-                    .tasks
-                    .iter()
-                    .find(|item| item.name == *task)
-                    .ok_or_else(|| format!("unknown task: {task}"))?;
+                let (_, output) = task_types(program, task)?;
                 let output = if matches!(node.kind, NodeKind::MultiInstance { .. }) {
-                    Type::Generic("List".into(), Box::new(definition.output.clone()))
+                    Type::Generic("List".into(), Box::new(output.clone()))
                 } else {
-                    definition.output.clone()
+                    output.clone()
                 };
                 universe.insert(node.name.clone(), output);
             }
@@ -836,30 +847,20 @@ pub(crate) fn named_scopes<'a>(
                 env.insert(node.name.clone(), definition.output.clone());
             }
             NodeKind::Task { task, input } => {
-                let definition = program
-                    .tasks
-                    .iter()
-                    .find(|item| item.name == *task)
-                    .ok_or_else(|| format!("unknown task: {task}"))?;
+                let (expected, output) = task_types(program, task)?;
                 let mut before = env.clone();
                 before.remove(&node.name);
-                let actual = infer(input, Some(&definition.input_type), &before, program)?;
-                if actual != definition.input_type {
+                let actual = infer(input, Some(expected), &before, program)?;
+                if actual != *expected {
                     return Err(format!(
-                        "task input type mismatch for {task}: expected {}, got {actual}",
-                        definition.input_type
+                        "task input type mismatch for {task}: expected {expected}, got {actual}"
                     ));
                 }
-                env.insert(node.name.clone(), definition.output.clone());
+                env.insert(node.name.clone(), output.clone());
             }
             NodeKind::MultiInstance { task, items, .. } => {
-                let definition = program
-                    .tasks
-                    .iter()
-                    .find(|item| item.name == *task)
-                    .ok_or_else(|| format!("unknown task: {task}"))?;
-                let expected =
-                    Type::Generic("List".into(), Box::new(definition.input_type.clone()));
+                let (input_type, output) = task_types(program, task)?;
+                let expected = Type::Generic("List".into(), Box::new(input_type.clone()));
                 let mut before = env.clone();
                 before.remove(&node.name);
                 let actual = infer(items, Some(&expected), &before, program)?;
@@ -870,7 +871,7 @@ pub(crate) fn named_scopes<'a>(
                 }
                 env.insert(
                     node.name.clone(),
-                    Type::Generic("List".into(), Box::new(definition.output.clone())),
+                    Type::Generic("List".into(), Box::new(output.clone())),
                 );
             }
             NodeKind::TaskLoop {
@@ -881,35 +882,29 @@ pub(crate) fn named_scopes<'a>(
                 initial,
                 ..
             } => {
-                let definition = program
-                    .tasks
-                    .iter()
-                    .find(|item| item.name == *task)
-                    .ok_or_else(|| format!("unknown task: {task}"))?;
+                let (input_type, output) = task_types(program, task)?;
                 let mut initial_env = env.clone();
                 initial_env.remove(&node.name);
                 if let Some(initial) = initial {
-                    let actual = infer(initial, Some(&definition.output), &initial_env, program)?;
-                    if actual != definition.output {
+                    let actual = infer(initial, Some(output), &initial_env, program)?;
+                    if actual != *output {
                         return Err(format!(
-                            "task loop initial result type mismatch: expected {}, got {actual}",
-                            definition.output
+                            "task loop initial result type mismatch: expected {output}, got {actual}"
                         ));
                     }
                 }
                 let argument_env = if *before { &env } else { &initial_env };
-                let actual = infer(input, Some(&definition.input_type), argument_env, program)?;
-                if actual != definition.input_type {
+                let actual = infer(input, Some(input_type), argument_env, program)?;
+                if actual != *input_type {
                     return Err(format!(
-                        "task loop input type mismatch for {task}: expected {}, got {actual}",
-                        definition.input_type
+                        "task loop input type mismatch for {task}: expected {input_type}, got {actual}"
                     ));
                 }
                 let actual = infer(condition, Some(&Type::Named("Bool".into())), &env, program)?;
                 if actual != Type::Named("Bool".into()) {
                     return Err(format!("task loop condition must be Bool, got {actual}"));
                 }
-                env.insert(node.name.clone(), definition.output.clone());
+                env.insert(node.name.clone(), output.clone());
             }
             NodeKind::Join { kind, output, .. } => {
                 let results: Vec<Type> = incoming
