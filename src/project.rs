@@ -247,10 +247,8 @@ impl Project {
     }
 
     pub fn programs(&self) -> Result<Vec<Program>, String> {
-        let mut groups: BTreeMap<
-            (String, String),
-            (Program, BTreeMap<String, PathBuf>, Vec<PathBuf>),
-        > = BTreeMap::new();
+        type ProjectGroup = (Program, BTreeMap<String, PathBuf>, Vec<PathBuf>);
+        let mut groups: BTreeMap<(String, String), ProjectGroup> = BTreeMap::new();
         for path in &self.sources {
             let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
             let parsed = parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;

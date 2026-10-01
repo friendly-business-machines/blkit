@@ -102,9 +102,9 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
                     }
                 }
             }
-        } else if ch == '.' && chars.peek() == Some(&'.') {
-            token.push(chars.next().unwrap());
-        } else if "!=<>".contains(ch) && chars.peek() == Some(&'=') {
+        } else if (ch == '.' && chars.peek() == Some(&'.'))
+            || ("!=<>".contains(ch) && chars.peek() == Some(&'='))
+        {
             token.push(chars.next().unwrap());
         } else if !".[](),<>".contains(ch) {
             return Err(format!("invalid character in expression: {ch}"));

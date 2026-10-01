@@ -79,7 +79,9 @@ pub struct Knowledge {
     pub body: Expr,
 }
 
-fn signature(text: &str) -> Result<(String, Vec<(String, Type)>, Type), String> {
+type DecisionSignature = (String, Vec<(String, Type)>, Type);
+
+fn signature(text: &str) -> Result<DecisionSignature, String> {
     let (name, rest) = text.split_once('(').ok_or("invalid decision signature")?;
     let (params, output) = rest
         .split_once(") -> ")

@@ -5,6 +5,8 @@ use blkit::{
     server::router,
 };
 
+// Generated Rust is checked by compilation and integration tests, not style lints.
+#[allow(clippy::all)]
 mod compiled {
     include!(concat!(env!("OUT_DIR"), "/graph.rs"));
 }

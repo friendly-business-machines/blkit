@@ -513,11 +513,12 @@ impl Engine {
             }
             let mut checkpoint = graph.checkpoint(&input)?;
             graph.resume_due(&input, &mut checkpoint, crate::store::now_ms())?;
-            if graph.ready(&checkpoint).is_empty() && !graph.has_pending(&checkpoint) {
-                if let Some(at_ms) = graph.waiting_until(&checkpoint) {
-                    instance.status = "waiting".into();
-                    instance.wake_at_ms = Some(at_ms);
-                }
+            if graph.ready(&checkpoint).is_empty()
+                && !graph.has_pending(&checkpoint)
+                && let Some(at_ms) = graph.waiting_until(&checkpoint)
+            {
+                instance.status = "waiting".into();
+                instance.wake_at_ms = Some(at_ms);
             }
             instance.checkpoint = Some(checkpoint);
         }
@@ -850,11 +851,10 @@ async fn execute_named(
         if tasks.is_empty()
             && graph.ready(&checkpoint).is_empty()
             && !graph.has_pending(&checkpoint)
+            && let Some(wake) = graph.waiting_until(&checkpoint)
         {
-            if let Some(wake) = graph.waiting_until(&checkpoint) {
-                save_wait(context, &checkpoint, wake).await?;
-                return Ok(NamedOutcome::Waiting(wake));
-            }
+            save_wait(context, &checkpoint, wake).await?;
+            return Ok(NamedOutcome::Waiting(wake));
         }
         for (activation, name) in graph.ready_activations(&checkpoint) {
             if in_flight.contains(&activation) {
@@ -981,11 +981,13 @@ async fn execute_named(
         };
         let mut next = checkpoint.clone();
         graph.complete_activation(input, &mut next, activation, result)?;
-        if tasks.is_empty() && graph.ready(&next).is_empty() && !graph.has_pending(&next) {
-            if let Some(wake) = graph.waiting_until(&next) {
-                save_wait(context, &next, wake).await?;
-                return Ok(NamedOutcome::Waiting(wake));
-            }
+        if tasks.is_empty()
+            && graph.ready(&next).is_empty()
+            && !graph.has_pending(&next)
+            && let Some(wake) = graph.waiting_until(&next)
+        {
+            save_wait(context, &next, wake).await?;
+            return Ok(NamedOutcome::Waiting(wake));
         }
         if let Some(claim) = &context.claim {
             if !claim
@@ -1003,7 +1005,9 @@ async fn execute_named(
     }
 }
 
+// Legacy execution helper follows these tests in this module.
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 

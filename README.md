@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # blkit
 
 Experimental compiler and single-node development server for type-safe `.bl` business processes. The compiler emits Rust; the dev server runs a compiled process graph.

@@ -8,6 +8,24 @@ repos:
 
   - repo: local
     hooks:
+      - id: rust-fmt
+        name: Check Rust formatting
+        entry: cargo fmt --check
+        language: system
+        files: '(^Cargo\.(toml|lock)$|\.rs$)'
+        pass_filenames: false
+      - id: rust-clippy
+        name: Check Rust lints
+        entry: env CARGO_BUILD_JOBS=1 cargo clippy --all-targets --locked -- -D warnings
+        language: system
+        files: '(^Cargo\.(toml|lock)$|\.rs$)'
+        pass_filenames: false
+      - id: rust-test
+        name: Run Rust tests
+        entry: scripts/without-git-env.sh env CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 cargo test --locked
+        language: system
+        files: '(^Cargo\.(toml|lock)$|\.rs$)'
+        pass_filenames: false
       - id: markdownlint
         name: Markdownlint
         entry: markdownlint-cli2
@@ -20,7 +38,7 @@ repos:
         types: [dockerfile]
       - id: docker-build
         name: Build modified Dockerfiles
-        entry: scripts/check-docker-build.sh
+        entry: scripts/without-git-env.sh scripts/check-docker-build.sh
         language: system
         types: [dockerfile]
       - id: check-devcontainer
@@ -40,6 +58,7 @@ repos:
       - id: check-merge-conflict
       - id: check-yaml
       - id: check-json
+        exclude: ^\.devcontainer/devcontainer\.json$
       - id: check-added-large-files
         args: [--maxkb=2048]
 

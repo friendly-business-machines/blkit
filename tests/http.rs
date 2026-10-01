@@ -324,6 +324,8 @@ async fn http_reports_retry_waiting_business_failure_termination_and_cancel_whil
     std::fs::remove_file(path).unwrap();
 }
 
+// Generated Rust is checked by compilation and integration tests, not style lints.
+#[allow(clippy::all)]
 mod compiled {
     include!(concat!(env!("OUT_DIR"), "/graph.rs"));
 }

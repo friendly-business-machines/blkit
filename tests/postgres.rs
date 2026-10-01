@@ -706,13 +706,12 @@ async fn distributed_deadline_precedes_iteration_bound_and_late_claim_writes() {
     assert_eq!(result.instance.status, "business-error");
     assert_eq!(result.instance.terminal_name.as_deref(), Some("timeout"));
     assert!(
-        result
+        !result
             .instance
             .checkpoint
             .unwrap()
             .completed
-            .get("work")
-            .is_none()
+            .contains_key("work")
     );
     let long = control
         .start("test", "1", "long", json!(null))
@@ -1716,6 +1715,8 @@ impl Drop for WorkerChild {
     }
 }
 
+// Generated Rust is checked by compilation and integration tests, not style lints.
+#[allow(clippy::all)]
 mod compiled {
     include!(concat!(env!("OUT_DIR"), "/graph.rs"));
 }
