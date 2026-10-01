@@ -474,10 +474,8 @@ fn check_named_graph(graph: &NamedGraph, has_deadline: bool) -> Result<(), Strin
         if nodes.insert(node.name.as_str(), &node.kind).is_some() {
             return Err(format!("duplicate node: {}", node.name));
         }
-        if matches!(node.kind, NodeKind::Start) {
-            if start.replace(node.name.as_str()).is_some() {
-                return Err("multiple start nodes".into());
-            }
+        if matches!(node.kind, NodeKind::Start) && start.replace(node.name.as_str()).is_some() {
+            return Err("multiple start nodes".into());
         }
     }
     let start = start.ok_or("missing start node")?;
@@ -592,14 +590,13 @@ fn check_named_graph(graph: &NamedGraph, has_deadline: bool) -> Result<(), Strin
                 node.name
             ));
         }
-        if let NodeKind::Join { kind, split, .. } = &node.kind {
-            if !matches!(nodes.get(split.as_str()), Some(NodeKind::Split(actual)) if actual == kind)
-            {
-                return Err(format!(
-                    "join {} requires a matching {kind} split: {split}",
-                    node.name
-                ));
-            }
+        if let NodeKind::Join { kind, split, .. } = &node.kind
+            && !matches!(nodes.get(split.as_str()), Some(NodeKind::Split(actual)) if actual == kind)
+        {
+            return Err(format!(
+                "join {} requires a matching {kind} split: {split}",
+                node.name
+            ));
         }
         if let NodeKind::Split(kind) = &node.kind {
             let joins: Vec<_> = graph.nodes.iter().filter(|other| matches!(&other.kind, NodeKind::Join { kind: actual, split, .. } if actual == kind && split == &node.name)).collect();
@@ -1521,10 +1518,9 @@ fn infer_with(
                 }
                 return Ok(named("Bool"));
             }
-            let lhs = if matches!(left.as_ref(), Range(None, None, _, _)) {
-                let other = infer_with(right, None, env, program, knowledge)?;
-                infer_with(left, Some(&other), env, program, knowledge)?
-            } else if matches!(left.as_ref(), List(elements) if elements.is_empty()) {
+            let lhs = if matches!(left.as_ref(), Range(None, None, _, _))
+                || matches!(left.as_ref(), List(elements) if elements.is_empty())
+            {
                 let other = infer_with(right, None, env, program, knowledge)?;
                 infer_with(left, Some(&other), env, program, knowledge)?
             } else {

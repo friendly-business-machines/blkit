@@ -356,6 +356,8 @@ impl PostgresStore {
         Ok(Some(status))
     }
 
+    // Keep the ownership and terminal fields explicit at this storage boundary.
+    #[allow(clippy::too_many_arguments)]
     pub async fn finish_owned(
         &self,
         id: &str,

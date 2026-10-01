@@ -675,7 +675,7 @@ fn multi_instance_empty_sequential_resume_and_parallel_order() {
     graph
         .complete_activation(&input, &mut state, first, json!(3))
         .unwrap();
-    assert!(state.completed.get("batch").is_none());
+    assert!(!state.completed.contains_key("batch"));
     let mut restored: GraphCheckpoint =
         serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
     assert_eq!(graph.run(&input, &mut restored).unwrap(), input);

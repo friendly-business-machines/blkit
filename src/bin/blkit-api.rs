@@ -4,6 +4,8 @@ use blkit::{
     distributed::DistributedControl, postgres_store::PostgresStore, server::router_distributed,
 };
 
+// Generated Rust is checked by compilation and integration tests, not style lints.
+#[allow(clippy::all)]
 mod compiled {
     include!(concat!(env!("OUT_DIR"), "/graph.rs"));
 }

@@ -49,6 +49,7 @@ ARG USER_GID=${USER_UID}
 # - golang: Go compiler/toolchain (`go`).
 # - rustc and cargo: Rust compiler and package manager for the `.bl` transpiler.
 # - rustfmt: `cargo fmt --check` for the Rust implementation tasks.
+# - rust-clippy: `cargo clippy` for Rust correctness and style checks.
 #
 # Package versions are pinned to what's currently available in the Ubuntu
 # 26.04 archive (per apt-cache madison) for reproducible builds. Ubuntu's
@@ -77,6 +78,7 @@ RUN apt-get update \
         rustc=1.93.1ubuntu1 \
         cargo=1.93.1ubuntu1 \
         rustfmt=1.93.1ubuntu1 \
+        rust-clippy=1.93.1ubuntu1 \
         sudo=1.9.17p2-1ubuntu3.1 \
         wget=1.25.0-2ubuntu4.4 \
     && rm -rf /var/lib/apt/lists/*

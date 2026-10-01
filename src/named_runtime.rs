@@ -568,6 +568,8 @@ impl GraphDefinition {
         self.advance_with_budget(input, state, source, path, generations, values, &mut 64)
     }
 
+    // Recursive traversal carries its activation state explicitly.
+    #[allow(clippy::too_many_arguments)]
     fn advance_with_budget(
         &self,
         input: &Value,
@@ -653,6 +655,7 @@ impl GraphDefinition {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn enter(
         &self,
         input: &Value,
@@ -718,7 +721,12 @@ impl GraphDefinition {
                         parallel: *parallel,
                     },
                 );
-                for index in 0..if *parallel { total } else { 1 } {
+                for (index, item) in
+                    entries
+                        .iter()
+                        .enumerate()
+                        .take(if *parallel { total } else { 1 })
+                {
                     let mut token = Self::activation(
                         state,
                         node.name,
@@ -728,7 +736,7 @@ impl GraphDefinition {
                     );
                     token.batch_id = Some(batch_id);
                     token.item_index = Some(index);
-                    token.item = Some(entries[index].clone());
+                    token.item = Some(item.clone());
                     state.ready.push(token);
                 }
                 Ok(())

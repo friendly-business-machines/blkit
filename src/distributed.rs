@@ -42,11 +42,12 @@ impl DistributedControl {
         }
         let mut checkpoint = graph.checkpoint(&instance.input)?;
         graph.resume_due(&instance.input, &mut checkpoint, crate::store::now_ms())?;
-        if graph.ready(&checkpoint).is_empty() && !graph.has_pending(&checkpoint) {
-            if let Some(wake) = graph.waiting_until(&checkpoint) {
-                instance.status = "waiting".into();
-                instance.wake_at_ms = Some(wake);
-            }
+        if graph.ready(&checkpoint).is_empty()
+            && !graph.has_pending(&checkpoint)
+            && let Some(wake) = graph.waiting_until(&checkpoint)
+        {
+            instance.status = "waiting".into();
+            instance.wake_at_ms = Some(wake);
         }
         instance.checkpoint = Some(checkpoint);
         self.store

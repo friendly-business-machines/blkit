@@ -296,9 +296,7 @@ fn routing_annotations_require_their_matching_gateway() {
 #[test]
 fn exceptional_terminals_reject_payloads() {
     for terminal in ["error", "cancel", "terminate"] {
-        let source = EXPLICIT
-            .replace("node done = end", &format!("node done = {terminal}"))
-            .replace("link first -> done(first)", "link first -> done(first)");
+        let source = EXPLICIT.replace("node done = end", &format!("node done = {terminal}"));
         assert!(
             validate(&parse(&source).unwrap())
                 .unwrap_err()

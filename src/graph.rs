@@ -411,7 +411,7 @@ pub fn parse_named(
                             return Err("pre-check task loop requires a typed initial result; post-check forbids one".into());
                         }
                         let words: Vec<_> = bounds.split_whitespace().collect();
-                        if words.len() == 0 || words.len() > 4 || words.len() % 2 != 0 {
+                        if words.is_empty() || words.len() > 4 || words.len() % 2 != 0 {
                             return Err(format!("invalid task loop bounds: {line}"));
                         }
                         let (mut max_iterations, mut max_duration) = (None, None);
