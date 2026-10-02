@@ -27,11 +27,10 @@ commit it themselves.
 ```text
 type(scope): Subject line
 
-Body paragraph(s) if needed.
+Body paragraph explaining what changed and why.
 ```
 
-The scope is optional. Omit the body when the subject fully explains a small
-change.
+The scope is optional. Always include a body, even for a small change.
 
 ### Subject rules
 
@@ -47,6 +46,7 @@ change.
 
 ### Body rules
 
+- Always include at least one body paragraph; never output a one-line message.
 - Wrap body text at 72 characters.
 - Explain what changed and why, not implementation mechanics that are obvious
   from the diff.
@@ -90,5 +90,5 @@ Before responding, verify:
 1. The message accurately covers the supplied change as one coherent commit.
 2. The subject follows the required prefix and is at most 50 characters.
 3. The description is capitalized, imperative, and has no final period.
-4. Any body starts after one blank line and is wrapped at 72 characters.
+4. A nonempty body starts after one blank line and is wrapped at 72 characters.
 5. No footer is present.
