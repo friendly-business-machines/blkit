@@ -803,6 +803,71 @@ fn renaming_project_removes_stale_generated_binary() {
 }
 
 #[test]
+fn generated_binaries_configure_logging_before_runtime_and_report_failures() {
+    use std::process::Command;
+    let source = "namespace orders\nversion \"1\"\nprocess route(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n";
+    for role in ["server", "worker"] {
+        let root = project(
+            &MANIFEST.replace("\"crate\"", &format!("\"{role}\"")),
+            &[("route.bl", source)],
+        );
+        blkit::project::Project::load(&root)
+            .unwrap()
+            .build()
+            .unwrap();
+        let binary = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
+            || root.join(format!(".blkit/target/debug/orders-{role}")),
+            |target| PathBuf::from(target).join(format!("debug/orders-{role}")),
+        );
+        let args: Vec<_> = if role == "server" {
+            vec![root.join("local.db").to_string_lossy().into_owned()]
+        } else {
+            vec!["postgres://user:secret@127.0.0.1:1/orders".into()]
+        };
+        let invalid = Command::new(&binary)
+            .args(&args)
+            .env("BLKIT_LOG_OUTPUTS", "file")
+            .env_remove("BLKIT_LOG_FILE")
+            .output()
+            .unwrap();
+        assert!(!invalid.status.success());
+        let stderr = String::from_utf8_lossy(&invalid.stderr);
+        assert!(stderr.contains("BLKIT_LOG_FILE"), "{role}: {stderr}");
+        assert!(
+            !root.join("local.db").exists(),
+            "runtime started before logging"
+        );
+        let fatal_args = if role == "server" {
+            vec![root.to_string_lossy().into_owned()]
+        } else {
+            args.clone()
+        };
+        let fatal = Command::new(&binary)
+            .args(&fatal_args)
+            .env_remove("BLKIT_LOG_OUTPUTS")
+            .env_remove("BLKIT_LOG_LEVEL")
+            .output()
+            .unwrap();
+        assert!(!fatal.status.success());
+        let stdout = String::from_utf8_lossy(&fatal.stdout);
+        assert!(
+            stdout.contains("ERROR") && stdout.contains("error"),
+            "{role}: {stdout}"
+        );
+        assert!(!stdout.contains("secret"), "{stdout}");
+        assert!(
+            stdout.contains(if role == "server" {
+                "open store"
+            } else {
+                "connect to postgres"
+            }),
+            "{role}: {stdout}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn project_server_executes_compiled_process_over_loopback_rest() {
     use std::{
         net::{TcpListener, TcpStream},
@@ -836,7 +901,7 @@ fn project_server_executes_compiled_process_over_loopback_rest() {
         .arg(root.join("local.db"))
         .arg("2")
         .arg(format!("127.0.0.1:{port}"))
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
@@ -862,7 +927,13 @@ fn project_server_executes_compiled_process_over_loopback_rest() {
     };
     assert_eq!(result["result"], serde_json::json!("7"));
     child.kill().unwrap();
-    child.wait().unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("INFO") && stdout.contains("listening"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("\"7\""), "{stdout}");
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1108,7 +1179,7 @@ async fn project_worker_binary_claims_only_its_compiled_process_version() {
     let mut child = Command::new(binary)
         .arg(&url)
         .args(["32", "5000"])
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
@@ -1139,7 +1210,13 @@ async fn project_worker_binary_claims_only_its_compiled_process_version() {
         "pending"
     );
     child.kill().unwrap();
-    child.wait().unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("INFO") && stdout.contains("ready"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("\"7\""), "{stdout}");
     drop(store);
     fs::remove_dir_all(root).unwrap();
 }

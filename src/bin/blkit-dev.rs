@@ -20,6 +20,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         return Ok(());
     }
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
     if args.len() > 4 {
         return Err("usage: blkit-dev [DATABASE_FILE] [MAX_TASKS] [BIND_ADDRESS]".into());
     }

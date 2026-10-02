@@ -60,8 +60,8 @@ impl PostgresStore {
             .await
             .map_err(|e| e.to_string())?;
         tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                eprintln!("postgres connection failed: {error}");
+            if connection.await.is_err() {
+                tracing::error!("postgres connection failed");
             }
         });
         client.batch_execute(

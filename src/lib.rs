@@ -4,6 +4,7 @@ pub mod decision;
 pub mod distributed;
 pub mod expr;
 pub mod graph;
+pub mod logging;
 pub mod named_runtime;
 pub mod postgres_store;
 pub mod project;

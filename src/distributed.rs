@@ -214,7 +214,7 @@ impl DistributedWorker {
                     if !self.store.heartbeat(&self.id).await? { return Err("worker registration lost".into()); }
                     for (id, generation) in &active {
                         if !self.store.renew_claim(id, &self.id, *generation, self.lease_ms).await? {
-                            eprintln!("instance {id} no longer has a renewable running claim");
+                            tracing::error!(worker_id = %self.id, instance_id = %id, "instance claim lost");
                         }
                     }
                 }
@@ -222,7 +222,12 @@ impl DistributedWorker {
                     let (id, result) = completed.ok_or("missing worker task")?.map_err(|e| e.to_string())?;
                     active.remove(&id);
                     if let Err(error) = result {
-                        eprintln!("instance {id} stopped: {error}");
+                        let reason = if error == "lost claim during execution" {
+                            "claim lost during execution"
+                        } else {
+                            "execution infrastructure failure"
+                        };
+                        tracing::error!(worker_id = %self.id, instance_id = %id, reason, "instance execution stopped");
                     }
                 }
             }

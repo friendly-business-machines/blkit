@@ -21,9 +21,41 @@ fn error(code: StatusCode, message: &str) -> Reply {
     (code, Json(json!({"error": message})))
 }
 
-fn internal(error: String) -> Reply {
-    eprintln!("runtime storage error: {error}");
+fn internal(operation: &str, instance_id: Option<&str>, _error: String) -> Reply {
+    tracing::error!(operation, instance_id, "runtime storage error");
     self::error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use super::*;
+
+    #[test]
+    fn storage_failure_uses_selected_log_sink_without_exposing_request_data() {
+        let file =
+            std::env::temp_dir().join(format!("blkit-server-events-{}.log", std::process::id()));
+        let writer = std::sync::Mutex::new(std::fs::File::create(&file).unwrap());
+        let subscriber = tracing_subscriber::fmt().with_writer(writer).finish();
+        let reply = tracing::subscriber::with_default(subscriber, || {
+            internal(
+                "status",
+                Some("instance-42"),
+                "request-payload-secret".into(),
+            )
+        });
+        assert_eq!(reply.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(reply.1.0["error"], "internal error");
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            text.contains("ERROR")
+                && text.contains("storage")
+                && text.contains("status")
+                && text.contains("instance-42"),
+            "{text}"
+        );
+        assert!(!text.contains("request-payload-secret"), "{text}");
+        std::fs::remove_file(file).unwrap();
+    }
 }
 
 pub fn router(engine: Arc<Engine>) -> Router {
@@ -69,7 +101,7 @@ async fn start(
         Err(message) if message.starts_with("invalid input:") => {
             self::error(StatusCode::BAD_REQUEST, &message)
         }
-        Err(message) => internal(message),
+        Err(message) => internal("start", None, message),
     }
 }
 
@@ -87,7 +119,7 @@ async fn status(State(engine): State<Arc<Backend>>, Path(id): Path<String>) -> R
     match result {
         Ok(Some(item)) => (StatusCode::OK, Json(item)),
         Ok(None) => error(StatusCode::NOT_FOUND, "unknown instance"),
-        Err(message) => internal(message),
+        Err(message) => internal("status", Some(&id), message),
     }
 }
 
@@ -105,6 +137,6 @@ async fn cancel(State(engine): State<Arc<Backend>>, Path(id): Path<String>) -> R
         Err(message) if message == "instance already terminal" => {
             error(StatusCode::CONFLICT, &message)
         }
-        Err(message) => internal(message),
+        Err(message) => internal("cancel", Some(&id), message),
     }
 }

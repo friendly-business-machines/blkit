@@ -488,7 +488,7 @@ impl Project {
 }
 
 const WORKER_SOURCE: &str = r#"use std::{env, time::Duration};
-use blkit::{distributed::DistributedWorker, postgres_store::PostgresStore};
+use blkit::{distributed::DistributedWorker, logging::{self, tracing}, postgres_store::PostgresStore};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -497,25 +497,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("usage: worker POSTGRES_URL [MAX_TASKS] [LEASE_MS]");
         return Ok(());
     }
+    let _logging = logging::init(concat!(env!("CARGO_PKG_NAME"), "-worker"))
+        .map_err(|e| { eprintln!("logging configuration: {e}"); e })?;
+    if let Err(reason) = run(&args).await {
+        tracing::error!(reason, "worker error");
+        return Err(reason.into());
+    }
+    Ok(())
+}
+
+async fn run(args: &[String]) -> Result<(), &'static str> {
     let url = args.get(1).ok_or("usage: worker POSTGRES_URL [MAX_TASKS] [LEASE_MS]")?;
-    if args.len() > 4 { return Err("usage: worker POSTGRES_URL [MAX_TASKS] [LEASE_MS]".into()); }
-    let limit = args.get(2).map_or(Ok(32), |n| n.parse::<usize>())?;
-    let lease_ms = args.get(3).map_or(Ok(5000), |n| n.parse::<i64>())?;
-    let store = PostgresStore::connect(url).await?;
+    if args.len() > 4 { return Err("usage: worker POSTGRES_URL [MAX_TASKS] [LEASE_MS]"); }
+    let limit = args.get(2).map_or(Ok(32), |n| n.parse::<usize>()).map_err(|_| "invalid MAX_TASKS")?;
+    let lease_ms = args.get(3).map_or(Ok(5000), |n| n.parse::<i64>()).map_err(|_| "invalid LEASE_MS")?;
+    let store = PostgresStore::connect(url).await.map_err(|_| "cannot connect to postgres")?;
     let id = format!("worker-{}", std::process::id());
-    let worker = DistributedWorker::new(store, &id, PROJECT_CRATE::named_graph_definitions(), limit, lease_ms)?;
-    worker.advertise().await?;
-    eprintln!("worker {id} ready");
+    let worker = DistributedWorker::new(store, &id, PROJECT_CRATE::named_graph_definitions(), limit, lease_ms)
+        .map_err(|_| "invalid worker configuration")?;
+    worker.advertise().await.map_err(|_| "cannot register worker")?;
+    tracing::info!(worker_id = %id, "worker ready");
     loop {
-        worker.run_once().await?;
-        if worker.drain_if_requested().await? { return Ok(()); }
+        worker.run_once().await.map_err(|_| "worker runtime failure")?;
+        if worker.drain_if_requested().await.map_err(|_| "cannot drain worker")? { return Ok(()); }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 "#;
 
 const SERVER_SOURCE: &str = r#"use std::{env, path::Path, sync::Arc};
-use blkit::{runtime::{Engine, Registry, Store}, server::router};
+use blkit::{logging::{self, tracing}, runtime::{Engine, Registry, Store}, server::router};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -524,17 +535,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("usage: server [DATABASE_FILE] [MAX_TASKS] [BIND_ADDRESS]\nDefault: blkit.db 32 127.0.0.1:3000");
         return Ok(());
     }
-    if args.len() > 4 { return Err("usage: server [DATABASE_FILE] [MAX_TASKS] [BIND_ADDRESS]".into()); }
+    let _logging = logging::init(concat!(env!("CARGO_PKG_NAME"), "-server"))
+        .map_err(|e| { eprintln!("logging configuration: {e}"); e })?;
+    if let Err(reason) = run(&args).await {
+        tracing::error!(reason, "server error");
+        return Err(reason.into());
+    }
+    Ok(())
+}
+
+async fn run(args: &[String]) -> Result<(), &'static str> {
+    if args.len() > 4 { return Err("usage: server [DATABASE_FILE] [MAX_TASKS] [BIND_ADDRESS]"); }
     let database = args.get(1).map_or("blkit.db", String::as_str);
-    let limit = args.get(2).map_or(Ok(32), |value| value.parse::<usize>())?;
+    let limit = args.get(2).map_or(Ok(32), |value| value.parse::<usize>()).map_err(|_| "invalid MAX_TASKS")?;
     let bind = args.get(3).map_or("127.0.0.1:3000", String::as_str);
-    let store = Store::open(Path::new(database)).await?;
-    let registry = Registry::new_named(PROJECT_CRATE::named_graph_definitions())?;
-    let engine = Arc::new(Engine::new(registry, store, limit)?);
-    engine.recover().await?;
-    let listener = tokio::net::TcpListener::bind(bind).await?;
-    eprintln!("server listening on {}", listener.local_addr()?);
-    axum::serve(listener, router(engine)).await?;
+    let store = Store::open(Path::new(database)).await.map_err(|_| "cannot open store")?;
+    let registry = Registry::new_named(PROJECT_CRATE::named_graph_definitions()).map_err(|_| "invalid process definitions")?;
+    let engine = Arc::new(Engine::new(registry, store, limit).map_err(|_| "invalid server configuration")?);
+    engine.recover().await.map_err(|_| "cannot recover instances")?;
+    let listener = tokio::net::TcpListener::bind(bind).await.map_err(|_| "cannot bind server address")?;
+    let address = listener.local_addr().map_err(|_| "cannot read bound address")?;
+    tracing::info!(%address, "server listening");
+    axum::serve(listener, router(engine)).await.map_err(|_| "server listener failed")?;
     Ok(())
 }
 "#;

@@ -16,6 +16,11 @@ axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 tokio-postgres = "0.7.18"
 toml_edit = "0.25.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "std"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["logs", "http-proto", "reqwest-blocking-client"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["logs"] }
+opentelemetry-appender-tracing = "0.33"
 
 [build-dependencies]
 rust_decimal = "1.39"

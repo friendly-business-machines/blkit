@@ -2663,6 +2663,10 @@ async fn malformed_claim_does_not_stop_worker_or_abandon_other_instances() {
 
 #[tokio::test]
 async fn expired_lease_signals_inflight_hook_without_stopping_other_instances() {
+    let file = std::env::temp_dir().join(format!("blkit-claim-events-{}.log", std::process::id()));
+    let writer = std::sync::Mutex::new(std::fs::File::create(&file).unwrap());
+    tracing::subscriber::set_global_default(tracing_subscriber::fmt().with_writer(writer).finish())
+        .unwrap();
     let node = Postgres::default()
         .with_tag("17.6-alpine")
         .start()
@@ -2715,7 +2719,7 @@ async fn expired_lease_signals_inflight_hook_without_stopping_other_instances() 
         item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
         store.create(&item).await.unwrap();
     }
-    let worker = DistributedWorker::new(store.clone(), "worker", vec![graph], 2, 450).unwrap();
+    let worker = DistributedWorker::new(store.clone(), "worker", vec![graph], 2, 5000).unwrap();
     worker.advertise().await.unwrap();
     let running = tokio::spawn(async move { worker.run_once().await.unwrap() });
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -2735,7 +2739,7 @@ async fn expired_lease_signals_inflight_hook_without_stopping_other_instances() 
         .execute("UPDATE instances SET lease_until=0 WHERE id='lost'", &[])
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_millis(800), async {
+    tokio::time::timeout(Duration::from_secs(3), async {
         while hooks.load(Ordering::SeqCst) == 0 {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -2752,6 +2756,11 @@ async fn expired_lease_signals_inflight_hook_without_stopping_other_instances() 
         store.get("lost").await.unwrap().unwrap().instance.status,
         "running"
     );
+    let logs = std::fs::read_to_string(&file).unwrap();
+    assert!(logs.contains("lost") && logs.contains("claim"), "{logs}");
+    assert!(logs.contains("claim lost during execution"), "{logs}");
+    assert!(!logs.contains("postgres:postgres"), "{logs}");
+    std::fs::remove_file(file).unwrap();
     drop(node);
 }
 

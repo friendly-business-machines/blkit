@@ -15,6 +15,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("usage: blkit-worker POSTGRES_URL [MAX_TASKS] [LEASE_MS]");
         return Ok(());
     }
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
     let url = args
         .get(1)
         .ok_or("usage: blkit-worker POSTGRES_URL [MAX_TASKS] [LEASE_MS]")?;

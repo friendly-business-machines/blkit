@@ -17,6 +17,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("usage: blkit-api POSTGRES_URL [BIND_ADDRESS]\nDefault bind: 127.0.0.1:3000");
         return Ok(());
     }
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
     let url = args
         .get(1)
         .ok_or("usage: blkit-api POSTGRES_URL [BIND_ADDRESS]")?;
