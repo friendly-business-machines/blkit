@@ -5,7 +5,7 @@ use tokio::{sync::Semaphore, task::JoinSet};
 use crate::{
     named_runtime::GraphDefinition,
     postgres_store::{DistributedInstance, PostgresStore},
-    runtime::{Instance, Registry, execute_claimed},
+    runtime::{Instance, NamedRegistry, Registry, execute_claimed, validate_named_registry},
 };
 use serde_json::Value;
 
@@ -93,7 +93,7 @@ impl DistributedControl {
 pub struct DistributedWorker {
     store: PostgresStore,
     id: String,
-    definitions: HashMap<(String, String, String), Arc<GraphDefinition>>,
+    definitions: Arc<NamedRegistry>,
     permits: Arc<Semaphore>,
     limit: usize,
     lease_ms: i64,
@@ -121,10 +121,11 @@ impl DistributedWorker {
                 return Err("duplicate process identity".into());
             }
         }
+        validate_named_registry(&entries)?;
         Ok(Self {
             store,
             id: id.into(),
-            definitions: entries,
+            definitions: Arc::new(entries),
             permits: Arc::new(Semaphore::new(limit)),
             limit,
             lease_ms,
@@ -199,10 +200,11 @@ impl DistributedWorker {
             let store = self.store.clone();
             let worker_id = self.id.clone();
             let permits = self.permits.clone();
+            let definitions = self.definitions.clone();
             tasks.spawn(async move {
                 (
                     id,
-                    execute_claimed(graph, instance, store, worker_id, permits).await,
+                    execute_claimed(graph, instance, store, worker_id, permits, definitions).await,
                 )
             });
         }

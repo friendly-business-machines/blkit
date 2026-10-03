@@ -16,6 +16,1240 @@ use std::{
     time::Duration,
 };
 
+#[tokio::test]
+async fn subprocess_child_terminals_are_caught_or_propagated_with_name() {
+    for (outcome, expected) in [
+        ("error", "business-error"),
+        ("cancel", "cancelled"),
+        ("terminate", "terminated"),
+    ] {
+        for handled in [false, true] {
+            let link = |source, target, value, label| GraphLink {
+                source,
+                target,
+                value,
+                condition: None,
+                fallback: false,
+                label,
+            };
+            let child = GraphDefinition {
+                namespace: "test",
+                version: "1",
+                name: "child",
+                retry: None,
+                deadline: None,
+                decode_input: Box::new(Ok),
+                nodes: vec![
+                    GraphNode {
+                        name: "start",
+                        kind: GraphNodeKind::Start,
+                    },
+                    GraphNode {
+                        name: "work",
+                        kind: echo_task(),
+                    },
+                    GraphNode {
+                        name: "failure",
+                        kind: match outcome {
+                            "error" => GraphNodeKind::Error,
+                            "cancel" => GraphNodeKind::Cancel,
+                            _ => GraphNodeKind::Terminate,
+                        },
+                    },
+                ],
+                links: vec![
+                    link("start", "work", None, None),
+                    link("work", "failure", None, None),
+                ],
+            };
+            let mut links = vec![
+                link("start", "called", None, None),
+                link(
+                    "called",
+                    "done",
+                    Some(Arc::new(|_, values| Ok(values["called"].clone()))),
+                    None,
+                ),
+                link(
+                    "recovered",
+                    "done",
+                    Some(Arc::new(|_, values| Ok(values["recovered"].clone()))),
+                    None,
+                ),
+            ];
+            if handled {
+                links.push(link("called", "recovered", None, Some(outcome)));
+            }
+            let parent = GraphDefinition {
+                namespace: "test",
+                version: "1",
+                name: "parent",
+                retry: None,
+                deadline: None,
+                decode_input: Box::new(Ok),
+                nodes: vec![
+                    GraphNode {
+                        name: "start",
+                        kind: GraphNodeKind::Start,
+                    },
+                    GraphNode {
+                        name: "called",
+                        kind: GraphNodeKind::Subprocess {
+                            process: "child",
+                            input: Arc::new(|input, _| Ok(input.clone())),
+                        },
+                    },
+                    GraphNode {
+                        name: "recovered",
+                        kind: echo_task(),
+                    },
+                    GraphNode {
+                        name: "done",
+                        kind: GraphNodeKind::End,
+                    },
+                ],
+                links,
+            };
+            let path = std::env::temp_dir().join(format!(
+                "blkit-subprocess-terminal-{}-{outcome}-{handled}.db",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&path);
+            let store = Store::open(&path).await.unwrap();
+            let engine = Engine::new(
+                Registry::new_named(vec![parent, child]).unwrap(),
+                store.clone(),
+                1,
+            )
+            .unwrap();
+            let id = engine.start("test", "1", "parent", json!(3)).await.unwrap();
+            let status = tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let status = engine.status(&id).await.unwrap().unwrap();
+                    if matches!(
+                        status.status.as_str(),
+                        "completed" | "business-error" | "cancelled" | "terminated" | "failed"
+                    ) {
+                        break status;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                status.status,
+                if handled { "completed" } else { expected },
+                "{outcome}"
+            );
+            assert_eq!(
+                status.terminal_name.as_deref(),
+                if handled { None } else { Some("failure") }
+            );
+            if handled {
+                assert_eq!(status.result, Some(json!(3)));
+            }
+            drop(engine);
+            drop(store);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn subprocess_parallel_and_repeated_activations_share_capacity_one() {
+    let link = |source, target, value, condition, fallback, label| GraphLink {
+        source,
+        target,
+        value,
+        condition,
+        fallback,
+        label,
+    };
+    let hits = Arc::new(AtomicUsize::new(0));
+    let child = GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "child",
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "work",
+                kind: GraphNodeKind::Task({
+                    let hits = hits.clone();
+                    Arc::new(move |input, _| {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        Ok(json!(input.as_i64().unwrap() + 1))
+                    })
+                }),
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            link("start", "work", None, None, false, None),
+            link(
+                "work",
+                "done",
+                Some(Arc::new(|_, values| Ok(values["work"].clone()))),
+                None,
+                false,
+                None,
+            ),
+        ],
+    };
+    let parent = GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "parallel",
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "split",
+                kind: GraphNodeKind::Split("and"),
+            },
+            GraphNode {
+                name: "left",
+                kind: GraphNodeKind::Subprocess {
+                    process: "child",
+                    input: Arc::new(|input, _| Ok(input.clone())),
+                },
+            },
+            GraphNode {
+                name: "right",
+                kind: GraphNodeKind::Subprocess {
+                    process: "child",
+                    input: Arc::new(|input, _| Ok(input.clone())),
+                },
+            },
+            GraphNode {
+                name: "joined",
+                kind: GraphNodeKind::Join {
+                    kind: "and",
+                    split: "split",
+                },
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            link("start", "split", None, None, false, None),
+            link("split", "left", None, None, false, Some("left")),
+            link("split", "right", None, None, false, Some("right")),
+            link(
+                "left",
+                "joined",
+                Some(Arc::new(|_, values| Ok(values["left"].clone()))),
+                None,
+                false,
+                None,
+            ),
+            link(
+                "right",
+                "joined",
+                Some(Arc::new(|_, values| Ok(values["right"].clone()))),
+                None,
+                false,
+                None,
+            ),
+            link(
+                "joined",
+                "done",
+                Some(Arc::new(|_, values| Ok(values["joined"].clone()))),
+                None,
+                false,
+                None,
+            ),
+        ],
+    };
+    let repeated = GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "repeated",
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "called",
+                kind: GraphNodeKind::Subprocess {
+                    process: "child",
+                    input: Arc::new(|input, values| {
+                        Ok(values
+                            .get("called")
+                            .cloned()
+                            .unwrap_or_else(|| input.clone()))
+                    }),
+                },
+            },
+            GraphNode {
+                name: "gate",
+                kind: GraphNodeKind::Split("xor"),
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            link("start", "called", None, None, false, None),
+            link("called", "gate", None, None, false, None),
+            link(
+                "gate",
+                "called",
+                None,
+                Some(Arc::new(|_, values| {
+                    Ok(json!(values["called"].as_i64().unwrap() < 3))
+                })),
+                false,
+                None,
+            ),
+            link(
+                "gate",
+                "done",
+                Some(Arc::new(|_, values| Ok(values["called"].clone()))),
+                None,
+                true,
+                None,
+            ),
+        ],
+    };
+    let path = std::env::temp_dir().join(format!(
+        "blkit-subprocess-parallel-{}.db",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let engine = Engine::new(
+        Registry::new_named(vec![child, parent, repeated]).unwrap(),
+        store.clone(),
+        1,
+    )
+    .unwrap();
+    for (process, expected, calls) in [
+        ("parallel", json!({"left":1,"right":1}), 2),
+        ("repeated", json!(3), 5),
+    ] {
+        let id = engine.start("test", "1", process, json!(0)).await.unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let status = engine.status(&id).await.unwrap().unwrap();
+                if matches!(status.status.as_str(), "completed" | "failed") {
+                    break status;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(status.status, "completed", "{process}: {:?}", status.error);
+        assert_eq!(status.result, Some(expected));
+        assert_eq!(hits.load(Ordering::SeqCst), calls);
+    }
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn handled_child_terminal_signals_its_inflight_siblings_only() {
+    let signalled = Arc::new(AtomicBool::new(false));
+    let entered = Arc::new(AtomicBool::new(false));
+    let link = |source, target, value, label| GraphLink {
+        source,
+        target,
+        value,
+        condition: None,
+        fallback: false,
+        label,
+    };
+    let child = GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "child",
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "split",
+                kind: GraphNodeKind::Split("and"),
+            },
+            GraphNode {
+                name: "slow",
+                kind: GraphNodeKind::TaskWithCancel(
+                    {
+                        let entered = entered.clone();
+                        let signalled = signalled.clone();
+                        Arc::new(move |input, _| {
+                            entered.store(true, Ordering::SeqCst);
+                            for _ in 0..100 {
+                                if signalled.load(Ordering::SeqCst) {
+                                    return Ok(input.clone());
+                                }
+                                std::thread::sleep(Duration::from_millis(10));
+                            }
+                            Err("child task was not cancelled".into())
+                        })
+                    },
+                    {
+                        let signalled = signalled.clone();
+                        Arc::new(move || {
+                            signalled.store(true, Ordering::SeqCst);
+                        })
+                    },
+                ),
+            },
+            GraphNode {
+                name: "fast",
+                kind: GraphNodeKind::Task({
+                    let entered = entered.clone();
+                    Arc::new(move |input, _| {
+                        while !entered.load(Ordering::SeqCst) {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        Ok(input.clone())
+                    })
+                }),
+            },
+            GraphNode {
+                name: "failure",
+                kind: GraphNodeKind::Error,
+            },
+            GraphNode {
+                name: "joined",
+                kind: GraphNodeKind::Join {
+                    kind: "and",
+                    split: "split",
+                },
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            link("start", "split", None, None),
+            link("split", "slow", None, Some("slow")),
+            link("split", "fast", None, Some("fast")),
+            link("fast", "failure", None, None),
+            link(
+                "slow",
+                "joined",
+                Some(Arc::new(|input, _| Ok(input.clone()))),
+                None,
+            ),
+            link(
+                "joined",
+                "done",
+                Some(Arc::new(|input, _| Ok(input.clone()))),
+                None,
+            ),
+        ],
+    };
+    let parent = GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "parent",
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "called",
+                kind: GraphNodeKind::Subprocess {
+                    process: "child",
+                    input: Arc::new(|input, _| Ok(input.clone())),
+                },
+            },
+            GraphNode {
+                name: "recovered",
+                kind: echo_task(),
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            link("start", "called", None, None),
+            link("called", "recovered", None, Some("error")),
+            link(
+                "called",
+                "done",
+                Some(Arc::new(|input, _| Ok(input.clone()))),
+                None,
+            ),
+            link(
+                "recovered",
+                "done",
+                Some(Arc::new(|input, _| Ok(input.clone()))),
+                None,
+            ),
+        ],
+    };
+    let path = std::env::temp_dir().join(format!("blkit-child-cancel-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let engine = Engine::new(
+        Registry::new_named(vec![parent, child]).unwrap(),
+        store.clone(),
+        2,
+    )
+    .unwrap();
+    let id = engine.start("test", "1", "parent", json!(2)).await.unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let status = engine.status(&id).await.unwrap().unwrap();
+            if matches!(status.status.as_str(), "completed" | "failed") {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(status.status, "completed", "{:?}", status.error);
+    assert!(
+        signalled.load(Ordering::SeqCst),
+        "child sibling was not signalled"
+    );
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn subprocess_wait_checkpoints_child_progress_and_resumes_without_replay() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let link = |source, target, value| GraphLink {
+        source,
+        target,
+        value,
+        condition: None,
+        fallback: false,
+        label: None,
+    };
+    let child = GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "child",
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "work",
+                kind: GraphNodeKind::Task({
+                    let hits = hits.clone();
+                    Arc::new(move |input, _| {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        Ok(input.clone())
+                    })
+                }),
+            },
+            GraphNode {
+                name: "wait",
+                kind: GraphNodeKind::PauseFor(Duration::from_millis(150)),
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            link("start", "work", None),
+            link("work", "wait", None),
+            link(
+                "wait",
+                "done",
+                Some(Arc::new(|_, values| Ok(values["work"].clone()))),
+            ),
+        ],
+    };
+    let parent = GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "parent",
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "called",
+                kind: GraphNodeKind::Subprocess {
+                    process: "child",
+                    input: Arc::new(|input, _| Ok(input.clone())),
+                },
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            link("start", "called", None),
+            link(
+                "called",
+                "done",
+                Some(Arc::new(|_, values| Ok(values["called"].clone()))),
+            ),
+        ],
+    };
+    let path = std::env::temp_dir().join(format!("blkit-child-wait-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let engine = Engine::new(
+        Registry::new_named(vec![parent, child]).unwrap(),
+        store.clone(),
+        1,
+    )
+    .unwrap();
+    let id = engine.start("test", "1", "parent", json!(7)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while engine.status(&id).await.unwrap().unwrap().status != "waiting" {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let checkpoint = store.get(&id).await.unwrap().unwrap().checkpoint.unwrap();
+    assert!(
+        serde_json::to_value(&checkpoint).unwrap()["children"]
+            .as_object()
+            .is_some_and(|entries| entries.len() == 1)
+    );
+    let restored: GraphCheckpoint =
+        serde_json::from_value(serde_json::to_value(&checkpoint).unwrap()).unwrap();
+    assert_eq!(
+        serde_json::to_value(&restored).unwrap()["children"],
+        serde_json::to_value(&checkpoint).unwrap()["children"]
+    );
+    let wake = store.get(&id).await.unwrap().unwrap().wake_at_ms;
+    drop(engine);
+    let mut recovered = child_policy_graphs(
+        GraphNodeKind::Task({
+            let hits = hits.clone();
+            Arc::new(move |input, _| {
+                hits.fetch_add(1, Ordering::SeqCst);
+                Ok(input.clone())
+            })
+        }),
+        None,
+        None,
+        None,
+        None,
+    );
+    recovered[0].nodes.push(GraphNode {
+        name: "wait",
+        kind: GraphNodeKind::PauseFor(Duration::from_millis(150)),
+    });
+    recovered[0].links[1].source = "wait";
+    recovered[0].links.push(link("work", "wait", None));
+    let engine = Engine::new(Registry::new_named(recovered).unwrap(), store.clone(), 1).unwrap();
+    engine.recover().await.unwrap();
+    assert_eq!(engine.status(&id).await.unwrap().unwrap().wake_at_ms, wake);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while engine.status(&id).await.unwrap().unwrap().status != "completed" {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        engine.status(&id).await.unwrap().unwrap().result,
+        Some(json!(7))
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+fn child_policy_graphs(
+    work: GraphNodeKind,
+    child_retry: Option<RetryPolicy>,
+    child_deadline: Option<blkit::DeadlinePolicy>,
+    parent_retry: Option<RetryPolicy>,
+    parent_deadline: Option<blkit::DeadlinePolicy>,
+) -> Vec<GraphDefinition> {
+    let link = |source, target, value, label| GraphLink {
+        source,
+        target,
+        value,
+        condition: None,
+        fallback: false,
+        label,
+    };
+    vec![
+        GraphDefinition {
+            namespace: "test",
+            version: "1",
+            name: "child",
+            retry: child_retry,
+            deadline: child_deadline,
+            decode_input: Box::new(Ok),
+            nodes: vec![
+                GraphNode {
+                    name: "start",
+                    kind: GraphNodeKind::Start,
+                },
+                GraphNode {
+                    name: "work",
+                    kind: work,
+                },
+                GraphNode {
+                    name: "done",
+                    kind: GraphNodeKind::End,
+                },
+            ],
+            links: vec![
+                link("start", "work", None, None),
+                link(
+                    "work",
+                    "done",
+                    Some(Arc::new(|input, _| Ok(input.clone()))),
+                    None,
+                ),
+            ],
+        },
+        GraphDefinition {
+            namespace: "test",
+            version: "1",
+            name: "parent",
+            retry: parent_retry,
+            deadline: parent_deadline,
+            decode_input: Box::new(Ok),
+            nodes: vec![
+                GraphNode {
+                    name: "start",
+                    kind: GraphNodeKind::Start,
+                },
+                GraphNode {
+                    name: "called",
+                    kind: GraphNodeKind::Subprocess {
+                        process: "child",
+                        input: Arc::new(|input, _| Ok(input.clone())),
+                    },
+                },
+                GraphNode {
+                    name: "recovered",
+                    kind: echo_task(),
+                },
+                GraphNode {
+                    name: "done",
+                    kind: GraphNodeKind::End,
+                },
+            ],
+            links: vec![
+                link("start", "called", None, None),
+                link(
+                    "called",
+                    "done",
+                    Some(Arc::new(|_, values| Ok(values["called"].clone()))),
+                    None,
+                ),
+                link("called", "recovered", None, Some("error")),
+                link(
+                    "recovered",
+                    "done",
+                    Some(Arc::new(|input, _| Ok(input.clone()))),
+                    None,
+                ),
+            ],
+        },
+    ]
+}
+
+#[test]
+fn subprocess_registry_rejects_recursive_compiled_definitions() {
+    let mut graphs = child_policy_graphs(echo_task(), None, None, None, None);
+    graphs[0].nodes[1].kind = GraphNodeKind::Subprocess {
+        process: "child",
+        input: Arc::new(|input, _| Ok(input.clone())),
+    };
+    assert!(
+        Registry::new_named(graphs)
+            .err()
+            .unwrap()
+            .contains("recursive subprocess")
+    );
+}
+
+#[tokio::test]
+async fn child_deadline_interrupts_inflight_task_and_routes_timeout() {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let mut graphs = child_policy_graphs(
+        GraphNodeKind::TaskWithCancel(
+            {
+                let cancelled = cancelled.clone();
+                Arc::new(move |input, _| {
+                    for _ in 0..180 {
+                        if cancelled.load(Ordering::SeqCst) {
+                            return Ok(input.clone());
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Ok(input.clone())
+                })
+            },
+            {
+                let cancelled = cancelled.clone();
+                Arc::new(move || cancelled.store(true, Ordering::SeqCst))
+            },
+        ),
+        None,
+        Some(blkit::DeadlinePolicy {
+            origin: "queued",
+            duration: Duration::from_millis(100),
+        }),
+        None,
+        None,
+    );
+    // Return a distinct value from the error handler so success cannot mask the timeout.
+    graphs[1].links[3].value = Some(Arc::new(|_, _| Ok(json!("timeout-handled"))));
+    let path = std::env::temp_dir().join(format!(
+        "blkit-child-running-deadline-{}.db",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new_named(graphs).unwrap(), store.clone(), 1).unwrap();
+    let id = engine.start("test", "1", "parent", json!(9)).await.unwrap();
+    let status = tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            let status = engine.status(&id).await.unwrap().unwrap();
+            if status.status == "completed" {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("child deadline did not interrupt in-flight work");
+    assert_eq!(status.result, Some(json!("timeout-handled")));
+    assert!(cancelled.load(Ordering::SeqCst));
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn child_deadline_times_out_through_parent_handler_before_wait_finishes() {
+    let definitions = child_policy_graphs(
+        GraphNodeKind::PauseFor(Duration::from_secs(2)),
+        None,
+        Some(blkit::DeadlinePolicy {
+            origin: "queued",
+            duration: Duration::from_millis(200),
+        }),
+        None,
+        None,
+    );
+    let path = std::env::temp_dir().join(format!("blkit-child-deadline-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new_named(definitions).unwrap(), store.clone(), 1).unwrap();
+    let id = engine.start("test", "1", "parent", json!(9)).await.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let status = engine.status(&id).await.unwrap().unwrap();
+            if matches!(
+                status.status.as_str(),
+                "completed" | "failed" | "business-error"
+            ) {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.status, "completed", "{:?}", result.error);
+    assert_eq!(result.result, Some(json!(9)));
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn child_queued_deadline_starts_when_subprocess_node_is_entered() {
+    for (origin, expected_hits) in [("queued", 0), ("first_claimed", 1)] {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let definitions = child_policy_graphs(
+            GraphNodeKind::Task({
+                let hits = hits.clone();
+                Arc::new(move |input, _| {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Ok(input.clone())
+                })
+            }),
+            None,
+            Some(blkit::DeadlinePolicy {
+                origin,
+                duration: Duration::from_millis(100),
+            }),
+            None,
+            None,
+        );
+        let path = std::env::temp_dir().join(format!(
+            "blkit-child-origin-{}-{origin}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let store = Store::open(&path).await.unwrap();
+        let mut instance = Instance::new("job", "test", "1", "parent", json!(9));
+        instance.checkpoint = Some(definitions[1].checkpoint(&instance.input).unwrap());
+        store.create(&instance).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(180)).await;
+        let engine =
+            Engine::new(Registry::new_named(definitions).unwrap(), store.clone(), 1).unwrap();
+        engine.recover().await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let status = engine.status("job").await.unwrap().unwrap();
+                if matches!(status.status.as_str(), "completed" | "failed") {
+                    break status;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.status, "completed", "{origin}: {:?}", result.error);
+        assert_eq!(hits.load(Ordering::SeqCst), expected_hits, "{origin}");
+        drop(engine);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn child_retry_resumes_without_using_parent_attempt() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let work = GraphNodeKind::Task({
+        let hits = hits.clone();
+        Arc::new(move |input, _| {
+            if hits.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err("transient child failure".into())
+            } else {
+                Ok(input.clone())
+            }
+        })
+    });
+    let definitions = child_policy_graphs(
+        work,
+        Some(RetryPolicy {
+            max_retries: 1,
+            retry_for: Duration::from_secs(2),
+            retry_delay: Duration::from_millis(50),
+            backoff: "exponential",
+        }),
+        None,
+        None,
+        None,
+    );
+    let path = std::env::temp_dir().join(format!("blkit-child-retry-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new_named(definitions).unwrap(), store.clone(), 1).unwrap();
+    let id = engine.start("test", "1", "parent", json!(9)).await.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let status = engine.status(&id).await.unwrap().unwrap();
+            if matches!(status.status.as_str(), "completed" | "failed") {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.status, "completed", "{:?}", result.error);
+    assert_eq!(result.attempt, 1);
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn intermediate_subprocess_retries_leaf_failure_before_top_level_attempt() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let mut graphs = child_policy_graphs(
+        GraphNodeKind::Task({
+            let hits = hits.clone();
+            Arc::new(move |input, _| {
+                if hits.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err("leaf failed".into())
+                } else {
+                    Ok(input.clone())
+                }
+            })
+        }),
+        None,
+        None,
+        None,
+        None,
+    );
+    graphs[1].name = "middle";
+    graphs[1].retry = Some(RetryPolicy {
+        max_retries: 1,
+        retry_for: Duration::from_secs(2),
+        retry_delay: Duration::from_millis(20),
+        backoff: "exponential",
+    });
+    let mut parent = child_policy_graphs(echo_task(), None, None, None, None)
+        .pop()
+        .unwrap();
+    if let GraphNodeKind::Subprocess { process, .. } = &mut parent.nodes[1].kind {
+        *process = "middle";
+    }
+    graphs.push(parent);
+    let path = std::env::temp_dir().join(format!(
+        "blkit-intermediate-retry-{}.db",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new_named(graphs).unwrap(), store.clone(), 1).unwrap();
+    let id = engine.start("test", "1", "parent", json!(9)).await.unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let status = engine.status(&id).await.unwrap().unwrap();
+            if matches!(status.status.as_str(), "completed" | "failed") {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(status.status, "completed", "{:?}", status.error);
+    assert_eq!(status.attempt, 1);
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn exhausted_child_retries_fail_parent_attempt_without_replaying_committed_work() {
+    let before = Arc::new(AtomicUsize::new(0));
+    let failures = Arc::new(AtomicUsize::new(0));
+    let work = GraphNodeKind::Task({
+        let failures = failures.clone();
+        Arc::new(move |_, _| {
+            failures.fetch_add(1, Ordering::SeqCst);
+            Err("child failed".into())
+        })
+    });
+    let mut graphs = child_policy_graphs(
+        work,
+        Some(RetryPolicy {
+            max_retries: 1,
+            retry_for: Duration::from_secs(3),
+            retry_delay: Duration::from_millis(20),
+            backoff: "exponential",
+        }),
+        None,
+        Some(RetryPolicy {
+            max_retries: 1,
+            retry_for: Duration::from_secs(3),
+            retry_delay: Duration::from_millis(40),
+            backoff: "exponential",
+        }),
+        None,
+    );
+    let child = &mut graphs[0];
+    child.nodes.insert(
+        1,
+        GraphNode {
+            name: "before",
+            kind: GraphNodeKind::Task({
+                let before = before.clone();
+                Arc::new(move |input, _| {
+                    before.fetch_add(1, Ordering::SeqCst);
+                    Ok(input.clone())
+                })
+            }),
+        },
+    );
+    child.links[0].target = "before";
+    child.links.insert(
+        1,
+        GraphLink {
+            source: "before",
+            target: "work",
+            value: None,
+            condition: None,
+            fallback: false,
+            label: None,
+        },
+    );
+    let path =
+        std::env::temp_dir().join(format!("blkit-child-exhausted-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new_named(graphs).unwrap(), store.clone(), 1).unwrap();
+    let id = engine.start("test", "1", "parent", json!(9)).await.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            let status = engine.status(&id).await.unwrap().unwrap();
+            if status.status == "failed" {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.attempt, 2);
+    assert_eq!(before.load(Ordering::SeqCst), 1);
+    assert!(failures.load(Ordering::SeqCst) >= 3);
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn parent_deadline_cannot_be_caught_by_child_timeout_handler() {
+    let definitions = child_policy_graphs(
+        GraphNodeKind::PauseFor(Duration::from_secs(2)),
+        None,
+        Some(blkit::DeadlinePolicy {
+            origin: "queued",
+            duration: Duration::from_millis(400),
+        }),
+        None,
+        Some(blkit::DeadlinePolicy {
+            origin: "queued",
+            duration: Duration::from_millis(100),
+        }),
+    );
+    let path =
+        std::env::temp_dir().join(format!("blkit-parent-deadline-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new_named(definitions).unwrap(), store.clone(), 1).unwrap();
+    let id = engine.start("test", "1", "parent", json!(9)).await.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let status = engine.status(&id).await.unwrap().unwrap();
+            if status.status == "business-error" || status.status == "completed" {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.status, "business-error");
+    assert_eq!(result.terminal_name.as_deref(), Some("timeout"));
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn external_parent_cancellation_overrides_child_handler() {
+    let entered = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let work = GraphNodeKind::TaskWithCancel(
+        {
+            let entered = entered.clone();
+            let cancelled = cancelled.clone();
+            Arc::new(move |input, _| {
+                entered.store(true, Ordering::SeqCst);
+                for _ in 0..100 {
+                    if cancelled.load(Ordering::SeqCst) {
+                        return Ok(input.clone());
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err("child never cancelled".into())
+            })
+        },
+        {
+            let cancelled = cancelled.clone();
+            Arc::new(move || {
+                cancelled.store(true, Ordering::SeqCst);
+            })
+        },
+    );
+    let mut graphs = child_policy_graphs(work, None, None, None, None);
+    graphs[1].links.push(GraphLink {
+        source: "called",
+        target: "recovered",
+        value: None,
+        condition: None,
+        fallback: false,
+        label: Some("cancel"),
+    });
+    let path = std::env::temp_dir().join(format!(
+        "blkit-parent-cancel-child-{}.db",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new_named(graphs).unwrap(), store.clone(), 1).unwrap();
+    let id = engine.start("test", "1", "parent", json!(9)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !entered.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    engine.cancel(&id).await.unwrap();
+    assert_eq!(
+        engine.status(&id).await.unwrap().unwrap().status,
+        "cancelled"
+    );
+    assert!(cancelled.load(Ordering::SeqCst));
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(engine.status(&id).await.unwrap().unwrap().result, None);
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
 fn echo_task() -> GraphNodeKind {
     GraphNodeKind::Task(Arc::new(|input, _| Ok(input.clone())))
 }

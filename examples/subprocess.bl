@@ -1,0 +1,47 @@
+namespace orders
+version "1.0"
+
+task echo(input: Number) -> Number:
+  return input
+
+task recover_error(input: Number) -> Number:
+  return 100
+
+task recover_cancel(input: Number) -> Number:
+  return 200
+
+task recover_terminate(input: Number) -> Number:
+  return 300
+
+process child(input: Number) -> Number:
+  node start = start
+  node gate = xor_split
+  node work = task echo(input)
+  node joined = xor_join(gate)
+  node done = end
+  node failed = error
+  node cancelled = cancel
+  node halted = terminate
+  link start -> gate
+  link gate -> failed when input == 0
+  link gate -> cancelled when input < 0
+  link gate -> halted when input > 10
+  link gate -> work else
+  link work -> joined(work)
+  link joined -> done(joined)
+
+process parent(input: Number) -> Number:
+  node start = start
+  node called = subprocess child(input)
+  node error_route = task recover_error(input)
+  node cancel_route = task recover_cancel(input)
+  node terminate_route = task recover_terminate(input)
+  node done = end
+  link start -> called
+  link called -> done(called)
+  link called -> error_route on error
+  link called -> cancel_route on cancel
+  link called -> terminate_route on terminate
+  link error_route -> done(error_route)
+  link cancel_route -> done(cancel_route)
+  link terminate_route -> done(terminate_route)

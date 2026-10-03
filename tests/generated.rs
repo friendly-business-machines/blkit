@@ -7,6 +7,12 @@ use std::{
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
+fn nested_target() -> std::path::PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map(Into::into)
+        .unwrap_or_else(|| std::env::temp_dir().join("blkit-generated-test-target"))
+}
+
 fn compile_and_test(source: &str, assertion: &str) {
     let generated = transpile(source).unwrap();
     let directory = std::env::temp_dir().join(format!(
@@ -20,7 +26,7 @@ fn compile_and_test(source: &str, assertion: &str) {
     let result = Command::new("cargo")
         .args(["test", "--offline", "--manifest-path"])
         .arg(directory.join("Cargo.toml"))
-        .env("CARGO_TARGET_DIR", directory.join("target"))
+        .env("CARGO_TARGET_DIR", nested_target())
         .output()
         .unwrap();
     assert!(
@@ -225,6 +231,22 @@ fn generated_any_and_priority_reject_conflicting_or_unranked_matches() {
 }
 
 #[test]
+fn generated_subprocess_calls_registered_typed_child() {
+    compile_and_test_graph(
+        "namespace orders\nversion \"1\"\ntask four(input: Bool) -> Number:\n  return 4\nprocess child(input: Bool) -> Number:\n  node start = start\n  node work = task four(input)\n  node done = end\n  link start -> work\n  link work -> done(work)\nprocess parent(input: Bool) -> Number:\n  node start = start\n  node called = subprocess child(input)\n  node done = end\n  link start -> called\n  link called -> done(called)\n",
+        "let mut definitions = named_graph_definitions(); assert_eq!(definitions.len(), 2); let parent = definitions.remove(1); assert!(blkit::runtime::Registry::new_named(vec![parent]).is_err()); let registry = blkit::runtime::Registry::new_named(named_graph_definitions()).unwrap(); let store = blkit::runtime::Store::open(&std::env::temp_dir().join(format!(\"generated-child-{}.db\", std::process::id()))).await.unwrap(); let engine = blkit::runtime::Engine::new(registry, store, 1).unwrap(); let id = engine.start(\"orders\", \"1\", \"parent\", serde_json::json!(true)).await.unwrap(); let result = tokio::time::timeout(std::time::Duration::from_secs(5), async { loop { let status = engine.status(&id).await.unwrap().unwrap(); if status.status != \"pending\" && status.status != \"running\" { break status; } tokio::time::sleep(std::time::Duration::from_millis(10)).await; } }).await.unwrap(); assert_eq!(result.result, Some(serde_json::json!(\"4\")));",
+    );
+}
+
+#[test]
+fn documented_subprocess_example_routes_success_and_each_child_outcome() {
+    compile_and_test_graph(
+        include_str!("../examples/subprocess.bl"),
+        "let store = blkit::runtime::Store::open(&std::env::temp_dir().join(format!(\"documented-subprocess-{}.db\", std::process::id()))).await.unwrap(); let engine = blkit::runtime::Engine::new(blkit::runtime::Registry::new_named(named_graph_definitions()).unwrap(), store, 1).unwrap(); for (input, expected) in [(\"2\", \"2\"), (\"0\", \"100\"), (\"-1\", \"200\"), (\"11\", \"300\")] { let id = engine.start(\"orders\", \"1.0\", \"parent\", serde_json::json!(input)).await.unwrap(); let status = tokio::time::timeout(std::time::Duration::from_secs(5), async { loop { let item = engine.status(&id).await.unwrap().unwrap(); if matches!(item.status.as_str(), \"completed\" | \"failed\" | \"business-error\") { break item; } tokio::time::sleep(std::time::Duration::from_millis(10)).await; } }).await.unwrap(); assert_eq!(status.status, \"completed\", \"{input}: {:?}\", status.error); assert_eq!(status.result, Some(serde_json::json!(expected))); }",
+    );
+}
+
+#[test]
 fn generated_multi_instance_task_evaluates_typed_list() {
     compile_and_test_graph(
         "namespace repeaters\nversion \"1\"\ntask echo(input: Number) -> Number:\n  return input\nprocess gather(input: List<Number>) -> List<Number>:\n  node start = start\n  node batch = task echo each input parallel\n  node done = end\n  link start -> batch\n  link batch -> done(batch)\n",
@@ -301,15 +323,12 @@ fn compile_and_test_graph(source: &str, assertion: &str) {
     ));
     fs::create_dir_all(directory.join("src")).unwrap();
     let root = env!("CARGO_MANIFEST_DIR").replace('\\', "\\\\");
-    fs::write(directory.join("Cargo.toml"), format!("[package]\nname = \"blkit_generated_graph\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit = {{ path = {root:?} }}\nrust_decimal = {{ version = \"1.39\", features = [\"serde-str\"] }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\"] }}\n")).unwrap();
+    fs::write(directory.join("Cargo.toml"), format!("[package]\nname = \"blkit_generated_graph\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit = {{ path = {root:?} }}\nrust_decimal = {{ version = \"1.39\", features = [\"serde-str\"] }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"time\"] }}\n")).unwrap();
     fs::write(directory.join("src/lib.rs"), format!("{generated}\n#[cfg(test)] mod checks {{ use super::*; #[tokio::test] async fn graph() {{ {assertion} }} }}")).unwrap();
     let result = Command::new("cargo")
         .args(["test", "--manifest-path"])
         .arg(directory.join("Cargo.toml"))
-        .env(
-            "CARGO_TARGET_DIR",
-            std::env::temp_dir().join("blkit-graph-test-target"),
-        )
+        .env("CARGO_TARGET_DIR", nested_target())
         .output()
         .unwrap();
     assert!(

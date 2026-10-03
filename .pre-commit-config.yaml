@@ -22,7 +22,7 @@ repos:
         pass_filenames: false
       - id: rust-test
         name: Run Rust tests
-        entry: scripts/without-git-env.sh env CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 cargo test --locked
+        entry: scripts/without-git-env.sh env CARGO_TARGET_DIR=target/nested-tests CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 cargo test --locked --target-dir target
         language: system
         files: '(^Cargo\.(toml|lock)$|\.rs$)'
         pass_filenames: false
@@ -31,6 +31,7 @@ repos:
         entry: markdownlint-cli2
         language: system
         types: [markdown]
+        exclude: ^openspec/
       - id: hadolint
         name: Hadolint
         entry: hadolint
