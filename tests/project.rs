@@ -6,6 +6,25 @@ use std::{
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
+fn cargo_build(root: &std::path::Path) -> Result<(), String> {
+    let manifest = root.join(".blkit/Cargo.toml");
+    let mut command = std::process::Command::new("cargo");
+    command.args(["build", "--manifest-path"]).arg(manifest);
+    if root.join(".blkit/Cargo.lock").exists() {
+        command.arg("--locked");
+    }
+    let output = command.output().map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "cargo build failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
 fn project(manifest: &str, files: &[(&str, &str)]) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
         "blkit-project-{}-{}",
@@ -25,6 +44,37 @@ fn project(manifest: &str, files: &[(&str, &str)]) -> PathBuf {
 const SOURCE: &str = "namespace orders\nversion \"1\"\n";
 const MANIFEST: &str =
     "[project]\nname = \"orders\"\nblkit = \"0.1.0\"\nbuild_target = \"crate\"\n";
+
+#[test]
+fn transpilation_generates_each_target_without_compiling() {
+    for target in ["crate", "worker", "server"] {
+        let root = project(
+            &MANIFEST.replace("\"crate\"", &format!("\"{target}\"")),
+            &[("source.bl", SOURCE)],
+        );
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_blkit"))
+            .arg("transpile")
+            .arg(&root)
+            .env("PATH", "")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{target}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(root.join(".blkit/Cargo.toml").exists());
+        assert!(root.join(".blkit/src/lib.rs").exists());
+        if target != "crate" {
+            assert!(
+                root.join(format!(".blkit/src/bin/orders-{target}.rs"))
+                    .exists()
+            );
+        }
+        assert!(!root.join(".blkit/target").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
 
 #[test]
 fn discovers_nested_bl_files_but_not_generated_or_hidden_files() {
@@ -147,13 +197,14 @@ fn server_and_worker_build_link_cross_file_subprocesses() {
         );
         blkit::project::Project::load(&root)
             .unwrap()
-            .build()
+            .transpile()
             .unwrap();
+        cargo_build(&root).unwrap();
         fs::remove_file(root.join("z-child.bl")).unwrap();
         assert!(
             blkit::project::Project::load(&root)
                 .unwrap()
-                .build()
+                .transpile()
                 .unwrap_err()
                 .contains("unknown process: child")
         );
@@ -249,7 +300,7 @@ fn project_builds_a_reusable_library_from_multiple_scopes_and_cross_file_tasks()
     );
     blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .unwrap();
     let consumer = root.join("consumer");
     fs::create_dir_all(consumer.join("src")).unwrap();
@@ -290,8 +341,9 @@ fn project_locks_local_dependency_versions_until_explicit_update() {
     );
     blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .unwrap();
+    cargo_build(&root).unwrap();
     let lockfile = root.join(".blkit/Cargo.lock");
     let locked = fs::read_to_string(&lockfile).unwrap();
     assert!(locked.contains("name = \"extra\"\nversion = \"0.1.0\""));
@@ -306,14 +358,16 @@ fn project_locks_local_dependency_versions_until_explicit_update() {
     )
     .unwrap();
     let updated = blkit::project::Project::load(&root).unwrap();
-    let error = updated.build().err().unwrap();
+    updated.transpile().unwrap();
+    let error = cargo_build(&root).unwrap_err();
     assert!(
         error.contains("lock") || error.contains("locked"),
         "{error}"
     );
     assert_eq!(fs::read_to_string(&lockfile).unwrap(), locked);
     updated.update().unwrap();
-    updated.build().unwrap();
+    updated.transpile().unwrap();
+    cargo_build(&root).unwrap();
     assert!(
         fs::read_to_string(&lockfile)
             .unwrap()
@@ -342,7 +396,7 @@ fn update_refreshes_lockfile_when_a_referenced_extension_version_changes() {
     );
     blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .unwrap();
     let locked = fs::read_to_string(root.join(".blkit/Cargo.lock")).unwrap();
     fs::write(
@@ -356,7 +410,7 @@ fn update_refreshes_lockfile_when_a_referenced_extension_version_changes() {
     )
     .unwrap();
     let updated = blkit::project::Project::load(&root).unwrap();
-    let error = updated.build().err().unwrap();
+    let error = updated.transpile().err().unwrap();
     assert!(
         error.contains("lock") || error.contains("locked"),
         "{error}"
@@ -366,7 +420,7 @@ fn update_refreshes_lockfile_when_a_referenced_extension_version_changes() {
         locked
     );
     updated.update().unwrap();
-    updated.build().unwrap();
+    updated.transpile().unwrap();
     assert!(
         fs::read_to_string(root.join(".blkit/Cargo.lock"))
             .unwrap()
@@ -376,16 +430,19 @@ fn update_refreshes_lockfile_when_a_referenced_extension_version_changes() {
 }
 
 #[test]
-fn missing_extension_dependency_stops_the_build() {
+fn missing_extension_dependency_stops_transpilation() {
     let root = project(
         &format!(
             "{MANIFEST}[dependencies]\nmissing = {{ version = \"0.1.0\", path = \"not-there\" }}\n"
         ),
-        &[("source.bl", SOURCE)],
+        &[(
+            "source.bl",
+            "namespace orders\nversion \"1\"\nprocess route(input: Number) -> Number:\n  node start = start\n  node work = task missing.charge(input)\n  node done = end\n  link start -> work\n  link work -> done(work)\n",
+        )],
     );
     let error = blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .err()
         .unwrap();
     assert!(
@@ -408,8 +465,9 @@ fn project_only_tracks_generated_lockfile_and_ignore_rules() {
     );
     blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .unwrap();
+    cargo_build(&root).unwrap();
     let output = std::process::Command::new("git")
         .args(["status", "--short", "--untracked-files=all"])
         .current_dir(&root)
@@ -447,7 +505,7 @@ fn resolved_extension_crate_exposes_typed_task_descriptors() {
         ],
     );
     let project = blkit::project::Project::load(&root).unwrap();
-    project.build().unwrap();
+    project.transpile().unwrap();
     let tasks = project.extensions().unwrap();
     let charge = &tasks["payments.charge"];
     assert_eq!(charge.function, "charge");
@@ -497,7 +555,7 @@ fn extension_descriptor_rejects_malformed_function_and_types() {
             ],
         );
         let project = blkit::project::Project::load(&root).unwrap();
-        project.build().unwrap();
+        project.transpile().unwrap();
         let error = project.extensions().err().unwrap();
         assert!(
             error.contains("charge") || error.contains("List<"),
@@ -613,9 +671,11 @@ fn project_build_links_async_extension_and_rejects_wrong_callable() {
         ],
     );
     let project = blkit::project::Project::load(&root).unwrap();
-    project.build().unwrap();
+    project.transpile().unwrap();
+    cargo_build(&root).unwrap();
     fs::write(root.join("payments/src/lib.rs"), "pub fn charge() {}\n").unwrap();
-    let error = project.build().err().unwrap();
+    project.transpile().unwrap();
+    let error = cargo_build(&root).unwrap_err();
     assert!(
         error.contains("charge") && error.contains("cargo build failed"),
         "{error}"
@@ -643,7 +703,7 @@ fn qualified_each_and_loop_calls_execute_async_extension_tasks() {
     );
     blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .unwrap();
     let generated = root.join(".blkit");
     fs::create_dir_all(generated.join("tests")).unwrap();
@@ -727,7 +787,7 @@ fn generated_async_task_retries_invalid_output_without_committing_it() {
     );
     blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .unwrap();
     let generated = root.join(".blkit");
     let cargo = generated.join("Cargo.toml");
@@ -787,8 +847,9 @@ fn switching_project_target_keeps_lockfile_and_only_selected_binary() {
     let root = project(MANIFEST, &[("route.bl", source)]);
     blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .unwrap();
+    cargo_build(&root).unwrap();
     let locked = fs::read(root.join(".blkit/Cargo.lock")).unwrap();
     fs::write(
         root.join("blkit.toml"),
@@ -797,7 +858,7 @@ fn switching_project_target_keeps_lockfile_and_only_selected_binary() {
     .unwrap();
     blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .unwrap();
     assert!(root.join(".blkit/src/bin/orders-worker.rs").exists());
     assert_eq!(fs::read(root.join(".blkit/Cargo.lock")).unwrap(), locked);
@@ -808,7 +869,7 @@ fn switching_project_target_keeps_lockfile_and_only_selected_binary() {
     .unwrap();
     blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .unwrap();
     assert!(root.join(".blkit/src/bin/orders-server.rs").exists());
     assert!(!root.join(".blkit/src/bin/orders-worker.rs").exists());
@@ -816,7 +877,7 @@ fn switching_project_target_keeps_lockfile_and_only_selected_binary() {
     fs::write(root.join("blkit.toml"), MANIFEST).unwrap();
     blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .unwrap();
     assert!(!root.join(".blkit/src/bin/orders-worker.rs").exists());
     assert!(!root.join(".blkit/src/bin/orders-server.rs").exists());
@@ -850,7 +911,7 @@ fn renaming_project_removes_stale_generated_binary() {
     let root = project(&manifest, &[("route.bl", source)]);
     blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .unwrap();
     assert!(root.join(".blkit/src/bin/orders-worker.rs").exists());
     fs::write(
@@ -860,7 +921,7 @@ fn renaming_project_removes_stale_generated_binary() {
     .unwrap();
     let renamed = blkit::project::Project::load(&root).unwrap();
     renamed.update().unwrap();
-    renamed.build().unwrap();
+    renamed.transpile().unwrap();
     assert!(root.join(".blkit/src/bin/purchases-worker.rs").exists());
     assert!(!root.join(".blkit/src/bin/orders-worker.rs").exists());
     fs::remove_dir_all(root).unwrap();
@@ -877,8 +938,9 @@ fn generated_binaries_configure_logging_before_runtime_and_report_failures() {
         );
         blkit::project::Project::load(&root)
             .unwrap()
-            .build()
+            .transpile()
             .unwrap();
+        cargo_build(&root).unwrap();
         let binary = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
             || root.join(format!(".blkit/target/debug/orders-{role}")),
             |target| PathBuf::from(target).join(format!("debug/orders-{role}")),
@@ -945,8 +1007,9 @@ fn project_server_executes_compiled_process_over_loopback_rest() {
     );
     blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .unwrap();
+    cargo_build(&root).unwrap();
     let binary = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
         || root.join(".blkit/target/debug/orders-server"),
         |target| PathBuf::from(target).join("debug/orders-server"),
@@ -1041,8 +1104,9 @@ pub async fn bad(_: Value) -> Result<Value, String> { Ok(json!({"id":42})) }
     );
     blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .unwrap();
+    cargo_build(&root).unwrap();
     let binary = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
         || root.join(".blkit/target/debug/orders-server"),
         |target| PathBuf::from(target).join("debug/orders-server"),
@@ -1172,8 +1236,9 @@ async fn project_worker_binary_claims_only_its_compiled_process_version() {
     let root = project(&manifest, &[("route.bl", source)]);
     blkit::project::Project::load(&root)
         .unwrap()
-        .build()
+        .transpile()
         .unwrap();
+    cargo_build(&root).unwrap();
     let binary = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
         || root.join(".blkit/target/debug/orders-worker"),
         |target| PathBuf::from(target).join("debug/orders-worker"),
