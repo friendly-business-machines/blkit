@@ -30,6 +30,10 @@ pub struct LoopPolicy {
 
 pub enum GraphNodeKind {
     Start,
+    Subprocess {
+        process: &'static str,
+        input: Evaluate,
+    },
     Task(Evaluate),
     AsyncTask(crate::runtime::AsyncEvaluate),
     MultiInstance {
@@ -113,6 +117,25 @@ pub enum GraphTerminal {
     Terminate(String),
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ChildActivation {
+    pub process: String,
+    pub input: Value,
+    pub checkpoint: Box<GraphCheckpoint>,
+    #[serde(default)]
+    pub entered_at_ms: i64,
+    #[serde(default)]
+    pub first_claimed_at_ms: Option<i64>,
+    #[serde(default)]
+    pub attempt: u32,
+    #[serde(default)]
+    pub first_failure_at_ms: Option<i64>,
+    #[serde(default)]
+    pub next_eligible_at_ms: Option<i64>,
+    #[serde(default)]
+    pub deadline_at_ms: Option<i64>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct GraphCheckpoint {
     #[serde(default)]
@@ -134,11 +157,20 @@ pub struct GraphCheckpoint {
     committed: HashMap<u64, Value>,
     #[serde(default)]
     multi: HashMap<u64, MultiProgress>,
+    #[serde(default)]
+    pub(crate) children: HashMap<u64, ChildActivation>,
     pub outcome: Option<Value>,
     pub terminal: Option<GraphTerminal>,
 }
 
 impl GraphDefinition {
+    pub fn child_processes(&self) -> impl Iterator<Item = &str> {
+        self.nodes.iter().filter_map(|node| match &node.kind {
+            GraphNodeKind::Subprocess { process, .. } => Some(*process),
+            _ => None,
+        })
+    }
+
     pub fn checkpoint(&self, input: &Value) -> Result<GraphCheckpoint, String> {
         let mut state = GraphCheckpoint {
             version: 2,
@@ -341,6 +373,19 @@ impl GraphDefinition {
             .collect()
     }
 
+    pub(crate) fn activation_started_at(
+        &self,
+        state: &GraphCheckpoint,
+        id: u64,
+    ) -> Result<i64, String> {
+        state
+            .ready
+            .iter()
+            .find(|token| token.id == id)
+            .map(|token| token.started_at_ms)
+            .ok_or("subprocess activation not ready".into())
+    }
+
     pub fn activation_input(
         &self,
         state: &GraphCheckpoint,
@@ -428,6 +473,48 @@ impl GraphDefinition {
             .ok_or_else(|| format!("task not ready: {name}"))?
             .id;
         self.complete_activation(input, state, id, value)
+    }
+
+    pub(crate) fn complete_subprocess_terminal(
+        &self,
+        input: &Value,
+        state: &mut GraphCheckpoint,
+        id: u64,
+        terminal: GraphTerminal,
+    ) -> Result<(), String> {
+        let mut next = state.clone();
+        let index = next
+            .ready
+            .iter()
+            .position(|token| token.id == id)
+            .ok_or("subprocess activation not ready")?;
+        let mut token = next.ready.remove(index);
+        next.children.remove(&id);
+        token.values.remove(&token.node);
+        let outcome = match &terminal {
+            GraphTerminal::Error(_) => "error",
+            GraphTerminal::Cancel(_) => "cancel",
+            GraphTerminal::Terminate(_) => "terminate",
+        };
+        if let Some(link) = self
+            .links
+            .iter()
+            .find(|link| link.source == token.node && link.label == Some(outcome))
+        {
+            self.enter(
+                input,
+                &mut next,
+                link,
+                token.path,
+                token.generations,
+                token.values,
+                &mut 64,
+            )?;
+        } else {
+            next.terminal = Some(terminal);
+        }
+        *state = next;
+        Ok(())
     }
 
     pub fn complete_activation(
@@ -586,18 +673,21 @@ impl GraphDefinition {
             return Ok(());
         }
         *budget -= 1;
-        let outgoing: Vec<_> = self
-            .links
-            .iter()
-            .enumerate()
-            .filter(|(_, link)| link.source == source)
-            .collect();
         let kind = &self
             .nodes
             .iter()
             .find(|node| node.name == source)
             .ok_or_else(|| format!("unknown node: {source}"))?
             .kind;
+        let outgoing: Vec<_> = self
+            .links
+            .iter()
+            .enumerate()
+            .filter(|(_, link)| {
+                link.source == source
+                    && (!matches!(kind, GraphNodeKind::Subprocess { .. }) || link.label.is_none())
+            })
+            .collect();
         let selected: Vec<usize> = match kind {
             GraphNodeKind::Split("and") => outgoing.iter().map(|(index, _)| *index).collect(),
             GraphNodeKind::Split("xor" | "or") => {
@@ -673,6 +763,12 @@ impl GraphDefinition {
             .ok_or_else(|| format!("unknown node: {}", link.target))?;
         match &node.kind {
             GraphNodeKind::Start => Err("link into start".into()),
+            GraphNodeKind::Subprocess { .. } => {
+                let mut token = Self::activation(state, node.name, path, generations, values);
+                token.started_at_ms = crate::store::now_ms();
+                state.ready.push(token);
+                Ok(())
+            }
             GraphNodeKind::Task(_)
             | GraphNodeKind::TaskWithCancel(_, _)
             | GraphNodeKind::AsyncTask(_) => {

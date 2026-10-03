@@ -1826,6 +1826,296 @@ async fn worker_binary_advertises_only_linked_identities_and_runs_without_source
     drop(node);
 }
 
+fn subprocess_parent_graph() -> GraphDefinition {
+    GraphDefinition {
+        namespace: "orders",
+        version: "1.0",
+        name: "parent",
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "called",
+                kind: GraphNodeKind::Subprocess {
+                    process: "child",
+                    input: Arc::new(|input, _| Ok(input.clone())),
+                },
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            GraphLink {
+                source: "start",
+                target: "called",
+                value: None,
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+            GraphLink {
+                source: "called",
+                target: "done",
+                value: Some(Arc::new(|_, values| Ok(values["called"].clone()))),
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+        ],
+    }
+}
+
+#[tokio::test]
+async fn distributed_subprocess_retry_and_wait_handoff_share_one_parent_claim() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let call: blkit::runtime::Evaluate = {
+        let hits = hits.clone();
+        Arc::new(move |input, _| {
+            if hits.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err("retry child".into())
+            } else {
+                Ok(input.clone())
+            }
+        })
+    };
+    let child_graph = || {
+        let mut graph = versioned_graph(
+            "1.0",
+            call.clone(),
+            Some(RetryPolicy {
+                max_retries: 1,
+                retry_for: Duration::from_secs(2),
+                retry_delay: Duration::from_millis(60),
+                backoff: "exponential",
+            }),
+        );
+        graph.name = "child";
+        graph.nodes.push(GraphNode {
+            name: "pause",
+            kind: GraphNodeKind::PauseFor(Duration::from_millis(100)),
+        });
+        graph.links[1].source = "pause";
+        graph.links.push(GraphLink {
+            source: "work",
+            target: "pause",
+            value: None,
+            condition: None,
+            fallback: false,
+            label: None,
+        });
+        graph
+    };
+    let parent = subprocess_parent_graph();
+    let mut item = Instance::new("job", "orders", "1.0", "parent", json!(4));
+    item.checkpoint = Some(parent.checkpoint(&item.input).unwrap());
+    store.create(&item).await.unwrap();
+    let first =
+        DistributedWorker::new(store.clone(), "first", vec![parent, child_graph()], 1, 5000)
+            .unwrap();
+    let second = DistributedWorker::new(
+        store.clone(),
+        "second",
+        vec![subprocess_parent_graph(), child_graph()],
+        1,
+        5000,
+    )
+    .unwrap();
+    first.advertise().await.unwrap();
+    second.advertise().await.unwrap();
+    assert_eq!(first.run_once().await.unwrap(), 1);
+    assert_eq!(
+        store.get("job").await.unwrap().unwrap().instance.status,
+        "waiting"
+    );
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert_eq!(second.run_once().await.unwrap(), 1);
+    assert_eq!(
+        store.get("job").await.unwrap().unwrap().instance.status,
+        "waiting"
+    );
+    tokio::time::sleep(Duration::from_millis(130)).await;
+    assert_eq!(first.run_once().await.unwrap(), 1);
+    let result = store.get("job").await.unwrap().unwrap();
+    assert_eq!(
+        result.instance.status, "completed",
+        "{:?}",
+        result.instance.error
+    );
+    assert_eq!(result.instance.result, Some(json!(4)));
+    assert_eq!(result.instance.id, "job");
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+    drop(node);
+}
+
+#[tokio::test]
+async fn distributed_parent_cancellation_signals_parallel_children() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let entered = Arc::new(AtomicUsize::new(0));
+    let hooks = Arc::new(AtomicUsize::new(0));
+    let released = Arc::new(AtomicBool::new(false));
+    let child = {
+        let mut graph = versioned_graph(
+            "1.0",
+            {
+                let entered = entered.clone();
+                let released = released.clone();
+                Arc::new(move |input, _| {
+                    entered.fetch_add(1, Ordering::SeqCst);
+                    for _ in 0..200 {
+                        if released.load(Ordering::SeqCst) {
+                            return Ok(input.clone());
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err("child not signalled".into())
+                })
+            },
+            None,
+        );
+        graph.name = "child";
+        graph.nodes[1].kind = GraphNodeKind::TaskWithCancel(
+            match &graph.nodes[1].kind {
+                GraphNodeKind::Task(call) => call.clone(),
+                _ => unreachable!(),
+            },
+            {
+                let hooks = hooks.clone();
+                let released = released.clone();
+                Arc::new(move || {
+                    hooks.fetch_add(1, Ordering::SeqCst);
+                    released.store(true, Ordering::SeqCst);
+                })
+            },
+        );
+        graph
+    };
+    let link = |source, target, value, label| GraphLink {
+        source,
+        target,
+        value,
+        condition: None,
+        fallback: false,
+        label,
+    };
+    let parent = GraphDefinition {
+        namespace: "orders",
+        version: "1.0",
+        name: "parent",
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "split",
+                kind: GraphNodeKind::Split("and"),
+            },
+            GraphNode {
+                name: "left",
+                kind: GraphNodeKind::Subprocess {
+                    process: "child",
+                    input: Arc::new(|input, _| Ok(input.clone())),
+                },
+            },
+            GraphNode {
+                name: "right",
+                kind: GraphNodeKind::Subprocess {
+                    process: "child",
+                    input: Arc::new(|input, _| Ok(input.clone())),
+                },
+            },
+            GraphNode {
+                name: "joined",
+                kind: GraphNodeKind::Join {
+                    kind: "and",
+                    split: "split",
+                },
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            link("start", "split", None, None),
+            link("split", "left", None, Some("left")),
+            link("split", "right", None, Some("right")),
+            link(
+                "left",
+                "joined",
+                Some(Arc::new(|_, values| Ok(values["left"].clone()))),
+                None,
+            ),
+            link(
+                "right",
+                "joined",
+                Some(Arc::new(|_, values| Ok(values["right"].clone()))),
+                None,
+            ),
+            link(
+                "joined",
+                "done",
+                Some(Arc::new(|_, values| Ok(values["joined"].clone()))),
+                None,
+            ),
+        ],
+    };
+    let mut item = Instance::new("job", "orders", "1.0", "parent", json!(4));
+    item.checkpoint = Some(parent.checkpoint(&item.input).unwrap());
+    store.create(&item).await.unwrap();
+    let worker =
+        DistributedWorker::new(store.clone(), "worker", vec![parent, child], 2, 5000).unwrap();
+    worker.advertise().await.unwrap();
+    let running = tokio::spawn(async move { worker.run_once().await.unwrap() });
+    tokio::time::timeout(Duration::from_secs(4), async {
+        while entered.load(Ordering::SeqCst) != 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    store.cancel("job").await.unwrap();
+    running.await.unwrap();
+    assert_eq!(hooks.load(Ordering::SeqCst), 2);
+    let row = store.get("job").await.unwrap().unwrap();
+    assert_eq!(row.instance.status, "cancelled");
+    assert!(row.instance.result.is_none());
+    drop(node);
+}
+
 fn versioned_graph(
     version: &'static str,
     task: blkit::runtime::Evaluate,

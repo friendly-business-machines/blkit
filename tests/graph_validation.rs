@@ -1,5 +1,89 @@
 use blkit::{parse, transpile, validate};
 
+const SUBPROCESS: &str = "namespace orders\nversion \"1.0\"\ntask echo(input: Number) -> Number:\n  return input\nprocess child(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\nprocess parent(input: Number) -> Number:\n  node start = start\n  node called = subprocess child(input)\n  node recovered = task echo(input)\n  node done = end\n  link start -> called\n  link called -> done(called)\n  link called -> recovered on error\n  link recovered -> done(recovered)\n";
+
+#[test]
+fn subprocess_routes_are_typed_and_scoped() {
+    validate(&parse(SUBPROCESS).unwrap()).unwrap();
+    let invalid = |source: &str| validate(&parse(source).unwrap()).unwrap_err();
+    assert!(
+        invalid(&SUBPROCESS.replace("echo(input)\n  node done", "echo(called)\n  node done"))
+            .contains("unknown name")
+    );
+    assert!(
+        invalid(&SUBPROCESS.replace("subprocess child(input)", "subprocess child(true)"))
+            .contains("input type")
+    );
+    assert!(
+        invalid(&SUBPROCESS.replace("subprocess child(input)", "subprocess missing(input)"))
+            .contains("unknown process")
+    );
+    assert!(invalid(&SUBPROCESS.replace("done(called)", "done(true)")).contains("end output"));
+    let wrong_output = SUBPROCESS
+        .replace(
+            "process child(input: Number) -> Number:",
+            "process child(input: Number) -> Bool:",
+        )
+        .replacen("link start -> done(input)", "link start -> done(true)", 1);
+    assert!(invalid(&wrong_output).contains("end output"));
+}
+
+#[test]
+fn subprocess_links_require_one_success_route_and_unique_unvalued_handlers() {
+    let invalid = |source: &str| validate(&parse(source).unwrap()).unwrap_err();
+    assert!(
+        invalid(&SUBPROCESS.replace("  link called -> done(called)\n", "")).contains("success")
+    );
+    assert!(
+        invalid(&SUBPROCESS.replace(
+            "  link called -> recovered on error\n",
+            "  link called -> recovered on error\n  link called -> recovered on error\n"
+        ))
+        .contains("duplicate")
+    );
+    assert!(
+        invalid(&SUBPROCESS.replace("recovered on error", "recovered(true) on error"))
+            .contains("payload")
+    );
+    assert!(parse(&SUBPROCESS.replace("recovered on error", "recovered on cancel else")).is_err());
+    let all_handlers = SUBPROCESS.replace("  node done = end\n  link start -> called", "  node cancelled = task echo(input)\n  node terminated = task echo(input)\n  node done = end\n  link start -> called")
+        .replace("  link recovered -> done(recovered)", "  link recovered -> done(recovered)\n  link called -> cancelled on cancel\n  link cancelled -> done(cancelled)\n  link called -> terminated on terminate\n  link terminated -> done(terminated)");
+    validate(&parse(&all_handlers).unwrap()).unwrap();
+    assert!(
+        invalid(&SUBPROCESS.replace(
+            "link recovered -> done(recovered)",
+            "link recovered -> done(recovered) on error"
+        ))
+        .contains("subprocess")
+    );
+    assert!(
+        invalid(&SUBPROCESS.replace(
+            "link recovered -> done(recovered)",
+            "link recovered -> done(recovered)\n  link called -> done(called)"
+        ))
+        .contains("success")
+    );
+}
+
+#[test]
+fn subprocess_process_calls_must_be_acyclic_even_with_deadlines() {
+    let recursive = SUBPROCESS.replace("node start = start\n  node done = end\n  link start -> done(input)", "deadline queued \"1m\"\n  node start = start\n  node again = subprocess child(input)\n  node done = end\n  link start -> again\n  link again -> done(again)");
+    assert!(
+        validate(&parse(&recursive).unwrap())
+            .unwrap_err()
+            .contains("recursive")
+    );
+    let indirect = SUBPROCESS.replace("node start = start\n  node done = end\n  link start -> done(input)", "node start = start\n  node again = subprocess parent(input)\n  node done = end\n  link start -> again\n  link again -> done(again)");
+    assert!(
+        validate(&parse(&indirect).unwrap())
+            .unwrap_err()
+            .contains("recursive")
+    );
+    let acyclic = SUBPROCESS.replace("node start = start\n  node done = end\n  link start -> done(input)", "node start = start\n  node again = subprocess leaf(input)\n  node done = end\n  link start -> again\n  link again -> done(again)")
+        + "process leaf(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n";
+    validate(&parse(&acyclic).unwrap()).unwrap();
+}
+
 const EXPLICIT: &str = "namespace orders\nversion \"1.0\"\ntask echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> Number:\n  node start = start\n  node first = task echo(input)\n  node done = end\n  link start -> first\n  link first -> done(first)\n";
 
 const TYPED_XOR: &str = "namespace orders\nversion \"1.0\"\ntask echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> Number:\n  node start = start\n  node gate = xor_split\n  node high = task echo(input)\n  node low = task echo(input)\n  node chosen = xor_join(gate)\n  node done = end\n  link start -> gate\n  link gate -> high when input > 10\n  link gate -> low else\n  link high -> chosen(high)\n  link low -> chosen(low)\n  link chosen -> done(chosen)\n";

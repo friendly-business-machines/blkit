@@ -1,4 +1,4 @@
-use blkit::{parse, validate};
+use blkit::{graph::NodeKind, parse, validate};
 
 const HEADER: &str = "namespace orders\nversion \"1.0\"\n";
 
@@ -53,6 +53,29 @@ fn parses_and_or_joins_and_labeled_links() {
     assert_eq!(graph.links[1].label.as_deref(), Some("left"));
     assert_eq!(graph.links[2].label.as_deref(), Some("right"));
     assert!(graph.links[3].fallback);
+}
+
+#[test]
+fn parses_subprocess_and_per_outcome_links() {
+    let source = format!(
+        "{HEADER}process child(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\nprocess parent(input: Number) -> Number:\n  node start = start\n  node called = subprocess child(input)\n  node done = end\n  node failed = error\n  node cancelled = cancel\n  node stopped = terminate\n  link start -> called\n  link called -> done(called)\n  link called -> failed on error\n  link called -> cancelled on cancel\n  link called -> stopped on terminate\n"
+    );
+    let program = parse(&source).unwrap();
+    let graph = program.processes[1].named_graph.as_ref().unwrap();
+    assert!(
+        matches!(&graph.nodes[1].kind, NodeKind::Subprocess { process, .. } if process == "child")
+    );
+    assert_eq!(graph.links.len(), 5);
+    assert_eq!(graph.links[1].outcome, None);
+    for (link, target, outcome) in [
+        (&graph.links[2], "failed", "error"),
+        (&graph.links[3], "cancelled", "cancel"),
+        (&graph.links[4], "stopped", "terminate"),
+    ] {
+        assert_eq!(link.target, target);
+        assert_eq!(link.outcome.as_deref(), Some(outcome));
+        assert!(link.value.is_none());
+    }
 }
 
 #[test]

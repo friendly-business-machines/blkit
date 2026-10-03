@@ -14,7 +14,9 @@ use tokio::{
 };
 
 use crate::{
-    named_runtime::{GraphDefinition, GraphNodeKind, GraphTerminal},
+    named_runtime::{
+        ChildActivation, GraphCheckpoint, GraphDefinition, GraphNodeKind, GraphTerminal,
+    },
     postgres_store::{ClaimActivity, DistributedInstance, PostgresStore},
 };
 
@@ -76,9 +78,42 @@ pub struct Branch {
     pub steps: Vec<Step>,
 }
 
+pub(crate) type NamedRegistry = HashMap<(String, String, String), Arc<GraphDefinition>>;
+
+pub(crate) fn validate_named_registry(entries: &NamedRegistry) -> Result<(), String> {
+    fn visit<'a>(
+        graph: &'a GraphDefinition,
+        entries: &'a NamedRegistry,
+        active: &mut HashSet<(&'a str, &'a str, &'a str)>,
+        done: &mut HashSet<(&'a str, &'a str, &'a str)>,
+    ) -> Result<(), String> {
+        let key = (graph.namespace, graph.version, graph.name);
+        if done.contains(&key) {
+            return Ok(());
+        }
+        if !active.insert(key) {
+            return Err(format!("recursive subprocess call: {}", graph.name));
+        }
+        for child in graph.child_processes() {
+            let definition = entries
+                .get(&(graph.namespace.into(), graph.version.into(), child.into()))
+                .ok_or_else(|| format!("missing compiled subprocess: {child}"))?;
+            visit(definition, entries, active, done)?;
+        }
+        active.remove(&key);
+        done.insert(key);
+        Ok(())
+    }
+    let mut done = HashSet::new();
+    for graph in entries.values() {
+        visit(graph, entries, &mut HashSet::new(), &mut done)?;
+    }
+    Ok(())
+}
+
 pub struct Registry {
     legacy: HashMap<(String, String, String), Arc<Definition>>,
-    named: HashMap<(String, String, String), Arc<GraphDefinition>>,
+    named: Arc<NamedRegistry>,
 }
 
 impl Registry {
@@ -96,7 +131,7 @@ impl Registry {
         }
         Ok(Self {
             legacy: entries,
-            named: HashMap::new(),
+            named: Arc::new(HashMap::new()),
         })
     }
 
@@ -112,9 +147,10 @@ impl Registry {
                 return Err("duplicate process identity".into());
             }
         }
+        validate_named_registry(&named)?;
         Ok(Self {
             legacy: HashMap::new(),
-            named,
+            named: Arc::new(named),
         })
     }
 
@@ -481,9 +517,10 @@ impl Engine {
         }
         let permits = self.permits.clone();
         let active = self.active.clone();
+        let definitions = self.registry.named.clone();
         tokio::spawn(async move {
             let id = instance.id.clone();
-            run_named(graph, instance, permits, context).await;
+            run_named(graph, instance, permits, context, definitions).await;
             active.lock().await.remove(&id);
         });
     }
@@ -608,6 +645,7 @@ pub(crate) async fn execute_claimed(
     store: PostgresStore,
     worker_id: String,
     permits: Arc<Semaphore>,
+    definitions: Arc<NamedRegistry>,
 ) -> Result<(), String> {
     if claimed.instance.status == "cancelled" {
         return Ok(());
@@ -653,7 +691,7 @@ pub(crate) async fn execute_claimed(
         }
     };
     let outcome = tokio::select! {
-        result = execute_named(&graph, &claimed.instance.input, checkpoint, &permits, &context) => result,
+        result = execute_named(&graph, &claimed.instance.input, checkpoint, &permits, &context, &definitions) => result,
         cancelled = watch => {
             return if cancelled? { Ok(()) } else { Err("lost claim during execution".into()) };
         }
@@ -685,6 +723,7 @@ async fn run_named(
     instance: Instance,
     permits: Arc<Semaphore>,
     context: Context,
+    definitions: Arc<NamedRegistry>,
 ) {
     let Some(mut checkpoint) = instance.checkpoint else {
         return;
@@ -751,6 +790,7 @@ async fn run_named(
             checkpoint.clone(),
             &permits,
             &context,
+            &definitions,
         )
         .await
         {
@@ -810,18 +850,343 @@ async fn save_wait(
     Ok(())
 }
 
+fn compiled_child<'a>(
+    graph: &GraphDefinition,
+    name: &str,
+    definitions: &'a NamedRegistry,
+) -> Result<&'a Arc<GraphDefinition>, String> {
+    definitions
+        .get(&(graph.namespace.into(), graph.version.into(), name.into()))
+        .ok_or_else(|| format!("missing compiled subprocess: {name}"))
+}
+
+fn resolve_children(
+    graph: &GraphDefinition,
+    input: &Value,
+    state: &mut GraphCheckpoint,
+    definitions: &NamedRegistry,
+    path: &[u64],
+    ended: &mut Vec<Vec<u64>>,
+) -> Result<bool, String> {
+    let mut changed = false;
+    for (id, name) in graph
+        .ready_activations(state)
+        .into_iter()
+        .map(|(id, name)| (id, name.to_owned()))
+        .collect::<Vec<_>>()
+    {
+        if state.terminal.is_some() || state.outcome.is_some() {
+            break;
+        }
+        let Some(GraphNodeKind::Subprocess {
+            process,
+            input: evaluate,
+        }) = graph
+            .nodes
+            .iter()
+            .find(|node| node.name == name)
+            .map(|node| &node.kind)
+        else {
+            continue;
+        };
+        let child = compiled_child(graph, process, definitions)?;
+        if !state.children.contains_key(&id) {
+            let source = graph.activation_input(state, id, input)?;
+            let values = graph.activation_values(state, id)?;
+            let child_input = (child.decode_input)(evaluate(&source, &values)?)?;
+            let now = crate::store::now_ms();
+            let entered = graph.activation_started_at(state, id)?;
+            let entered = if entered == 0 { now } else { entered };
+            let deadline_at_ms = child
+                .deadline
+                .as_ref()
+                .map(|policy| {
+                    let duration = i64::try_from(policy.duration.as_millis())
+                        .map_err(|_| "deadline overflow")?;
+                    let origin = if policy.origin == "queued" {
+                        entered
+                    } else {
+                        now
+                    };
+                    origin.checked_add(duration).ok_or("deadline overflow")
+                })
+                .transpose()?;
+            state.children.insert(
+                id,
+                ChildActivation {
+                    process: (*process).into(),
+                    checkpoint: Box::new(child.checkpoint(&child_input)?),
+                    input: child_input,
+                    entered_at_ms: entered,
+                    first_claimed_at_ms: Some(now),
+                    attempt: 1,
+                    first_failure_at_ms: None,
+                    next_eligible_at_ms: None,
+                    deadline_at_ms,
+                },
+            );
+            changed = true;
+        }
+        let nested = state
+            .children
+            .get_mut(&id)
+            .ok_or("missing child activation")?;
+        let now = crate::store::now_ms();
+        if nested.deadline_at_ms.is_some_and(|at| at <= now) {
+            nested.checkpoint.outcome = None;
+            nested.checkpoint.terminal = Some(GraphTerminal::Error("timeout".into()));
+        } else {
+            child.check_loop_bounds(&mut nested.checkpoint, now);
+        }
+        if nested.next_eligible_at_ms.is_some_and(|at| at <= now) {
+            nested.next_eligible_at_ms = None;
+            nested.attempt = nested.attempt.saturating_add(1);
+            changed = true;
+        }
+        if child
+            .waiting_until(&nested.checkpoint)
+            .is_some_and(|wake| wake <= now)
+        {
+            child.resume_due(&nested.input, &mut nested.checkpoint, now)?;
+            changed = true;
+        }
+        let mut child_path = path.to_vec();
+        child_path.push(id);
+        changed |= resolve_children(
+            child,
+            &nested.input,
+            &mut nested.checkpoint,
+            definitions,
+            &child_path,
+            ended,
+        )?;
+        let outcome = nested.checkpoint.outcome.clone();
+        let terminal = nested.checkpoint.terminal.clone();
+        if let Some(value) = outcome {
+            state.children.remove(&id);
+            graph.complete_activation(input, state, id, value)?;
+            changed = true;
+        } else if let Some(terminal) = terminal {
+            ended.push(child_path);
+            graph.complete_subprocess_terminal(input, state, id, terminal)?;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+async fn signal_child_scopes(
+    context: &Context,
+    ended: &[Vec<u64>],
+    scopes: &mut HashMap<usize, (Vec<u64>, u64)>,
+    in_flight: &mut HashSet<(Vec<u64>, u64)>,
+) {
+    if ended.is_empty() {
+        return;
+    }
+    let mut state = context.state.lock().await;
+    let keys: Vec<_> = scopes
+        .iter()
+        .filter(|(_, (path, _))| ended.iter().any(|scope| path.starts_with(scope)))
+        .map(|(key, _)| *key)
+        .collect();
+    let mut hooks = Vec::new();
+    for key in keys {
+        if let Some((path, id)) = scopes.remove(&key) {
+            in_flight.remove(&(path, id));
+        }
+        if let Some(hook) = state.in_flight.remove(&key) {
+            hooks.push(hook);
+        }
+    }
+    drop(state);
+    for hook in hooks {
+        hook();
+    }
+}
+
+fn nested_wake(
+    graph: &GraphDefinition,
+    state: &GraphCheckpoint,
+    definitions: &NamedRegistry,
+) -> Result<Option<i64>, String> {
+    let mut next = graph.waiting_until(state);
+    for child in state.children.values() {
+        for at in [child.deadline_at_ms, child.next_eligible_at_ms]
+            .into_iter()
+            .flatten()
+        {
+            next = Some(next.map_or(at, |prior| prior.min(at)));
+        }
+        let definition = compiled_child(graph, &child.process, definitions)?;
+        if let Some(at) = nested_wake(definition, &child.checkpoint, definitions)? {
+            next = Some(next.map_or(at, |prior| prior.min(at)));
+        }
+    }
+    Ok(next)
+}
+
+fn nested_pending(
+    graph: &GraphDefinition,
+    state: &GraphCheckpoint,
+    definitions: &NamedRegistry,
+) -> Result<bool, String> {
+    if graph.has_pending(state) {
+        return Ok(true);
+    }
+    for child in state.children.values() {
+        let definition = compiled_child(graph, &child.process, definitions)?;
+        if nested_pending(definition, &child.checkpoint, definitions)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn resume_nested_pending(
+    graph: &GraphDefinition,
+    input: &Value,
+    state: &mut GraphCheckpoint,
+    definitions: &NamedRegistry,
+) -> Result<(), String> {
+    if graph.has_pending(state) {
+        graph.resume_pending(input, state)?;
+    }
+    for child in state.children.values_mut() {
+        let definition = compiled_child(graph, &child.process, definitions)?;
+        resume_nested_pending(definition, &child.input, &mut child.checkpoint, definitions)?;
+    }
+    Ok(())
+}
+
+fn nested_state<'a>(
+    state: &'a mut GraphCheckpoint,
+    path: &[u64],
+) -> Result<&'a mut GraphCheckpoint, String> {
+    if let Some((first, rest)) = path.split_first() {
+        nested_state(
+            &mut state
+                .children
+                .get_mut(first)
+                .ok_or("missing child activation")?
+                .checkpoint,
+            rest,
+        )
+    } else {
+        Ok(state)
+    }
+}
+
+struct ReadyWork {
+    path: Vec<u64>,
+    activation: u64,
+    input: Value,
+    source: Value,
+    values: Values,
+    call: Option<Evaluate>,
+    async_call: Option<AsyncEvaluate>,
+    cancel: Cancel,
+}
+
+fn collect_ready(
+    graph: &GraphDefinition,
+    input: &Value,
+    state: &GraphCheckpoint,
+    path: &[u64],
+    definitions: &NamedRegistry,
+    work: &mut Vec<ReadyWork>,
+) -> Result<(), String> {
+    for (activation, name) in graph.ready_activations(state) {
+        let node = graph
+            .nodes
+            .iter()
+            .find(|node| node.name == name)
+            .ok_or("unknown task node")?;
+        if let GraphNodeKind::Subprocess { process, .. } = &node.kind {
+            let child = compiled_child(graph, process, definitions)?;
+            let nested = state
+                .children
+                .get(&activation)
+                .ok_or("missing child activation")?;
+            if nested.next_eligible_at_ms.is_some() {
+                continue;
+            }
+            let mut child_path = path.to_vec();
+            child_path.push(activation);
+            collect_ready(
+                child,
+                &nested.input,
+                &nested.checkpoint,
+                &child_path,
+                definitions,
+                work,
+            )?;
+            continue;
+        }
+        let (call, async_call, cancel) = match &node.kind {
+            GraphNodeKind::Task(call) | GraphNodeKind::TaskLoop(call, _) => {
+                (Some(call.clone()), None, Arc::new(|| {}) as Cancel)
+            }
+            GraphNodeKind::MultiInstance { task, .. } => {
+                (Some(task.clone()), None, Arc::new(|| {}) as Cancel)
+            }
+            GraphNodeKind::TaskWithCancel(call, cancel) => {
+                (Some(call.clone()), None, cancel.clone())
+            }
+            GraphNodeKind::AsyncTask(call)
+            | GraphNodeKind::AsyncTaskLoop(call, _)
+            | GraphNodeKind::AsyncMultiInstance { task: call, .. } => {
+                (None, Some(call.clone()), Arc::new(|| {}) as Cancel)
+            }
+            _ => return Err("ready node is not a task".into()),
+        };
+        work.push(ReadyWork {
+            path: path.to_vec(),
+            activation,
+            input: input.clone(),
+            source: graph.activation_input(state, activation, input)?,
+            values: graph.activation_values(state, activation)?,
+            call,
+            async_call,
+            cancel,
+        });
+    }
+    Ok(())
+}
+
 async fn execute_named(
     graph: &GraphDefinition,
     input: &Value,
     mut checkpoint: crate::named_runtime::GraphCheckpoint,
     permits: &Arc<Semaphore>,
     context: &Context,
+    definitions: &NamedRegistry,
 ) -> Result<NamedOutcome, String> {
     graph.migrate_checkpoint(&mut checkpoint);
     let mut tasks = JoinSet::new();
     let mut in_flight = HashSet::new();
-    loop {
+    let mut scopes = HashMap::new();
+    let mut task_ids = HashMap::new();
+    'drive: loop {
         graph.check_loop_bounds(&mut checkpoint, crate::store::now_ms());
+        let mut next = checkpoint.clone();
+        let mut ended = Vec::new();
+        if resolve_children(graph, input, &mut next, definitions, &[], &mut ended)? {
+            signal_child_scopes(context, &ended, &mut scopes, &mut in_flight).await;
+            if let Some(claim) = &context.claim {
+                if !claim
+                    .store
+                    .commit_checkpoint(&context.id, &claim.worker_id, claim.generation, &next)
+                    .await?
+                {
+                    return Err("lost claim before checkpoint".into());
+                }
+            } else if let Some(store) = &context.store {
+                store.commit_checkpoint(&context.id, &next).await?;
+            }
+            checkpoint = next;
+            continue;
+        }
         if let Some(terminal) = &checkpoint.terminal {
             return Ok(NamedOutcome::Terminal(terminal.clone()));
         }
@@ -848,53 +1213,50 @@ async fn execute_named(
             checkpoint = next;
             continue;
         }
+        let mut work = Vec::new();
+        collect_ready(graph, input, &checkpoint, &[], definitions, &mut work)?;
         if tasks.is_empty()
-            && graph.ready(&checkpoint).is_empty()
-            && !graph.has_pending(&checkpoint)
-            && let Some(wake) = graph.waiting_until(&checkpoint)
+            && work.is_empty()
+            && !nested_pending(graph, &checkpoint, definitions)?
+            && let Some(wake) = nested_wake(graph, &checkpoint, definitions)?
         {
             save_wait(context, &checkpoint, wake).await?;
             return Ok(NamedOutcome::Waiting(wake));
         }
-        for (activation, name) in graph.ready_activations(&checkpoint) {
-            if in_flight.contains(&activation) {
+        for ReadyWork {
+            path,
+            activation,
+            input: child_input,
+            source,
+            values,
+            call,
+            async_call,
+            cancel,
+        } in work
+        {
+            if in_flight.contains(&(path.clone(), activation)) {
                 continue;
             }
             let permit = match permits.clone().try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(tokio::sync::TryAcquireError::NoPermits)
-                    if tasks.is_empty() && !graph.has_pending(&checkpoint) =>
+                    if tasks.is_empty() && !nested_pending(graph, &checkpoint, definitions)? =>
                 {
-                    permits
-                        .clone()
-                        .acquire_owned()
-                        .await
-                        .map_err(|error| error.to_string())?
+                    if let Some(wake) = nested_wake(graph, &checkpoint, definitions)? {
+                        tokio::select! {
+                            permit = permits.clone().acquire_owned() => permit.map_err(|error| error.to_string())?,
+                            _ = tokio::time::sleep(Duration::from_millis(wake.saturating_sub(crate::store::now_ms()) as u64)) => continue 'drive,
+                        }
+                    } else {
+                        permits
+                            .clone()
+                            .acquire_owned()
+                            .await
+                            .map_err(|error| error.to_string())?
+                    }
                 }
                 Err(tokio::sync::TryAcquireError::NoPermits) => break,
                 Err(error) => return Err(error.to_string()),
-            };
-            let node = graph
-                .nodes
-                .iter()
-                .find(|node| node.name == name)
-                .ok_or("unknown task node")?;
-            let (call, async_call, cancel) = match &node.kind {
-                GraphNodeKind::Task(call) | GraphNodeKind::TaskLoop(call, _) => {
-                    (Some(call.clone()), None, Arc::new(|| {}) as Cancel)
-                }
-                GraphNodeKind::MultiInstance { task, .. } => {
-                    (Some(task.clone()), None, Arc::new(|| {}) as Cancel)
-                }
-                GraphNodeKind::TaskWithCancel(call, cancel) => {
-                    (Some(call.clone()), None, cancel.clone())
-                }
-                GraphNodeKind::AsyncTask(call)
-                | GraphNodeKind::AsyncTaskLoop(call, _)
-                | GraphNodeKind::AsyncMultiInstance { task: call, .. } => {
-                    (None, Some(call.clone()), Arc::new(|| {}) as Cancel)
-                }
-                _ => return Err("ready node is not a task".into()),
             };
             let mut state = context.state.lock().await;
             if !matches!(state.status, "pending" | "running" | "retry-waiting") {
@@ -910,14 +1272,20 @@ async fn execute_named(
             state.next += 1;
             state.in_flight.insert(key, cancel);
             drop(state);
-            let source = graph.activation_input(&checkpoint, activation, input)?;
-            let values = graph.activation_values(&checkpoint, activation)?;
-            in_flight.insert(activation);
+            in_flight.insert((path.clone(), activation));
+            scopes.insert(key, (path.clone(), activation));
             if let Some(call) = async_call {
                 let handle = tasks.spawn(async move {
                     let _permit = permit;
-                    (key, activation, call(source, values).await)
+                    (
+                        key,
+                        path,
+                        activation,
+                        child_input,
+                        call(source, values).await,
+                    )
                 });
+                task_ids.insert(handle.id(), key);
                 let abort: Cancel = Arc::new(move || handle.abort());
                 let mut state = context.state.lock().await;
                 if state.status == "running" {
@@ -927,14 +1295,15 @@ async fn execute_named(
                 }
             } else {
                 let call = call.ok_or("missing task call")?;
-                tasks.spawn_blocking(move || {
+                let handle = tasks.spawn_blocking(move || {
                     let _permit = permit;
-                    (key, activation, call(&source, &values))
+                    (key, path, activation, child_input, call(&source, &values))
                 });
+                task_ids.insert(handle.id(), key);
             }
         }
-        let completed = if graph.has_pending(&checkpoint) {
-            if let Some(done) = tasks.try_join_next() {
+        let completed = if nested_pending(graph, &checkpoint, definitions)? {
+            if let Some(done) = tasks.try_join_next_with_id() {
                 done
             } else {
                 let mut state = context.state.lock().await;
@@ -948,7 +1317,7 @@ async fn execute_named(
                     state.status = "running";
                 }
                 let mut next = checkpoint.clone();
-                graph.resume_pending(input, &mut next)?;
+                resume_nested_pending(graph, input, &mut next, definitions)?;
                 if let Some(claim) = &context.claim {
                     if !claim
                         .store
@@ -965,29 +1334,115 @@ async fn execute_named(
                 tokio::task::yield_now().await;
                 continue;
             }
+        } else if let Some(wake) = nested_wake(graph, &checkpoint, definitions)? {
+            tokio::select! {
+                done = tasks.join_next_with_id() => done.ok_or("graph has no ready tasks")?,
+                _ = tokio::time::sleep(Duration::from_millis(wake.saturating_sub(crate::store::now_ms()) as u64)) => continue 'drive,
+            }
         } else {
-            tasks.join_next().await.ok_or("graph has no ready tasks")?
+            tasks
+                .join_next_with_id()
+                .await
+                .ok_or("graph has no ready tasks")?
         };
-        let (key, activation, result) = completed.map_err(|error| error.to_string())?;
-        in_flight.remove(&activation);
+        let (task_id, (key, path, activation, child_input, result)) = match completed {
+            Ok(completed) => completed,
+            Err(error) => {
+                let key = task_ids.remove(&error.id());
+                if key.is_some_and(|key| !scopes.contains_key(&key)) {
+                    continue;
+                }
+                return Err(error.to_string());
+            }
+        };
+        task_ids.remove(&task_id);
+        if scopes.remove(&key).is_none() {
+            continue;
+        }
+        in_flight.remove(&(path.clone(), activation));
         let mut state = context.state.lock().await;
         state.in_flight.remove(&key);
         if state.status != "running" {
             return Err("instance cancelled".into());
         }
+        drop(state);
+        let mut current_graph = graph;
+        let mut current_state = &checkpoint;
+        let mut graphs = vec![graph];
+        for id in &path {
+            let child = current_state
+                .children
+                .get(id)
+                .ok_or("missing child activation")?;
+            current_graph = compiled_child(current_graph, &child.process, definitions)?;
+            graphs.push(current_graph);
+            current_state = &child.checkpoint;
+        }
         let result = match result {
             Ok(value) => value,
-            Err(error) => return Err(error),
+            Err(error) => {
+                for depth in (1..=path.len()).rev() {
+                    let Some(policy) = graphs[depth].retry.as_ref() else {
+                        continue;
+                    };
+                    let mut next = checkpoint.clone();
+                    let child = nested_state(&mut next, &path[..depth - 1])?
+                        .children
+                        .get_mut(&path[depth - 1])
+                        .ok_or("missing child activation")?;
+                    let now = crate::store::now_ms();
+                    let first = *child.first_failure_at_ms.get_or_insert(now);
+                    if let Some(wake) = next_retry_at(policy, child.attempt, first, now) {
+                        child.next_eligible_at_ms = Some(wake);
+                        signal_child_scopes(
+                            context,
+                            &[path[..depth].to_vec()],
+                            &mut scopes,
+                            &mut in_flight,
+                        )
+                        .await;
+                        if let Some(claim) = &context.claim {
+                            if !claim
+                                .store
+                                .commit_checkpoint(
+                                    &context.id,
+                                    &claim.worker_id,
+                                    claim.generation,
+                                    &next,
+                                )
+                                .await?
+                            {
+                                return Err("lost claim before checkpoint".into());
+                            }
+                        } else if let Some(store) = &context.store {
+                            store.commit_checkpoint(&context.id, &next).await?;
+                        }
+                        checkpoint = next;
+                        continue 'drive;
+                    }
+                }
+                return Err(error);
+            }
         };
         let mut next = checkpoint.clone();
-        graph.complete_activation(input, &mut next, activation, result)?;
-        if tasks.is_empty()
-            && graph.ready(&next).is_empty()
-            && !graph.has_pending(&next)
-            && let Some(wake) = graph.waiting_until(&next)
-        {
-            save_wait(context, &next, wake).await?;
-            return Ok(NamedOutcome::Waiting(wake));
+        current_graph.complete_activation(
+            &child_input,
+            nested_state(&mut next, &path)?,
+            activation,
+            result,
+        )?;
+        let mut ended = Vec::new();
+        let advanced = resolve_children(graph, input, &mut next, definitions, &[], &mut ended)?;
+        signal_child_scopes(context, &ended, &mut scopes, &mut in_flight).await;
+        if tasks.is_empty() && !advanced && !nested_pending(graph, &next, definitions)? {
+            let mut work = Vec::new();
+            collect_ready(graph, input, &next, &[], definitions, &mut work)?;
+            if work.is_empty()
+                && let Some(wake) = nested_wake(graph, &next, definitions)?
+            {
+                save_wait(context, &next, wake).await?;
+                return Ok(NamedOutcome::Waiting(wake));
+            }
         }
         if let Some(claim) = &context.claim {
             if !claim
@@ -1001,7 +1456,6 @@ async fn execute_named(
             store.commit_checkpoint(&context.id, &next).await?;
         }
         checkpoint = next;
-        drop(state);
     }
 }
 
@@ -1140,7 +1594,8 @@ mod tests {
                 cancelled,
                 store.clone(),
                 "worker".into(),
-                Arc::new(Semaphore::new(1))
+                Arc::new(Semaphore::new(1)),
+                Arc::new(HashMap::new()),
             )
             .await
             .is_ok()

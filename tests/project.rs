@@ -121,6 +121,70 @@ fn project_resolves_cross_file_types_tasks_and_decisions_in_any_file_order() {
 }
 
 #[test]
+fn project_resolves_subprocesses_across_same_scope_files() {
+    let parent = "namespace orders\nversion \"1\"\nprocess parent(input: Number) -> Number:\n  node start = start\n  node called = subprocess child(input)\n  node done = end\n  link start -> called\n  link called -> done(called)\n";
+    let child = "namespace orders\nversion \"1\"\nprocess child(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n";
+    for (a, b) in [(parent, child), (child, parent)] {
+        let root = project(MANIFEST, &[("a.bl", a), ("z.bl", b)]);
+        let programs = blkit::project::Project::load(&root)
+            .unwrap()
+            .programs()
+            .unwrap();
+        assert_eq!(programs.len(), 1);
+        assert_eq!(programs[0].processes.len(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn server_and_worker_build_link_cross_file_subprocesses() {
+    let parent = "namespace orders\nversion \"1\"\nprocess parent(input: Number) -> Number:\n  node start = start\n  node called = subprocess child(input)\n  node done = end\n  link start -> called\n  link called -> done(called)\n";
+    let child = "namespace orders\nversion \"1\"\nprocess child(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n";
+    for target in ["server", "worker"] {
+        let root = project(
+            &MANIFEST.replace("\"crate\"", &format!("\"{target}\"")),
+            &[("a-parent.bl", parent), ("z-child.bl", child)],
+        );
+        blkit::project::Project::load(&root)
+            .unwrap()
+            .build()
+            .unwrap();
+        fs::remove_file(root.join("z-child.bl")).unwrap();
+        assert!(
+            blkit::project::Project::load(&root)
+                .unwrap()
+                .build()
+                .unwrap_err()
+                .contains("unknown process: child")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn project_rejects_subprocesses_across_namespaces_or_versions() {
+    let parent = "namespace orders\nversion \"1\"\nprocess parent(input: Number) -> Number:\n  node start = start\n  node called = subprocess child(input)\n  node done = end\n  link start -> called\n  link called -> done(called)\n";
+    for child_header in [
+        "namespace other\nversion \"1\"\n",
+        "namespace orders\nversion \"2\"\n",
+    ] {
+        let child = format!(
+            "{child_header}process child(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n"
+        );
+        let root = project(MANIFEST, &[("a.bl", parent), ("z.bl", &child)]);
+        let error = blkit::project::Project::load(&root)
+            .unwrap()
+            .programs()
+            .unwrap_err();
+        assert!(
+            error.contains("a.bl") && error.contains("unknown process: child"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn project_rejects_duplicates_with_both_paths_and_keeps_versions_isolated() {
     let root = project(
         MANIFEST,

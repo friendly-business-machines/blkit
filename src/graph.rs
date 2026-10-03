@@ -170,6 +170,10 @@ pub struct Node {
 #[derive(Debug)]
 pub enum NodeKind {
     Start,
+    Subprocess {
+        process: String,
+        input: Expr,
+    },
     Task {
         task: String,
         input: Expr,
@@ -214,6 +218,7 @@ pub struct Link {
     pub condition: Option<Expr>,
     pub fallback: bool,
     pub label: Option<String>,
+    pub outcome: Option<String>,
 }
 
 fn task_reference(value: &str) -> bool {
@@ -338,6 +343,22 @@ pub fn parse_named(
                 _ if declaration.starts_with("pause_until ") => NodeKind::PauseUntil(
                     expr::expression(declaration.strip_prefix("pause_until ").unwrap())?,
                 ),
+                _ if declaration.starts_with("subprocess ") => {
+                    let call = declaration.strip_prefix("subprocess ").unwrap();
+                    let (process, argument) = call
+                        .split_once('(')
+                        .ok_or_else(|| format!("invalid subprocess node: {line}"))?;
+                    let argument = argument
+                        .strip_suffix(')')
+                        .ok_or_else(|| format!("invalid subprocess node: {line}"))?;
+                    if !super::identifier(process) {
+                        return Err(format!("invalid subprocess node: {line}"));
+                    }
+                    NodeKind::Subprocess {
+                        process: process.into(),
+                        input: expr::expression(argument)?,
+                    }
+                }
                 _ if declaration.starts_with("business_rule ") => {
                     let call = declaration.strip_prefix("business_rule ").unwrap();
                     let (model, argument) = call
@@ -491,6 +512,15 @@ pub fn parse_named(
             if !super::identifier(source) {
                 return Err(format!("invalid link: {line}"));
             }
+            let (target, outcome) = if let Some(target) = target.strip_suffix(" on error") {
+                (target, Some("error".to_owned()))
+            } else if let Some(target) = target.strip_suffix(" on cancel") {
+                (target, Some("cancel".to_owned()))
+            } else if let Some(target) = target.strip_suffix(" on terminate") {
+                (target, Some("terminate".to_owned()))
+            } else {
+                (target, None)
+            };
             let (target, condition, fallback, label) =
                 if let Some((target, cond)) = target.split_once(" when ") {
                     (target, Some(expr::expression(cond)?), false, None)
@@ -522,6 +552,7 @@ pub fn parse_named(
                 condition,
                 fallback,
                 label,
+                outcome,
             });
         } else if statement.starts_with("return ") {
             return Err("process return is not a terminal; link to an explicit end node".into());

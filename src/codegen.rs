@@ -631,6 +631,22 @@ pub fn generate(program: &Program) -> Result<String, String> {
             for node in &graph.nodes {
                 let kind = match &node.kind {
                     NodeKind::Start => "blkit::named_runtime::GraphNodeKind::Start".into(),
+                    NodeKind::Subprocess {
+                        process: child,
+                        input: argument,
+                    } => {
+                        let mut env = scopes[node.name.as_str()].clone();
+                        env.remove(&node.name);
+                        format!(
+                            "blkit::named_runtime::GraphNodeKind::Subprocess {{ process: {child:?}, input: {} }}",
+                            graph_closure(
+                                emit_expr(argument, program),
+                                &env,
+                                &process.input,
+                                &process.input_type
+                            )
+                        )
+                    }
                     NodeKind::PauseFor(duration) => format!(
                         "blkit::named_runtime::GraphNodeKind::PauseFor(std::time::Duration::from_millis({}))",
                         duration.as_millis()
@@ -831,7 +847,7 @@ pub fn generate(program: &Program) -> Result<String, String> {
                         )
                     )
                 });
-                out.push_str(&format!("blkit::named_runtime::GraphLink {{ source: {:?}, target: {:?}, value: {value}, condition: {condition}, fallback: {}, label: {:?} }},\n", link.source, link.target, link.fallback, link.label));
+                out.push_str(&format!("blkit::named_runtime::GraphLink {{ source: {:?}, target: {:?}, value: {value}, condition: {condition}, fallback: {}, label: {:?} }},\n", link.source, link.target, link.fallback, link.outcome.as_ref().or(link.label.as_ref())));
             }
             out.push_str("] },\n");
         }

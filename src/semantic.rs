@@ -106,6 +106,43 @@ pub fn validate(program: &Program) -> Result<(), String> {
             check_graph(&process.graph, &mut env, &process.output, program, false)?;
         }
     }
+    fn visit_process<'a>(
+        name: &'a str,
+        program: &'a Program,
+        active: &mut HashSet<&'a str>,
+        done: &mut HashSet<&'a str>,
+    ) -> Result<(), String> {
+        if done.contains(name) {
+            return Ok(());
+        }
+        if !active.insert(name) {
+            return Err(format!("recursive subprocess call: {name}"));
+        }
+        let process = program
+            .processes
+            .iter()
+            .find(|item| item.name == name)
+            .unwrap();
+        if let Some(graph) = &process.named_graph {
+            for node in &graph.nodes {
+                if let NodeKind::Subprocess { process: child, .. } = &node.kind {
+                    let child = program
+                        .processes
+                        .iter()
+                        .find(|item| item.name == *child)
+                        .unwrap();
+                    visit_process(&child.name, program, active, done)?;
+                }
+            }
+        }
+        active.remove(name);
+        done.insert(name);
+        Ok(())
+    }
+    let mut done = HashSet::new();
+    for process in &program.processes {
+        visit_process(&process.name, program, &mut HashSet::new(), &mut done)?;
+    }
     Ok(())
 }
 
@@ -496,6 +533,21 @@ fn check_named_graph(graph: &NamedGraph, has_deadline: bool) -> Result<(), Strin
         if matches!(target, NodeKind::Start) {
             return Err("link into start node".into());
         }
+        if link.outcome.is_some() {
+            if !matches!(source, NodeKind::Subprocess { .. }) {
+                return Err(format!("outcome link requires subprocess: {}", link.source));
+            }
+            if link.value.is_some()
+                || link.condition.is_some()
+                || link.fallback
+                || link.label.is_some()
+            {
+                return Err(format!(
+                    "outcome link cannot carry a payload or gateway annotation: {}",
+                    link.source
+                ));
+            }
+        }
         links.entry(&link.source).or_default().push(&link.target);
     }
     fn visit<'a>(
@@ -571,6 +623,25 @@ fn check_named_graph(graph: &NamedGraph, has_deadline: bool) -> Result<(), Strin
         return Err(format!("node {name} has no reachable exit"));
     }
     for node in &graph.nodes {
+        if matches!(node.kind, NodeKind::Subprocess { .. }) {
+            let mut outcomes = HashSet::new();
+            let mut success = 0;
+            for link in graph.links.iter().filter(|link| link.source == node.name) {
+                if let Some(outcome) = &link.outcome {
+                    if !outcomes.insert(outcome) {
+                        return Err(format!("duplicate subprocess outcome link: {outcome}"));
+                    }
+                } else {
+                    success += 1;
+                }
+            }
+            if success != 1 {
+                return Err(format!(
+                    "subprocess {} requires exactly one success link",
+                    node.name
+                ));
+            }
+        }
         if matches!(
             node.kind,
             NodeKind::Start
@@ -686,6 +757,17 @@ fn check_named_graph(graph: &NamedGraph, has_deadline: bool) -> Result<(), Strin
     Ok(())
 }
 
+fn route_scope(
+    scopes: &HashMap<&str, HashMap<String, Type>>,
+    link: &crate::graph::Link,
+) -> HashMap<String, Type> {
+    let mut env = scopes[link.source.as_str()].clone();
+    if link.outcome.is_some() {
+        env.remove(&link.source);
+    }
+    env
+}
+
 fn task_types<'a>(program: &'a Program, task: &str) -> Result<(&'a Type, &'a Type), String> {
     if let Some(source) = program.tasks.iter().find(|item| item.name == task) {
         return Ok((&source.input_type, &source.output));
@@ -706,6 +788,14 @@ pub(crate) fn named_scopes<'a>(
     let mut universe = input.clone();
     for node in &graph.nodes {
         match &node.kind {
+            NodeKind::Subprocess { process, .. } => {
+                let child = program
+                    .processes
+                    .iter()
+                    .find(|item| item.name == *process)
+                    .ok_or_else(|| format!("unknown process: {process}"))?;
+                universe.insert(node.name.clone(), child.output.clone());
+            }
             NodeKind::Task { task, .. }
             | NodeKind::TaskLoop { task, .. }
             | NodeKind::MultiInstance { task, .. } => {
@@ -789,14 +879,13 @@ pub(crate) fn named_scopes<'a>(
                 .iter()
                 .filter(|link| link.target == node.name)
                 .collect();
-            let mut env = incoming.first().map_or_else(
-                || input.clone(),
-                |link| scopes[link.source.as_str()].clone(),
-            );
+            let mut env = incoming
+                .first()
+                .map_or_else(|| input.clone(), |link| route_scope(&scopes, link));
             env.retain(|name, ty| {
                 incoming
                     .iter()
-                    .all(|link| scopes[link.source.as_str()].get(name) == Some(ty))
+                    .all(|link| route_scope(&scopes, link).get(name) == Some(ty))
             });
             if let Some(ty) = universe.get(&node.name) {
                 env.insert(node.name.clone(), ty.clone());
@@ -819,6 +908,28 @@ pub(crate) fn named_scopes<'a>(
         let mut env = scopes[node.name.as_str()].clone();
         match &node.kind {
             NodeKind::Start => {}
+            NodeKind::Subprocess { process, input } => {
+                let child = program
+                    .processes
+                    .iter()
+                    .find(|item| item.name == *process)
+                    .ok_or_else(|| format!("unknown process: {process}"))?;
+                if child.named_graph.is_none() {
+                    return Err(format!(
+                        "subprocess requires a named process graph: {process}"
+                    ));
+                }
+                let mut before = env.clone();
+                before.remove(&node.name);
+                let actual = infer(input, Some(&child.input_type), &before, program)?;
+                if actual != child.input_type {
+                    return Err(format!(
+                        "subprocess input type mismatch for {process}: expected {}, got {actual}",
+                        child.input_type
+                    ));
+                }
+                env.insert(node.name.clone(), child.output.clone());
+            }
             NodeKind::PauseFor(_) => {}
             NodeKind::PauseUntil(value) => {
                 let actual = infer(value, Some(&Type::Named("DateTime".into())), &env, program)?;
@@ -911,7 +1022,7 @@ pub(crate) fn named_scopes<'a>(
                             .value
                             .as_ref()
                             .ok_or_else(|| format!("join {} requires a value", node.name))?;
-                        infer(value, None, &scopes[link.source.as_str()], program)
+                        infer(value, None, &route_scope(&scopes, link), program)
                     })
                     .collect::<Result<_, _>>()?;
                 let first = results
@@ -1014,7 +1125,7 @@ pub(crate) fn named_scopes<'a>(
                     let actual = infer(
                         value,
                         Some(&process.output),
-                        &scopes[link.source.as_str()],
+                        &route_scope(&scopes, link),
                         program,
                     )?;
                     if actual != process.output {
@@ -1064,7 +1175,7 @@ pub(crate) fn named_scopes<'a>(
                 }
             }
             if let Some(value) = &link.value {
-                infer(value, None, &env, program)?;
+                infer(value, None, &route_scope(&scopes, link), program)?;
             }
         }
     }
