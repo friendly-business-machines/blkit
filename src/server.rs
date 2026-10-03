@@ -26,38 +26,6 @@ fn internal(operation: &str, instance_id: Option<&str>, _error: String) -> Reply
     self::error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
 }
 
-#[cfg(test)]
-mod logging_tests {
-    use super::*;
-
-    #[test]
-    fn storage_failure_uses_selected_log_sink_without_exposing_request_data() {
-        let file =
-            std::env::temp_dir().join(format!("blkit-server-events-{}.log", std::process::id()));
-        let writer = std::sync::Mutex::new(std::fs::File::create(&file).unwrap());
-        let subscriber = tracing_subscriber::fmt().with_writer(writer).finish();
-        let reply = tracing::subscriber::with_default(subscriber, || {
-            internal(
-                "status",
-                Some("instance-42"),
-                "request-payload-secret".into(),
-            )
-        });
-        assert_eq!(reply.0, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(reply.1.0["error"], "internal error");
-        let text = std::fs::read_to_string(&file).unwrap();
-        assert!(
-            text.contains("ERROR")
-                && text.contains("storage")
-                && text.contains("status")
-                && text.contains("instance-42"),
-            "{text}"
-        );
-        assert!(!text.contains("request-payload-secret"), "{text}");
-        std::fs::remove_file(file).unwrap();
-    }
-}
-
 pub fn router(engine: Arc<Engine>) -> Router {
     routes(Backend::Local(engine))
 }
@@ -138,5 +106,37 @@ async fn cancel(State(engine): State<Arc<Backend>>, Path(id): Path<String>) -> R
             error(StatusCode::CONFLICT, &message)
         }
         Err(message) => internal("cancel", Some(&id), message),
+    }
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use super::*;
+
+    #[test]
+    fn storage_failure_uses_selected_log_sink_without_exposing_request_data() {
+        let file =
+            std::env::temp_dir().join(format!("blkit-server-events-{}.log", std::process::id()));
+        let writer = std::sync::Mutex::new(std::fs::File::create(&file).unwrap());
+        let subscriber = tracing_subscriber::fmt().with_writer(writer).finish();
+        let reply = tracing::subscriber::with_default(subscriber, || {
+            internal(
+                "status",
+                Some("instance-42"),
+                "request-payload-secret".into(),
+            )
+        });
+        assert_eq!(reply.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(reply.1.0["error"], "internal error");
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            text.contains("ERROR")
+                && text.contains("storage")
+                && text.contains("status")
+                && text.contains("instance-42"),
+            "{text}"
+        );
+        assert!(!text.contains("request-payload-secret"), "{text}");
+        std::fs::remove_file(file).unwrap();
     }
 }
