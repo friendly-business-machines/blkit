@@ -489,3 +489,91 @@ fn field_variant_and_return_errors_are_reported() {
         );
     }
 }
+
+#[test]
+fn string_operators_parse_and_typecheck_without_changing_range_or_equality() {
+    use blkit::expr::{Expr, Stmt};
+    let source = format!(
+        "{HEADER}task compose(input: String) -> String:\n  return \"foo\" + input + \"bar\"\ntask member(input: String) -> Bool:\n  return input in [\"active\", \"pending\"]\ntask negative(input: String) -> Bool:\n  return -1 == -1\ntask compare(input: String) -> Bool:\n  return \"a\" + \"b\" == \"ab\"\n"
+    );
+    let program = parse(&source).unwrap();
+    validate(&program).unwrap();
+    let Stmt::Return(Expr::Binary(_, op, _)) = &program.tasks[3].body[0] else {
+        panic!("expected comparison");
+    };
+    assert_eq!(op, "==", "concatenation binds more tightly than equality");
+    for broken in [
+        source.replace("\"foo\" + input", "\"foo\" + 1"),
+        source.replace("input in [\"active\", \"pending\"]", "input in [1, 2]"),
+        source.replace("\"a\" + \"b\" == \"ab\"", "\"a\" = \"A\""),
+    ] {
+        assert!(
+            parse(&broken).and_then(|p| validate(&p)).is_err(),
+            "accepted {broken}"
+        );
+    }
+    let range = format!("{HEADER}task range(input: Number) -> Bool:\n  return input in [1..5]\n");
+    validate(&parse(&range).unwrap()).unwrap();
+}
+
+#[test]
+fn string_builtin_signatures_and_literal_regexes_are_validated() {
+    let good = [
+        ("string(123)", "String"),
+        ("string(true)", "String"),
+        ("string(date(\"2026-01-01\"))", "String"),
+        ("string(time(\"12:30:00\"))", "String"),
+        ("string(dateTime(\"2026-01-01T00:00:00Z\"))", "String"),
+        ("stringJoin([], \",\")", "String"),
+        ("stringLength(\"é\")", "Number"),
+        ("substring(\"abc\", -1)", "String"),
+        ("substring(\"abc\", 1, 2)", "String"),
+        ("substringBefore(\"a:b\", \":\")", "String"),
+        ("substringAfter(\"a:b\", \":\")", "String"),
+        ("upperCase(\"a\")", "String"),
+        ("lowerCase(\"A\")", "String"),
+        ("trim(\" a \" )", "String"),
+        ("trimLeading(\" a\")", "String"),
+        ("trimTrailing(\"a \" )", "String"),
+        ("contains(\"ab\", \"a\")", "Bool"),
+        ("startsWith(\"ab\", \"a\")", "Bool"),
+        ("endsWith(\"ab\", \"b\")", "Bool"),
+        ("matches(\"ab\", \"a\", \"im\")", "Bool"),
+        ("replace(\"ab\", \"a\", \"x\", \"s\")", "String"),
+        ("split(\"a,b\", \",\")", "List<String>"),
+        ("split(\"a,b\", [\",\", \";\"])", "List<String>"),
+        ("extract(\"ab\", \"(a)(b)\")", "List<List<String>>"),
+        ("isBlank(\" \" )", "Bool"),
+        ("isEmpty(\"\")", "Bool"),
+        ("indexOf(\"abc\", \"b\")", "Number"),
+        ("charAt(\"abc\", -1)", "String"),
+        ("reverse(\"abc\")", "String"),
+        ("padLeading(\"a\", 3)", "String"),
+        ("padTrailing(\"a\", 3, \"x\")", "String"),
+        ("repeat(\"ab\", 2)", "String"),
+    ];
+    for (expr, ty) in good {
+        let source = format!("{HEADER}task good(input: String) -> {ty}:\n  return {expr}\n");
+        validate(&parse(&source).unwrap()).unwrap_or_else(|e| panic!("{expr}: {e}"));
+    }
+    let decision = format!(
+        "{HEADER}decision find(input: String) -> List<List<String>>:\n  node result: List<List<String>> = literal extract(input, \"(a)\")\n  output result\n"
+    );
+    validate(&parse(&decision).unwrap()).unwrap();
+    for (expr, diagnostic) in [
+        ("string([1])", "string"),
+        ("stringJoin([1], \",\")", "List<String>"),
+        ("split(\"x\", 1)", "split"),
+        ("matches(\"x\", \"[\")", "regex"),
+        ("matches(\"x\", \"x\", \"q\")", "flag"),
+        ("replace(\"x\", \"[\", \"y\")", "regex"),
+        ("extract(\"x\", \"[\")", "regex"),
+        ("substring(\"x\")", "substring"),
+        ("padLeading(\"a\", \"3\")", "Number"),
+        ("contains(\"abc\", 1)", "contains"),
+    ] {
+        let source = format!("{HEADER}task bad(input: String) -> String:\n  return {expr}\n");
+        let error = validate(&parse(&source).unwrap()).unwrap_err();
+        assert!(error.contains(diagnostic), "{expr}: {error}");
+    }
+}
