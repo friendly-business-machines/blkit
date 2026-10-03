@@ -9,6 +9,8 @@ cargo run -- examples/approve.bl /tmp/approve.rs
 
 The generated file can be included in a Rust crate with dependencies on `blkit`, `serde` (derive), `serde_json`, and `rust_decimal` (serde-str), and `chrono` (serde) when temporal types or constructors are used. Compile that crate with `cargo build` or `cargo test`. The example in [`examples/approve.bl`](examples/approve.bl) is compiled and executed by the test suite.
 
+The `blkit` CLI accepts `blkit SOURCE.bl OUTPUT.rs` for one file, `blkit build [PROJECT_DIR]` to build a project, and `blkit update [PROJECT_DIR]` to refresh its lockfile. Project commands default to the current directory. Run `blkit --help` or `blkit build --help` for usage, `blkit --version` for the CLI version, or `blkit --completions bash` to print shell completion (also supports `elvish`, `fish`, `powershell`, and `zsh`). From this checkout, replace `blkit` with `cargo run --` in these examples. Project `build` and `update` show a temporary spinner on an interactive stderr terminal; errors include the file or project path on stderr. Redirected stderr, `NO_COLOR`, and `CLICOLOR=0` disable styling and animation, so scripts receive plain diagnostics. Completion scripts go to stdout without progress output.
+
 ## Build a blkit project
 
 Put a `blkit.toml` at the root of your project; no Rust project or list of `.bl` files is needed. For example:
