@@ -276,6 +276,43 @@ fn project_builds_a_reusable_library_from_multiple_scopes_and_cross_file_tasks()
 }
 
 #[test]
+fn project_string_helpers_are_available_to_generated_crate_and_consumer() {
+    let root = project(
+        MANIFEST,
+        &[(
+            "strings.bl",
+            "namespace orders\nversion \"1\"\ntask first(input: String) -> String:\n  return charAt(input, 1)\ntask check(input: String) -> Bool:\n  return matches(input, input)\nprocess route(input: String) -> String:\n  node start = start\n  node value = task first(input)\n  node done = end\n  link start -> value\n  link value -> done(value)\n",
+        )],
+    );
+    blkit::project::Project::load(&root)
+        .unwrap()
+        .build()
+        .unwrap();
+    let consumer = root.join("consumer");
+    fs::create_dir_all(consumer.join("src")).unwrap();
+    fs::write(consumer.join("Cargo.toml"), format!("[package]\nname = \"string_consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\norders = {{ path = {:?} }}\nserde_json = \"1\"\n", root.join(".blkit").to_str().unwrap())).unwrap();
+    fs::write(consumer.join("src/lib.rs"), "#[test] fn generated_strings() { assert_eq!(orders::scope_0::first(\"éx\".into()).unwrap(), \"é\"); assert!(orders::scope_0::check(\"[\".into()).is_err()); let graph = orders::named_graph_definitions().remove(0); let input = serde_json::json!(\"éx\"); let mut checkpoint = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut checkpoint).unwrap(), serde_json::json!(\"é\")); }\n").unwrap();
+    let output = std::process::Command::new("cargo")
+        .args(["test", "--offline", "--manifest-path"])
+        .arg(consumer.join("Cargo.toml"))
+        .env(
+            "CARGO_TARGET_DIR",
+            std::env::var_os("CARGO_TARGET_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| root.join(".blkit/target")),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn project_locks_local_dependency_versions_until_explicit_update() {
     let manifest =
         format!("{MANIFEST}[dependencies]\nextra = {{ version = \"0.1.0\", path = \"extra\" }}\n");

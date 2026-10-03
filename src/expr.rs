@@ -85,14 +85,17 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
             if !closed {
                 return Err("unterminated string expression".into());
             }
-        } else if ch.is_ascii_alphanumeric() || ch == '_' {
+        } else if ch.is_ascii_alphanumeric()
+            || ch == '_'
+            || (ch == '-' && chars.peek().is_some_and(char::is_ascii_digit))
+        {
             while chars
                 .peek()
                 .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
             {
                 token.push(chars.next().unwrap());
             }
-            if ch.is_ascii_digit() && chars.peek() == Some(&'.') {
+            if (ch.is_ascii_digit() || ch == '-') && chars.peek() == Some(&'.') {
                 let mut lookahead = chars.clone();
                 lookahead.next();
                 if lookahead.peek().is_some_and(char::is_ascii_digit) {
@@ -106,7 +109,7 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
             || ("!=<>".contains(ch) && chars.peek() == Some(&'='))
         {
             token.push(chars.next().unwrap());
-        } else if !".[](),<>".contains(ch) {
+        } else if !".[](),<>+".contains(ch) {
             return Err(format!("invalid character in expression: {ch}"));
         }
         result.push(token);
@@ -196,8 +199,17 @@ impl Parser {
             _ if first.starts_with('"') && first.ends_with('"') && first.len() >= 2 => {
                 Expr::String(first[1..first.len() - 1].into())
             }
-            _ if first.chars().next().is_some_and(|c| c.is_ascii_digit())
-                && first.chars().all(|c| c.is_ascii_digit() || c == '.') =>
+            _ if first
+                .strip_prefix('-')
+                .unwrap_or(&first)
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+                && first
+                    .strip_prefix('-')
+                    .unwrap_or(&first)
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == '.') =>
             {
                 Expr::Number(first)
             }
@@ -238,6 +250,7 @@ impl Parser {
                 Some("and") => 2,
                 Some("==" | "!=" | ">" | ">=" | "<" | "<=" | "in" | "between") => 3,
                 Some("matches") if !self.columns.is_empty() => 3,
+                Some("+") => 4,
                 _ => break,
             };
             if priority < minimum {

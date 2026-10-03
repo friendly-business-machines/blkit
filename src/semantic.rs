@@ -236,6 +236,7 @@ fn check_decision(
         for name in found {
             if !knowledge_names.contains(name)
                 && !range_relation(name)
+                && !string_builtin(name)
                 && !matches!(name, "date" | "time" | "dateTime")
             {
                 return Err(format!("unknown knowledge model: {name}"));
@@ -310,6 +311,7 @@ fn check_decision(
             for name in called {
                 if !knowledge_names.contains(name)
                     && !range_relation(name)
+                    && !string_builtin(name)
                     && !matches!(name, "date" | "time" | "dateTime")
                 {
                     return Err(format!("unknown knowledge model: {name}"));
@@ -1533,7 +1535,124 @@ fn infer_with(
                     _ => "DateTime",
                 }));
             }
-            Err(format!("unknown knowledge model: {name}"))
+            let text = named("String");
+            let number = named("Number");
+            let boolean = named("Bool");
+            let texts = Type::Generic("List".into(), Box::new(text.clone()));
+            if name == "string" {
+                let [value] = args.as_slice() else {
+                    return Err("string requires one argument".into());
+                };
+                let ty = infer_with(value, None, env, program, knowledge)?;
+                if !matches!(&ty, Type::Named(n) if matches!(n.as_str(), "String" | "Number" | "Bool" | "Date" | "Time" | "DateTime"))
+                {
+                    return Err(format!("string cannot convert {ty}"));
+                }
+                return Ok(text);
+            }
+            if name == "split" {
+                let [value, delimiters] = args.as_slice() else {
+                    return Err("split requires two arguments".into());
+                };
+                if infer_with(value, Some(&text), env, program, knowledge)? != text {
+                    return Err("split requires String input".into());
+                }
+                let delimiter_type = match delimiters {
+                    List(_) => infer_with(delimiters, Some(&texts), env, program, knowledge)?,
+                    _ => infer_with(delimiters, None, env, program, knowledge)?,
+                };
+                if delimiter_type != text && delimiter_type != texts {
+                    return Err("split requires String or List<String> delimiters".into());
+                }
+                return Ok(texts);
+            }
+            let (parameters, optional, output) = match name.as_str() {
+                "stringJoin" => (vec![texts, text.clone()], false, text.clone()),
+                "stringLength" | "indexOf" => (
+                    if name == "indexOf" {
+                        vec![text.clone(), text.clone()]
+                    } else {
+                        vec![text.clone()]
+                    },
+                    false,
+                    number.clone(),
+                ),
+                "substring" => (
+                    vec![text.clone(), number.clone(), number.clone()],
+                    true,
+                    text.clone(),
+                ),
+                "charAt" => (vec![text.clone(), number.clone()], false, text.clone()),
+                "padLeading" | "padTrailing" => (
+                    vec![text.clone(), number.clone(), text.clone()],
+                    true,
+                    text.clone(),
+                ),
+                "repeat" => (vec![text.clone(), number.clone()], false, text.clone()),
+                "substringBefore" | "substringAfter" => {
+                    (vec![text.clone(), text.clone()], false, text.clone())
+                }
+                "upperCase" | "lowerCase" | "trim" | "trimLeading" | "trimTrailing" | "reverse" => {
+                    (vec![text.clone()], false, text.clone())
+                }
+                "contains" | "startsWith" | "endsWith" => {
+                    (vec![text.clone(), text.clone()], false, boolean.clone())
+                }
+                "isBlank" | "isEmpty" => (vec![text.clone()], false, boolean.clone()),
+                "matches" => (
+                    vec![text.clone(), text.clone(), text.clone()],
+                    true,
+                    boolean.clone(),
+                ),
+                "replace" => (
+                    vec![text.clone(), text.clone(), text.clone(), text.clone()],
+                    true,
+                    text.clone(),
+                ),
+                "extract" => (
+                    vec![text.clone(), text.clone(), text.clone()],
+                    true,
+                    Type::Generic(
+                        "List".into(),
+                        Box::new(Type::Generic("List".into(), Box::new(text.clone()))),
+                    ),
+                ),
+                _ => return Err(format!("unknown knowledge model: {name}")),
+            };
+            if args.len() != parameters.len() && !(optional && args.len() == parameters.len() - 1) {
+                return Err(format!(
+                    "{name} requires {}{} arguments",
+                    parameters.len() - usize::from(optional),
+                    if optional { " or one more" } else { "" }
+                ));
+            }
+            for (arg, ty) in args.iter().zip(&parameters) {
+                let actual = infer_with(arg, Some(ty), env, program, knowledge)?;
+                if actual != *ty {
+                    return Err(format!("{name} requires {ty}, got {actual}"));
+                }
+            }
+            if matches!(name.as_str(), "matches" | "replace" | "extract") {
+                let flags = args.get(if name == "replace" { 3 } else { 2 });
+                let flags = match flags {
+                    Some(String(value)) if !value.chars().all(|c| matches!(c, 'i' | 'm' | 's')) => {
+                        return Err(format!("invalid regex flag: {value}"));
+                    }
+                    Some(String(value)) => value.as_str(),
+                    _ => "",
+                };
+                if let String(pattern) = &args[1] {
+                    let mut builder = regex::RegexBuilder::new(pattern);
+                    builder
+                        .case_insensitive(flags.contains('i'))
+                        .multi_line(flags.contains('m'))
+                        .dot_matches_new_line(flags.contains('s'));
+                    builder
+                        .build()
+                        .map_err(|error| format!("invalid regex: {error}"))?;
+                }
+            }
+            Ok(output)
         }
         Field(base, field) => {
             if let Name(name) = base.as_ref()
@@ -1622,10 +1741,15 @@ fn infer_with(
         Binary(left, op, right) => {
             if op == "in" {
                 let lhs = infer_with(left, None, env, program, knowledge)?;
-                let expected = Type::Generic("Range".into(), Box::new(lhs.clone()));
+                let kind = if lhs == named("String") && !matches!(right.as_ref(), Range(..)) {
+                    "List"
+                } else {
+                    "Range"
+                };
+                let expected = Type::Generic(kind.into(), Box::new(lhs.clone()));
                 let rhs = infer_with(right, Some(&expected), env, program, knowledge)?;
                 if rhs != expected {
-                    return Err(format!("in requires a range of {lhs}, got {rhs}"));
+                    return Err(format!("in requires a {kind} of {lhs}, got {rhs}"));
                 }
                 return Ok(named("Bool"));
             }
@@ -1643,6 +1767,7 @@ fn infer_with(
             }
             match op.as_str() {
                 "and" | "or" if lhs == named("Bool") => Ok(named("Bool")),
+                "+" if lhs == named("String") => Ok(named("String")),
                 "==" | "!=" => Ok(named("Bool")),
                 ">" | ">=" | "<" | "<="
                     if lhs == named("Number")
@@ -1668,6 +1793,38 @@ fn valid_time_format(value: &str) -> bool {
         && b[5] == b':'
         && [0, 1, 3, 4, 6, 7].iter().all(|&i| b[i].is_ascii_digit())
         && (b.len() == 8 || (b.len() > 9 && b[8] == b'.' && b[9..].iter().all(u8::is_ascii_digit)))
+}
+
+pub(crate) fn string_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "string"
+            | "stringJoin"
+            | "stringLength"
+            | "substring"
+            | "substringBefore"
+            | "substringAfter"
+            | "upperCase"
+            | "lowerCase"
+            | "trim"
+            | "trimLeading"
+            | "trimTrailing"
+            | "contains"
+            | "startsWith"
+            | "endsWith"
+            | "matches"
+            | "replace"
+            | "split"
+            | "extract"
+            | "isBlank"
+            | "isEmpty"
+            | "indexOf"
+            | "charAt"
+            | "reverse"
+            | "padLeading"
+            | "padTrailing"
+            | "repeat"
+    )
 }
 
 fn range_relation(name: &str) -> bool {
