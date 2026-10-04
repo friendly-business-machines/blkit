@@ -17,6 +17,8 @@
       "worker": {
         "skills": [
           "ponytail",
+          "test-driven-development",
+          "systematic-debugging",
           "application-errors",
           "error-handling-basics",
           "find-crate-source",
