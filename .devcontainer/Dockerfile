@@ -43,6 +43,7 @@ ARG USER_GID=${USER_UID}
 # - pass: standard Unix password manager.
 # - pinentry-tty: passphrase prompt helper for terminal-based GPG workflows.
 # - pre-commit: Git hook runner, available from the Ubuntu archive.
+# - socat: forward a root-owned Docker Desktop socket to the non-root user.
 # - sudo: allow privileged actions from non-root `vscode` account.
 #
 # Language/toolchain package rationale:
@@ -79,6 +80,7 @@ RUN apt-get update \
         cargo=1.93.1ubuntu1 \
         rustfmt=1.93.1ubuntu1 \
         rust-clippy=1.93.1ubuntu1 \
+        socat=1.8.1.1-1ubuntu0.1 \
         sudo=1.9.17p2-1ubuntu3.1 \
         wget=1.25.0-2ubuntu4.4 \
     && rm -rf /var/lib/apt/lists/*
@@ -145,7 +147,7 @@ ARG PI_CODING_AGENT_VERSION=0.87.1
 ARG PI_BETTER_COMPACTION_VERSION=0.7.1
 ARG PI_KEEP_GOING_VERSION=1.1.0
 ARG PI_QUOTAS_VERSION=0.5.0
-ARG PI_SUBAGENTS_VERSION=0.71.0
+ARG PI_SUBAGENTS_VERSION=0.75.0
 ARG PI_WEB_ACCESS_VERSION=0.31.0
 ARG PONYTAIL_VERSION=4.10.0
 ARG SUPERPOWERS_REF=5bf4e78011075bcfc0dc295f0724994cd123ee71
@@ -177,9 +179,8 @@ RUN install -d -m 0755 /usr/local/share/fonts/meslo \
 # - Passwordless sudo is intentional for developer convenience in ephemeral containers.
 # - Sudoers file permissions are set to 0440 as required by sudo.
 # - `GPG_TTY=$(tty)` helps `gpg`/`pinentry` and tools like `pass` talk to the active terminal.
-# - Rootless Podman's user namespace is configured by `--userns=keep-id` in
-#   devcontainer.json, so the user can access the bind-mounted API socket without
-#   a container-side Docker group.
+# - Rootless Podman's keep-id maps the bind-mounted API socket owner to vscode;
+#   Docker Desktop uses a user-owned socket proxy instead of the root group.
 #
 # GnuPG is left at its defaults so VS Code Dev Containers' credential forwarding
 # works as shipped: it forwards both the host gpg-agent (private-key operations,
@@ -277,8 +278,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 RUN uv tool install zensical \
     && uv tool install check-jsonschema
 
-# The host Podman socket's group is known only after it is mounted. Run this
-# before the VS Code server starts; devcontainer.json preserves the entrypoint.
-COPY --chmod=0755 .devcontainer/grant-podman-socket.sh /usr/local/bin/grant-podman-socket.sh
-ENTRYPOINT ["/usr/local/bin/grant-podman-socket.sh"]
+# Set up access to the mounted container-engine socket before VS Code starts.
+COPY --chmod=0755 .devcontainer/grant-container-engine-socket.sh /usr/local/bin/grant-container-engine-socket.sh
+ENTRYPOINT ["/usr/local/bin/grant-container-engine-socket.sh"]
 CMD ["sleep", "infinity"]

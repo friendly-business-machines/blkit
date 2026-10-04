@@ -169,20 +169,24 @@ Independent graph branches run concurrently. Each completed task's typed output 
 
 The first argument is the local in-process Turso database path (default `blkit.db`); the second is the shared maximum number of in-flight tasks (default `32`, must be positive). The optional third address defaults to loopback `127.0.0.1:3000`; binding elsewhere explicitly exposes an **unauthenticated development API**. Restarting with the same database keeps past results and checkpoints. A checkpointed pending instance starts, retry-waiting work resumes when eligible, and interrupted running work counts as an execution failure: it resumes from the last committed checkpoint after a permitted delay, or becomes failed if retry limits prohibit it. Accepted cancellation stays cancelled. Turso adds the checkpoint/retry columns to existing local databases on open; old active records without a checkpoint are marked interrupted/failed rather than guessed or replayed, while old terminal records remain intact. Cancellation stops further graph advancement and signals all in-flight tasks, but cannot preempt a synchronous `.bl` function already running or undo external side effects; late results are ignored.
 
+## Development containers
+
+In VS Code, run **Dev Containers: Reopen in Container** and select the configuration for your host: the existing **blkit (Ubuntu 26.04 LTS)** option is for Fedora Silverblue with rootless Podman; **blkit (Windows + Docker Desktop)** is for Windows VS Code with a Windows checkout and Docker Desktop's WSL 2 backend. Both use the same Dockerfile. The Windows option forwards Docker Desktop's socket without making the host socket world-writable; do not use it from a VS Code Remote–WSL window.
+
 ## PostgreSQL integration tests
 
-Run isolated PostgreSQL tests with the Docker-compatible Podman socket mounted in this devcontainer:
+Run isolated PostgreSQL tests with the Docker-compatible container-engine socket mounted in the selected devcontainer:
 
 ```sh
-BLKIT_TESTCONTAINERS_HOST=host.containers.internal cargo test --test postgres
+cargo test --test postgres
 ```
 
-The devcontainer sets `BLKIT_TESTCONTAINERS_HOST` for new sessions; pass it explicitly in an already-running container. Outside Podman-in-a-container, omit it to use Testcontainers' discovered host. The Rust Testcontainers PostgreSQL module launches a fresh `postgres:17.6-alpine` database for each test, waits for readiness, and removes it afterward. No system PostgreSQL or manually managed database is needed.
+The Podman devcontainer sets `BLKIT_TESTCONTAINERS_HOST=host.containers.internal`; the Docker Desktop option sets it to `host.docker.internal`. If using a container started before selecting the new configuration, rebuild/reopen it to get the right value. Outside a devcontainer, omit it to use Testcontainers' discovered host. The Rust Testcontainers PostgreSQL module launches a fresh `postgres:17.6-alpine` database for each test, waits for readiness, and removes it afterward. No system PostgreSQL or manually managed database is needed.
 
 To run the two-process failover example (kills the owner after B commits and proves C resumes without rerunning B):
 
 ```sh
-BLKIT_TESTCONTAINERS_HOST=host.containers.internal cargo test --test postgres second_worker_process_resumes_c_after_owner_killed_without_replaying_b -- --nocapture
+cargo test --test postgres second_worker_process_resumes_c_after_owner_killed_without_replaying_b -- --nocapture
 ```
 
 PostgreSQL keeps each instance as a durable queue row: `pending` or eligible `retry-waiting` rows remain present when claimed, with exact process identity, checkpoint, attempt metadata, owner, lease deadline and incrementing claim generation. Claims use `FOR UPDATE SKIP LOCKED`; committed checkpoint/terminal updates and lease renewals require the current unexpired owner and generation. Expired owners are reconciled by the API and worker loops using the policy persisted with each instance; a capable worker is required to claim the retry. A worker takes a positive lease duration in milliseconds (default `5000`) and renews it while executing; configure it longer than expected transient database pauses. Claims are fenced by owner, unexpired lease and generation.
