@@ -1,6 +1,6 @@
 use blkit::{
-    named_runtime::GraphCheckpoint,
-    runtime::{Instance, Store},
+    compiled_graph::GraphCheckpoint,
+    runtime::{Engine, Instance, LocalStore, Registry},
 };
 use serde_json::json;
 
@@ -8,7 +8,7 @@ use serde_json::json;
 async fn local_cancel_timeout_race_has_one_terminal_winner() {
     let path = std::env::temp_dir().join(format!("blkit-timeout-race-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -51,7 +51,7 @@ async fn local_cancel_timeout_race_has_one_terminal_winner() {
 async fn expired_deadline_wins_over_late_completion_and_cancellation() {
     let path = std::env::temp_dir().join(format!("blkit-timeout-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     for (id, status) in [
         ("queued", "pending"),
         ("waiting", "waiting"),
@@ -103,7 +103,7 @@ async fn expired_deadline_wins_over_late_completion_and_cancellation() {
 async fn wake_and_deadline_metadata_survive_reopen_and_due_selection() {
     let path = std::env::temp_dir().join(format!("blkit-wake-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let mut item = Instance::new("due", "orders", "1", "route", json!(1));
     item.status = "waiting".into();
     item.wake_at_ms = Some(100);
@@ -114,7 +114,7 @@ async fn wake_and_deadline_metadata_survive_reopen_and_due_selection() {
     store.create(&item).await.unwrap();
     assert!(store.due_waits(99).await.unwrap().is_empty());
     drop(store);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let loaded = store.get("due").await.unwrap().unwrap();
     assert_eq!(loaded.wake_at_ms, Some(100));
     assert_eq!(loaded.first_claim_at_ms, Some(25));
@@ -129,7 +129,7 @@ async fn wake_and_deadline_metadata_survive_reopen_and_due_selection() {
 async fn local_first_claim_deadline_is_not_reset_by_retry() {
     let path = std::env::temp_dir().join(format!("blkit-first-claim-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let mut item = Instance::new("job", "orders", "1", "route", json!(1));
     item.deadline_origin = Some("first_claimed".into());
     item.deadline_duration_ms = Some(300_000);
@@ -151,11 +151,11 @@ async fn local_first_claim_deadline_is_not_reset_by_retry() {
 }
 
 #[tokio::test]
-async fn legacy_checkpoint_bytes_survive_store_upgrade_without_losing_committed_results() {
+async fn legacy_checkpoint_recovery_fails_without_changing_stored_work() {
     let path =
         std::env::temp_dir().join(format!("blkit-legacy-checkpoint-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let mut item = Instance::new("legacy", "test", "1", "work", json!(null));
     item.checkpoint = Some(
         serde_json::from_value(json!({
@@ -166,18 +166,76 @@ async fn legacy_checkpoint_bytes_survive_store_upgrade_without_losing_committed_
     );
     store.create(&item).await.unwrap();
     drop(store);
-    let store = Store::open(&path).await.unwrap();
-    let saved = store.get("legacy").await.unwrap().unwrap();
-    assert_eq!(saved.checkpoint.unwrap().completed["finished"], json!(4));
+    let store = LocalStore::open(&path).await.unwrap();
+    let before = store.get("legacy").await.unwrap().unwrap();
+    let engine = Engine::new(Registry::new(vec![]).unwrap(), store.clone(), 1).unwrap();
+    assert!(
+        engine
+            .recover()
+            .await
+            .unwrap_err()
+            .contains("unsupported checkpoint version")
+    );
+    let after = store.get("legacy").await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&after).unwrap(),
+        serde_json::to_value(&before).unwrap()
+    );
+    assert_eq!(after.checkpoint.unwrap().completed["finished"], json!(4));
+    drop(engine);
     drop(store);
     std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn nested_legacy_checkpoint_recovery_preserves_parent_and_child() {
+    let path = std::env::temp_dir().join(format!("blkit-nested-legacy-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let mut parent = serde_json::to_value(GraphCheckpoint::default()).unwrap();
+    let mut child = parent.clone();
+    child.as_object_mut().unwrap().remove("version");
+    parent["version"] = json!(2);
+    parent["children"] = json!({"1": {"process": "child", "input": null, "checkpoint": child}});
+    let mut item = Instance::new("nested", "test", "1", "work", json!(null));
+    item.checkpoint = Some(serde_json::from_value(parent).unwrap());
+    store.create(&item).await.unwrap();
+    let before = serde_json::to_value(store.get("nested").await.unwrap()).unwrap();
+    let engine = Engine::new(Registry::new(vec![]).unwrap(), store.clone(), 1).unwrap();
+    assert!(
+        engine
+            .recover()
+            .await
+            .unwrap_err()
+            .contains("unsupported checkpoint version")
+    );
+    assert_eq!(
+        serde_json::to_value(store.get("nested").await.unwrap()).unwrap(),
+        before
+    );
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn default_checkpoint_is_current_but_old_json_is_not() {
+    GraphCheckpoint::default().ensure_supported().unwrap();
+    let mut json = serde_json::to_value(GraphCheckpoint::default()).unwrap();
+    json.as_object_mut().unwrap().remove("version");
+    let old: GraphCheckpoint = serde_json::from_value(json).unwrap();
+    assert!(
+        old.ensure_supported()
+            .unwrap_err()
+            .contains("unsupported checkpoint version")
+    );
 }
 
 #[tokio::test]
 async fn checkpoint_retry_metadata_and_named_terminal_survive_reopen() {
     let path = std::env::temp_dir().join(format!("blkit-checkpoint-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let mut checkpoint = GraphCheckpoint::default();
     checkpoint.completed.insert("b".into(), json!(12));
     checkpoint.selected.insert("fork".into(), vec![1, 2]);
@@ -194,7 +252,7 @@ async fn checkpoint_retry_metadata_and_named_terminal_survive_reopen() {
         .await
         .unwrap();
     drop(store);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let retry = store.get("checkpoint").await.unwrap().unwrap();
     assert_eq!(retry.status, "retry-waiting");
     assert_eq!(retry.attempt, 1);
@@ -212,7 +270,7 @@ async fn checkpoint_retry_metadata_and_named_terminal_survive_reopen() {
         .await
         .unwrap();
     drop(store);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let terminal = store.get("checkpoint").await.unwrap().unwrap();
     assert_eq!(terminal.terminal_name.as_deref(), Some("rejected"));
     assert_eq!(terminal.status, "business-error");
@@ -235,7 +293,7 @@ async fn upgrading_an_old_store_keeps_terminal_records_and_adds_checkpoint_colum
     conn.execute("INSERT INTO instances VALUES ('old', 'orders', '1.0', 'decide', '7', 'completed', '\"ok\"', NULL, 10, 11)", ()).await.unwrap();
     drop(conn);
     drop(db);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let old = store.get("old").await.unwrap().unwrap();
     assert_eq!(old.status, "completed");
     assert_eq!(old.result, Some(json!("ok")));
@@ -253,7 +311,7 @@ async fn upgrading_an_old_store_keeps_terminal_records_and_adds_checkpoint_colum
         .await
         .unwrap();
     drop(store);
-    let reopened = Store::open(&path).await.unwrap();
+    let reopened = LocalStore::open(&path).await.unwrap();
     assert!(
         reopened
             .get("new")
@@ -275,7 +333,7 @@ async fn upgrading_an_old_store_keeps_terminal_records_and_adds_checkpoint_colum
 async fn persisted_instance_and_terminal_result_survive_reopen() {
     let path = std::env::temp_dir().join(format!("blkit-store-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     store
         .create(&Instance::new(
             "case-1",
@@ -287,7 +345,7 @@ async fn persisted_instance_and_terminal_result_survive_reopen() {
         .await
         .unwrap();
     drop(store);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     assert_eq!(
         store.get("case-1").await.unwrap().unwrap().status,
         "pending"
@@ -297,7 +355,7 @@ async fn persisted_instance_and_terminal_result_survive_reopen() {
         .await
         .unwrap();
     drop(store);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let instance = store.get("case-1").await.unwrap().unwrap();
     assert_eq!(instance.namespace, "orders");
     assert_eq!(instance.version, "1.0");
@@ -312,7 +370,7 @@ async fn persisted_instance_and_terminal_result_survive_reopen() {
 async fn startup_fails_incomplete_instances_without_replaying_terminal_records() {
     let path = std::env::temp_dir().join(format!("blkit-recovery-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     for (id, state) in [
         ("pending", "pending"),
         ("running", "running"),
@@ -328,7 +386,7 @@ async fn startup_fails_incomplete_instances_without_replaying_terminal_records()
         }
     }
     drop(store);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     store.recover_interrupted().await.unwrap();
     for id in ["pending", "running", "cancelling"] {
         let item = store.get(id).await.unwrap().unwrap();
@@ -347,7 +405,7 @@ async fn startup_fails_incomplete_instances_without_replaying_terminal_records()
 async fn acknowledged_write_survives_abrupt_process_exit() {
     const KEY: &str = "BLKIT_STORE_CRASH_CHILD";
     if let Ok(path) = std::env::var(KEY) {
-        let store = Store::open(std::path::Path::new(&path)).await.unwrap();
+        let store = LocalStore::open(std::path::Path::new(&path)).await.unwrap();
         store
             .create(&Instance::new(
                 "crash-case",
@@ -376,7 +434,7 @@ async fn acknowledged_write_survives_abrupt_process_exit() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     assert_eq!(
         store.get("crash-case").await.unwrap().unwrap().result,
         Some(json!("ok"))
@@ -389,7 +447,7 @@ async fn acknowledged_write_survives_abrupt_process_exit() {
 async fn concurrent_acknowledged_transitions_survive_reopen() {
     let path = std::env::temp_dir().join(format!("blkit-concurrent-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let mut jobs = Vec::new();
     for index in 0..24 {
         let store = store.clone();
@@ -409,7 +467,7 @@ async fn concurrent_acknowledged_transitions_survive_reopen() {
         job.await.unwrap();
     }
     drop(store);
-    let reopened = Store::open(&path).await.unwrap();
+    let reopened = LocalStore::open(&path).await.unwrap();
     for index in 0..24 {
         let item = reopened
             .get(&format!("job-{index}"))

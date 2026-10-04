@@ -1,6 +1,6 @@
 use blkit::{
-    named_runtime::{GraphDefinition, GraphLink, GraphNode, GraphNodeKind},
-    runtime::{Branch, Definition, Engine, Evaluate, Registry, Step, Store},
+    compiled_graph::{GraphDefinition, GraphLink, GraphNode, GraphNodeKind},
+    runtime::{Engine, Evaluate, LocalStore, Registry},
 };
 use serde_json::{Value, json};
 use std::{
@@ -15,7 +15,7 @@ use std::{
 async fn parallel_multi_instances_share_capacity_and_cancel_inflight_work() {
     let path = std::env::temp_dir().join(format!("blkit-multi-capacity-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let active = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
     let task: Evaluate = {
@@ -73,7 +73,7 @@ async fn parallel_multi_instances_share_capacity_and_cancel_inflight_work() {
             },
         ],
     };
-    let engine = Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 2).unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 2).unwrap();
     let first = engine
         .start("test", "1", "batch", json!([1, 2, 3]))
         .await
@@ -186,8 +186,8 @@ async fn async_io_and_synchronous_tasks_share_the_inflight_limit() {
             }
         })
         .collect();
-    let store = Store::open(&path).await.unwrap();
-    let engine = Engine::new(Registry::new_named(graphs).unwrap(), store.clone(), 2).unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new(graphs).unwrap(), store.clone(), 2).unwrap();
     let a = engine.start("test", "1", "io", json!(1)).await.unwrap();
     let b = engine.start("test", "1", "io", json!(2)).await.unwrap();
     let c = engine.start("test", "1", "sync", json!(3)).await.unwrap();
@@ -288,9 +288,8 @@ async fn cancelling_async_task_drops_its_pending_future() {
                 },
             ],
         };
-        let store = Store::open(&path).await.unwrap();
-        let engine =
-            Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+        let store = LocalStore::open(&path).await.unwrap();
+        let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
         let id = engine
             .start("test", "1", "cancel_async", Value::Null)
             .await
@@ -394,7 +393,7 @@ async fn worker_restart_replays_uncommitted_async_effect() {
     };
     let input = json!(7);
     let checkpoint = graph.checkpoint(&input).unwrap();
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let mut item = Instance::new("lost", "test", "1", "replay", input.clone());
     item.checkpoint = Some(checkpoint);
     store.create(&item).await.unwrap();
@@ -405,8 +404,8 @@ async fn worker_restart_replays_uncommitted_async_effect() {
     };
     assert_eq!(call(input, Default::default()).await.unwrap(), json!(7));
     drop(store);
-    let store = Store::open(&path).await.unwrap();
-    let engine = Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
     engine.recover().await.unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
         while store.get("lost").await.unwrap().unwrap().status != "completed" {
@@ -422,62 +421,4 @@ async fn worker_restart_replays_uncommitted_async_effect() {
     drop(engine);
     drop(store);
     std::fs::remove_file(path).unwrap();
-}
-
-#[tokio::test]
-async fn independent_branches_and_instances_share_one_limit() {
-    let active = Arc::new(AtomicUsize::new(0));
-    let peak = Arc::new(AtomicUsize::new(0));
-    let branches: Vec<_> = (0..2)
-        .map(|index| {
-            let active = active.clone();
-            let peak = peak.clone();
-            Branch {
-                label: Some(if index == 0 { "left" } else { "right" }),
-                condition: None,
-                steps: vec![Step::Run {
-                    name: "work",
-                    call: Arc::new(move |_, _| {
-                        let count = active.fetch_add(1, Ordering::SeqCst) + 1;
-                        peak.fetch_max(count, Ordering::SeqCst);
-                        std::thread::sleep(Duration::from_millis(40));
-                        active.fetch_sub(1, Ordering::SeqCst);
-                        Ok(json!(index))
-                    }),
-                    cancel: Arc::new(|| {}),
-                }],
-            }
-        })
-        .collect();
-    let definition = Definition {
-        namespace: "test",
-        version: "1",
-        name: "parallel",
-        steps: vec![
-            Step::Gateway {
-                kind: "and",
-                branches,
-                join: "result",
-            },
-            Step::Return(Arc::new(|_, values| Ok(values["result"].clone()))),
-        ],
-        decode_input: Box::new(Ok::<Value, String>),
-    };
-    let permits = Arc::new(tokio::sync::Semaphore::new(2));
-    let (a, b) = tokio::join!(
-        definition.evaluate_limited(json!(null), permits.clone()),
-        definition.evaluate_limited(json!(null), permits)
-    );
-    assert_eq!(a.unwrap(), json!({"left":0, "right":1}));
-    assert_eq!(b.unwrap(), json!({"left":0, "right":1}));
-    assert_eq!(peak.load(Ordering::SeqCst), 2);
-    peak.store(0, Ordering::SeqCst);
-    let one = Arc::new(tokio::sync::Semaphore::new(1));
-    let (a, b) = tokio::join!(
-        definition.evaluate_limited(json!(null), one.clone()),
-        definition.evaluate_limited(json!(null), one)
-    );
-    a.unwrap();
-    b.unwrap();
-    assert_eq!(peak.load(Ordering::SeqCst), 1);
 }

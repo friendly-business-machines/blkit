@@ -1,0 +1,34 @@
+# Design
+
+## Context
+
+See `proposal.md` for motivation. `compiler::parse` constructs `Process.graph` as empty and only parses named process graphs; process-level `run`/`return` is explicitly rejected. The remaining step-graph parser (`graph::parse`), validator (`check_graph`), emitter (`emit_graph_steps`), and runtime (`Definition`/`Step`/`Branch`, `Registry::new`, `execute`) serve only manually constructed older Rust definitions and their tests. Separately, `GraphDefinition::migrate_checkpoint` and version-zero fallback fields handle old checkpoint JSON, not the step runtime. The current capabilities specify named graphs and restart from current committed checkpoints, not either old path. The code generator, project templates, README, and tests embed public Rust paths.
+
+## Goals / Non-Goals
+
+**Goals:** Delete the unsupported step-graph path and old checkpoint upgrade logic; fail safely on unsupported persisted checkpoints; make the surviving compiled-graph and local-store APIs self-describing; group remaining private compiler/execution logic by responsibility.
+
+**Non-Goals:** New `.bl` syntax, a new crate/workspace, redesigning the compiled-graph state machine, changing current checkpoint JSON or task/retry/cancellation semantics, renaming every identifier containing `named` or `legacy`, or splitting integration tests just for line counts.
+
+## Decisions
+
+1. **Delete the step-based path end to end before restructuring the remaining modules.** Remove `GraphStmt`/its branch/parser while retaining `NamedGraph`/`Node`/`Link` and `parse_named`. Remove the always-empty `Process.graph`, `semantic::check_graph`, codegen's legacy emitter and `has_legacy` branch, and the runtime's step `Definition`/`Step`/`Branch`, evaluate helpers, `execute`, registry legacy map/getter, engine legacy start branch, and tests that only exercise that removed path. Keep `Evaluate`, `Values`, `AsyncEvaluate`, `Cancel`, and shared `Context` behavior actually used by compiled-graph execution. Replace `Registry::new_named` with `Registry::new` for compiled graph definitions, and `get_named` with `get`; do not preserve dead aliases. Alternative: rename `Definition` to `LegacyDefinition`; rejected because this path cannot be emitted from valid source and removal is simpler.
+
+2. **Retire old-checkpoint upgrades, but reject rather than corrupt old state.** Remove `GraphDefinition::migrate_checkpoint`, version-zero `activation_values` fallback, and `GraphCheckpoint` fields used only to convert old `progress` to `route_progress`. Current checkpoints are created with version 2; keep the current fields and serialization shape. At public execution/resume entry points (synchronous `run`, local and distributed execution, and any other path that could advance a deserialized checkpoint), return a clear unsupported-checkpoint error if a checkpoint has an old/unsupported version; do not panic or silently discard committed results. Replace version-zero migration tests with rejection checks, retaining current-version round-trip and recovery checks. Alternative: preserve migration indefinitely; rejected because unpublished project needs no guarantee of compatibility with older checkpoint layouts. Do not purge persisted rows automatically.
+
+3. **Use precise prepublication public names, with one deliberate exception.** Rename `named_runtime` to `compiled_graph` and `runtime::Store` to `runtime::LocalStore` (the private `store.rs` may keep its filename). Update Rust references, codegen strings, project templates, README, binaries, and tests; no compatibility aliases. Keep generated `named_graph_definitions()` because a user task named `graph_definitions` is currently valid (`tests/generated.rs`), so renaming the generated function to that name creates a new collision. Alternative: renaming the generated function and reserving the name; rejected as an unnecessary language behavior change.
+
+4. **Split only meaningful remaining private boundaries.** Under `src/semantic/`, group decision checks, named graph/scope checks, and expression/type checks, leaving `validate` and declaration checks in `semantic.rs`; preserve `named_scopes` access for codegen. Under `src/codegen/`, group decision and named-graph emission; extract embedded range/date/time helper text verbatim only if it substantially clarifies the emitter. Under `src/runtime/`, move named/compiled-graph scheduling, subprocess and claimed execution into a private child; `Engine`, registry, retry helper, and existing worker hook remain accessible at their current `runtime` paths. Alternative: split everything by line count; rejected because `compiled_graph` is a cohesive state machine and small modules already have useful boundaries.
+
+5. **Characterize supported behavior, then make sequential cuts.** Use current `.bl` parse/validation checks, decision/range generation, compiled-graph local/distributed execution, and current-checkpoint restarts as baselines. After deletion, ensure process `run`/`return` remains rejected. Compare representative emitted Rust allowing only `named_runtime` → `compiled_graph` path changes; generated function name and diagnostics stay the same. Retire tests for deleted hand-built step execution and old checkpoint migration; do not replace them with tests for unsupported behavior. Keep or add minimal tests for old-checkpoint rejection and supported current-checkpoint recovery. Run targeted tests after each subsystem and all tests at the end, reporting any unavailable PostgreSQL environment.
+
+## Risks / Trade-offs
+
+- [Existing saved version-zero checkpoints can no longer resume] → reject with an actionable error rather than replay them or delete rows; document that current-format data is retained and old-format data requires the previous checkout.
+- [Removed step-execution tests may also have covered shared cancellation/concurrency behavior] → inspect each deleted test and retain/add a focused named-graph equivalent only where supported behavior would otherwise be untested.
+- [Generated Rust or README may still refer to removed symbols] → search repository references including string literals, regenerate representative projects, and build their consumers.
+- [Rust privacy and code moves can perturb claim/checkpoint timing] → keep changes mechanical, narrow visibility to parent/siblings as needed, and verify local and distributed execution without incidental behavior edits.
+
+## Migration Plan
+
+No automatic data migration. Upgrade published examples and generated Rust by retranspiling with this checkout; previous step-based consumers must switch to compiled named graphs. If an existing dev DB contains version-zero checkpoint JSON, it is rejected without mutation and can only be resumed by an earlier checkout; no automatic conversion or deletion. Current-version stored checkpoints, Cargo manifests, and `.bl` syntax continue to work.

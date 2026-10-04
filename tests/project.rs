@@ -750,13 +750,13 @@ async fn qualified_each_and_loops_execute() {
     use std::time::Duration;
     let path = std::env::temp_dir().join(format!("orders-each-loop-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = blkit::runtime::Store::open(&path).await.unwrap();
+    let store = blkit::runtime::LocalStore::open(&path).await.unwrap();
     for graph in orders::named_graph_definitions() {
         let input = if graph.name.starts_with("gather") { serde_json::json!(["1"]) } else { serde_json::json!("1") };
         let mut checkpoint = graph.checkpoint(&input).unwrap();
         assert!(graph.run(&input, &mut checkpoint).unwrap_err().contains("async task requires async executor"));
     }
-    let engine = blkit::runtime::Engine::new(blkit::runtime::Registry::new_named(orders::named_graph_definitions()).unwrap(), store.clone(), 2).unwrap();
+    let engine = blkit::runtime::Engine::new(blkit::runtime::Registry::new(orders::named_graph_definitions()).unwrap(), store.clone(), 2).unwrap();
     for (name, input, expected) in [
         ("gather", serde_json::json!(["1", "2"]), serde_json::json!(["2", "3"])),
         ("gather_sequential", serde_json::json!(["1", "2"]), serde_json::json!(["2", "3"])),
@@ -838,9 +838,9 @@ async fn invalid_output_is_not_committed_and_is_retried() {
     use std::{sync::atomic::Ordering, time::Duration};
     let path = std::env::temp_dir().join(format!("orders-custom-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = blkit::runtime::Store::open(&path).await.unwrap();
+    let store = blkit::runtime::LocalStore::open(&path).await.unwrap();
     let engine = blkit::runtime::Engine::new(
-        blkit::runtime::Registry::new_named(orders::named_graph_definitions()).unwrap(), store.clone(), 2
+        blkit::runtime::Registry::new(orders::named_graph_definitions()).unwrap(), store.clone(), 2
     ).unwrap();
     let id = engine.start("orders", "1", "charge_order", serde_json::json!({"amount":"5"})).await.unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -1254,7 +1254,7 @@ pub async fn bad(_: Value) -> Result<Value, String> { Ok(json!({"id":42})) }
 #[tokio::test]
 async fn project_worker_binary_claims_only_its_compiled_process_version() {
     use blkit::{
-        named_runtime::{GraphDefinition, GraphLink, GraphNode, GraphNodeKind},
+        compiled_graph::{GraphDefinition, GraphLink, GraphNode, GraphNodeKind},
         postgres_store::PostgresStore,
         runtime::Instance,
     };

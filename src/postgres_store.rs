@@ -5,7 +5,7 @@ use tokio_postgres::{Client, NoTls};
 
 use crate::{
     RetryPolicy,
-    named_runtime::GraphCheckpoint,
+    compiled_graph::GraphCheckpoint,
     runtime::{Instance, next_retry_at},
 };
 
@@ -199,6 +199,23 @@ impl PostgresStore {
         }
     }
 
+    pub(crate) async fn ensure_supported_incomplete(&self) -> Result<(), String> {
+        let rows = self.0.lock().await.query(
+            "SELECT id, checkpoint FROM instances WHERE status IN ('pending', 'running', 'retry-waiting', 'waiting') AND checkpoint IS NOT NULL",
+            &[],
+        ).await.map_err(|e| e.to_string())?;
+        for row in rows {
+            let id: String = row.get(0);
+            let text: String = row.get(1);
+            let checkpoint: GraphCheckpoint =
+                serde_json::from_str(&text).map_err(|e| format!("{id}: {e}"))?;
+            checkpoint
+                .ensure_supported()
+                .map_err(|e| format!("{id}: {e}"))?;
+        }
+        Ok(())
+    }
+
     pub async fn claim(
         &self,
         worker_id: &str,
@@ -209,27 +226,42 @@ impl PostgresStore {
             return Err("lease must be positive".into());
         }
         let limit = i64::try_from(limit).map_err(|e| e.to_string())?;
-        let client = self.0.lock().await;
-        let rows = client.query(
-            "WITH eligible AS (
-                SELECT i.id FROM instances i
+        let mut client = self.0.lock().await;
+        let tx = client.transaction().await.map_err(|e| e.to_string())?;
+        let eligible = tx.query(
+            "SELECT i.id, i.checkpoint FROM instances i
                 JOIN worker_capabilities c ON (i.namespace, i.version, i.process) = (c.namespace, c.version, c.process)
                 JOIN workers w ON w.id=c.worker_id
                 WHERE c.worker_id=$1 AND NOT w.draining AND i.owner_id IS NULL
                     AND (i.deadline_at_ms IS NULL OR i.deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)
                     AND (i.status='pending' OR (i.status='retry-waiting' AND i.next_eligible_at <= (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT))
-                ORDER BY i.created_at, i.id LIMIT $2 FOR UPDATE OF i SKIP LOCKED
-            )
-            UPDATE instances i SET status='running', owner_id=$1,
-                lease_until=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT+$3,
+                ORDER BY i.created_at, i.id LIMIT $2 FOR UPDATE OF i SKIP LOCKED",
+            &[&worker_id, &limit]
+        ).await.map_err(|e| e.to_string())?;
+        let mut ids = Vec::with_capacity(eligible.len());
+        for row in eligible {
+            let id: String = row.get(0);
+            if let Some(text) = row.get::<_, Option<String>>(1) {
+                let checkpoint: GraphCheckpoint =
+                    serde_json::from_str(&text).map_err(|e| e.to_string())?;
+                checkpoint
+                    .ensure_supported()
+                    .map_err(|e| format!("{id}: {e}"))?;
+            }
+            ids.push(id);
+        }
+        let rows = tx.query(
+            "UPDATE instances i SET status='running', owner_id=$1,
+                lease_until=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT+$2,
                 generation=generation+1, attempt=CASE WHEN i.status='pending' AND i.wake_at_ms IS NOT NULL AND i.attempt>0 THEN i.attempt ELSE i.attempt+1 END, next_eligible_at=NULL, wake_at_ms=NULL,
                 first_claim_at_ms=COALESCE(first_claim_at_ms, (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT),
                 deadline_at_ms=CASE WHEN deadline_origin='first_claimed' THEN COALESCE(deadline_at_ms, (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT + deadline_duration_ms) ELSE deadline_at_ms END,
                 updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
-            FROM eligible WHERE i.id=eligible.id RETURNING i.id",
-            &[&worker_id, &limit, &lease_ms]
+            WHERE i.id=ANY($3) AND (i.deadline_at_ms IS NULL OR i.deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT) RETURNING i.id",
+            &[&worker_id, &lease_ms, &ids]
         ).await.map_err(|e| e.to_string())?;
         let ids: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+        tx.commit().await.map_err(|e| e.to_string())?;
         drop(client);
         let mut claimed = Vec::with_capacity(ids.len());
         for id in ids {

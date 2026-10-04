@@ -136,7 +136,7 @@ pub(crate) struct ChildActivation {
     pub deadline_at_ms: Option<i64>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GraphCheckpoint {
     #[serde(default)]
     version: u8,
@@ -149,7 +149,6 @@ pub struct GraphCheckpoint {
     waiting: Vec<WaitActivation>,
     pub completed: Values,
     pub selected: HashMap<String, Vec<usize>>,
-    progress: HashMap<String, Vec<(usize, Value)>>,
     #[serde(default)]
     route_progress: HashMap<String, Vec<(usize, Value, Values)>>,
     // ponytail: committed activation history grows with visits; compact per generation if long-lived cycles become common.
@@ -163,6 +162,38 @@ pub struct GraphCheckpoint {
     pub terminal: Option<GraphTerminal>,
 }
 
+impl Default for GraphCheckpoint {
+    fn default() -> Self {
+        Self {
+            version: 2,
+            next_activation_id: 1,
+            ready: Vec::new(),
+            pending: Vec::new(),
+            waiting: Vec::new(),
+            completed: Values::new(),
+            selected: HashMap::new(),
+            route_progress: HashMap::new(),
+            committed: HashMap::new(),
+            multi: HashMap::new(),
+            children: HashMap::new(),
+            outcome: None,
+            terminal: None,
+        }
+    }
+}
+
+impl GraphCheckpoint {
+    pub fn ensure_supported(&self) -> Result<(), String> {
+        if self.version != 2 {
+            return Err(format!("unsupported checkpoint version: {}", self.version));
+        }
+        for child in self.children.values() {
+            child.checkpoint.ensure_supported()?;
+        }
+        Ok(())
+    }
+}
+
 impl GraphDefinition {
     pub fn child_processes(&self) -> impl Iterator<Item = &str> {
         self.nodes.iter().filter_map(|node| match &node.kind {
@@ -172,11 +203,7 @@ impl GraphDefinition {
     }
 
     pub fn checkpoint(&self, input: &Value) -> Result<GraphCheckpoint, String> {
-        let mut state = GraphCheckpoint {
-            version: 2,
-            next_activation_id: 1,
-            ..Default::default()
-        };
+        let mut state = GraphCheckpoint::default();
         let start = self
             .nodes
             .iter()
@@ -195,7 +222,7 @@ impl GraphDefinition {
     }
 
     pub fn run(&self, input: &Value, state: &mut GraphCheckpoint) -> Result<Value, String> {
-        self.migrate_checkpoint(state);
+        state.ensure_supported()?;
         let deadline = self
             .deadline
             .as_ref()
@@ -212,7 +239,7 @@ impl GraphDefinition {
             if deadline.is_some_and(|at| crate::store::now_ms() >= at) {
                 state.terminal = Some(GraphTerminal::Error("timeout".into()));
             }
-            self.check_loop_bounds(state, crate::store::now_ms());
+            self.check_loop_bounds(state, crate::store::now_ms())?;
             if let Some(terminal) = &state.terminal {
                 return Err(format!("terminal event: {terminal:?}"));
             }
@@ -264,35 +291,6 @@ impl GraphDefinition {
         Ok(state.outcome.clone().unwrap())
     }
 
-    pub fn migrate_checkpoint(&self, state: &mut GraphCheckpoint) {
-        if state.version != 0 {
-            return;
-        }
-        let mut next = state.next_activation_id.max(1);
-        for token in state
-            .ready
-            .iter_mut()
-            .chain(state.pending.iter_mut())
-            .chain(state.waiting.iter_mut().map(|wait| &mut wait.token))
-        {
-            token.id = next;
-            next += 1;
-            token.values = state.completed.clone();
-            token.generations = vec![0; token.path.len()];
-        }
-        state.next_activation_id = next;
-        for (name, values) in std::mem::take(&mut state.progress) {
-            state.route_progress.insert(
-                name,
-                values
-                    .into_iter()
-                    .map(|(branch, value)| (branch, value, state.completed.clone()))
-                    .collect(),
-            );
-        }
-        state.version = 2;
-    }
-
     fn activation(
         state: &mut GraphCheckpoint,
         name: &str,
@@ -326,13 +324,19 @@ impl GraphDefinition {
             })
     }
 
-    pub fn check_loop_bounds(&self, state: &mut GraphCheckpoint, now_ms: i64) {
+    pub fn check_loop_bounds(
+        &self,
+        state: &mut GraphCheckpoint,
+        now_ms: i64,
+    ) -> Result<(), String> {
+        state.ensure_supported()?;
         if state.terminal.is_some() || state.outcome.is_some() {
-            return;
+            return Ok(());
         }
         if state.ready.iter().any(|token| self.nodes.iter().any(|node| node.name == token.node && matches!(&node.kind, GraphNodeKind::TaskLoop(_, policy) | GraphNodeKind::AsyncTaskLoop(_, policy) if Self::loop_bound_reached(policy, token, now_ms)))) {
             state.terminal = Some(GraphTerminal::Error("task-iteration-limit".into()));
         }
+        Ok(())
     }
 
     pub fn has_pending(&self, state: &GraphCheckpoint) -> bool {
@@ -340,8 +344,8 @@ impl GraphDefinition {
     }
 
     pub fn resume_pending(&self, input: &Value, state: &mut GraphCheckpoint) -> Result<(), String> {
+        state.ensure_supported()?;
         let mut next = state.clone();
-        self.migrate_checkpoint(&mut next);
         let mut budget = 64;
         let mut deferred = Vec::new();
         for token in std::mem::take(&mut next.pending) {
@@ -378,6 +382,7 @@ impl GraphDefinition {
         state: &GraphCheckpoint,
         id: u64,
     ) -> Result<i64, String> {
+        state.ensure_supported()?;
         state
             .ready
             .iter()
@@ -392,6 +397,7 @@ impl GraphDefinition {
         id: u64,
         input: &Value,
     ) -> Result<Value, String> {
+        state.ensure_supported()?;
         let token = state
             .ready
             .iter()
@@ -406,11 +412,8 @@ impl GraphDefinition {
             .iter()
             .find(|token| token.id == id)
             .ok_or("task activation not ready")?;
-        Ok(if state.version == 0 {
-            state.completed.clone()
-        } else {
-            token.values.clone()
-        })
+        state.ensure_supported()?;
+        Ok(token.values.clone())
     }
 
     pub fn waiting_until(&self, state: &GraphCheckpoint) -> Option<i64> {
@@ -423,11 +426,11 @@ impl GraphDefinition {
         state: &mut GraphCheckpoint,
         at_ms: i64,
     ) -> Result<(), String> {
+        state.ensure_supported()?;
         if state.outcome.is_some() || state.terminal.is_some() {
             return Ok(());
         }
         let mut next = state.clone();
-        self.migrate_checkpoint(&mut next);
         let mut future = Vec::new();
         let waiting = std::mem::take(&mut next.waiting);
         for wait in waiting {
@@ -464,9 +467,8 @@ impl GraphDefinition {
         name: &str,
         value: Value,
     ) -> Result<(), String> {
-        let mut next = state.clone();
-        self.migrate_checkpoint(&mut next);
-        let id = next
+        state.ensure_supported()?;
+        let id = state
             .ready
             .iter()
             .find(|token| token.node == name)
@@ -482,6 +484,7 @@ impl GraphDefinition {
         id: u64,
         terminal: GraphTerminal,
     ) -> Result<(), String> {
+        state.ensure_supported()?;
         let mut next = state.clone();
         let index = next
             .ready
@@ -525,8 +528,8 @@ impl GraphDefinition {
         value: Value,
     ) -> Result<(), String> {
         // ponytail: copy the checkpoint per transition; replace with store-backed atomic updates if size becomes costly.
+        state.ensure_supported()?;
         let mut next = state.clone();
-        self.migrate_checkpoint(&mut next);
         if next.outcome.is_some() || next.terminal.is_some() {
             return Err("graph already terminal".into());
         }

@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{
-    named_runtime::GraphDefinition,
+    compiled_graph::GraphDefinition,
     postgres_store::{DistributedInstance, PostgresStore},
     runtime::{Instance, NamedRegistry, Registry, execute_claimed, validate_named_registry},
 };
@@ -18,7 +18,7 @@ impl DistributedControl {
     pub fn new(store: PostgresStore, definitions: Vec<GraphDefinition>) -> Result<Self, String> {
         Ok(Self {
             store,
-            registry: Registry::new_named(definitions)?,
+            registry: Registry::new(definitions)?,
         })
     }
 
@@ -31,7 +31,7 @@ impl DistributedControl {
     ) -> Result<String, String> {
         let graph = self
             .registry
-            .get_named(namespace, version, name)
+            .get(namespace, version, name)
             .ok_or("unknown process")?;
         let input =
             (graph.decode_input)(input).map_err(|error| format!("invalid input: {error}"))?;
@@ -61,15 +61,17 @@ impl DistributedControl {
     }
 
     pub async fn cancel(&self, id: &str) -> Result<(), String> {
+        self.store.ensure_supported_incomplete().await?;
         self.store.expire_due().await?;
         self.store.cancel(id).await
     }
 
     pub async fn reconcile_once(&self) -> Result<usize, String> {
+        self.store.ensure_supported_incomplete().await?;
         let mut reconciled = self.store.expire_due().await?.len();
         reconciled += self.store.resume_due_waits().await? as usize;
         for expired in self.store.expired_claims().await? {
-            let graph = self.registry.get_named(
+            let graph = self.registry.get(
                 &expired.instance.namespace,
                 &expired.instance.version,
                 &expired.instance.process,
@@ -160,6 +162,7 @@ impl DistributedWorker {
         if !self.store.heartbeat(&self.id).await? {
             return Err("worker not registered".into());
         }
+        self.store.ensure_supported_incomplete().await?;
         for expired in self.store.expired_claims().await? {
             let key = (
                 expired.instance.namespace,

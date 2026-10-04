@@ -6,7 +6,7 @@ use std::{
 
 use serde_json::Value;
 
-use crate::named_runtime::GraphCheckpoint;
+use crate::compiled_graph::GraphCheckpoint;
 
 fn now() -> i64 {
     SystemTime::now()

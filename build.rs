@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-#[path = "src/codegen.rs"]
+#[path = "src/codegen/mod.rs"]
 mod codegen;
 #[path = "src/compiler.rs"]
 mod compiler;
@@ -10,7 +10,7 @@ mod decision;
 mod expr;
 #[path = "src/graph.rs"]
 mod graph;
-#[path = "src/semantic.rs"]
+#[path = "src/semantic/mod.rs"]
 mod semantic;
 use compiler::{Program, Type, identifier, type_ref};
 
@@ -21,8 +21,13 @@ fn main() {
         "src/decision.rs",
         "src/expr.rs",
         "src/graph.rs",
-        "src/semantic.rs",
-        "src/codegen.rs",
+        "src/semantic/mod.rs",
+        "src/semantic/decision.rs",
+        "src/semantic/graph.rs",
+        "src/semantic/types.rs",
+        "src/codegen/mod.rs",
+        "src/codegen/decision.rs",
+        "src/codegen/graph.rs",
     ] {
         println!("cargo:rerun-if-changed={file}");
     }

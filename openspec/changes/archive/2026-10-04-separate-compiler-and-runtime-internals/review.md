@@ -1,0 +1,21 @@
+# Independent review and adjudication
+
+Three read-only reviews independently examined the completed working-tree change:
+
+- Rust Project: `/home/vscode/.pi/agent/sessions/--workspaces-blkit--/subagent-artifacts/outputs/58275c9b-9461-4c7a-aec2-adfb2b3215b3/tmp/review-rust-project.md`
+- Microsoft: `/home/vscode/.pi/agent/sessions/--workspaces-blkit--/subagent-artifacts/outputs/58275c9b-9461-4c7a-aec2-adfb2b3215b3/tmp/review-rust-microsoft.md`
+- Google: `/home/vscode/.pi/agent/sessions/--workspaces-blkit--/subagent-artifacts/outputs/58275c9b-9461-4c7a-aec2-adfb2b3215b3/tmp/review-rust-google.md`
+
+## Findings
+
+1. **Accept (all three): distributed recovery mutated legacy rows before rejection.** `DistributedWorker::run_once` and `DistributedControl::reconcile_once` formerly updated wake/expiry/claim state before `execute_claimed` checked the version. Added preflight over incomplete stored checkpoints before recovery operations and a transactional validation of eligible checkpoint data under row locks in `PostgresStore::claim`; an invalid candidate rolls back without claiming it. Tests cover pending and due-waiting old rows and direct claim rejection. This implements the OpenSpec design's no-mutation requirement. [Rust API Guidelines C-VALIDATE](https://rust-lang.github.io/api-guidelines/dependability.html#functions-validate-their-arguments-c-validate) supports validating input, but is guidance, not a guarantee of transactional behavior. [Google's API design course](https://google.github.io/comprehensive-rust/idiomatic/welcome.html) supports predictable errors in general. **Reject Microsoft's specific guideline attribution:** [M-STRONG-TYPES-GUARD](https://microsoft.github.io/rust-guidelines/guidelines/libs/resilience/#M-STRONG-TYPES-GUARD) concerns invariants encoded by newtypes, not checkpoint storage. The observed bug and fix remain valid without that citation.
+2. **Accept (Rust Project only): nested old checkpoints bypassed the outer-version preflight.** `GraphCheckpoint::ensure_supported` now recursively validates child checkpoints before local or distributed recovery changes rows. Regression test confirms old child data and parent row remain unchanged. C-VALIDATE is contextual guidance; the no-mutation contract comes from the OpenSpec design.
+3. **Accept (Google only): `GraphCheckpoint::default()` created version zero, now unsupported.** Implemented `Default` with version 2 and initial activation ID 1; deserializing old JSON without a version still yields zero and fails validation. Test covers both. [Google's type-system course](https://google.github.io/comprehensive-rust/idiomatic/leveraging-the-type-system.html) generally favors expressing invariants, but does not specifically prescribe `Default` behavior; the concrete API inconsistency is the reason for the fix.
+
+No reviewers disagreed on an observed behavior; they differed in coverage and the applicability of the cited guidance. No other review findings were rejected.
+
+## Complexity review and verification
+
+Applied the existing ponytail-review lens to the revised diff. `src/compiled_graph.rs:204`: shrink: the graph checkpoint initializer repeated the new `Default` values for version and activation ID; replaced it with `GraphCheckpoint::default()` (net: -4 lines). No additional evidenced cuts; the two distributed validations serve distinct purposes (preflight before wake/expiry writes and atomic protection of claims).
+
+Final checks: `cargo fmt --check`, `git diff --check`, `cargo clippy --all-targets -- -D warnings`; `cargo test --test store --test engine --test postgres -- --test-threads=1` (13/13, 47/47, 32/32); `cargo test --test generated --test cli` (34/34, 15/15); representative generated-project consumer test (1/1). Logs: `/tmp/blkit-review-clippy.log`, `/tmp/blkit-review-affected.log`, `/tmp/blkit-review-generated-cli.log`, `/tmp/blkit-review-project-consumer.log`. Before the final fixes, the full project suite passed 28/28 and all other targets passed under `RUST_TEST_THREADS=1`; the combined all-targets command timed out while compiling generated projects at the 30-minute command limit, then project and store targets were verified independently. Prior parallel PostgreSQL container failures were OS error 11; serial PostgreSQL tests pass.

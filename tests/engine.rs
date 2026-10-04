@@ -1,16 +1,14 @@
-use blkit::named_runtime::{
+use blkit::compiled_graph::{
     GraphCheckpoint, GraphDefinition, GraphLink, GraphNode, GraphNodeKind, GraphTerminal,
 };
 use blkit::{
     RetryPolicy,
-    runtime::{
-        Branch, Definition, Engine, Evaluate, Instance, Registry, Step, Store, next_retry_at,
-    },
+    runtime::{Engine, Evaluate, Instance, LocalStore, Registry, next_retry_at},
 };
 use serde_json::{Value, json};
 use std::{
     sync::{
-        Arc, Barrier,
+        Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -115,9 +113,9 @@ async fn subprocess_child_terminals_are_caught_or_propagated_with_name() {
                 std::process::id()
             ));
             let _ = std::fs::remove_file(&path);
-            let store = Store::open(&path).await.unwrap();
+            let store = LocalStore::open(&path).await.unwrap();
             let engine = Engine::new(
-                Registry::new_named(vec![parent, child]).unwrap(),
+                Registry::new(vec![parent, child]).unwrap(),
                 store.clone(),
                 1,
             )
@@ -339,9 +337,9 @@ async fn subprocess_parallel_and_repeated_activations_share_capacity_one() {
         std::process::id()
     ));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let engine = Engine::new(
-        Registry::new_named(vec![child, parent, repeated]).unwrap(),
+        Registry::new(vec![child, parent, repeated]).unwrap(),
         store.clone(),
         1,
     )
@@ -518,9 +516,9 @@ async fn handled_child_terminal_signals_its_inflight_siblings_only() {
     };
     let path = std::env::temp_dir().join(format!("blkit-child-cancel-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let engine = Engine::new(
-        Registry::new_named(vec![parent, child]).unwrap(),
+        Registry::new(vec![parent, child]).unwrap(),
         store.clone(),
         2,
     )
@@ -634,9 +632,9 @@ async fn subprocess_wait_checkpoints_child_progress_and_resumes_without_replay()
     };
     let path = std::env::temp_dir().join(format!("blkit-child-wait-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let engine = Engine::new(
-        Registry::new_named(vec![parent, child]).unwrap(),
+        Registry::new(vec![parent, child]).unwrap(),
         store.clone(),
         1,
     )
@@ -682,7 +680,7 @@ async fn subprocess_wait_checkpoints_child_progress_and_resumes_without_replay()
     });
     recovered[0].links[1].source = "wait";
     recovered[0].links.push(link("work", "wait", None));
-    let engine = Engine::new(Registry::new_named(recovered).unwrap(), store.clone(), 1).unwrap();
+    let engine = Engine::new(Registry::new(recovered).unwrap(), store.clone(), 1).unwrap();
     engine.recover().await.unwrap();
     assert_eq!(engine.status(&id).await.unwrap().unwrap().wake_at_ms, wake);
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -805,7 +803,7 @@ fn subprocess_registry_rejects_recursive_compiled_definitions() {
         input: Arc::new(|input, _| Ok(input.clone())),
     };
     assert!(
-        Registry::new_named(graphs)
+        Registry::new(graphs)
             .err()
             .unwrap()
             .contains("recursive subprocess")
@@ -849,8 +847,8 @@ async fn child_deadline_interrupts_inflight_task_and_routes_timeout() {
         std::process::id()
     ));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
-    let engine = Engine::new(Registry::new_named(graphs).unwrap(), store.clone(), 1).unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new(graphs).unwrap(), store.clone(), 1).unwrap();
     let id = engine.start("test", "1", "parent", json!(9)).await.unwrap();
     let status = tokio::time::timeout(Duration::from_millis(500), async {
         loop {
@@ -884,8 +882,8 @@ async fn child_deadline_times_out_through_parent_handler_before_wait_finishes() 
     );
     let path = std::env::temp_dir().join(format!("blkit-child-deadline-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
-    let engine = Engine::new(Registry::new_named(definitions).unwrap(), store.clone(), 1).unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new(definitions).unwrap(), store.clone(), 1).unwrap();
     let id = engine.start("test", "1", "parent", json!(9)).await.unwrap();
     let result = tokio::time::timeout(Duration::from_secs(1), async {
         loop {
@@ -933,13 +931,12 @@ async fn child_queued_deadline_starts_when_subprocess_node_is_entered() {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let store = Store::open(&path).await.unwrap();
+        let store = LocalStore::open(&path).await.unwrap();
         let mut instance = Instance::new("job", "test", "1", "parent", json!(9));
         instance.checkpoint = Some(definitions[1].checkpoint(&instance.input).unwrap());
         store.create(&instance).await.unwrap();
         tokio::time::sleep(Duration::from_millis(180)).await;
-        let engine =
-            Engine::new(Registry::new_named(definitions).unwrap(), store.clone(), 1).unwrap();
+        let engine = Engine::new(Registry::new(definitions).unwrap(), store.clone(), 1).unwrap();
         engine.recover().await.unwrap();
         let result = tokio::time::timeout(Duration::from_secs(3), async {
             loop {
@@ -987,8 +984,8 @@ async fn child_retry_resumes_without_using_parent_attempt() {
     );
     let path = std::env::temp_dir().join(format!("blkit-child-retry-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
-    let engine = Engine::new(Registry::new_named(definitions).unwrap(), store.clone(), 1).unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new(definitions).unwrap(), store.clone(), 1).unwrap();
     let id = engine.start("test", "1", "parent", json!(9)).await.unwrap();
     let result = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
@@ -1047,8 +1044,8 @@ async fn intermediate_subprocess_retries_leaf_failure_before_top_level_attempt()
         std::process::id()
     ));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
-    let engine = Engine::new(Registry::new_named(graphs).unwrap(), store.clone(), 1).unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new(graphs).unwrap(), store.clone(), 1).unwrap();
     let id = engine.start("test", "1", "parent", json!(9)).await.unwrap();
     let status = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -1126,8 +1123,8 @@ async fn exhausted_child_retries_fail_parent_attempt_without_replaying_committed
     let path =
         std::env::temp_dir().join(format!("blkit-child-exhausted-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
-    let engine = Engine::new(Registry::new_named(graphs).unwrap(), store.clone(), 1).unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new(graphs).unwrap(), store.clone(), 1).unwrap();
     let id = engine.start("test", "1", "parent", json!(9)).await.unwrap();
     let result = tokio::time::timeout(Duration::from_secs(4), async {
         loop {
@@ -1166,8 +1163,8 @@ async fn parent_deadline_cannot_be_caught_by_child_timeout_handler() {
     let path =
         std::env::temp_dir().join(format!("blkit-parent-deadline-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
-    let engine = Engine::new(Registry::new_named(definitions).unwrap(), store.clone(), 1).unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new(definitions).unwrap(), store.clone(), 1).unwrap();
     let id = engine.start("test", "1", "parent", json!(9)).await.unwrap();
     let result = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -1227,8 +1224,8 @@ async fn external_parent_cancellation_overrides_child_handler() {
         std::process::id()
     ));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
-    let engine = Engine::new(Registry::new_named(graphs).unwrap(), store.clone(), 1).unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new(graphs).unwrap(), store.clone(), 1).unwrap();
     let id = engine.start("test", "1", "parent", json!(9)).await.unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
         while !entered.load(Ordering::SeqCst) {
@@ -1341,7 +1338,7 @@ fn long_split_graph(first: GraphNodeKind, second: Evaluate) -> GraphDefinition {
 async fn pending_split_branch_advances_past_wait_and_inflight_task() {
     let path = std::env::temp_dir().join(format!("blkit-pending-split-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
     let second: Evaluate = {
         let hits = hits.clone();
@@ -1351,7 +1348,7 @@ async fn pending_split_branch_advances_past_wait_and_inflight_task() {
         })
     };
     let graph = long_split_graph(GraphNodeKind::PauseFor(Duration::from_millis(500)), second);
-    let engine = Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 2).unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 2).unwrap();
     let id = engine
         .start("test", "1", "long_split", json!(4))
         .await
@@ -1370,7 +1367,7 @@ async fn pending_split_branch_advances_past_wait_and_inflight_task() {
     drop(store);
     std::fs::remove_file(&path).unwrap();
 
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let signal = Arc::new(AtomicBool::new(false));
     let first: Evaluate = {
         let signal = signal.clone();
@@ -1392,7 +1389,7 @@ async fn pending_split_branch_advances_past_wait_and_inflight_task() {
         })
     };
     let graph = long_split_graph(GraphNodeKind::Task(first), second);
-    let engine = Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 2).unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 2).unwrap();
     let id = engine
         .start("test", "1", "long_split", json!(4))
         .await
@@ -1527,9 +1524,9 @@ async fn task_free_cycle_yields_and_respects_both_deadline_origins() {
     );
     let path = std::env::temp_dir().join(format!("blkit-task-free-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let engine = Engine::new(
-        Registry::new_named(vec![
+        Registry::new(vec![
             task_free_cycle_graph("queued", "queued"),
             task_free_cycle_graph("claimed", "first_claimed"),
         ])
@@ -1611,24 +1608,14 @@ fn wait_graph() -> GraphDefinition {
 async fn local_wait_keeps_original_wake_on_restart_and_accepts_cancellation() {
     let path = std::env::temp_dir().join(format!("blkit-local-wait-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
-    let engine = Engine::new(
-        Registry::new_named(vec![wait_graph()]).unwrap(),
-        store.clone(),
-        1,
-    )
-    .unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
+    let engine = Engine::new(Registry::new(vec![wait_graph()]).unwrap(), store.clone(), 1).unwrap();
     let id = engine.start("test", "1", "wait", json!(17)).await.unwrap();
     let before = engine.status(&id).await.unwrap().unwrap();
     assert_eq!(before.status, "waiting");
     let wake = before.wake_at_ms.unwrap();
     drop(engine);
-    let engine = Engine::new(
-        Registry::new_named(vec![wait_graph()]).unwrap(),
-        store.clone(),
-        1,
-    )
-    .unwrap();
+    let engine = Engine::new(Registry::new(vec![wait_graph()]).unwrap(), store.clone(), 1).unwrap();
     engine.recover().await.unwrap();
     assert_eq!(
         engine.status(&id).await.unwrap().unwrap().wake_at_ms,
@@ -1661,13 +1648,13 @@ async fn local_wait_keeps_original_wake_on_restart_and_accepts_cancellation() {
 async fn local_queue_deadline_expires_while_waiting_without_reaching_wake() {
     let path = std::env::temp_dir().join(format!("blkit-queue-deadline-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let mut graph = wait_graph();
     graph.deadline = Some(blkit::DeadlinePolicy {
         origin: "queued",
         duration: Duration::from_millis(50),
     });
-    let engine = Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
     let id = engine.start("test", "1", "wait", json!(2)).await.unwrap();
     let wake = store.get(&id).await.unwrap().unwrap().wake_at_ms.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1692,7 +1679,7 @@ async fn first_claim_deadline_begins_after_wait_and_rejects_late_task_result() {
         std::process::id()
     ));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let mut graph = wait_graph();
     graph.deadline = Some(blkit::DeadlinePolicy {
         origin: "first_claimed",
@@ -1715,7 +1702,7 @@ async fn first_claim_deadline_begins_after_wait_and_rejects_late_task_result() {
         fallback: false,
         label: None,
     });
-    let engine = Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
     let id = engine.start("test", "1", "wait", json!(2)).await.unwrap();
     assert!(
         store
@@ -1745,7 +1732,7 @@ async fn first_claim_deadline_begins_after_wait_and_rejects_late_task_result() {
 async fn recovered_wait_without_original_runner_resumes() {
     let path = std::env::temp_dir().join(format!("blkit-wait-recover-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let graph = wait_graph();
     let checkpoint = graph.checkpoint(&json!(13)).unwrap();
     let mut instance = Instance::new("wait-recover", "test", "1", "wait", json!(13));
@@ -1753,7 +1740,7 @@ async fn recovered_wait_without_original_runner_resumes() {
     instance.wake_at_ms = graph.waiting_until(&checkpoint);
     instance.checkpoint = Some(checkpoint);
     store.create(&instance).await.unwrap();
-    let engine = Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
     engine.recover().await.unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
         while engine.status("wait-recover").await.unwrap().unwrap().status != "completed" {
@@ -1776,7 +1763,7 @@ async fn local_wait_after_task_does_not_replay_committed_task() {
     let path =
         std::env::temp_dir().join(format!("blkit-after-task-wait-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let make_graph = || {
         let mut graph = wait_graph();
@@ -1799,12 +1786,7 @@ async fn local_wait_after_task_does_not_replay_committed_task() {
         });
         graph
     };
-    let engine = Engine::new(
-        Registry::new_named(vec![make_graph()]).unwrap(),
-        store.clone(),
-        1,
-    )
-    .unwrap();
+    let engine = Engine::new(Registry::new(vec![make_graph()]).unwrap(), store.clone(), 1).unwrap();
     let id = engine.start("test", "1", "wait", json!(7)).await.unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
         while engine.status(&id).await.unwrap().unwrap().status != "waiting" {
@@ -1822,12 +1804,7 @@ async fn local_wait_after_task_does_not_replay_committed_task() {
         .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     drop(engine);
-    let engine = Engine::new(
-        Registry::new_named(vec![make_graph()]).unwrap(),
-        store.clone(),
-        1,
-    )
-    .unwrap();
+    let engine = Engine::new(Registry::new(vec![make_graph()]).unwrap(), store.clone(), 1).unwrap();
     engine.recover().await.unwrap();
     assert_eq!(
         engine.status(&id).await.unwrap().unwrap().wake_at_ms,
@@ -1936,7 +1913,7 @@ fn multi_instance_empty_sequential_resume_and_parallel_order() {
 async fn multi_instance_retry_skips_committed_items() {
     let path = std::env::temp_dir().join(format!("blkit-batch-retry-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let visited = Arc::new(std::sync::Mutex::new(Vec::new()));
     let calls = visited.clone();
     let task: Evaluate = Arc::new(move |item, _| {
@@ -1955,7 +1932,7 @@ async fn multi_instance_retry_skips_committed_items() {
         retry_delay: Duration::from_millis(10),
         backoff: "exponential",
     });
-    let engine = Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
     let id = engine
         .start("test", "1", "batch", json!([1, 2, 3]))
         .await
@@ -1978,7 +1955,7 @@ async fn multi_instance_retry_skips_committed_items() {
 }
 
 fn bounded_loop_graph(before: bool, limit: u32, condition: bool) -> GraphDefinition {
-    use blkit::named_runtime::LoopPolicy;
+    use blkit::compiled_graph::LoopPolicy;
     let call: Evaluate = Arc::new(|_, values| {
         Ok(json!(
             values.get("repeat").and_then(Value::as_i64).unwrap_or(0) + 1
@@ -2075,7 +2052,7 @@ fn task_loop_zero_iterations_post_check_and_bound_are_checkpointed() {
 async fn loop_limit_is_business_error_and_not_retried() {
     let path = std::env::temp_dir().join(format!("blkit-loop-limit-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let mut graph = bounded_loop_graph(false, 1, true);
     graph.retry = Some(RetryPolicy {
         max_retries: 2,
@@ -2083,7 +2060,7 @@ async fn loop_limit_is_business_error_and_not_retried() {
         retry_delay: Duration::from_millis(10),
         backoff: "exponential",
     });
-    let engine = Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
     let id = engine
         .start("test", "1", "bounded", json!(null))
         .await
@@ -2108,7 +2085,7 @@ async fn restart_resumes_only_uncommitted_task_loop_iteration() {
     let path =
         std::env::temp_dir().join(format!("blkit-task-loop-resume-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let mut graph = bounded_loop_graph(false, 3, true);
     graph.retry = Some(RetryPolicy {
         max_retries: 1,
@@ -2135,7 +2112,7 @@ async fn restart_resumes_only_uncommitted_task_loop_iteration() {
     item.attempt = 1;
     item.checkpoint = Some(checkpoint);
     store.create(&item).await.unwrap();
-    let engine = Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
     engine.recover().await.unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
         while engine
@@ -2174,7 +2151,7 @@ fn task_loop_elapsed_bound_prevents_next_invocation() {
         .complete_activation(&input, &mut state, id, json!(1))
         .unwrap();
     std::thread::sleep(Duration::from_millis(25));
-    graph.check_loop_bounds(&mut state, i64::MAX);
+    graph.check_loop_bounds(&mut state, i64::MAX).unwrap();
     assert_eq!(
         state.terminal,
         Some(GraphTerminal::Error("task-iteration-limit".into()))
@@ -2374,7 +2351,7 @@ fn echo_task_call() -> Evaluate {
 }
 
 #[test]
-fn legacy_checkpoint_resumes_uncommitted_branch_without_replaying_completed_one() {
+fn legacy_checkpoint_is_rejected_without_replaying_committed_work() {
     let b_calls = Arc::new(AtomicUsize::new(0));
     let b: Evaluate = {
         let calls = b_calls.clone();
@@ -2392,10 +2369,21 @@ fn legacy_checkpoint_resumes_uncommitted_branch_without_replaying_completed_one(
         "outcome": null, "terminal": null
     });
     let mut restored: GraphCheckpoint = serde_json::from_value(saved).unwrap();
-    assert_eq!(
-        graph.run(&json!(null), &mut restored).unwrap(),
-        json!({"left":3,"right":5})
+    let original = serde_json::to_value(&restored).unwrap();
+    assert!(
+        graph
+            .run(&json!(null), &mut restored)
+            .unwrap_err()
+            .contains("unsupported checkpoint version")
     );
+    assert_eq!(serde_json::to_value(&restored).unwrap(), original);
+    assert!(
+        graph
+            .resume_pending(&json!(null), &mut restored)
+            .unwrap_err()
+            .contains("unsupported checkpoint version")
+    );
+    assert_eq!(serde_json::to_value(&restored).unwrap(), original);
     assert_eq!(b_calls.load(Ordering::SeqCst), 0);
 }
 
@@ -2403,7 +2391,7 @@ fn legacy_checkpoint_resumes_uncommitted_branch_without_replaying_completed_one(
 async fn local_parallel_tokens_do_not_share_uncommitted_route_outputs() {
     let path = std::env::temp_dir().join(format!("blkit-route-values-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let b: Evaluate = Arc::new(|_, values| {
         if values.contains_key("c") {
             return Err("sibling c leaked".into());
@@ -2417,7 +2405,7 @@ async fn local_parallel_tokens_do_not_share_uncommitted_route_outputs() {
         Ok(json!(5))
     });
     let engine = Engine::new(
-        Registry::new_named(vec![parallel_named_graph(b, c)]).unwrap(),
+        Registry::new(vec![parallel_named_graph(b, c)]).unwrap(),
         store.clone(),
         1,
     )
@@ -2990,7 +2978,7 @@ async fn parallel_named_completions_commit_only_before_failure_and_resume_unfini
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let store = Store::open(&path).await.unwrap();
+        let store = LocalStore::open(&path).await.unwrap();
         let b_started = Arc::new(AtomicBool::new(false));
         let c_started = Arc::new(AtomicBool::new(false));
         let release_b = Arc::new(AtomicBool::new(b_first));
@@ -3035,7 +3023,7 @@ async fn parallel_named_completions_commit_only_before_failure_and_resume_unfini
             }
         });
         let engine = Engine::new(
-            Registry::new_named(vec![parallel_named_graph(b.clone(), c.clone())]).unwrap(),
+            Registry::new(vec![parallel_named_graph(b.clone(), c.clone())]).unwrap(),
             store.clone(),
             2,
         )
@@ -3115,7 +3103,7 @@ fn retry_eligibility_respects_additional_attempts_window_and_exponential_minimum
 async fn execution_failure_retries_from_committed_checkpoint_not_from_input() {
     let path = std::env::temp_dir().join(format!("blkit-retry-engine-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let release_c = Arc::new(AtomicBool::new(false));
     let b_hits = Arc::new(AtomicUsize::new(0));
     let c_hits = Arc::new(AtomicUsize::new(0));
@@ -3149,7 +3137,7 @@ async fn execution_failure_retries_from_committed_checkpoint_not_from_input() {
         retry_delay: Duration::from_millis(100),
         backoff: "exponential",
     });
-    let engine = Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 2).unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 2).unwrap();
     let id = engine
         .start("test", "1", "parallel", json!(null))
         .await
@@ -3222,7 +3210,7 @@ async fn restart_recovers_running_checkpoint_or_fails_when_retry_is_absent() {
         graph
             .complete(&input, &mut checkpoint, "b", json!(3))
             .unwrap();
-        let store = Store::open(&path).await.unwrap();
+        let store = LocalStore::open(&path).await.unwrap();
         let mut instance = Instance::new("old", "test", "1", "parallel", input);
         instance.checkpoint = Some(checkpoint);
         store.create(&instance).await.unwrap();
@@ -3237,13 +3225,8 @@ async fn restart_recovers_running_checkpoint_or_fails_when_retry_is_absent() {
                 backoff: "exponential",
             });
         }
-        let reopened = Store::open(&path).await.unwrap();
-        let engine = Engine::new(
-            Registry::new_named(vec![graph]).unwrap(),
-            reopened.clone(),
-            2,
-        )
-        .unwrap();
+        let reopened = LocalStore::open(&path).await.unwrap();
+        let engine = Engine::new(Registry::new(vec![graph]).unwrap(), reopened.clone(), 2).unwrap();
         engine.recover().await.unwrap();
         tokio::time::timeout(Duration::from_secs(3), async {
             while engine.status("old").await.unwrap().unwrap().status
@@ -3284,7 +3267,7 @@ async fn restart_dispatches_pending_named_work_but_preserves_accepted_cancellati
     });
     let c: Evaluate = Arc::new(|_, _| Ok(json!(5)));
     let graph = parallel_named_graph(b.clone(), c.clone());
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     for (id, status) in [("pending", "pending"), ("cancelling", "cancelling")] {
         let mut item = Instance::new(id, "test", "1", "parallel", json!(null));
         item.checkpoint = Some(graph.checkpoint(&json!(null)).unwrap());
@@ -3294,9 +3277,9 @@ async fn restart_dispatches_pending_named_work_but_preserves_accepted_cancellati
         }
     }
     drop(store);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let engine = Engine::new(
-        Registry::new_named(vec![parallel_named_graph(b, c)]).unwrap(),
+        Registry::new(vec![parallel_named_graph(b, c)]).unwrap(),
         store.clone(),
         2,
     )
@@ -3331,7 +3314,7 @@ async fn named_terminals_stop_parallel_work_without_becoming_execution_failures(
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let store = Store::open(&path).await.unwrap();
+        let store = LocalStore::open(&path).await.unwrap();
         let started = Arc::new(AtomicBool::new(false));
         let released = Arc::new(AtomicBool::new(false));
         let signalled = Arc::new(AtomicUsize::new(0));
@@ -3443,8 +3426,7 @@ async fn named_terminals_stop_parallel_work_without_becoming_execution_failures(
                 },
             ],
         };
-        let engine =
-            Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 2).unwrap();
+        let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 2).unwrap();
         let id = engine
             .start("test", "1", "event", json!(null))
             .await
@@ -3492,9 +3474,9 @@ async fn normal_end_waits_for_the_other_branch_before_completing() {
             Err("not released".into())
         }
     });
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let engine = Engine::new(
-        Registry::new_named(vec![parallel_named_graph(b, c)]).unwrap(),
+        Registry::new(vec![parallel_named_graph(b, c)]).unwrap(),
         store.clone(),
         2,
     )
@@ -3540,138 +3522,28 @@ async fn normal_end_waits_for_the_other_branch_before_completing() {
 }
 
 #[tokio::test]
-async fn failed_branch_signals_inflight_sibling_and_skips_successor() {
-    let path = std::env::temp_dir().join(format!("blkit-engine-fail-{}.db", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
-    let entered = Arc::new(Barrier::new(2));
-    let released = Arc::new(AtomicBool::new(false));
-    let signalled = Arc::new(AtomicUsize::new(0));
-    let successor = Arc::new(AtomicBool::new(false));
-    let bad = Step::Run {
-        name: "bad",
-        call: Arc::new({
-            let barrier = entered.clone();
-            move |_, _| {
-                barrier.wait();
-                Err("boom".into())
-            }
-        }),
-        cancel: Arc::new(|| {}),
-    };
-    let slow = Step::Run {
-        name: "slow",
-        call: Arc::new({
-            let barrier = entered.clone();
-            let released = released.clone();
-            move |_, _| {
-                barrier.wait();
-                for _ in 0..100 {
-                    if released.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Ok(json!(1))
-            }
-        }),
-        cancel: Arc::new({
-            let released = released.clone();
-            let signalled = signalled.clone();
-            move || {
-                signalled.fetch_add(1, Ordering::SeqCst);
-                released.store(true, Ordering::SeqCst);
-            }
-        }),
-    };
-    let definition = Definition {
-        namespace: "test",
-        version: "1",
-        name: "fail",
-        steps: vec![
-            Step::Gateway {
-                kind: "and",
-                branches: vec![
-                    Branch {
-                        label: Some("bad"),
-                        condition: None,
-                        steps: vec![bad],
-                    },
-                    Branch {
-                        label: Some("slow"),
-                        condition: None,
-                        steps: vec![slow],
-                    },
-                ],
-                join: "both",
-            },
-            Step::Run {
-                name: "after",
-                call: Arc::new({
-                    let successor = successor.clone();
-                    move |_, _| {
-                        successor.store(true, Ordering::SeqCst);
-                        Ok(json!(0))
-                    }
-                }),
-                cancel: Arc::new(|| {}),
-            },
-            Step::Return(Arc::new(|_, values| Ok(values["after"].clone()))),
-        ],
-        decode_input: Box::new(Ok::<Value, String>),
-    };
-    let registry = Registry::new(vec![definition]).unwrap();
-    let engine = Engine::new(registry, store.clone(), 2).unwrap();
-    let id = engine
-        .start("test", "1", "fail", json!(null))
-        .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let item: Instance = engine.status(&id).await.unwrap().unwrap();
-            if item.status == "failed" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(signalled.load(Ordering::SeqCst), 1);
-    assert!(!successor.load(Ordering::SeqCst));
-    assert!(
-        engine
-            .status(&id)
-            .await
-            .unwrap()
-            .unwrap()
-            .error
-            .unwrap()
-            .contains("boom")
-    );
-    assert!(engine.cancel(&id).await.unwrap_err().contains("terminal"));
-    assert_eq!(engine.status(&id).await.unwrap().unwrap().status, "failed");
-    drop(engine);
-    drop(store);
-    std::fs::remove_file(path).unwrap();
-}
-
-#[tokio::test]
 async fn queued_instance_cancels_before_its_first_task_is_dispatched() {
     let path = std::env::temp_dir().join(format!("blkit-engine-pending-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let occupied = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
     let other_started = Arc::new(AtomicBool::new(false));
-    let definition = Definition {
+    let graph = GraphDefinition {
         namespace: "test",
         version: "1",
         name: "queue",
-        steps: vec![
-            Step::Run {
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
                 name: "work",
-                call: Arc::new({
+                kind: GraphNodeKind::Task(Arc::new({
                     let occupied = occupied.clone();
                     let release = release.clone();
                     let other_started = other_started.clone();
@@ -3689,14 +3561,33 @@ async fn queued_instance_cancels_before_its_first_task_is_dispatched() {
                         }
                         Ok(source.clone())
                     }
-                }),
-                cancel: Arc::new(|| {}),
+                })),
             },
-            Step::Return(Arc::new(|_, values| Ok(values["work"].clone()))),
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
         ],
-        decode_input: Box::new(Ok::<Value, String>),
+        links: vec![
+            GraphLink {
+                source: "start",
+                target: "work",
+                value: None,
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+            GraphLink {
+                source: "work",
+                target: "done",
+                value: Some(Arc::new(|_, values| Ok(values["work"].clone()))),
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+        ],
     };
-    let engine = Engine::new(Registry::new(vec![definition]).unwrap(), store.clone(), 1).unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
     let first = engine.start("test", "1", "queue", json!(0)).await.unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
         while !occupied.load(Ordering::SeqCst) {
@@ -3733,101 +3624,6 @@ async fn queued_instance_cancels_before_its_first_task_is_dispatched() {
     assert_eq!(
         engine.status(&first).await.unwrap().unwrap().status,
         "completed"
-    );
-    drop(engine);
-    drop(store);
-    std::fs::remove_file(path).unwrap();
-}
-
-#[tokio::test]
-async fn cancellation_signals_all_running_tasks_and_ignores_late_results() {
-    let path = std::env::temp_dir().join(format!("blkit-engine-cancel-{}.db", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
-    let started = Arc::new(AtomicUsize::new(0));
-    let signalled = Arc::new(AtomicUsize::new(0));
-    let released = Arc::new(AtomicBool::new(false));
-    let successor = Arc::new(AtomicBool::new(false));
-    let branches = (0..2)
-        .map(|index| {
-            let started = started.clone();
-            let released = released.clone();
-            let signalled = signalled.clone();
-            let task = Step::Run {
-                name: "work",
-                call: Arc::new(move |_, _| {
-                    started.fetch_add(1, Ordering::SeqCst);
-                    for _ in 0..150 {
-                        if released.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Ok(json!(index))
-                }),
-                cancel: Arc::new(move || {
-                    signalled.fetch_add(1, Ordering::SeqCst);
-                }),
-            };
-            Branch {
-                label: Some(if index == 0 { "left" } else { "right" }),
-                condition: None,
-                steps: vec![task],
-            }
-        })
-        .collect();
-    let definition = Definition {
-        namespace: "test",
-        version: "1",
-        name: "cancel",
-        steps: vec![
-            Step::Gateway {
-                kind: "and",
-                branches,
-                join: "both",
-            },
-            Step::Run {
-                name: "after",
-                call: Arc::new({
-                    let successor = successor.clone();
-                    move |_, _| {
-                        successor.store(true, Ordering::SeqCst);
-                        Ok(json!(3))
-                    }
-                }),
-                cancel: Arc::new(|| {}),
-            },
-            Step::Return(Arc::new(|_, values| Ok(values["after"].clone()))),
-        ],
-        decode_input: Box::new(Ok::<Value, String>),
-    };
-    let engine = Engine::new(Registry::new(vec![definition]).unwrap(), store.clone(), 2).unwrap();
-    let id = engine
-        .start("test", "1", "cancel", json!(null))
-        .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while started.load(Ordering::SeqCst) != 2 {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let (first, repeated) = tokio::join!(engine.cancel(&id), engine.cancel(&id));
-    first.unwrap();
-    repeated.unwrap();
-    engine.cancel(&id).await.unwrap();
-    assert_eq!(signalled.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        engine.status(&id).await.unwrap().unwrap().status,
-        "cancelled"
-    );
-    released.store(true, Ordering::SeqCst);
-    tokio::time::sleep(Duration::from_millis(80)).await;
-    assert!(!successor.load(Ordering::SeqCst));
-    assert_eq!(
-        engine.status(&id).await.unwrap().unwrap().status,
-        "cancelled"
     );
     drop(engine);
     drop(store);

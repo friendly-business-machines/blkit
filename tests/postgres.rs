@@ -4,8 +4,8 @@ use axum::{
 };
 use blkit::{
     RetryPolicy,
+    compiled_graph::{GraphCheckpoint, GraphDefinition, GraphLink, GraphNode, GraphNodeKind},
     distributed::{DistributedControl, DistributedWorker},
-    named_runtime::{GraphCheckpoint, GraphDefinition, GraphLink, GraphNode, GraphNodeKind},
     postgres_store::PostgresStore,
     runtime::{Evaluate, Instance},
     server::router_distributed,
@@ -75,6 +75,72 @@ fn distributed_batch_graph(task: Evaluate) -> GraphDefinition {
             },
         ],
     }
+}
+
+#[tokio::test]
+async fn distributed_recovery_rejects_old_checkpoints_without_changing_rows() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let graph = distributed_batch_graph(Arc::new(|input, _| Ok(input.clone())));
+    let mut json = serde_json::to_value(graph.checkpoint(&json!([1])).unwrap()).unwrap();
+    json.as_object_mut().unwrap().remove("version");
+    let old: GraphCheckpoint = serde_json::from_value(json).unwrap();
+    for (id, status) in [("old-pending", "pending"), ("old-waiting", "waiting")] {
+        let mut item = Instance::new(id, "test", "1", "batch", json!([1]));
+        item.status = status.into();
+        item.wake_at_ms = (status == "waiting").then_some(0);
+        item.checkpoint = Some(old.clone());
+        store
+            .create_with_policy(&item, graph.retry.as_ref())
+            .await
+            .unwrap();
+    }
+    let pending = serde_json::to_value(store.get("old-pending").await.unwrap()).unwrap();
+    let waiting = serde_json::to_value(store.get("old-waiting").await.unwrap()).unwrap();
+    let worker =
+        DistributedWorker::new(store.clone(), "legacy-worker", vec![graph], 1, 1_000).unwrap();
+    worker.advertise().await.unwrap();
+    assert!(
+        store
+            .claim("legacy-worker", 1, 1_000)
+            .await
+            .err()
+            .unwrap()
+            .contains("unsupported checkpoint version")
+    );
+    assert!(
+        worker
+            .run_once()
+            .await
+            .unwrap_err()
+            .contains("unsupported checkpoint version")
+    );
+    let control = DistributedControl::new(store.clone(), vec![]).unwrap();
+    assert!(
+        control
+            .reconcile_once()
+            .await
+            .unwrap_err()
+            .contains("unsupported checkpoint version")
+    );
+    assert_eq!(
+        serde_json::to_value(store.get("old-pending").await.unwrap()).unwrap(),
+        pending
+    );
+    assert_eq!(
+        serde_json::to_value(store.get("old-waiting").await.unwrap()).unwrap(),
+        waiting
+    );
 }
 
 #[tokio::test]
@@ -651,7 +717,7 @@ async fn distributed_deadline_precedes_iteration_bound_and_late_claim_writes() {
         });
         graph.nodes[2].kind = GraphNodeKind::TaskLoop(
             task.clone(),
-            blkit::named_runtime::LoopPolicy {
+            blkit::compiled_graph::LoopPolicy {
                 condition: Arc::new(|_, _| Ok(json!(true))),
                 initial: None,
                 before: false,

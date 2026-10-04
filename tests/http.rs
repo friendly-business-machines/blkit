@@ -4,8 +4,8 @@ use axum::{
 };
 use blkit::{
     RetryPolicy,
-    named_runtime::{GraphDefinition, GraphLink, GraphNode, GraphNodeKind},
-    runtime::{Definition, Engine, Registry, Step, Store},
+    compiled_graph::{GraphDefinition, GraphLink, GraphNode, GraphNodeKind},
+    runtime::{Engine, LocalStore, Registry},
     server::router,
     transpile,
 };
@@ -71,7 +71,7 @@ async fn wait_http_status(app: &axum::Router, id: &str, expected: &str) -> Value
 async fn http_reports_intermediate_wait_and_accepts_cancellation() {
     let path = std::env::temp_dir().join(format!("blkit-http-pause-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let graph = GraphDefinition {
         namespace: "test",
         version: "1",
@@ -113,7 +113,7 @@ async fn http_reports_intermediate_wait_and_accepts_cancellation() {
         ],
     };
     let app = router(Arc::new(
-        Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 1).unwrap(),
+        Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap(),
     ));
     let id = http_start(&app, "pause").await;
     let item = http_status(&app, &id).await;
@@ -142,7 +142,7 @@ async fn http_reports_intermediate_wait_and_accepts_cancellation() {
 async fn http_exposes_deadline_timeout_and_rejects_late_cancellation() {
     let path = std::env::temp_dir().join(format!("blkit-http-timeout-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let graph = GraphDefinition {
         namespace: "test",
         version: "1",
@@ -187,7 +187,7 @@ async fn http_exposes_deadline_timeout_and_rejects_late_cancellation() {
         ],
     };
     let app = router(Arc::new(
-        Engine::new(Registry::new_named(vec![graph]).unwrap(), store.clone(), 1).unwrap(),
+        Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap(),
     ));
     let id = http_start(&app, "timeout").await;
     let initial = http_status(&app, &id).await;
@@ -216,7 +216,7 @@ async fn http_exposes_deadline_timeout_and_rejects_late_cancellation() {
 async fn http_reports_retry_waiting_business_failure_termination_and_cancel_while_waiting() {
     let path = std::env::temp_dir().join(format!("blkit-http-outcomes-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let graphs = [
         ("business", GraphNodeKind::Error, None),
         ("terminated", GraphNodeKind::Terminate, None),
@@ -283,7 +283,7 @@ async fn http_reports_retry_waiting_business_failure_termination_and_cancel_whil
         })
         .collect();
     let app = router(Arc::new(
-        Engine::new(Registry::new_named(definitions).unwrap(), store.clone(), 2).unwrap(),
+        Engine::new(Registry::new(definitions).unwrap(), store.clone(), 2).unwrap(),
     ));
     let business = http_start(&app, "business").await;
     let item = wait_http_status(&app, &business, "business-error").await;
@@ -338,11 +338,11 @@ async fn compiled_graph_http_start_status_and_errors() {
     );
     let path = std::env::temp_dir().join(format!("blkit-http-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     store.recover_interrupted().await.unwrap();
     let app = router(Arc::new(
         Engine::new(
-            Registry::new_named(compiled::named_graph_definitions()).unwrap(),
+            Registry::new(compiled::named_graph_definitions()).unwrap(),
             store.clone(),
             4,
         )
@@ -433,43 +433,67 @@ async fn compiled_graph_http_start_status_and_errors() {
 async fn active_cancellation_is_acknowledged_over_http() {
     let path = std::env::temp_dir().join(format!("blkit-http-cancel-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let store = Store::open(&path).await.unwrap();
+    let store = LocalStore::open(&path).await.unwrap();
     let started = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
-    let definition = Definition {
+    let graph = GraphDefinition {
         namespace: "test",
         version: "1",
         name: "wait",
-        steps: vec![
-            Step::Run {
-                name: "slow",
-                call: Arc::new({
-                    let started = started.clone();
-                    let release = release.clone();
-                    move |_, _| {
-                        started.store(true, Ordering::SeqCst);
-                        for _ in 0..100 {
-                            if release.load(Ordering::SeqCst) {
-                                break;
-                            }
-                            std::thread::sleep(Duration::from_millis(10));
-                        }
-                        Ok(json!(true))
-                    }
-                }),
-                cancel: Arc::new({
-                    let release = release.clone();
-                    move || {
-                        release.store(true, Ordering::SeqCst);
-                    }
-                }),
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
             },
-            Step::Return(Arc::new(|_, values| Ok(values["slow"].clone()))),
+            GraphNode {
+                name: "slow",
+                kind: GraphNodeKind::TaskWithCancel(
+                    Arc::new({
+                        let started = started.clone();
+                        let release = release.clone();
+                        move |_, _| {
+                            started.store(true, Ordering::SeqCst);
+                            while !release.load(Ordering::SeqCst) {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            Ok(json!(true))
+                        }
+                    }),
+                    Arc::new({
+                        let release = release.clone();
+                        move || release.store(true, Ordering::SeqCst)
+                    }),
+                ),
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
         ],
-        decode_input: Box::new(Ok::<Value, String>),
+        links: vec![
+            GraphLink {
+                source: "start",
+                target: "slow",
+                value: None,
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+            GraphLink {
+                source: "slow",
+                target: "done",
+                value: Some(Arc::new(|_, values| Ok(values["slow"].clone()))),
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+        ],
     };
     let app = router(Arc::new(
-        Engine::new(Registry::new(vec![definition]).unwrap(), store.clone(), 1).unwrap(),
+        Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap(),
     ));
     let request = Request::builder()
         .method("POST")

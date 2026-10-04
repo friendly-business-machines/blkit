@@ -380,7 +380,7 @@ impl Project {
                 .map_err(|e| e.to_string())?;
             lib.push_str(&format!("pub mod scope_{index};\n"));
         }
-        lib.push_str("pub fn named_graph_definitions() -> Vec<blkit::named_runtime::GraphDefinition> {\n    let mut definitions = Vec::new();\n");
+        lib.push_str("pub fn named_graph_definitions() -> Vec<blkit::compiled_graph::GraphDefinition> {\n    let mut definitions = Vec::new();\n");
         for (index, program) in programs.iter().enumerate() {
             if program.processes.iter().any(|p| p.named_graph.is_some()) {
                 lib.push_str(&format!(
@@ -508,7 +508,7 @@ async fn run(args: &[String]) -> Result<(), &'static str> {
 "#;
 
 const SERVER_SOURCE: &str = r#"use std::{env, path::Path, sync::Arc};
-use blkit::{logging::{self, tracing}, runtime::{Engine, Registry, Store}, server::router};
+use blkit::{logging::{self, tracing}, runtime::{Engine, Registry, LocalStore}, server::router};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -531,8 +531,8 @@ async fn run(args: &[String]) -> Result<(), &'static str> {
     let database = args.get(1).map_or("blkit.db", String::as_str);
     let limit = args.get(2).map_or(Ok(32), |value| value.parse::<usize>()).map_err(|_| "invalid MAX_TASKS")?;
     let bind = args.get(3).map_or("127.0.0.1:3000", String::as_str);
-    let store = Store::open(Path::new(database)).await.map_err(|_| "cannot open store")?;
-    let registry = Registry::new_named(PROJECT_CRATE::named_graph_definitions()).map_err(|_| "invalid process definitions")?;
+    let store = LocalStore::open(Path::new(database)).await.map_err(|_| "cannot open store")?;
+    let registry = Registry::new(PROJECT_CRATE::named_graph_definitions()).map_err(|_| "invalid process definitions")?;
     let engine = Arc::new(Engine::new(registry, store, limit).map_err(|_| "invalid server configuration")?);
     engine.recover().await.map_err(|_| "cannot recover instances")?;
     let listener = tokio::net::TcpListener::bind(bind).await.map_err(|_| "cannot bind server address")?;
