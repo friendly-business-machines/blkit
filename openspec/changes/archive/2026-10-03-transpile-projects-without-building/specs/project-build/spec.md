@@ -1,10 +1,6 @@
-# project-build Specification
+# Spec Delta
 
-## Purpose
-
-Defines a user-facing blkit project that builds `.bl` sources into a reusable Rust crate or packaged executables without requiring authors to maintain generated Rust by hand.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Projects discover sources and select one build target
 A blkit project SHALL discover its `.bl` files under the project root without a source list in its manifest, and SHALL require exactly one `build_target` value from `crate`, `worker`, or `server`. Each target SHALL use the same validated generated process definitions from every discovered source. `blkit transpile [PROJECT_DIR]` SHALL generate a Cargo project in `PROJECT_DIR/.blkit` for the selected target, defaulting `PROJECT_DIR` to the current directory, without invoking `cargo build` or claiming a compiled artifact. A `crate` target SHALL generate a reusable Rust library; a `worker` target SHALL generate a distributed worker binary entry point; a `server` target SHALL generate a local REST server binary entry point. Users SHALL NOT need to author the generated Cargo project, but SHALL invoke Cargo themselves to compile it. `blkit build` SHALL NOT remain an alias for project transpilation.
@@ -94,10 +90,3 @@ A blkit project SHALL declare the blkit version and any custom task crate depend
 #### Scenario: Dependency fails Rust compilation
 - **WHEN** a custom task crate resolves but its Rust callable cannot compile or link with the generated project
 - **THEN** `blkit transpile` does not promise a runnable artifact, and the user's Cargo build reports the compilation failure
-
-### Requirement: Existing direct source transpilation remains available
-The existing single-file CLI invocation SHALL continue to accept one `.bl` file and emit Rust without requiring a blkit project configuration, for sources using built-in tasks.
-
-#### Scenario: Legacy compile command
-- **WHEN** an existing built-in-only `.bl` file is compiled with `blkit SOURCE.bl OUTPUT.rs`
-- **THEN** the command still emits Rust or reports its validation errors without requiring a project manifest

@@ -1,10 +1,6 @@
-# cli-experience Specification
+# Spec Delta
 
-## Purpose
-
-Defines a usable command-line interface for compiling and building blkit projects, with discoverable usage, contextual errors, and output appropriate for humans and scripts.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Existing CLI invocations remain compatible
 The blkit CLI SHALL accept `blkit SOURCE.bl OUTPUT.rs`, `blkit transpile [PROJECT_DIR]`, and `blkit update [PROJECT_DIR]`, with `.` as the default project directory. It SHALL preserve direct source output, selected project target, and dependency update behavior. `blkit build` SHALL be rejected rather than accepted as an alias or invoked to compile the generated project.
@@ -31,17 +27,6 @@ The CLI SHALL provide generated top-level and subcommand help, and a version dis
 #### Scenario: Invalid invocation
 - **WHEN** a user omits required operands, supplies unexpected extra arguments, or selects an unknown command
 - **THEN** the CLI reports usage to stderr, exits nonzero, and performs no compilation or project transpilation
-
-### Requirement: Shell completion is available without another command
-The CLI SHALL provide a top-level `--completions SHELL` option that writes a completion script for a supported shell to stdout and then exits successfully without reading project files or building. Unsupported shells SHALL fail with usage information.
-
-#### Scenario: Requesting completion
-- **WHEN** a user invokes `blkit --completions bash`
-- **THEN** stdout contains a completion script for the existing commands and options, and no project output is created
-
-#### Scenario: Unsupported shell
-- **WHEN** a user supplies an unsupported shell to `--completions`
-- **THEN** the CLI exits nonzero with an actionable diagnostic and no completion script
 
 ### Requirement: Diagnostics are contextual and automation-safe
 Operational errors SHALL identify the failing source, project, or underlying operation where available and exit nonzero. CLI-generated failures SHALL go to stderr; completion scripts SHALL go to stdout. Terminal styling and transient progress SHALL appear only when stderr is an interactive terminal and styling is enabled; non-interactive or color-disabled output SHALL contain no ANSI control sequences or progress animation. Compiler diagnostics SHALL NOT claim a source span unless one is known.
