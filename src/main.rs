@@ -11,7 +11,7 @@ use indicatif::ProgressBar;
 #[derive(Parser)]
 #[command(
     version,
-    about = "Compile .bl sources and build blkit projects",
+    about = "Transpile .bl sources and projects to Rust",
     args_conflicts_with_subcommands = true,
     arg_required_else_help = true,
     disable_help_subcommand = true
@@ -37,7 +37,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Operation {
-    Build { project_dir: Option<PathBuf> },
+    Transpile { project_dir: Option<PathBuf> },
     Update { project_dir: Option<PathBuf> },
 }
 
@@ -50,13 +50,21 @@ struct CliError {
 }
 
 fn main() {
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "build") {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::InvalidSubcommand,
+                "'build' was removed; use 'transpile' and run cargo build separately",
+            )
+            .exit();
+    }
     let cli = Cli::parse();
     if let Some(shell) = cli.completions {
         clap_complete::generate(shell, &mut Cli::command(), "blkit", &mut std::io::stdout());
         return;
     }
     let result = match cli.command {
-        Some(Operation::Build { project_dir }) => project("build", project_dir.as_deref()),
+        Some(Operation::Transpile { project_dir }) => project("transpile", project_dir.as_deref()),
         Some(Operation::Update { project_dir }) => project("update", project_dir.as_deref()),
         None => {
             let source = cli.source.expect("clap requires a source or subcommand");
@@ -108,7 +116,7 @@ fn project(operation: &'static str, directory: Option<&Path>) -> Result<(), CliE
         progress
     });
     let result = blkit::project::Project::load(directory).and_then(|project| match operation {
-        "build" => project.build(),
+        "transpile" => project.transpile(),
         _ => project.update(),
     });
     if let Some(progress) = progress {

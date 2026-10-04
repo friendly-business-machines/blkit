@@ -47,10 +47,9 @@ ARG USER_GID=${USER_UID}
 # - sudo: allow privileged actions from non-root `vscode` account.
 #
 # Language/toolchain package rationale:
-# - golang: Go compiler/toolchain (`go`).
-# - rustc and cargo: Rust compiler and package manager for the `.bl` transpiler.
-# - rustfmt: `cargo fmt --check` for the Rust implementation tasks.
-# - rust-clippy: `cargo clippy` for Rust correctness and style checks.
+# - gcc and libc6-dev: linker and C runtime files needed to compile Rust binaries.
+# Rust (rustc, cargo, rustfmt, clippy) is installed via rustup below so it
+# can meet the project's minimum version independently of Ubuntu's archive.
 #
 # Package versions are pinned to what's currently available in the Ubuntu
 # 26.04 archive (per apt-cache madison) for reproducible builds. Ubuntu's
@@ -62,13 +61,14 @@ RUN apt-get update \
         ca-certificates=20260601~26.04.1 \
         curl=8.18.0-1ubuntu2.7 \
         fish=4.2.1-3.2 \
+        gcc=4:15.2.0-5ubuntu1 \
         git=1:2.53.0-1ubuntu1 \
         gh=2.46.0-4 \
         gnupg=2.4.8-4ubuntu3.1 \
-        golang=2:1.26~1 \
         jq=1.8.1-4ubuntu2 \
         less=668-1build1 \
         libatomic1=16-20260322-1ubuntu1 \
+        libc6-dev=2.43-2ubuntu2.4 \
         make=4.4.1-3 \
         nano=8.7.1-1ubuntu0.1 \
         nodejs=22.22.1+dfsg+~cs22.19.15-1ubuntu1 \
@@ -76,10 +76,6 @@ RUN apt-get update \
         pass=1.7.4-8 \
         pinentry-tty=1.3.2-3ubuntu1 \
         pre-commit=4.5.1-1 \
-        rustc=1.93.1ubuntu1 \
-        cargo=1.93.1ubuntu1 \
-        rustfmt=1.93.1ubuntu1 \
-        rust-clippy=1.93.1ubuntu1 \
         socat=1.8.1.1-1ubuntu0.1 \
         sudo=1.9.17p2-1ubuntu3.1 \
         wget=1.25.0-2ubuntu4.4 \
@@ -239,6 +235,30 @@ RUN git config --system pull.rebase false \
 
 # Default runtime user for VS Code terminals/tasks inside the container.
 USER ${USERNAME}
+
+# Install the pinned Rust toolchain and the cargo-binstall and Symposium CLIs
+# for the development user. Symposium setup (`cargo agents init`) is interactive
+# and belongs to the user's configuration, not the image build.
+ARG RUST_VERSION=1.96.1
+ARG CARGO_BINSTALL_VERSION=1.25.0
+ARG SYMPOSIUM_VERSION=0.5.1
+ENV PATH="/home/${USERNAME}/.cargo/bin:${PATH}"
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal \
+        --default-toolchain "${RUST_VERSION}" --component rustfmt --component clippy \
+    && arch="$(dpkg --print-architecture)" \
+    && case "${arch}" in \
+        amd64) target=x86_64-unknown-linux-musl; checksum=6d864dd99e63386b54c7ca1808eb000571a9e00f530ed86a2c0016d0290083b9 ;; \
+        arm64) target=aarch64-unknown-linux-musl; checksum=4d3cc6e0308d2f76b7de7f69d1d316a2749917bb6c1a9c69cea803400460e5a6 ;; \
+        *) echo "Unsupported architecture: ${arch}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/cargo-bins/cargo-binstall/releases/download/v${CARGO_BINSTALL_VERSION}/cargo-binstall-${target}.tgz" -o /tmp/cargo-binstall.tgz \
+    && printf '%s  %s\n' "${checksum}" /tmp/cargo-binstall.tgz | sha256sum -c --strict - \
+    && tar -xzf /tmp/cargo-binstall.tgz -C "/home/${USERNAME}/.cargo/bin" cargo-binstall \
+    && rm /tmp/cargo-binstall.tgz \
+    && cargo binstall symposium --version "${SYMPOSIUM_VERSION}" --target "${target}" --no-confirm \
+    && rustc --version \
+    && cargo-binstall -V \
+    && cargo agents --version
 
 # Preinstall this project's Pi packages in the image. Project-local settings
 # still declare the same packages so Pi uses the configuration when the repo is

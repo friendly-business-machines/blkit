@@ -39,6 +39,88 @@ fn compile_and_test(source: &str, assertion: &str) {
 }
 
 #[test]
+fn generated_string_functions_evaluate_typed_tasks_and_decisions() {
+    compile_and_test_graph(
+        r#"namespace strings
+version "1"
+task concat(input: String) -> String:
+  return "order-" + input
+task join(input: String) -> String:
+  return stringJoin([input, upperCase(input)], ", ")
+task member(input: String) -> Bool:
+  return input in ["active", "pending"]
+task last(input: String) -> String:
+  return charAt(input, -1)
+task slice(input: String) -> String:
+  return substring(input, -1)
+task length(input: String) -> Number:
+  return stringLength(input)
+task regex(input: String) -> Bool:
+  return matches(input, input)
+task extracts(input: String) -> List<List<String>>:
+  return extract(input, "(a)(b)?")
+task convert(input: Number) -> String:
+  return "order-" + string(input)
+task convert_date(input: Date) -> String:
+  return string(input)
+task convert_time(input: Time) -> String:
+  return string(input)
+task convert_instant(input: DateTime) -> String:
+  return string(input)
+decision inspect(input: String) -> String:
+  node result: String = context
+    entry shortened: String = substring(input, 1, 1)
+    result shortened
+  output result
+decision judge(input: String) -> Bool:
+  knowledge check(s: String) -> Bool = matches(s, "^a")
+  node result: Bool = literal check(input)
+  output result
+"#,
+        r#"assert_eq!(concat("123".into()), "order-123"); assert_eq!(join("ab".into()), "ab, AB"); assert!(member("active".into())); assert!(!member("ACTIVE".into())); assert_eq!(last("e\u{301}x".into()).unwrap(), "x"); assert_eq!(slice("e\u{301}x".into()).unwrap(), "x"); assert_eq!(length("e\u{301}x".into()), Number::from(2)); assert!(regex("[".into()).is_err()); assert_eq!(extracts("ab a".into()).unwrap(), vec![vec!["a", "b"], vec!["a"]]); assert_eq!(convert(Number::from(123)).unwrap(), "order-123"); assert_eq!(convert_date("2026-01-01".parse().unwrap()).unwrap(), "2026-01-01"); assert_eq!(convert_time(serde_json::from_value(serde_json::json!("12:30:00")).unwrap()).unwrap(), "12:30:00"); assert_eq!(convert_instant("2026-01-01T00:00:00+02:00".parse().unwrap()).unwrap(), "2026-01-01T00:00:00+02:00"); assert_eq!(inspect("e\u{301}x".into()).unwrap(), "e\u{301}"); assert!(inspect("".into()).is_err()); assert!(judge("abc".into()).unwrap()); assert!(judge("[".into()).unwrap() == false);"#,
+    );
+}
+
+#[test]
+fn generated_string_edges_and_decision_table_propagate_errors() {
+    compile_and_test_graph(
+        r#"namespace strings
+version "1"
+task trim_case(input: String) -> String:
+  return upperCase(trimTrailing(trimLeading(input)))
+task slice(input: String) -> String:
+  return substring(input, 1, 2)
+task prefix(input: String) -> String:
+  return substringBefore(input, ":")
+task suffix(input: String) -> String:
+  return substringAfter(input, ":")
+task pieces(input: String) -> List<String>:
+  return split(input, [",", ";"])
+task padded(input: String) -> String:
+  return padTrailing(padLeading(input, 3, "x"), 5)
+task repeated(input: String) -> String:
+  return repeat(input, 2)
+task replaced(input: String) -> String:
+  return replace(input, "(a)", "x$1", "i")
+task test_text(input: String) -> Bool:
+  return contains(input, "a") and startsWith(input, "a") and endsWith(input, "b") and not isBlank(input) and not isEmpty(input)
+task index(input: String) -> Number:
+  return indexOf(input, "b")
+task reverses(input: String) -> String:
+  return reverse(lowerCase(input))
+decision table_test(input: String) -> Bool:
+  node result: Bool = table FIRST
+    input value: String = input
+    output ok: Bool
+    rule matches(value, input) -> true
+    default false
+  output result
+"#,
+        r#"assert_eq!(trim_case("  é  ".into()), "É"); assert_eq!(slice("e\u{301}x".into()).unwrap(), "e\u{301}x"); assert!(slice("".into()).is_err()); assert_eq!(prefix("a:b".into()), "a"); assert_eq!(suffix("a:b".into()), "b"); assert_eq!(pieces("a,b;c".into()).unwrap(), ["a", "b", "c"]); assert_eq!(padded("a".into()).unwrap(), "xxa  "); assert_eq!(repeated("ab".into()).unwrap(), "abab"); assert_eq!(replaced("aA".into()).unwrap(), "xaxA"); assert!(test_text("ab".into())); assert_eq!(index("ab".into()), Number::from(2)); assert_eq!(reverses("Ab".into()), "ba"); assert!(table_test("abc".into()).unwrap()); assert!(table_test("[".into()).is_err());"#,
+    );
+}
+
+#[test]
 fn generated_datetime_inputs_require_offset_and_compare_instants() {
     compile_and_test(
         "namespace timing\nversion \"1\"\ntype Window:\n  opens: DateTime\n  closes: DateTime\ntask before(input: Window) -> Bool:\n  return input.opens < input.closes\n",
@@ -338,6 +420,64 @@ fn compile_and_test_graph(source: &str, assertion: &str) {
         String::from_utf8_lossy(&result.stderr)
     );
     fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn string_errors_propagate_through_named_graph_tasks_and_routes() {
+    compile_and_test_graph(
+        r#"namespace string_graph
+version "1"
+type Request:
+  text: String
+  pattern: String
+task verify(input: Request) -> Bool:
+  return matches(input.text, input.pattern)
+process execute(input: Request) -> Bool:
+  node start = start
+  node checked = task verify(input)
+  node done = end
+  link start -> checked
+  link checked -> done(checked)
+process route(input: Request) -> Bool:
+  node start = start
+  node choice = xor_split
+  node yes = task verify(input)
+  node no = task verify(input)
+  node join = xor_join(choice)
+  node done = end
+  link start -> choice
+  link choice -> yes when matches(input.text, input.pattern)
+  link choice -> no else
+  link yes -> join(yes)
+  link no -> join(no)
+  link join -> done(join)
+"#,
+        r#"let graphs = named_graph_definitions(); for name in ["execute", "route"] { let graph = graphs.iter().find(|g| g.name == name).unwrap(); let good = serde_json::json!({"text":"abc", "pattern":"b"}); let mut state = graph.checkpoint(&good).unwrap(); assert_eq!(graph.run(&good, &mut state).unwrap(), serde_json::json!(true)); let bad = serde_json::json!({"text":"abc", "pattern":"["}); assert!(graph.checkpoint(&bad).and_then(|mut state| graph.run(&bad, &mut state)).is_err(), "{name} swallowed invalid regex"); }"#,
+    );
+}
+
+#[test]
+fn string_errors_propagate_through_multi_instance_and_task_loops() {
+    compile_and_test_graph(
+        r#"namespace string_graph
+version "1"
+task initial(input: String) -> String:
+  return charAt(input, 1)
+process batch(input: List<String>) -> List<String>:
+  node start = start
+  node many = task initial each input sequential
+  node done = end
+  link start -> many
+  link many -> done(many)
+process cycle(input: String) -> String:
+  node start = start
+  node one = task initial(input) repeat_post(one == "") max_iterations 2
+  node done = end
+  link start -> one
+  link one -> done(one)
+"#,
+        r#"let graphs = named_graph_definitions(); for (name, good, bad, result) in [("batch", serde_json::json!(["ab", "cd"]), serde_json::json!(["ab", ""]), serde_json::json!(["a", "c"])), ("cycle", serde_json::json!("ab"), serde_json::json!(""), serde_json::json!("a"))] { let graph = graphs.iter().find(|g| g.name == name).unwrap(); let mut state = graph.checkpoint(&good).unwrap(); assert_eq!(graph.run(&good, &mut state).unwrap(), result); assert!(graph.checkpoint(&bad).and_then(|mut state| graph.run(&bad, &mut state)).is_err(), "{name} swallowed invalid position"); }"#,
+    );
 }
 
 #[test]

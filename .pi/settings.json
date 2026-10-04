@@ -16,7 +16,12 @@
     "agentOverrides": {
       "worker": {
         "skills": [
-          "ponytail"
+          "ponytail",
+          "application-errors",
+          "error-handling-basics",
+          "find-crate-source",
+          "library-errors",
+          "rust-best-practice"
         ]
       }
     }

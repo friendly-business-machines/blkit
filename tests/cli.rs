@@ -10,13 +10,13 @@ fn help_explains_source_and_output() {
     let text = String::from_utf8(result.stdout).unwrap();
     assert!(text.contains("SOURCE.bl"));
     assert!(text.contains("OUTPUT.rs"));
-    assert!(text.contains("build"));
+    assert!(text.contains("transpile"));
     assert!(text.contains("update"));
 }
 
 #[test]
 fn subcommand_help_and_version_do_not_run_projects() {
-    for command in [["build", "--help"], ["update", "--help"]] {
+    for command in [["transpile", "--help"], ["update", "--help"]] {
         let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
             .args(command)
             .output()
@@ -48,7 +48,8 @@ fn bash_completion_is_printed_without_a_project() {
         String::from_utf8_lossy(&result.stderr)
     );
     let script = String::from_utf8(result.stdout).unwrap();
-    assert!(script.contains("build") && script.contains("update"));
+    assert!(script.contains("transpile") && script.contains("update"));
+    assert!(!script.contains("_blkit__build"));
     assert!(script.contains("--completions"));
     assert!(result.stderr.is_empty());
 }
@@ -57,8 +58,8 @@ fn bash_completion_is_printed_without_a_project() {
 fn invalid_cli_combinations_fail_before_writing_output() {
     for args in [
         vec!["missing.bl"],
-        vec!["missing.bl", "output.rs", "build"],
-        vec!["build", "project", "extra"],
+        vec!["missing.bl", "output.rs", "transpile"],
+        vec!["transpile", "project", "extra"],
         vec!["--completions", "no-such-shell"],
     ] {
         let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
@@ -79,7 +80,7 @@ fn invalid_cli_combinations_fail_before_writing_output() {
 fn project_commands_default_to_current_directory() {
     let directory = std::env::temp_dir().join(format!("blkit-cli-default-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
-    for command in ["build", "update"] {
+    for command in ["transpile", "update"] {
         let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
             .arg(command)
             .current_dir(&directory)
@@ -123,7 +124,78 @@ fn valid_source_writes_rust() {
 }
 
 #[test]
-fn build_command_reports_invalid_project_manifest() {
+fn transpile_generates_projects_without_cargo_or_a_binary() {
+    for target in ["crate", "worker", "server"] {
+        let directory = std::env::temp_dir().join(format!(
+            "blkit-cli-transpile-{target}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("blkit.toml"),
+            format!(
+                "[project]\nname = \"orders\"\nblkit = \"0.1.0\"\nbuild_target = \"{target}\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(directory.join("route.bl"), "namespace orders\nversion \"1\"\nprocess route(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n").unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
+            .arg("transpile")
+            .current_dir(&directory)
+            .env("PATH", "")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{target}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(directory.join(".blkit/Cargo.toml").exists());
+        assert!(directory.join(".blkit/src/lib.rs").exists());
+        assert!(!directory.join(".blkit/target").exists());
+        if target != "crate" {
+            assert!(
+                directory
+                    .join(format!(".blkit/src/bin/orders-{target}.rs"))
+                    .exists()
+            );
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn transpile_requires_cargo_when_extension_is_referenced() {
+    let directory =
+        std::env::temp_dir().join(format!("blkit-cli-extension-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("blkit.toml"), "[project]\nname = \"orders\"\nblkit = \"0.1.0\"\nbuild_target = \"crate\"\n[dependencies]\npayments = { version = \"0.1.0\", path = \"payments\" }\n").unwrap();
+    std::fs::write(directory.join("route.bl"), "namespace orders\nversion \"1\"\nprocess route(input: Number) -> Number:\n  node start = start\n  node work = task payments.charge(input)\n  node done = end\n  link start -> work\n  link work -> done(work)\n").unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
+        .arg("transpile")
+        .arg(&directory)
+        .env("PATH", "")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("cargo metadata"), "{stderr}");
+    assert!(!directory.join(".blkit/target").exists());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn removed_build_command_reports_usage() {
+    let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
+        .args(["build", "/not-a-project"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("Usage:"));
+}
+
+#[test]
+fn transpile_command_reports_invalid_project_manifest() {
     let directory = std::env::temp_dir().join(format!("blkit-cli-project-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(
@@ -132,7 +204,7 @@ fn build_command_reports_invalid_project_manifest() {
     )
     .unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
-        .arg("build")
+        .arg("transpile")
         .arg(&directory)
         .output()
         .unwrap();
@@ -215,7 +287,7 @@ fn errors_include_source_and_project_context_without_terminal_controls() {
             "version",
         ),
         (
-            vec![std::ffi::OsStr::new("build"), directory.as_os_str()],
+            vec![std::ffi::OsStr::new("transpile"), directory.as_os_str()],
             directory.to_string_lossy().to_string(),
             "build_target",
         ),
@@ -259,7 +331,7 @@ fn clicolor_zero_disables_interactive_styling_and_progress() {
     }
     let directory = std::env::temp_dir().join(format!("blkit-cli-clicolor-{}", std::process::id()));
     let command = format!(
-        "{} build {}",
+        "{} transpile {}",
         env!("CARGO_BIN_EXE_blkit"),
         directory.display()
     );

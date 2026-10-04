@@ -8,6 +8,49 @@ use crate::{
     semantic,
 };
 
+fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
+    match expr {
+        Expr::Call(name, args) => {
+            let shadowed = knowledge.iter().find(|item| item.name == *name);
+            (shadowed.is_none()
+                && matches!(
+                    name.as_str(),
+                    "string"
+                        | "substring"
+                        | "charAt"
+                        | "padLeading"
+                        | "padTrailing"
+                        | "repeat"
+                        | "split"
+                        | "matches"
+                        | "replace"
+                        | "extract"
+                ))
+                || shadowed.is_some_and(|item| expr_fallible(&item.body, knowledge))
+                || args.iter().any(|arg| expr_fallible(arg, knowledge))
+        }
+        Expr::Field(value, _) | Expr::Not(value) => expr_fallible(value, knowledge),
+        Expr::Binary(left, _, right) => {
+            expr_fallible(left, knowledge) || expr_fallible(right, knowledge)
+        }
+        Expr::List(items) => items.iter().any(|item| expr_fallible(item, knowledge)),
+        Expr::Range(lower, upper, _, _) => lower
+            .iter()
+            .chain(upper)
+            .any(|value| expr_fallible(value, knowledge)),
+        _ => false,
+    }
+}
+
+fn body_fallible(body: &[Stmt]) -> bool {
+    body.iter().any(|stmt| match stmt {
+        Stmt::Return(value) => expr_fallible(value, &[]),
+        Stmt::If(condition, yes, no) => {
+            expr_fallible(condition, &[]) || body_fallible(yes) || body_fallible(no)
+        }
+    })
+}
+
 fn emit_expr(expr: &Expr, program: &Program) -> String {
     emit_expr_with(expr, program, &[])
 }
@@ -17,7 +60,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
         Expr::Number(value) => format!("Number::from_str_exact({value:?}).unwrap()"),
         Expr::String(value) => format!("String::from({value:?})"),
         Expr::Bool(value) => value.to_string(),
-        Expr::Name(name) => name.clone(),
+        Expr::Name(name) => format!("({name}).clone()"),
         Expr::Call(name, args)
             if matches!(name.as_str(), "date" | "time" | "dateTime")
                 && !knowledge.iter().any(|item| item.name == *name) =>
@@ -76,13 +119,99 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 ),
             }
         }
-        Expr::Call(name, args) => format!(
-            "{name}({})",
-            args.iter()
+        Expr::Call(name, args)
+            if semantic::string_builtin(name)
+                && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let values: Vec<_> = args
+                .iter()
+                .map(|arg| emit_expr_with(arg, program, knowledge))
+                .collect();
+            let a = &values[0];
+            let b = values.get(1).map(String::as_str).unwrap_or("");
+            let c = values.get(2).map(String::as_str).unwrap_or("");
+            let flags = |index: usize| {
+                values
+                    .get(index)
+                    .map_or("None".to_owned(), |flag| format!("Some(({flag}).as_str())"))
+            };
+            match name.as_str() {
+                "string" => format!("blkit::string_ops::scalar(&({a}))?"),
+                "stringJoin" => format!("blkit::string_ops::join(&({a}), &({b}))"),
+                "stringLength" => format!("blkit::string_ops::string_length(&({a}))"),
+                "indexOf" => format!("blkit::string_ops::index_of(&({a}), &({b}))"),
+                "substring" => format!(
+                    "blkit::string_ops::substring(&({a}), {b}, {})?",
+                    values
+                        .get(2)
+                        .map_or("None".to_owned(), |length| format!("Some({length})"))
+                ),
+                "charAt" => format!("blkit::string_ops::char_at(&({a}), {b})?"),
+                "reverse" => format!("blkit::string_ops::reverse(&({a}))"),
+                "padLeading" | "padTrailing" => format!(
+                    "blkit::string_ops::{}(&({a}), {b}, {})?",
+                    if name == "padLeading" {
+                        "pad_leading"
+                    } else {
+                        "pad_trailing"
+                    },
+                    flags(2)
+                ),
+                "repeat" => format!("blkit::string_ops::repeat(&({a}), {b})?"),
+                "substringBefore" | "substringAfter" => format!(
+                    "blkit::string_ops::{}(&({a}), &({b})).to_owned()",
+                    if name == "substringBefore" {
+                        "before"
+                    } else {
+                        "after"
+                    }
+                ),
+                "upperCase" => format!("({a}).to_uppercase()"),
+                "lowerCase" => format!("({a}).to_lowercase()"),
+                "trim" | "trimLeading" | "trimTrailing" => format!(
+                    "({a}).{}().to_owned()",
+                    match name.as_str() {
+                        "trim" => "trim",
+                        "trimLeading" => "trim_start",
+                        _ => "trim_end",
+                    }
+                ),
+                "contains" | "startsWith" | "endsWith" => format!(
+                    "({a}).{}(({b}).as_str())",
+                    match name.as_str() {
+                        "contains" => "contains",
+                        "startsWith" => "starts_with",
+                        _ => "ends_with",
+                    }
+                ),
+                "isBlank" => format!("blkit::string_ops::is_blank(&({a}))"),
+                "isEmpty" => format!("({a}).is_empty()"),
+                "split" => format!("blkit::string_ops::split(&({a}), &({b}))?"),
+                "matches" => format!("blkit::string_ops::matches(&({a}), &({b}), {})?", flags(2)),
+                "replace" => format!(
+                    "blkit::string_ops::replace(&({a}), &({b}), &({c}), {})?",
+                    flags(3)
+                ),
+                "extract" => format!("blkit::string_ops::extract(&({a}), &({b}), {})?", flags(2)),
+                _ => unreachable!(),
+            }
+        }
+        Expr::Call(name, args) => {
+            let arguments = args
+                .iter()
                 .map(|arg| emit_expr_with(arg, program, knowledge))
                 .collect::<Vec<_>>()
-                .join(", ")
-        ),
+                .join(", ");
+            let suffix = if knowledge
+                .iter()
+                .any(|item| item.name == *name && expr_fallible(&item.body, knowledge))
+            {
+                "?"
+            } else {
+                ""
+            };
+            format!("{name}({arguments}){suffix}")
+        }
         Expr::Field(base, field) => {
             if let Expr::Name(name) = base.as_ref()
                 && program.enums.iter().any(|item| item.name == *name)
@@ -123,6 +252,13 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                     emit_expr_with(left, program, knowledge)
                 );
             }
+            if op == "+" {
+                return format!(
+                    "format!(\"{{}}{{}}\", {}, {})",
+                    emit_expr_with(left, program, knowledge),
+                    emit_expr_with(right, program, knowledge)
+                );
+            }
             let operator = match op.as_str() {
                 "and" => "&&",
                 "or" => "||",
@@ -137,19 +273,24 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
     }
 }
 
-fn emit_stmt(stmt: &Stmt, program: &Program, out: &mut String) {
+fn emit_stmt(stmt: &Stmt, program: &Program, out: &mut String, fallible: bool) {
     match stmt {
-        Stmt::Return(value) => out.push_str(&format!("return {};\n", emit_expr(value, program))),
+        Stmt::Return(value) => out.push_str(&format!(
+            "return {}{}{};\n",
+            if fallible { "Ok(" } else { "" },
+            emit_expr(value, program),
+            if fallible { ")" } else { "" }
+        )),
         Stmt::If(condition, yes, no) => {
             out.push_str(&format!("if {} {{\n", emit_expr(condition, program)));
             for branch in yes {
-                emit_stmt(branch, program, out);
+                emit_stmt(branch, program, out, fallible);
             }
             out.push_str("}\n");
             if !no.is_empty() {
                 out.push_str("else {\n");
                 for branch in no {
-                    emit_stmt(branch, program, out);
+                    emit_stmt(branch, program, out, fallible);
                 }
                 out.push_str("}\n");
             }
@@ -166,6 +307,19 @@ fn rust_type(ty: &Type) -> String {
         },
         Type::Generic(_, inner) => format!("Vec<{}>", rust_type(inner)),
     }
+}
+
+fn task_call(task: &str, argument: &str, program: &Program) -> String {
+    let suffix = if program
+        .tasks
+        .iter()
+        .any(|item| item.name == task && body_fallible(&item.body))
+    {
+        "?"
+    } else {
+        ""
+    };
+    format!("self::{task}({argument}){suffix}")
 }
 
 fn graph_closure(
@@ -229,7 +383,7 @@ fn emit_graph_steps(
                     .iter()
                     .find(|item| item.name == *task)
                     .ok_or("missing task")?;
-                let expression = format!("self::{task}({})", emit_expr(arg, program));
+                let expression = task_call(task, &emit_expr(arg, program), program);
                 steps.push(format!("blkit::runtime::Step::Run {{ name: {name:?}, call: {}, cancel: std::sync::Arc::new(|| {{}}) }}", graph_closure(expression, env, input, input_type)));
                 env.insert(name.clone(), definition.output.clone());
                 last = Some(definition.output.clone());
@@ -446,16 +600,23 @@ fn emit_decision(model: &DecisionModel, program: &Program, out: &mut String) {
         rust_type(&model.output)
     ));
     for item in &model.knowledge {
+        let fallible = expr_fallible(&item.body, &model.knowledge);
         out.push_str(&format!(
-            "fn {}({}) -> {} {{ {} }}\n",
+            "fn {}({}) -> {} {{ {}{}{} }}\n",
             item.name,
             item.params
                 .iter()
                 .map(|(name, ty)| format!("{name}: {}", rust_type(ty)))
                 .collect::<Vec<_>>()
                 .join(", "),
-            rust_type(&item.output),
-            emit_expr_with(&item.body, program, &model.knowledge)
+            if fallible {
+                format!("Result<{}, String>", rust_type(&item.output))
+            } else {
+                rust_type(&item.output)
+            },
+            if fallible { "Ok(" } else { "" },
+            emit_expr_with(&item.body, program, &model.knowledge),
+            if fallible { ")" } else { "" }
         ));
     }
     let mut emitted = std::collections::HashSet::new();
@@ -585,15 +746,20 @@ pub fn generate(program: &Program) -> Result<String, String> {
         if has_graph {
             out.push_str("#[allow(unused_variables)]\n");
         }
+        let fallible = body_fallible(&process.body);
         out.push_str(&format!(
             "pub fn {}({}: {}) -> {} {{\n",
             process.name,
             process.input,
             rust_type(&process.input_type),
-            rust_type(&process.output),
+            if fallible {
+                format!("Result<{}, String>", rust_type(&process.output))
+            } else {
+                rust_type(&process.output)
+            },
         ));
         for stmt in &process.body {
-            emit_stmt(stmt, program, &mut out);
+            emit_stmt(stmt, program, &mut out, fallible);
         }
         out.push_str("}\n");
     }
@@ -692,7 +858,7 @@ pub fn generate(program: &Program) -> Result<String, String> {
                             )
                         } else {
                             let expression =
-                                format!("self::{task}({})", emit_expr(argument, program));
+                                task_call(task, &emit_expr(argument, program), program);
                             format!(
                                 "blkit::named_runtime::GraphNodeKind::Task({})",
                                 graph_closure(
@@ -732,8 +898,9 @@ pub fn generate(program: &Program) -> Result<String, String> {
                                 .iter()
                                 .find(|item| item.name == *task)
                                 .ok_or_else(|| format!("unknown task: {task}"))?;
+                            let call = task_call(task, "typed", program);
                             format!(
-                                "blkit::named_runtime::GraphNodeKind::MultiInstance {{ task: std::sync::Arc::new(|item, _| {{ let typed: {} = serde_json::from_value(item.clone()).map_err(|e| e.to_string())?; serde_json::to_value(self::{task}(typed)).map_err(|e| e.to_string()) }}), items: {items}, parallel: {parallel} }}",
+                                "blkit::named_runtime::GraphNodeKind::MultiInstance {{ task: std::sync::Arc::new(|item, _| {{ let typed: {} = serde_json::from_value(item.clone()).map_err(|e| e.to_string())?; serde_json::to_value({call}).map_err(|e| e.to_string()) }}), items: {items}, parallel: {parallel} }}",
                                 rust_type(&definition.input_type)
                             )
                         }
@@ -770,7 +937,7 @@ pub fn generate(program: &Program) -> Result<String, String> {
                             (
                                 "TaskLoop",
                                 graph_closure(
-                                    format!("self::{task}({})", emit_expr(argument, program)),
+                                    task_call(task, &emit_expr(argument, program), program),
                                     argument_env,
                                     &process.input,
                                     &process.input_type,

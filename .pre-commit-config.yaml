@@ -32,7 +32,7 @@ repos:
         entry: markdownlint-cli2
         language: system
         types: [markdown]
-        exclude: ^openspec/
+        exclude: ^(openspec/|\.pi/skills/symposium/)
       - id: hadolint
         name: Hadolint
         entry: hadolint

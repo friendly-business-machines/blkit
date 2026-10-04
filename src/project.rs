@@ -344,26 +344,8 @@ impl Project {
         Ok(programs)
     }
 
-    pub fn build(&self) -> Result<(), String> {
-        let package = self.generate()?;
-        let mut command = std::process::Command::new("cargo");
-        command
-            .args(["build", "--manifest-path"])
-            .arg(package.join("Cargo.toml"));
-        if package.join("Cargo.lock").exists() {
-            command.arg("--locked");
-        }
-        let result = command
-            .output()
-            .map_err(|e| format!("running cargo: {e}"))?;
-        if !result.status.success() {
-            return Err(format!(
-                "cargo build failed:\n{}\n{}",
-                String::from_utf8_lossy(&result.stdout),
-                String::from_utf8_lossy(&result.stderr)
-            ));
-        }
-        Ok(())
+    pub fn transpile(&self) -> Result<(), String> {
+        self.generate().map(|_| ())
     }
 
     pub fn update(&self) -> Result<(), String> {
