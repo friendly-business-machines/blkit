@@ -1,25 +1,34 @@
-namespace workflows
-version "1"
+namespace workflows;
+version "1";
 
-task echo(input: Number) -> Number:
-  return input
+start_event number_start { output input: Number; }
+start_event list_start { output values: List<Number>; }
+end_event done { input result: List<Number>; }
+error_event stopped {}
+xor_split gate {}
+xor_join joined { split gate; input value: Number; output result: Number; }
 
-process repeat_until_timeout(input: Number) -> Number:
-  deadline queued "2s"
-  node start = start
-  node gate = xor_split
-  node work = task echo(input)
-  node joined = xor_join(gate)
-  node stop = error
-  link start -> gate
-  link gate -> work when input > 0
-  link gate -> stop else
-  link work -> joined(work)
-  link joined -> gate
+decision_task echo {
+  input input: Number;
+  output result: Number = value;
+  literal_expression value { output result: Number; expression input; }
+}
 
-process gather(input: List<Number>) -> List<Number>:
-  node start = start
-  node batch = task echo each input parallel
-  node done = end
-  link start -> batch
-  link batch -> done(batch)
+process repeat_until_timeout {
+  deadline queued "2s";
+  flow number_start -> gate;
+  flow gate -> echo when number_start.input > 0;
+  flow gate -> stopped else;
+  flow echo -> joined;
+  flow joined -> gate;
+  bind number_start.input -> echo.input;
+  bind echo.result -> joined.value;
+}
+
+process gather {
+  multi_instance echo each list_start.values parallel;
+  flow list_start -> echo;
+  flow echo -> done;
+  bind list_start.values -> echo.input;
+  bind echo.result -> done.result;
+}

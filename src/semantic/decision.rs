@@ -5,23 +5,43 @@ pub(super) fn check_decision(
     program: &Program,
     types: &HashSet<&str>,
 ) -> Result<(), String> {
-    check_name(&model.input)?;
-    resolve(&model.input_type, types)?;
+    let mut names = HashSet::new();
+    for (input, ty) in &model.inputs {
+        check_name(input)?;
+        resolve(ty, types)?;
+        if !names.insert(input.as_str()) {
+            return Err(format!("duplicate decision input: {input}"));
+        }
+    }
+    for (output, ty, _) in &model.outputs {
+        check_name(output)?;
+        resolve(ty, types)?;
+    }
     resolve(&model.output, types)?;
-    let mut names = HashSet::from([model.input.as_str()]);
     for knowledge in &model.knowledge {
         check_name(&knowledge.name)?;
+        check_name(&knowledge.output_name)?;
         if !names.insert(&knowledge.name) {
             return Err(format!("duplicate knowledge model: {}", knowledge.name));
         }
         resolve(&knowledge.output, types)?;
-        let mut env = HashMap::new();
+        let mut env: HashMap<_, _> = model.inputs.iter().cloned().collect();
+        if model.braced {
+            env.extend(
+                model
+                    .nodes
+                    .iter()
+                    .map(|node| (node.name.clone(), node.output.clone())),
+            );
+        }
+        let mut params = HashSet::new();
         for (param, ty) in &knowledge.params {
             check_name(param)?;
             resolve(ty, types)?;
-            if env.insert(param.clone(), ty.clone()).is_some() {
+            if !params.insert(param) {
                 return Err(format!("duplicate knowledge parameter: {param}"));
             }
+            env.insert(param.clone(), ty.clone());
         }
         let result = infer_with(
             &knowledge.body,
@@ -149,7 +169,7 @@ pub(super) fn check_decision(
             .iter()
             .find(|n| n.name == name)
             .ok_or_else(|| format!("unknown decision node: {name}"))?;
-        let mut env = HashMap::from([(model.input.clone(), model.input_type.clone())]);
+        let mut env: HashMap<_, _> = model.inputs.iter().cloned().collect();
         for (source, target) in &model.links {
             if target == name {
                 visit(source, model, program, types, knowledge_names, active, done)?;

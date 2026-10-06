@@ -8,7 +8,7 @@ use crate::{
     Program, Type,
     decision::{DecisionKind, DecisionModel, DecisionTable, Knowledge},
     expr::{Expr, Stmt},
-    graph::{NamedGraph, NodeKind},
+    graph::{NamedGraph, NodeKind, PeerKind, SourceGraph},
 };
 
 mod decision;
@@ -16,8 +16,8 @@ mod graph;
 mod types;
 
 use decision::check_decision;
-use graph::check_named_graph;
 pub(crate) use graph::named_scopes;
+use graph::{check_named_graph, check_source_graph};
 pub(crate) use types::string_builtin;
 use types::*;
 
@@ -30,7 +30,7 @@ pub fn validate(program: &Program) -> Result<(), String> {
     let has_graph = program
         .processes
         .iter()
-        .any(|process| process.named_graph.is_some());
+        .any(|process| process.named_graph.is_some() || process.source_graph.is_some());
     for name in program
         .records
         .iter()
@@ -39,6 +39,7 @@ pub fn validate(program: &Program) -> Result<(), String> {
         .chain(program.processes.iter().map(|p| p.name.as_str()))
         .chain(program.tasks.iter().map(|t| t.name.as_str()))
         .chain(program.decisions.iter().map(|d| d.name.as_str()))
+        .chain(program.peer_nodes.iter().map(|node| node.name.as_str()))
     {
         check_name(name)?;
         if matches!(name, "Vec" | "NAMESPACE" | "VERSION" | "rust_decimal")
@@ -82,6 +83,40 @@ pub fn validate(program: &Program) -> Result<(), String> {
             }
         }
     }
+    for peer in &program.peer_nodes {
+        if peer.name == "timeout" {
+            return Err("reserved process node name: timeout".into());
+        }
+        match &peer.kind {
+            PeerKind::Split { kind } | PeerKind::Join { kind, .. }
+                if !matches!(*kind, "xor" | "or" | "and") =>
+            {
+                return Err(format!("invalid gateway kind: {kind}"));
+            }
+            PeerKind::Terminal { kind } if !matches!(*kind, "Error" | "Cancel" | "Terminate") => {
+                return Err(format!("invalid terminal kind: {kind}"));
+            }
+            _ => {}
+        }
+        let (inputs, outputs) = match &peer.kind {
+            PeerKind::Start { outputs } => (&[][..], outputs.as_slice()),
+            PeerKind::End { inputs } => (inputs.as_slice(), &[][..]),
+            PeerKind::Split { .. }
+            | PeerKind::Terminal { .. }
+            | PeerKind::PauseFor(_)
+            | PeerKind::PauseUntil { .. } => (&[][..], &[][..]),
+            PeerKind::Subprocess {
+                inputs, outputs, ..
+            } => (inputs.as_slice(), outputs.as_slice()),
+            PeerKind::Join {
+                inputs, outputs, ..
+            } => (inputs.as_slice(), outputs.as_slice()),
+        };
+        for (name, ty) in inputs.iter().chain(outputs) {
+            check_name(name)?;
+            resolve(ty, &names)?;
+        }
+    }
     for model in &program.decisions {
         check_decision(model, program, &names)?;
     }
@@ -93,6 +128,10 @@ pub fn validate(program: &Program) -> Result<(), String> {
             if retry.retry_delay.is_zero() {
                 return Err(format!("retry_delay must be positive in {}", process.name));
             }
+        }
+        if let Some(graph) = &process.source_graph {
+            check_source_graph(graph, program, process.deadline.is_some())?;
+            continue;
         }
         check_name(&process.input)?;
         resolve(&process.input_type, &names)?;
@@ -137,7 +176,24 @@ pub fn validate(program: &Program) -> Result<(), String> {
                         .processes
                         .iter()
                         .find(|item| item.name == *child)
-                        .unwrap();
+                        .ok_or_else(|| format!("unknown subprocess: {child}"))?;
+                    visit_process(&child.name, program, active, done)?;
+                }
+            }
+        }
+        if let Some(graph) = &process.source_graph {
+            for peer in &program.peer_nodes {
+                if graph
+                    .flows
+                    .iter()
+                    .any(|(source, target)| source == &peer.name || target == &peer.name)
+                    && let PeerKind::Subprocess { process: child, .. } = &peer.kind
+                {
+                    let child = program
+                        .processes
+                        .iter()
+                        .find(|item| item.name == *child)
+                        .ok_or_else(|| format!("unknown subprocess: {child}"))?;
                     visit_process(&child.name, program, active, done)?;
                 }
             }

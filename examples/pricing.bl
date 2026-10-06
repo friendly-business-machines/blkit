@@ -1,17 +1,33 @@
-namespace pricing
-version "1.0"
+namespace pricing;
+version "1.0";
 
-decision price(input: Number) -> Number:
-  node result: Number = table FIRST
-    input amount: Number = input
-    output price: Number
-    rule amount > 100 -> 5
-    default 2
-  output result
+start_event start { output amount: Number; }
 
-process quote(input: Number) -> Number:
-  node start = start
-  node decision = business_rule price(input)
-  node done = end
-  link start -> decision
-  link decision -> done(decision)
+decision_task price {
+  input amount: Number;
+  output result: Number = quoted;
+
+  decision_table tier {
+    output result: Number;
+    policy FIRST;
+    input value: Number = amount;
+    output price: Number;
+    rule value > 100 -> 5;
+    default 2;
+  }
+
+  context quoted {
+    output result: Number;
+    entry offer: Number = tier.result;
+    result offer;
+  }
+}
+
+end_event done { input result: Number; }
+
+process quote {
+  flow start -> price;
+  flow price -> done;
+  bind start.amount -> price.amount;
+  bind price.result -> done.result;
+}

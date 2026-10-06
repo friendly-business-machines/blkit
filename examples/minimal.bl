@@ -1,0 +1,22 @@
+namespace demo;
+version "1.0";
+
+start_event start { output amount: Number; }
+
+decision_task calculate {
+  input amount: Number;
+  output result: Number = compute;
+  literal_expression compute {
+    output result: Number;
+    expression amount;
+  }
+}
+
+end_event done { input result: Number; }
+
+process example {
+  flow start -> calculate;
+  flow calculate -> done;
+  bind start.amount -> calculate.amount;
+  bind calculate.result -> done.result;
+}

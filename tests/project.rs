@@ -41,9 +41,121 @@ fn project(manifest: &str, files: &[(&str, &str)]) -> PathBuf {
     root
 }
 
-const SOURCE: &str = "namespace orders\nversion \"1\"\n";
+const SOURCE: &str = "namespace orders;\nversion \"1\";\n";
 const MANIFEST: &str =
     "[project]\nname = \"orders\"\nblkit = \"0.1.0\"\nbuild_target = \"crate\"\n";
+
+#[test]
+fn braced_project_merges_forward_peer_declarations_without_cargo() {
+    let route = "namespace orders;\nversion \"1\";\nprocess route { flow start -> decide; flow decide -> done; bind start.amount -> decide.amount; bind decide.result -> done.result; }\n";
+    let peers = "namespace orders;\nversion \"1\";\nstart_event start { output amount: Number; }\nend_event done { input result: Number; }\ndecision_task decide { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression amount; } }\n";
+    let root = project(MANIFEST, &[("a.bl", route), ("z.bl", peers)]);
+    let program = blkit::project::Project::load(&root)
+        .unwrap()
+        .programs()
+        .unwrap();
+    assert_eq!(program[0].peer_nodes.len(), 2);
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_blkit"))
+        .args(["transpile"])
+        .arg(&root)
+        .env("PATH", "")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let lib = fs::read_to_string(root.join(".blkit/src/lib.rs")).unwrap();
+    assert!(lib.contains("scope_0::named_graph_definitions()"));
+    cargo_build(&root).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn braced_project_rejects_duplicate_and_out_of_scope_peers_without_cargo() {
+    let peers = "namespace orders; version \"1\"; start_event start { output amount: Number; }";
+    let root = project(MANIFEST, &[("a.bl", peers), ("z.bl", peers)]);
+    let error = blkit::project::Project::load(&root)
+        .unwrap()
+        .programs()
+        .unwrap_err();
+    assert!(
+        error.contains("start") && error.contains("a.bl") && error.contains("z.bl"),
+        "{error}"
+    );
+    fs::remove_dir_all(root).unwrap();
+    let wrong_scope = "namespace other; version \"1\"; end_event done { input result: Number; } process route { flow start -> done; bind start.amount -> done.result; }";
+    let root = project(MANIFEST, &[("orders.bl", peers), ("other.bl", wrong_scope)]);
+    let error = blkit::project::Project::load(&root)
+        .unwrap()
+        .programs()
+        .unwrap_err();
+    assert!(
+        error.contains("start") && error.contains("other.bl"),
+        "{error}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn braced_project_resolves_forward_subprocess_and_separates_versions() {
+    let parent = "namespace orders; version \"1\"; start_event start { output amount: Number; } end_event done { input result: Number; } subprocess called { process child; input amount: Number; output result: Number; } decision_task echo { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression amount; } } process parent { flow start -> called; flow called -> done; bind start.amount -> called.amount; bind called.result -> done.result; }";
+    let child = "namespace orders; version \"1\"; process child { flow start -> echo; flow echo -> done; bind start.amount -> echo.amount; bind echo.result -> done.result; }";
+    let root = project(MANIFEST, &[("a.bl", parent), ("z.bl", child)]);
+    let groups = blkit::project::Project::load(&root)
+        .unwrap()
+        .programs()
+        .unwrap();
+    assert_eq!(groups[0].processes.len(), 2);
+    fs::remove_dir_all(root).unwrap();
+    let version_two =
+        "namespace orders; version \"2\"; start_event start { output amount: Number; }";
+    let root = project(
+        MANIFEST,
+        &[
+            ("one.bl", parent),
+            ("child.bl", child),
+            ("two.bl", version_two),
+        ],
+    );
+    assert_eq!(
+        blkit::project::Project::load(&root)
+            .unwrap()
+            .programs()
+            .unwrap()
+            .len(),
+        2
+    );
+    fs::write(root.join("two.bl"), "namespace orders; version \"2\"; process other { flow start -> done; bind start.amount -> done.result; }").unwrap();
+    let error = blkit::project::Project::load(&root)
+        .unwrap()
+        .programs()
+        .unwrap_err();
+    assert!(
+        error.contains("start") && error.contains("two.bl"),
+        "{error}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn braced_project_rejects_legacy_extension_calls_before_cargo_resolution() {
+    let old = "namespace orders; version \"1\"; start_event start { output amount: Number; } end_event done { input result: Number; } process route { node paid = task payments.charge(start.amount); link start -> paid; link paid -> done; }";
+    let manifest =
+        format!("{MANIFEST}[dependencies]\npayments = {{ version = \"1\", path = \"missing\" }}\n");
+    let root = project(&manifest, &[("route.bl", old)]);
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_blkit"))
+        .args(["transpile"])
+        .arg(&root)
+        .env("PATH", "")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("invalid process statement"));
+    assert!(!root.join(".blkit/Cargo.toml").exists());
+    fs::remove_dir_all(root).unwrap();
+}
 
 #[test]
 fn transpilation_generates_each_target_without_compiling() {
@@ -147,14 +259,9 @@ fn project_requires_one_valid_target_and_matching_toolchain() {
 }
 
 #[test]
-fn project_resolves_cross_file_types_tasks_and_decisions_in_any_file_order() {
-    let header = "namespace orders\nversion \"1\"\n";
-    let source = format!(
-        "{header}type Order:\n  value: Number\ntask echo(input: Order) -> Order:\n  return input\ndecision flag(input: Order) -> Bool:\n  node result: Bool = literal true\n  output result\n"
-    );
-    let processes = format!(
-        "{header}process route(input: Order) -> Order:\n  node start = start\n  node value = task echo(input)\n  node done = end\n  link start -> value\n  link value -> done(value)\nprocess checked(input: Order) -> Bool:\n  node start = start\n  node answer = business_rule flag(input)\n  node done = end\n  link start -> answer\n  link answer -> done(answer)\n"
-    );
+fn project_resolves_cross_file_types_and_decision_tasks_in_any_file_order() {
+    let source = "namespace orders; version \"1\"; type Order:\n  value: Number;\nstart_event start { output input: Order; } end_event done { input result: Order; } end_event checked_done { input result: Bool; } decision_task echo { input input: Order; output result: Order = value; literal_expression value { output result: Order; expression input; } } decision_task flag { input input: Order; output result: Bool = value; literal_expression value { output result: Bool; expression true; } }";
+    let processes = "namespace orders; version \"1\"; process route { flow start -> echo; flow echo -> done; bind start.input -> echo.input; bind echo.result -> done.result; } process checked { flow start -> flag; flow flag -> checked_done; bind start.input -> flag.input; bind flag.result -> checked_done.result; }";
     let root = project(
         MANIFEST,
         &[("a-process.bl", &processes), ("z-declarations.bl", &source)],
@@ -165,15 +272,15 @@ fn project_resolves_cross_file_types_tasks_and_decisions_in_any_file_order() {
         .unwrap();
     assert_eq!(programs.len(), 1);
     assert_eq!(programs[0].processes.len(), 2);
-    assert_eq!(programs[0].tasks[0].name, "echo");
-    assert_eq!(programs[0].decisions[0].name, "flag");
+    assert_eq!(programs[0].peer_nodes.len(), 3);
+    assert_eq!(programs[0].decisions.len(), 2);
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn project_resolves_subprocesses_across_same_scope_files() {
-    let parent = "namespace orders\nversion \"1\"\nprocess parent(input: Number) -> Number:\n  node start = start\n  node called = subprocess child(input)\n  node done = end\n  link start -> called\n  link called -> done(called)\n";
-    let child = "namespace orders\nversion \"1\"\nprocess child(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n";
+    let parent = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } subprocess called { process child; input input: Number; output result: Number; } process parent { flow start -> called; flow called -> done; bind start.input -> called.input; bind called.result -> done.result; }";
+    let child = "namespace orders; version \"1\"; process child { flow start -> done; bind start.input -> done.result; }";
     for (a, b) in [(parent, child), (child, parent)] {
         let root = project(MANIFEST, &[("a.bl", a), ("z.bl", b)]);
         let programs = blkit::project::Project::load(&root)
@@ -188,8 +295,8 @@ fn project_resolves_subprocesses_across_same_scope_files() {
 
 #[test]
 fn server_and_worker_build_link_cross_file_subprocesses() {
-    let parent = "namespace orders\nversion \"1\"\nprocess parent(input: Number) -> Number:\n  node start = start\n  node called = subprocess child(input)\n  node done = end\n  link start -> called\n  link called -> done(called)\n";
-    let child = "namespace orders\nversion \"1\"\nprocess child(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n";
+    let parent = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } subprocess called { process child; input input: Number; output result: Number; } process parent { flow start -> called; flow called -> done; bind start.input -> called.input; bind called.result -> done.result; }";
+    let child = "namespace orders; version \"1\"; process child { flow start -> done; bind start.input -> done.result; }";
     for target in ["server", "worker"] {
         let root = project(
             &MANIFEST.replace("\"crate\"", &format!("\"{target}\"")),
@@ -206,7 +313,7 @@ fn server_and_worker_build_link_cross_file_subprocesses() {
                 .unwrap()
                 .transpile()
                 .unwrap_err()
-                .contains("unknown process: child")
+                .contains("unknown subprocess: child")
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -214,13 +321,13 @@ fn server_and_worker_build_link_cross_file_subprocesses() {
 
 #[test]
 fn project_rejects_subprocesses_across_namespaces_or_versions() {
-    let parent = "namespace orders\nversion \"1\"\nprocess parent(input: Number) -> Number:\n  node start = start\n  node called = subprocess child(input)\n  node done = end\n  link start -> called\n  link called -> done(called)\n";
+    let parent = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } subprocess called { process child; input input: Number; output result: Number; } process parent { flow start -> called; flow called -> done; bind start.input -> called.input; bind called.result -> done.result; }";
     for child_header in [
-        "namespace other\nversion \"1\"\n",
-        "namespace orders\nversion \"2\"\n",
+        "namespace other; version \"1\";",
+        "namespace orders; version \"2\";",
     ] {
         let child = format!(
-            "{child_header}process child(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n"
+            "{child_header} start_event start {{ output input: Number; }} end_event done {{ input result: Number; }} process child {{ flow start -> done; bind start.input -> done.result; }}"
         );
         let root = project(MANIFEST, &[("a.bl", parent), ("z.bl", &child)]);
         let error = blkit::project::Project::load(&root)
@@ -228,7 +335,7 @@ fn project_rejects_subprocesses_across_namespaces_or_versions() {
             .programs()
             .unwrap_err();
         assert!(
-            error.contains("a.bl") && error.contains("unknown process: child"),
+            error.contains("a.bl") && error.contains("unknown subprocess: child"),
             "{error}"
         );
         fs::remove_dir_all(root).unwrap();
@@ -242,11 +349,11 @@ fn project_rejects_duplicates_with_both_paths_and_keeps_versions_isolated() {
         &[
             (
                 "one.bl",
-                "namespace orders\nversion \"1\"\ntype Shared:\n  value: Number\n",
+                "namespace orders; version \"1\"; type Shared:\n  value: Number;\n",
             ),
             (
                 "two.bl",
-                "namespace orders\nversion \"1\"\ntype Shared:\n  value: Bool\n",
+                "namespace orders; version \"1\"; type Shared:\n  value: Bool;\n",
             ),
         ],
     );
@@ -265,11 +372,11 @@ fn project_rejects_duplicates_with_both_paths_and_keeps_versions_isolated() {
         &[
             (
                 "one.bl",
-                "namespace orders\nversion \"1\"\ntype Shared:\n  value: Number\n",
+                "namespace orders; version \"1\"; type Shared:\n  value: Number;\n",
             ),
             (
                 "two.bl",
-                "namespace orders\nversion \"2\"\nprocess route(input: Shared) -> Number:\n  node start = start\n  node done = end\n  link start -> done(1)\n",
+                "namespace orders; version \"2\"; start_event start { output input: Shared; } end_event done { input result: Number; } process route { flow start -> done; bind start.input -> done.result; }",
             ),
         ],
     );
@@ -287,9 +394,9 @@ fn project_rejects_duplicates_with_both_paths_and_keeps_versions_isolated() {
 
 #[test]
 fn project_builds_a_reusable_library_from_multiple_scopes_and_cross_file_tasks() {
-    let process = "namespace orders\nversion \"1\"\nprocess route(input: Order) -> Order:\n  node start = start\n  node value = task echo(input)\n  node done = end\n  link start -> value\n  link value -> done(value)\n";
-    let definitions = "namespace orders\nversion \"1\"\ntype Order:\n  value: Number\ntask echo(input: Order) -> Order:\n  return input\n";
-    let other = "namespace orders\nversion \"2\"\nprocess other(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n";
+    let process = "namespace orders; version \"1\"; process route { flow start -> echo; flow echo -> done; bind start.input -> echo.input; bind echo.result -> done.result; }";
+    let definitions = "namespace orders; version \"1\"; type Order:\n  value: Number;\nstart_event start { output input: Order; } end_event done { input result: Order; } decision_task echo { input input: Order; output result: Order = value; literal_expression value { output result: Order; expression input; } }";
+    let other = "namespace orders; version \"2\"; start_event start { output input: Number; } end_event done { input result: Number; } process other { flow start -> done; bind start.input -> done.result; }";
     let root = project(
         MANIFEST,
         &[
@@ -305,7 +412,7 @@ fn project_builds_a_reusable_library_from_multiple_scopes_and_cross_file_tasks()
     let consumer = root.join("consumer");
     fs::create_dir_all(consumer.join("src")).unwrap();
     fs::write(consumer.join("Cargo.toml"), format!("[package]\nname = \"consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\norders = {{ path = {:?} }}\nserde_json = \"1\"\n", root.join(".blkit").to_str().unwrap())).unwrap();
-    fs::write(consumer.join("src/lib.rs"), "#[test] fn imported_processes_run() { let defs = orders::named_graph_definitions(); assert_eq!(defs.len(), 2); let graph = defs.into_iter().find(|d| d.version == \"1\").unwrap(); let input = serde_json::json!({\"value\": \"2\"}); let mut checkpoint = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut checkpoint).unwrap(), input); }\n").unwrap();
+    fs::write(consumer.join("src/lib.rs"), "#[test] fn imported_processes_run() { let defs = orders::named_graph_definitions(); assert_eq!(defs.len(), 2); let graph = defs.into_iter().find(|d| d.version == \"1\").unwrap(); let input = serde_json::json!({\"input\": {\"value\": \"2\"}}); let mut checkpoint = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut checkpoint).unwrap(), serde_json::json!({\"value\":\"2\"})); }\n").unwrap();
     let output = std::process::Command::new("cargo")
         .args(["test", "--offline", "--manifest-path"])
         .arg(consumer.join("Cargo.toml"))
@@ -332,7 +439,7 @@ fn project_string_helpers_are_available_to_generated_crate_and_consumer() {
         MANIFEST,
         &[(
             "strings.bl",
-            "namespace orders\nversion \"1\"\ntask first(input: String) -> String:\n  return charAt(input, 1)\ntask check(input: String) -> Bool:\n  return matches(input, input)\nprocess route(input: String) -> String:\n  node start = start\n  node value = task first(input)\n  node done = end\n  link start -> value\n  link value -> done(value)\n",
+            "namespace orders; version \"1\"; start_event start { output input: String; } end_event done { input result: String; } decision_task first { input input: String; output result: String = value; literal_expression value { output result: String; expression charAt(input, 1); } } decision_task check { input input: String; output result: Bool = value; literal_expression value { output result: Bool; expression matches(input, input); } } process route { flow start -> first; flow first -> done; bind start.input -> first.input; bind first.result -> done.result; }",
         )],
     );
     blkit::project::Project::load(&root)
@@ -342,7 +449,7 @@ fn project_string_helpers_are_available_to_generated_crate_and_consumer() {
     let consumer = root.join("consumer");
     fs::create_dir_all(consumer.join("src")).unwrap();
     fs::write(consumer.join("Cargo.toml"), format!("[package]\nname = \"string_consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\norders = {{ path = {:?} }}\nserde_json = \"1\"\n", root.join(".blkit").to_str().unwrap())).unwrap();
-    fs::write(consumer.join("src/lib.rs"), "#[test] fn generated_strings() { assert_eq!(orders::scope_0::first(\"éx\".into()).unwrap(), \"é\"); assert!(orders::scope_0::check(\"[\".into()).is_err()); let graph = orders::named_graph_definitions().remove(0); let input = serde_json::json!(\"éx\"); let mut checkpoint = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut checkpoint).unwrap(), serde_json::json!(\"é\")); }\n").unwrap();
+    fs::write(consumer.join("src/lib.rs"), "#[test] fn generated_strings() { assert_eq!(orders::scope_0::first(\"éx\".into()).unwrap(), \"é\"); assert!(orders::scope_0::check(\"[\".into()).is_err()); let graph = orders::named_graph_definitions().remove(0); let input = serde_json::json!({\"input\":\"éx\"}); let mut checkpoint = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut checkpoint).unwrap(), serde_json::json!(\"é\")); }\n").unwrap();
     let output = std::process::Command::new("cargo")
         .args(["test", "--offline", "--manifest-path"])
         .arg(consumer.join("Cargo.toml"))
@@ -414,11 +521,11 @@ fn project_locks_local_dependency_versions_until_explicit_update() {
 }
 
 #[test]
-fn update_refreshes_lockfile_when_a_referenced_extension_version_changes() {
+fn update_refreshes_lockfile_when_an_unused_dependency_version_changes() {
     let manifest = format!(
         "{MANIFEST}[dependencies]\npayments = {{ version = \"0.1.0\", path = \"payments\" }}\n"
     );
-    let source = "namespace orders\nversion \"1\"\nprocess route(input: Number) -> Number:\n  node start = start\n  node charge = task payments.charge(input)\n  node done = end\n  link start -> charge\n  link charge -> done(charge)\n";
+    let source = SOURCE;
     let extension_manifest = "[package]\nname = \"payments\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[dependencies]\nserde_json = \"1\"\n";
     let descriptor = "[[tasks]]\nname = \"charge\"\nfunction = \"charge\"\ninput = \"Number\"\noutput = \"Number\"\n";
     let extension = "pub async fn charge(input: serde_json::Value) -> Result<serde_json::Value, String> { Ok(input) }\n";
@@ -431,10 +538,9 @@ fn update_refreshes_lockfile_when_a_referenced_extension_version_changes() {
             ("payments/src/lib.rs", extension),
         ],
     );
-    blkit::project::Project::load(&root)
-        .unwrap()
-        .transpile()
-        .unwrap();
+    let initial = blkit::project::Project::load(&root).unwrap();
+    initial.transpile().unwrap();
+    initial.update().unwrap();
     let locked = fs::read_to_string(root.join(".blkit/Cargo.lock")).unwrap();
     fs::write(
         root.join("blkit.toml"),
@@ -447,11 +553,7 @@ fn update_refreshes_lockfile_when_a_referenced_extension_version_changes() {
     )
     .unwrap();
     let updated = blkit::project::Project::load(&root).unwrap();
-    let error = updated.transpile().err().unwrap();
-    assert!(
-        error.contains("lock") || error.contains("locked"),
-        "{error}"
-    );
+    updated.transpile().unwrap();
     assert_eq!(
         fs::read_to_string(root.join(".blkit/Cargo.lock")).unwrap(),
         locked
@@ -467,25 +569,22 @@ fn update_refreshes_lockfile_when_a_referenced_extension_version_changes() {
 }
 
 #[test]
-fn missing_extension_dependency_stops_transpilation() {
+fn legacy_extension_call_fails_before_resolving_missing_dependency() {
     let root = project(
         &format!(
             "{MANIFEST}[dependencies]\nmissing = {{ version = \"0.1.0\", path = \"not-there\" }}\n"
         ),
         &[(
             "source.bl",
-            "namespace orders\nversion \"1\"\nprocess route(input: Number) -> Number:\n  node start = start\n  node work = task missing.charge(input)\n  node done = end\n  link start -> work\n  link work -> done(work)\n",
+            "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } process route { node work = task missing.charge(start.input); flow start -> done; bind start.input -> done.result; }",
         )],
     );
     let error = blkit::project::Project::load(&root)
         .unwrap()
         .transpile()
-        .err()
-        .unwrap();
-    assert!(
-        error.contains("missing") && error.contains("not-there"),
-        "{error}"
-    );
+        .unwrap_err();
+    assert!(error.contains("invalid process statement"), "{error}");
+    assert!(!root.join(".blkit/Cargo.toml").exists());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -603,284 +702,66 @@ fn extension_descriptor_rejects_malformed_function_and_types() {
 }
 
 #[test]
-fn crate_qualified_tasks_resolve_across_files_and_check_types() {
-    let manifest = format!(
-        "{MANIFEST}[dependencies]\npayments = {{ version = \"0.1.0\", path = \"payments\" }}\n"
-    );
-    let types = "namespace orders\nversion \"1\"\ntype Order:\n  amount: Number\ntype Receipt:\n  id: String\n";
-    let process = "namespace orders\nversion \"1\"\nprocess charge_order(input: Order) -> Receipt:\n  node start = start\n  node paid = task payments.charge(input)\n  node done = end\n  link start -> paid\n  link paid -> done(paid)\n";
-    let descriptor = "[[tasks]]\nname = \"charge\"\nfunction = \"charge\"\ninput = \"Order\"\noutput = \"Receipt\"\n";
+fn cross_file_legacy_extension_calls_fail_before_cargo_metadata() {
+    for statement in [
+        "node paid = task payments.charge(start.input);",
+        "node batch = task payments.increment each start.input parallel;",
+        "node batch = task payments.increment each start.input sequential;",
+        "node repeated = task payments.increment(start.input) repeat_post(repeated < 3) max_iterations 2;",
+    ] {
+        let source = format!(
+            "namespace orders; version \"1\"; process route {{ {statement} flow start -> done; bind start.input -> done.result; }}"
+        );
+        let peers = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; }";
+        let root = project(
+            &format!(
+                "{MANIFEST}[dependencies]\npayments = {{ version = \"1\", path = \"missing\" }}\n"
+            ),
+            &[("a.bl", &source), ("z.bl", peers)],
+        );
+        let error = blkit::project::Project::load(&root)
+            .unwrap()
+            .transpile()
+            .unwrap_err();
+        assert!(
+            error.contains("invalid process statement") && error.contains("a.bl"),
+            "{error}"
+        );
+        assert!(!root.join(".blkit/Cargo.toml").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn unused_dependency_compilation_errors_are_reported_by_cargo_build() {
     let root = project(
-        &manifest,
+        &format!(
+            "{MANIFEST}[dependencies]\npayments = {{ version = \"0.1.0\", path = \"payments\" }}\n"
+        ),
         &[
-            ("a-process.bl", process),
-            ("z-types.bl", types),
+            ("source.bl", SOURCE),
             (
                 "payments/Cargo.toml",
                 "[package]\nname = \"payments\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
             ),
-            ("payments/src/lib.rs", "pub fn placeholder() {}"),
-            ("payments/blkit-tasks.toml", descriptor),
+            ("payments/src/lib.rs", "this is not Rust"),
         ],
     );
-    let project = blkit::project::Project::load(&root).unwrap();
-    assert_eq!(project.programs().unwrap()[0].processes.len(), 1);
-    fs::write(
-        root.join("a-process.bl"),
-        process.replace(
-            "task payments.charge(input)",
-            "task payments.missing(input)",
-        ),
-    )
-    .unwrap();
-    assert!(
-        project
-            .programs()
-            .err()
-            .unwrap()
-            .contains("payments.missing")
-    );
-    fs::write(
-        root.join("a-process.bl"),
-        process.replace("task payments.charge(input)", "task unknown.charge(input)"),
-    )
-    .unwrap();
-    assert!(project.programs().err().unwrap().contains("unknown.charge"));
-    fs::write(
-        root.join("a-process.bl"),
-        process.replace(
-            "task payments.charge(input)",
-            "task payments.charge(input.amount)",
-        ),
-    )
-    .unwrap();
-    assert!(
-        project
-            .programs()
-            .err()
-            .unwrap()
-            .contains("task input type mismatch")
-    );
-    fs::write(
-        root.join("a-process.bl"),
-        process.replace("done(paid)", "done(input)"),
-    )
-    .unwrap();
-    assert!(project.programs().err().unwrap().contains("type"));
-    fs::write(root.join("a-process.bl"), process).unwrap();
-    fs::write(
-        root.join("payments/blkit-tasks.toml"),
-        descriptor.replace("input = \"Order\"", "input = \"Unknown\""),
-    )
-    .unwrap();
-    assert!(project.programs().err().unwrap().contains("Unknown"));
-    fs::write(
-        root.join("a-process.bl"),
-        process.replace("payments.charge", "payments..charge"),
-    )
-    .unwrap();
-    assert!(
-        project
-            .programs()
-            .err()
-            .unwrap()
-            .contains("invalid task node")
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn project_build_links_async_extension_and_rejects_wrong_callable() {
-    let manifest = format!(
-        "{MANIFEST}[dependencies]\npayments = {{ version = \"0.1.0\", path = \"payments\" }}\n"
-    );
-    let source = "namespace orders\nversion \"1\"\ntype Order:\n  amount: Number\ntype Receipt:\n  id: String\nprocess charge_order(input: Order) -> Receipt:\n  node start = start\n  node paid = task payments.charge(input)\n  node done = end\n  link start -> paid\n  link paid -> done(paid)\n";
-    let extension_manifest = "[package]\nname = \"payments\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[dependencies]\nserde_json = \"1\"\n";
-    let good = "pub async fn charge(_input: serde_json::Value) -> Result<serde_json::Value, String> { Ok(serde_json::json!({\"id\": \"ok\"})) }\n";
-    let descriptor = "[[tasks]]\nname = \"charge\"\nfunction = \"charge\"\ninput = \"Order\"\noutput = \"Receipt\"\n";
-    let root = project(
-        &manifest,
-        &[
-            ("source.bl", source),
-            ("payments/Cargo.toml", extension_manifest),
-            ("payments/src/lib.rs", good),
-            ("payments/blkit-tasks.toml", descriptor),
-        ],
-    );
-    let project = blkit::project::Project::load(&root).unwrap();
-    project.transpile().unwrap();
-    cargo_build(&root).unwrap();
-    fs::write(root.join("payments/src/lib.rs"), "pub fn charge() {}\n").unwrap();
-    project.transpile().unwrap();
+    blkit::project::Project::load(&root)
+        .unwrap()
+        .transpile()
+        .unwrap();
     let error = cargo_build(&root).unwrap_err();
     assert!(
-        error.contains("charge") && error.contains("cargo build failed"),
+        error.contains("payments") && error.contains("cargo build failed"),
         "{error}"
     );
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn qualified_each_and_loop_calls_execute_async_extension_tasks() {
-    let manifest = format!(
-        "{MANIFEST}[dependencies]\npayments = {{ version = \"0.1.0\", path = \"payments\" }}\n"
-    );
-    let source = "namespace orders\nversion \"1\"\nprocess gather(input: List<Number>) -> List<Number>:\n  node start = start\n  node batch = task payments.increment each input parallel\n  node done = end\n  link start -> batch\n  link batch -> done(batch)\nprocess gather_sequential(input: List<Number>) -> List<Number>:\n  node start = start\n  node batch = task payments.increment each input sequential\n  node done = end\n  link start -> batch\n  link batch -> done(batch)\nprocess repeat(input: Number) -> Number:\n  node start = start\n  node repeated = task payments.increment(repeated) repeat_pre(repeated < 3) max_iterations 3 initial input\n  node done = end\n  link start -> repeated\n  link repeated -> done(repeated)\nprocess once(input: Number) -> Number:\n  node start = start\n  node repeated = task payments.increment(input) repeat_post(repeated < 0) max_iterations 3\n  node done = end\n  link start -> repeated\n  link repeated -> done(repeated)\nprocess runaway(input: Number) -> Number:\n  node start = start\n  node repeated = task payments.increment(input) repeat_post(repeated < 99) max_iterations 2\n  node done = end\n  link start -> repeated\n  link repeated -> done(repeated)\n";
-    let extension_manifest = "[package]\nname = \"payments\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[dependencies]\nserde_json = \"1\"\n";
-    let function = "pub async fn increment(input: serde_json::Value) -> Result<serde_json::Value, String> { let value: u32 = input.as_str().ok_or(\"not a string\")?.parse().map_err(|e: std::num::ParseIntError| e.to_string())?; Ok(serde_json::json!((value + 1).to_string())) }\n";
-    let descriptor = "[[tasks]]\nname = \"increment\"\nfunction = \"increment\"\ninput = \"Number\"\noutput = \"Number\"\n";
-    let root = project(
-        &manifest,
-        &[
-            ("source.bl", source),
-            ("payments/Cargo.toml", extension_manifest),
-            ("payments/src/lib.rs", function),
-            ("payments/blkit-tasks.toml", descriptor),
-        ],
-    );
-    blkit::project::Project::load(&root)
-        .unwrap()
-        .transpile()
-        .unwrap();
-    let generated = root.join(".blkit");
-    fs::create_dir_all(generated.join("tests")).unwrap();
-    fs::write(generated.join("tests/custom.rs"), r#"
-#[tokio::test]
-async fn qualified_each_and_loops_execute() {
-    use std::time::Duration;
-    let path = std::env::temp_dir().join(format!("orders-each-loop-{}.db", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    let store = blkit::runtime::LocalStore::open(&path).await.unwrap();
-    for graph in orders::named_graph_definitions() {
-        let input = if graph.name.starts_with("gather") { serde_json::json!(["1"]) } else { serde_json::json!("1") };
-        let mut checkpoint = graph.checkpoint(&input).unwrap();
-        assert!(graph.run(&input, &mut checkpoint).unwrap_err().contains("async task requires async executor"));
-    }
-    let engine = blkit::runtime::Engine::new(blkit::runtime::Registry::new(orders::named_graph_definitions()).unwrap(), store.clone(), 2).unwrap();
-    for (name, input, expected) in [
-        ("gather", serde_json::json!(["1", "2"]), serde_json::json!(["2", "3"])),
-        ("gather_sequential", serde_json::json!(["1", "2"]), serde_json::json!(["2", "3"])),
-        ("repeat", serde_json::json!("1"), serde_json::json!("3")),
-        ("once", serde_json::json!("1"), serde_json::json!("2")),
-    ] {
-        let id = engine.start("orders", "1", name, input).await.unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
-                let item = store.get(&id).await.unwrap().unwrap();
-                if item.status == "completed" { break item; }
-                assert_ne!(item.status, "failed", "{name}: {:?}", item.error);
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        }).await.unwrap();
-        assert_eq!(result.result, Some(expected), "{name}");
-    }
-    let id = engine.start("orders", "1", "runaway", serde_json::json!("1")).await.unwrap();
-    let stopped = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let item = store.get(&id).await.unwrap().unwrap();
-            if item.status == "business-error" { break item; }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    }).await.unwrap();
-    assert_eq!(stopped.terminal_name.as_deref(), Some("task-iteration-limit"));
-    assert!(stopped.result.is_none());
-    drop(engine);
-    drop(store);
-    std::fs::remove_file(path).unwrap();
-}
-"#).unwrap();
-    let result = std::process::Command::new("cargo")
-        .args(["test", "--offline", "--manifest-path"])
-        .arg(generated.join("Cargo.toml"))
-        .args(["--test", "custom"])
-        .output()
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn generated_async_task_retries_invalid_output_without_committing_it() {
-    let manifest = format!(
-        "{MANIFEST}[dependencies]\npayments = {{ version = \"0.1.0\", path = \"payments\" }}\n"
-    );
-    let source = "namespace orders\nversion \"1\"\ntype Order:\n  amount: Number\ntype Receipt:\n  id: String\nprocess charge_order(input: Order) -> Receipt:\n  retry max_retries 1 retry_for \"10s\" retry_delay \"300ms\" backoff exponential\n  node start = start\n  node paid = task payments.charge(input)\n  node done = end\n  link start -> paid\n  link paid -> done(paid)\n";
-    let extension_manifest = "[package]\nname = \"payments\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[dependencies]\nserde_json = \"1\"\n";
-    let task = "use std::sync::atomic::{AtomicUsize, Ordering};\npub static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);\npub async fn charge(_input: serde_json::Value) -> Result<serde_json::Value, String> { if ATTEMPTS.fetch_add(1, Ordering::SeqCst) == 0 { Ok(serde_json::json!({\"id\": 42})) } else { Ok(serde_json::json!({\"id\": \"ok\"})) } }\n";
-    let descriptor = "[[tasks]]\nname = \"charge\"\nfunction = \"charge\"\ninput = \"Order\"\noutput = \"Receipt\"\n";
-    let root = project(
-        &manifest,
-        &[
-            ("source.bl", source),
-            ("payments/Cargo.toml", extension_manifest),
-            ("payments/src/lib.rs", task),
-            ("payments/blkit-tasks.toml", descriptor),
-        ],
-    );
-    blkit::project::Project::load(&root)
-        .unwrap()
-        .transpile()
-        .unwrap();
-    let generated = root.join(".blkit");
-    let cargo = generated.join("Cargo.toml");
-    let mut text = fs::read_to_string(&cargo).unwrap();
-    text.push_str("[dev-dependencies]\ntokio = { version = \"1\", features = [\"macros\", \"rt\", \"time\"] }\n");
-    fs::write(&cargo, text).unwrap();
-    fs::create_dir_all(generated.join("tests")).unwrap();
-    fs::write(generated.join("tests/custom.rs"), r#"
-#[tokio::test]
-async fn invalid_output_is_not_committed_and_is_retried() {
-    use std::{sync::atomic::Ordering, time::Duration};
-    let path = std::env::temp_dir().join(format!("orders-custom-{}.db", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    let store = blkit::runtime::LocalStore::open(&path).await.unwrap();
-    let engine = blkit::runtime::Engine::new(
-        blkit::runtime::Registry::new(orders::named_graph_definitions()).unwrap(), store.clone(), 2
-    ).unwrap();
-    let id = engine.start("orders", "1", "charge_order", serde_json::json!({"amount":"5"})).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while store.get(&id).await.unwrap().unwrap().status != "retry-waiting" {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    }).await.unwrap();
-    let waiting = store.get(&id).await.unwrap().unwrap();
-    assert!(waiting.checkpoint.unwrap().completed.get("paid").is_none());
-    assert_eq!(waiting.attempt, 1);
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while store.get(&id).await.unwrap().unwrap().status != "completed" {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    }).await.unwrap();
-    assert_eq!(payments::ATTEMPTS.load(Ordering::SeqCst), 2);
-    assert_eq!(store.get(&id).await.unwrap().unwrap().result, Some(serde_json::json!({"id":"ok"})));
-    drop(engine);
-    drop(store);
-    std::fs::remove_file(path).unwrap();
-}
-"#).unwrap();
-    let result = std::process::Command::new("cargo")
-        .args(["test", "--offline", "--manifest-path"])
-        .arg(&cargo)
-        .args(["--test", "custom"])
-        .output()
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn switching_project_target_keeps_lockfile_and_only_selected_binary() {
-    let source = "namespace orders\nversion \"1\"\nprocess route(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n";
+    let source = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } process route { flow start -> done; bind start.input -> done.result; }";
     let root = project(MANIFEST, &[("route.bl", source)]);
     blkit::project::Project::load(&root)
         .unwrap()
@@ -943,7 +824,7 @@ fn http_request(port: u16, method: &str, path: &str, body: &str) -> serde_json::
 
 #[test]
 fn renaming_project_removes_stale_generated_binary() {
-    let source = "namespace orders\nversion \"1\"\nprocess route(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n";
+    let source = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } process route { flow start -> done; bind start.input -> done.result; }";
     let manifest = MANIFEST.replace("\"crate\"", "\"worker\"");
     let root = project(&manifest, &[("route.bl", source)]);
     blkit::project::Project::load(&root)
@@ -967,7 +848,7 @@ fn renaming_project_removes_stale_generated_binary() {
 #[test]
 fn generated_binaries_configure_logging_before_runtime_and_report_failures() {
     use std::process::Command;
-    let source = "namespace orders\nversion \"1\"\nprocess route(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n";
+    let source = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } process route { flow start -> done; bind start.input -> done.result; }";
     for role in ["server", "worker"] {
         let root = project(
             &MANIFEST.replace("\"crate\"", &format!("\"{role}\"")),
@@ -1037,7 +918,7 @@ fn project_server_executes_compiled_process_over_loopback_rest() {
         process::{Command, Stdio},
         time::{Duration, Instant},
     };
-    let source = "namespace orders\nversion \"1\"\ntask echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> Number:\n  node start = start\n  node work = task echo(input)\n  node done = end\n  link start -> work\n  link work -> done(work)\n";
+    let source = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } decision_task echo { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression input; } } process route { flow start -> echo; flow echo -> done; bind start.input -> echo.input; bind echo.result -> done.result; }";
     let root = project(
         &MANIFEST.replace("\"crate\"", "\"server\""),
         &[("route.bl", source)],
@@ -1077,7 +958,12 @@ fn project_server_executes_compiled_process_over_loopback_rest() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    let id = http_request(port, "POST", "/processes/orders/1/route/instances", "\"7\"")["id"]
+    let id = http_request(
+        port,
+        "POST",
+        "/processes/orders/1/route/instances",
+        "{\"input\":\"7\"}",
+    )["id"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -1101,156 +987,6 @@ fn project_server_executes_compiled_process_over_loopback_rest() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[test]
-fn project_server_restarts_async_task_from_last_committed_checkpoint() {
-    use std::{
-        net::{TcpListener, TcpStream},
-        process::{Command, Stdio},
-        time::{Duration, Instant},
-    };
-    let manifest = format!(
-        "{}[dependencies]\npayments = {{ version = \"0.1.0\", path = \"payments\" }}\n",
-        MANIFEST.replace("\"crate\"", "\"server\"")
-    );
-    let source = "namespace orders\nversion \"1\"\ntype Order:\n  amount: Number\ntype Receipt:\n  id: String\nprocess charge_order(input: Order) -> Receipt:\n  retry max_retries 1 retry_for \"10s\" retry_delay \"10ms\" backoff exponential\n  node start = start\n  node first = task payments.first(input)\n  node second = task payments.second(first)\n  node done = end\n  link start -> first\n  link first -> second\n  link second -> done(second)\nprocess invalid_output(input: Order) -> Receipt:\n  node start = start\n  node bad = task payments.bad(input)\n  node done = end\n  link start -> bad\n  link bad -> done(bad)\n";
-    let extension_manifest = "[package]\nname = \"payments\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[dependencies]\nserde_json = \"1\"\ntokio = { version = \"1\", features = [\"time\"] }\n";
-    let descriptor = "[[tasks]]\nname = \"first\"\nfunction = \"first\"\ninput = \"Order\"\noutput = \"Receipt\"\n[[tasks]]\nname = \"second\"\nfunction = \"second\"\ninput = \"Receipt\"\noutput = \"Receipt\"\n[[tasks]]\nname = \"bad\"\nfunction = \"bad\"\ninput = \"Order\"\noutput = \"Receipt\"\n";
-    let functions = r#"use serde_json::{Value, json};
-use std::{fs::OpenOptions, io::Write};
-fn effect(name: &str) {
-    writeln!(OpenOptions::new().create(true).append(true).open(std::env::var("BLKIT_TASK_LOG").unwrap()).unwrap(), "{name}").unwrap();
-}
-pub async fn first(_: Value) -> Result<Value, String> { effect("first"); Ok(json!({"id":"ok"})) }
-pub async fn second(input: Value) -> Result<Value, String> {
-    effect("second");
-    while !std::path::Path::new(&std::env::var("BLKIT_TASK_RELEASE").unwrap()).exists() {
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    Ok(input)
-}
-pub async fn bad(_: Value) -> Result<Value, String> { Ok(json!({"id":42})) }
-"#;
-    let root = project(
-        &manifest,
-        &[
-            ("route.bl", source),
-            ("payments/Cargo.toml", extension_manifest),
-            ("payments/src/lib.rs", functions),
-            ("payments/blkit-tasks.toml", descriptor),
-        ],
-    );
-    blkit::project::Project::load(&root)
-        .unwrap()
-        .transpile()
-        .unwrap();
-    cargo_build(&root).unwrap();
-    let binary = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-        || root.join(".blkit/target/debug/orders-server"),
-        |target| PathBuf::from(target).join("debug/orders-server"),
-    );
-    let database = root.join("local.db");
-    let log = root.join("effects.log");
-    let release = root.join("release");
-    let port = TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let start = || {
-        Command::new(&binary)
-            .arg(&database)
-            .arg("2")
-            .arg(format!("127.0.0.1:{port}"))
-            .env("BLKIT_TASK_LOG", &log)
-            .env("BLKIT_TASK_RELEASE", &release)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap()
-    };
-    let mut child = start();
-    let started = Instant::now();
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(started.elapsed() < Duration::from_secs(5));
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let input = r#"{"amount":"5"}"#;
-    let id = http_request(
-        port,
-        "POST",
-        "/processes/orders/1/charge_order/instances",
-        input,
-    )["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    loop {
-        let item = http_request(port, "GET", &format!("/instances/{id}"), "");
-        if item["checkpoint"]["completed"]["first"].is_object()
-            && fs::read_to_string(&log)
-                .unwrap_or_default()
-                .contains("second")
-        {
-            break;
-        }
-        assert!(started.elapsed() < Duration::from_secs(5), "{item}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    child.kill().unwrap();
-    child.wait().unwrap();
-    fs::write(&release, "ready").unwrap();
-    let mut child = start();
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(started.elapsed() < Duration::from_secs(8));
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let result = loop {
-        let item = http_request(port, "GET", &format!("/instances/{id}"), "");
-        if item["status"] == "completed" {
-            break item;
-        }
-        assert!(started.elapsed() < Duration::from_secs(8), "{item}");
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    assert_eq!(result["result"], serde_json::json!({"id":"ok"}));
-    let effects = fs::read_to_string(&log).unwrap();
-    assert_eq!(
-        effects.lines().filter(|line| *line == "first").count(),
-        1,
-        "{effects}"
-    );
-    assert_eq!(
-        effects.lines().filter(|line| *line == "second").count(),
-        2,
-        "{effects}"
-    );
-    let bad = http_request(
-        port,
-        "POST",
-        "/processes/orders/1/invalid_output/instances",
-        input,
-    )["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    loop {
-        let item = http_request(port, "GET", &format!("/instances/{bad}"), "");
-        if item["status"] == "failed" {
-            assert!(
-                item["error"].as_str().unwrap().contains("invalid type"),
-                "{item}"
-            );
-            assert!(item["result"].is_null());
-            break;
-        }
-        assert!(started.elapsed() < Duration::from_secs(8), "{item}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    child.kill().unwrap();
-    child.wait().unwrap();
-    fs::remove_dir_all(root).unwrap();
-}
-
 #[tokio::test]
 async fn project_worker_binary_claims_only_its_compiled_process_version() {
     use blkit::{
@@ -1269,7 +1005,7 @@ async fn project_worker_binary_claims_only_its_compiled_process_version() {
         testcontainers::{ImageExt, runners::AsyncRunner},
     };
     let manifest = MANIFEST.replace("\"crate\"", "\"worker\"");
-    let source = "namespace orders\nversion \"1\"\ntask echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> Number:\n  node start = start\n  node work = task echo(input)\n  node done = end\n  link start -> work\n  link work -> done(work)\n";
+    let source = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } decision_task echo { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression input; } } process route { flow start -> echo; flow echo -> done; bind start.input -> echo.input; bind echo.result -> done.result; }";
     let root = project(&manifest, &[("route.bl", source)]);
     blkit::project::Project::load(&root)
         .unwrap()
@@ -1310,8 +1046,8 @@ async fn project_worker_binary_claims_only_its_compiled_process_version() {
                 kind: GraphNodeKind::Start,
             },
             GraphNode {
-                name: "work",
-                kind: GraphNodeKind::Task(Arc::new(|input, _| Ok(input.clone()))),
+                name: "echo",
+                kind: GraphNodeKind::Task(Arc::new(|input, _| Ok(input["input"].clone()))),
             },
             GraphNode {
                 name: "done",
@@ -1321,16 +1057,16 @@ async fn project_worker_binary_claims_only_its_compiled_process_version() {
         links: vec![
             GraphLink {
                 source: "start",
-                target: "work",
+                target: "echo",
                 value: None,
                 condition: None,
                 fallback: false,
                 label: None,
             },
             GraphLink {
-                source: "work",
+                source: "echo",
                 target: "done",
-                value: Some(Arc::new(|_, values| Ok(values["work"].clone()))),
+                value: Some(Arc::new(|_, values| Ok(values["echo"].clone()))),
                 condition: None,
                 fallback: false,
                 label: None,
@@ -1338,7 +1074,7 @@ async fn project_worker_binary_claims_only_its_compiled_process_version() {
         ],
     };
     for (id, version) in [("matched", "1"), ("other-version", "2")] {
-        let mut item = Instance::new(id, "orders", version, "route", json!("7"));
+        let mut item = Instance::new(id, "orders", version, "route", json!({"input":"7"}));
         item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
         store.create(&item).await.unwrap();
     }

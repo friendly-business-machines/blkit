@@ -21,7 +21,8 @@ fn compile_and_test(source: &str, assertion: &str) {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(directory.join("src")).unwrap();
-    fs::write(directory.join("Cargo.toml"), "[package]\nname = \"blkit_generated_test\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nrust_decimal = \"1.39\"\nchrono = { version = \"0.4\", features = [\"serde\"] }\nserde = \"1\"\nserde_json = \"1\"\n").unwrap();
+    let name = directory.file_name().unwrap().to_string_lossy();
+    fs::write(directory.join("Cargo.toml"), format!("[package]\nname = {name:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nrust_decimal = \"1.39\"\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\nserde = \"1\"\nserde_json = \"1\"\n")).unwrap();
     fs::write(directory.join("src/lib.rs"), format!("{generated}\n#[cfg(test)] mod generated_checks {{ use super::*; #[test] fn behavior() {{ {assertion} }} }}")).unwrap();
     let result = Command::new("cargo")
         .args(["test", "--offline", "--manifest-path"])
@@ -39,135 +40,148 @@ fn compile_and_test(source: &str, assertion: &str) {
 }
 
 #[test]
-fn generated_string_functions_evaluate_typed_tasks_and_decisions() {
+fn generated_string_functions_evaluate_decision_tasks() {
     compile_and_test_graph(
-        r#"namespace strings
-version "1"
-task concat(input: String) -> String:
-  return "order-" + input
-task join(input: String) -> String:
-  return stringJoin([input, upperCase(input)], ", ")
-task member(input: String) -> Bool:
-  return input in ["active", "pending"]
-task last(input: String) -> String:
-  return charAt(input, -1)
-task slice(input: String) -> String:
-  return substring(input, -1)
-task length(input: String) -> Number:
-  return stringLength(input)
-task regex(input: String) -> Bool:
-  return matches(input, input)
-task extracts(input: String) -> List<List<String>>:
-  return extract(input, "(a)(b)?")
-task convert(input: Number) -> String:
-  return "order-" + string(input)
-task convert_date(input: Date) -> String:
-  return string(input)
-task convert_time(input: Time) -> String:
-  return string(input)
-task convert_instant(input: DateTime) -> String:
-  return string(input)
-decision inspect(input: String) -> String:
-  node result: String = context
-    entry shortened: String = substring(input, 1, 1)
-    result shortened
-  output result
-decision judge(input: String) -> Bool:
-  knowledge check(s: String) -> Bool = matches(s, "^a")
-  node result: Bool = literal check(input)
-  output result
-"#,
-        r#"assert_eq!(concat("123".into()), "order-123"); assert_eq!(join("ab".into()), "ab, AB"); assert!(member("active".into())); assert!(!member("ACTIVE".into())); assert_eq!(last("e\u{301}x".into()).unwrap(), "x"); assert_eq!(slice("e\u{301}x".into()).unwrap(), "x"); assert_eq!(length("e\u{301}x".into()), Number::from(2)); assert!(regex("[".into()).is_err()); assert_eq!(extracts("ab a".into()).unwrap(), vec![vec!["a", "b"], vec!["a"]]); assert_eq!(convert(Number::from(123)).unwrap(), "order-123"); assert_eq!(convert_date("2026-01-01".parse().unwrap()).unwrap(), "2026-01-01"); assert_eq!(convert_time(serde_json::from_value(serde_json::json!("12:30:00")).unwrap()).unwrap(), "12:30:00"); assert_eq!(convert_instant("2026-01-01T00:00:00+02:00".parse().unwrap()).unwrap(), "2026-01-01T00:00:00+02:00"); assert_eq!(inspect("e\u{301}x".into()).unwrap(), "e\u{301}"); assert!(inspect("".into()).is_err()); assert!(judge("abc".into()).unwrap()); assert!(judge("[".into()).unwrap() == false);"#,
+        r#"namespace strings;
+version "1";
+decision_task inspect {
+  input text: String;
+  output result: String = shortened;
+  literal_expression shortened { output result: String; expression substring(text, 1, 1); }
+}
+decision_task join {
+  input text: String;
+  output result: String = value;
+  literal_expression value { output result: String; expression stringJoin([text, upperCase(text)], ", "); }
+}
+decision_task member {
+  input text: String;
+  output result: Bool = value;
+  literal_expression value { output result: Bool; expression text in ["active", "pending"]; }
+}
+decision_task convert {
+  input value: Number;
+  output result: String = text;
+  literal_expression text { output result: String; expression "order-" + string(value); }
+}
+decision_task convert_date { input value: Date; output result: String = text; literal_expression text { output result: String; expression string(value); } }
+decision_task convert_time { input value: Time; output result: String = text; literal_expression text { output result: String; expression string(value); } }
+decision_task convert_instant { input value: DateTime; output result: String = text; literal_expression text { output result: String; expression string(value); } }
+decision_task regex {
+  input text: String;
+  output result: Bool = value;
+  literal_expression value { output result: Bool; expression matches(text, text); }
+}
+decision_task extracts {
+  input text: String;
+  output result: List<List<String>> = value;
+  literal_expression value { output result: List<List<String>>; expression extract(text, "(a)(b)?"); }
+}"#,
+        r#"assert_eq!(inspect("e\u{301}x".into()).unwrap(), "e\u{301}"); assert!(inspect("".into()).is_err()); assert_eq!(join("ab".into()).unwrap(), "ab, AB"); assert!(member("active".into()).unwrap()); assert!(!member("ACTIVE".into()).unwrap()); assert_eq!(convert(Number::from(123)).unwrap(), "order-123"); assert_eq!(convert_date("2026-01-01".parse().unwrap()).unwrap(), "2026-01-01"); assert_eq!(convert_time(serde_json::from_value(serde_json::json!("12:30:00")).unwrap()).unwrap(), "12:30:00"); assert_eq!(convert_instant("2026-01-01T00:00:00+02:00".parse().unwrap()).unwrap(), "2026-01-01T00:00:00+02:00"); assert!(regex("[".into()).is_err()); assert_eq!(extracts("ab a".into()).unwrap(), vec![vec!["a", "b"], vec!["a"]]);"#,
     );
 }
 
 #[test]
-fn generated_string_edges_and_decision_table_propagate_errors() {
+fn generated_string_edges_and_table_propagate_errors() {
     compile_and_test_graph(
-        r#"namespace strings
-version "1"
-task trim_case(input: String) -> String:
-  return upperCase(trimTrailing(trimLeading(input)))
-task slice(input: String) -> String:
-  return substring(input, 1, 2)
-task prefix(input: String) -> String:
-  return substringBefore(input, ":")
-task suffix(input: String) -> String:
-  return substringAfter(input, ":")
-task pieces(input: String) -> List<String>:
-  return split(input, [",", ";"])
-task padded(input: String) -> String:
-  return padTrailing(padLeading(input, 3, "x"), 5)
-task repeated(input: String) -> String:
-  return repeat(input, 2)
-task replaced(input: String) -> String:
-  return replace(input, "(a)", "x$1", "i")
-task test_text(input: String) -> Bool:
-  return contains(input, "a") and startsWith(input, "a") and endsWith(input, "b") and not isBlank(input) and not isEmpty(input)
-task index(input: String) -> Number:
-  return indexOf(input, "b")
-task reverses(input: String) -> String:
-  return reverse(lowerCase(input))
-decision table_test(input: String) -> Bool:
-  node result: Bool = table FIRST
-    input value: String = input
-    output ok: Bool
-    rule matches(value, input) -> true
-    default false
-  output result
-"#,
-        r#"assert_eq!(trim_case("  é  ".into()), "É"); assert_eq!(slice("e\u{301}x".into()).unwrap(), "e\u{301}x"); assert!(slice("".into()).is_err()); assert_eq!(prefix("a:b".into()), "a"); assert_eq!(suffix("a:b".into()), "b"); assert_eq!(pieces("a,b;c".into()).unwrap(), ["a", "b", "c"]); assert_eq!(padded("a".into()).unwrap(), "xxa  "); assert_eq!(repeated("ab".into()).unwrap(), "abab"); assert_eq!(replaced("aA".into()).unwrap(), "xaxA"); assert!(test_text("ab".into())); assert_eq!(index("ab".into()), Number::from(2)); assert_eq!(reverses("Ab".into()), "ba"); assert!(table_test("abc".into()).unwrap()); assert!(table_test("[".into()).is_err());"#,
-    );
+        r#"namespace strings;
+version "1";
+decision_task text {
+  input value: String;
+  output result: String = transformed;
+  literal_expression transformed { output result: String; expression replace(repeat(padTrailing(padLeading(value, 3, "x"), 5), 2), "(a)", "x$1", "i"); }
 }
-
-#[test]
-fn generated_datetime_inputs_require_offset_and_compare_instants() {
-    compile_and_test(
-        "namespace timing\nversion \"1\"\ntype Window:\n  opens: DateTime\n  closes: DateTime\ntask before(input: Window) -> Bool:\n  return input.opens < input.closes\n",
-        "let opens: DateTime = serde_json::from_value(serde_json::json!(\"2026-10-02T09:30:00+02:00\")).unwrap(); let closes: DateTime = serde_json::from_value(serde_json::json!(\"2026-10-02T08:31:00+01:00\")).unwrap(); assert!(before(Window { opens, closes })); assert!(serde_json::from_value::<DateTime>(serde_json::json!(\"2026-10-02T09:30:00\")).is_err());",
+decision_task slice {
+  input value: String;
+  output result: String = sliced;
+  literal_expression sliced { output result: String; expression substring(value, 1, 2); }
+}
+decision_task trim_case { input value: String; output result: String = text; literal_expression text { output result: String; expression upperCase(trimTrailing(trimLeading(value))); } }
+decision_task pieces {
+  input value: String;
+  output result: List<String> = separated;
+  literal_expression separated { output result: List<String>; expression split(value, [",", ";"]); }
+}
+decision_task table_test {
+  input value: String;
+  output result: Bool = table.result;
+  decision_table table {
+    output result: Bool;
+    policy FIRST;
+    input item: String = value;
+    output ok: Bool;
+    rule matches(item, value) -> true;
+    default false;
+  }
+}"#,
+        r#"assert_eq!(text("a".into()).unwrap(), "xxxa  xxxa  "); assert_eq!(trim_case("  é  ".into()).unwrap(), "É"); assert_eq!(slice("e\u{301}x".into()).unwrap(), "e\u{301}x"); assert!(slice("".into()).is_err()); assert_eq!(pieces("a,b;c".into()).unwrap(), ["a", "b", "c"]); assert!(table_test("abc".into()).unwrap()); assert!(table_test("[".into()).is_err());"#,
     );
 }
 
 #[test]
 fn generated_temporal_values_roundtrip_and_order() {
     compile_and_test(
-        "namespace timing\nversion \"1\"\ntype Clock:\n  day: Date\n  time: Time\n  instant: DateTime\ntask day(input: Clock) -> Date:\n  return input.day\ntask time_of(input: Clock) -> Time:\n  return input.time\ntask later(input: Clock) -> Bool:\n  return input.day < date(\"2026-10-03\") and input.time < time(\"12:00:00\") and input.instant == dateTime(\"2026-10-02T08:30:00Z\")\n",
-        "let day_value: Date = serde_json::from_value(serde_json::json!(\"2026-10-02\")).unwrap(); let time: Time = serde_json::from_value(serde_json::json!(\"09:30:00.250\")).unwrap(); let instant: DateTime = serde_json::from_value(serde_json::json!(\"2026-10-02T09:30:00+01:00\")).unwrap(); let input = Clock { day: day_value, time, instant }; assert_eq!(serde_json::to_value(day(input.clone())).unwrap(), serde_json::json!(\"2026-10-02\")); assert_eq!(serde_json::to_value(time_of(input.clone())).unwrap(), serde_json::json!(\"09:30:00.250\")); assert!(later(input)); for invalid in [\"2026-02-30\", \"not-a-date\", \"2026-1-2\"] { assert!(serde_json::from_value::<Date>(serde_json::json!(invalid)).is_err()); } for invalid in [\"24:00:00\", \"09:30:00+02:00\", \"23:59:60\", \"9:30:00\"] { assert!(serde_json::from_value::<Time>(serde_json::json!(invalid)).is_err(), \"{invalid}\"); } assert!(serde_json::from_value::<DateTime>(serde_json::json!(\"2026-10-02T09:30:00\")).is_err());",
+        r#"namespace timing;
+version "1";
+type Clock:
+  day: Date;
+  time: Time;
+  instant: DateTime;
+decision_task later {
+  input value: Clock;
+  output result: Bool = checked;
+  literal_expression checked { output result: Bool; expression value.day < date("2026-10-03") and value.time < time("12:00:00") and value.instant == dateTime("2026-10-02T08:30:00Z"); }
+}
+decision_task before {
+  input opens: DateTime;
+  input closes: DateTime;
+  output result: Bool = checked;
+  literal_expression checked { output result: Bool; expression opens < closes; }
+}"#,
+        r#"let day: Date = serde_json::from_value(serde_json::json!("2026-10-02")).unwrap(); let time: Time = serde_json::from_value(serde_json::json!("09:30:00.250")).unwrap(); let instant: DateTime = serde_json::from_value(serde_json::json!("2026-10-02T09:30:00+01:00")).unwrap(); assert!(later(Clock { day, time, instant }).unwrap()); assert_eq!(serde_json::to_value(day).unwrap(), serde_json::json!("2026-10-02")); assert_eq!(serde_json::to_value(time).unwrap(), serde_json::json!("09:30:00.250")); assert!(before("2026-10-02T09:30:00+02:00".parse().unwrap(), "2026-10-02T08:31:00+01:00".parse().unwrap()).unwrap()); for invalid in ["2026-02-30", "not-a-date", "2026-1-2"] { assert!(serde_json::from_value::<Date>(serde_json::json!(invalid)).is_err()); } for invalid in ["24:00:00", "09:30:00+02:00", "23:59:60", "9:30:00"] { assert!(serde_json::from_value::<Time>(serde_json::json!(invalid)).is_err(), "{invalid}"); } assert!(serde_json::from_value::<DateTime>(serde_json::json!("2026-10-02T09:30:00")).is_err());"#,
     );
 }
 
 #[test]
 fn generated_ranges_obey_boundaries_and_dynamic_empty_semantics() {
     compile_and_test(
-        "namespace ranges\nversion \"1\"\ntype Bounds:\n  low: Number\n  high: Number\ntask inclusive(input: Number) -> Bool:\n  return input in [1..5]\ntask exclusive(input: Number) -> Bool:\n  return input in (1..5)\ntask left_open(input: Number) -> Bool:\n  return input in (1..5]\ntask right_open(input: Number) -> Bool:\n  return input in [1..5)\ntask upper_open(input: Number) -> Bool:\n  return input in [1..null)\ntask lower_open(input: Number) -> Bool:\n  return input in (null..0)\ntask all(input: Number) -> Bool:\n  return input in (null..null)\ntask between(input: Number) -> Bool:\n  return input between 1 and 5\ntask same(input: Number) -> Bool:\n  return [1..5] == [1..5] and [1..5] != [1..5)\ntask dynamic(input: Bounds) -> Bool:\n  return input.low in [input.low..input.high]\ntask singleton(input: Number) -> Bool:\n  return input in [1..1] and not (input in (1..1])\ntask instant(input: DateTime) -> Bool:\n  return input in [dateTime(\"2026-10-02T09:00:00+01:00\")..null)\n",
-        "let n = |text: &str| text.parse::<Number>().unwrap(); assert!(inclusive(n(\"1\"))); assert!(inclusive(n(\"5\"))); assert!(!exclusive(n(\"1\"))); assert!(exclusive(n(\"3\"))); assert!(!exclusive(n(\"5\"))); assert!(!left_open(n(\"1\"))); assert!(left_open(n(\"5\"))); assert!(right_open(n(\"1\"))); assert!(!right_open(n(\"5\"))); assert!(upper_open(n(\"100\"))); assert!(lower_open(n(\"-1\"))); assert!(!lower_open(n(\"0\"))); assert!(all(n(\"0\"))); assert!(between(n(\"5\"))); assert!(same(n(\"0\"))); assert!(singleton(n(\"1\"))); assert!(!dynamic(Bounds { low: n(\"5\"), high: n(\"1\") })); assert!(instant(\"2026-10-02T08:30:00Z\".parse().unwrap()));",
+        r#"namespace ranges;
+version "1";
+type Bounds:
+  low: Number;
+  high: Number;
+decision_task inclusive { input value: Number; output result: Bool = check; literal_expression check { output result: Bool; expression value in [1..5]; } }
+decision_task exclusive { input value: Number; output result: Bool = check; literal_expression check { output result: Bool; expression value in (1..5); } }
+decision_task upper_open { input value: Number; output result: Bool = check; literal_expression check { output result: Bool; expression value in [1..null); } }
+decision_task dynamic { input bounds: Bounds; output result: Bool = check; literal_expression check { output result: Bool; expression bounds.low in [bounds.low..bounds.high]; } }
+decision_task relations { input value: Number; output result: Bool = check; literal_expression check { output result: Bool; expression before([1..2], [3..4]) and meets([1..2], [2..3]) and overlaps([5..10], [1..6]) and includes([1..10], 5) and not (starts(1, (1..5])) and overlaps((null..5), [4..null)) and not (overlaps([value..1], [1..2])); } }
+decision_task instant { input value: DateTime; output result: Bool = check; literal_expression check { output result: Bool; expression value in [dateTime("2026-10-02T09:00:00+01:00")..null); } }
+decision_task adjacent { input value: Date; output result: Bool = check; literal_expression check { output result: Bool; expression not (overlaps((date("2026-01-01")..date("2026-01-03")), [date("2026-01-03")..null))) and not (overlaps((date("2026-01-01")..date("2026-01-02")), [date("2026-01-01")..date("2026-01-02")])); } }"#,
+        r#"let n = |text: &str| text.parse::<Number>().unwrap(); assert!(inclusive(n("1")).unwrap()); assert!(inclusive(n("5")).unwrap()); assert!(!exclusive(n("1")).unwrap()); assert!(exclusive(n("3")).unwrap()); assert!(!exclusive(n("5")).unwrap()); assert!(upper_open(n("100")).unwrap()); assert!(!dynamic(Bounds { low: n("5"), high: n("1") }).unwrap()); assert!(relations(n("5")).unwrap()); assert!(instant("2026-10-02T08:30:00Z".parse().unwrap()).unwrap()); assert!(adjacent("2026-01-01".parse().unwrap()).unwrap());"#,
     );
 }
 
-#[test]
-fn generated_interval_relations_handle_open_empty_and_adjacent_dates() {
-    compile_and_test(
-        "namespace relations\nversion \"1\"\ntask ordered(input: Number) -> Bool:\n  return before([1..2], [3..4]) and after([3..4], [1..2]) and meets([1..2], [2..3]) and metBy([2..3], [1..2])\ntask intersection(input: Number) -> Bool:\n  return overlaps([5..10], [1..6]) and overlapsBefore([1..5], [4..10]) and overlapsAfter([4..10], [1..5]) and not (overlaps([1..2), [2..3])) and not (overlaps([input..1], [1..2]))\ntask points(input: Number) -> Bool:\n  return includes([1..10], 5) and during(5, [1..10]) and starts(1, [1..5]) and startedBy([1..5], 1) and finishes(5, [1..5]) and finishedBy([1..5], 5) and coincides([1..5], [1..5])\ntask open(input: Number) -> Bool:\n  return not (starts(1, (1..5])) and not (finishes(5, [1..5))) and not (starts(1, (null..5])) and overlaps((null..5), [4..null))\ntask adjacent(input: Date) -> Bool:\n  return not (overlaps((date(\"2026-01-01\")..date(\"2026-01-03\")), [date(\"2026-01-03\")..null))) and not (overlaps((date(\"2026-01-01\")..date(\"2026-01-02\")), [date(\"2026-01-01\")..date(\"2026-01-02\")]))\n",
-        "assert!(ordered(Number::ZERO)); assert!(intersection(Number::from(5))); assert!(points(Number::ZERO)); assert!(open(Number::ZERO)); assert!(adjacent(\"2026-01-01\".parse().unwrap()));",
-    );
-}
-
-#[test]
-fn generated_table_unary_tests_preserve_outputs_and_hit_policies() {
-    compile_and_test(
-        "namespace pricing\nversion \"1\"\ntype Quote:\n  price: Number\n  tier: String\ndecision quotes(input: Number) -> List<Quote>:\n  node result: List<Quote> = table RULE_ORDER\n    input amount: Number = input\n    output price: Number\n    output tier: String\n    rule amount matches ([2..5], (2..5]) -> 1, \"range\"\n    rule amount matches (< 10, [20..30]) and amount > 3 -> 2, \"mixed\"\n    default 0, \"none\"\n  output result\n",
-        "let n = |value: &str| value.parse::<Number>().unwrap(); let two = quotes(n(\"2\")).unwrap(); assert_eq!(two.len(), 1); assert_eq!(two[0].tier, \"range\"); let five = quotes(n(\"5\")).unwrap(); assert_eq!(five.len(), 2); assert_eq!(five[0].tier, \"range\"); assert_eq!(five[1].tier, \"mixed\"); assert_eq!(quotes(n(\"6\")).unwrap()[0].tier, \"mixed\"); assert_eq!(quotes(n(\"25\")).unwrap()[0].tier, \"mixed\"); assert_eq!(quotes(n(\"15\")).unwrap()[0].tier, \"none\");",
-    );
-    compile_and_test(
-        "namespace dates\nversion \"1\"\ndecision in_season(input: Date) -> Bool:\n  node result: Bool = table FIRST\n    input day: Date = input\n    output approved: Bool\n    rule day matches ([date(\"2026-01-01\")..date(\"2026-01-31\")], >= date(\"2026-12-01\")) -> true\n    default false\n  output result\n",
-        "for (date, expected) in [(\"2026-01-15\", true), (\"2026-12-01\", true), (\"2026-02-01\", false)] { assert_eq!(in_season(date.parse().unwrap()).unwrap(), expected); }",
-    );
-}
-
+// Braced table policy, multi-column, context, knowledge, and branch tests below
+// cover the former duplicate legacy decision fixtures without nested recompiles.
 #[test]
 fn knowledge_names_can_coexist_with_range_builtins_and_date_parameters() {
     compile_and_test(
-        "namespace compatibility\nversion \"1\"\ndecision earlier(input: Number) -> Bool:\n  knowledge before(a: Number, b: Number) -> Bool = a < b\n  node result: Bool = literal before(input, 10)\n  output result\ndecision daylight(input: Number) -> Bool:\n  knowledge check(day: Date) -> Bool = day in [day..day]\n  knowledge datetime_check(at: DateTime) -> Bool = at == at\n  node result: Bool = literal true\n  output result\ndecision intervals(input: Number) -> Bool:\n  node result: Bool = literal before([1..2], [3..4])\n  output result\n",
+        r#"namespace compatibility;
+version "1";
+decision_task earlier {
+  input value: Number;
+  output result: Bool = check;
+  knowledge before { input a: Number; input b: Number; output result: Bool; expression a < b; }
+  literal_expression check { output result: Bool; expression before(value, 10); }
+}
+decision_task daylight {
+  input value: Number;
+  output result: Bool = check;
+  knowledge date_check { input day: Date; output result: Bool; expression day in [day..day]; }
+  knowledge datetime_check { input at: DateTime; output result: Bool; expression at == at; }
+  literal_expression check { output result: Bool; expression value == value; }
+}
+decision_task intervals { input value: Number; output result: Bool = check; literal_expression check { output result: Bool; expression before([1..2], [3..4]); } }"#,
         "assert!(earlier(Number::ONE).unwrap()); assert!(!earlier(Number::from(11)).unwrap()); assert!(daylight(Number::ZERO).unwrap()); assert!(intervals(Number::ZERO).unwrap());",
     );
 }
@@ -175,148 +189,31 @@ fn knowledge_names_can_coexist_with_range_builtins_and_date_parameters() {
 #[test]
 fn generated_records_enums_and_decimal_literals_compile() {
     compile_and_test(
-        "namespace orders\nversion \"1.0\"\ntype Order:\n  total: Number\n  tags: List<String>\nenum Decision:\n  approved\n  review\ntask amount(input: Order) -> Number:\n  return 12.50\n",
-        "let order = Order { total: Number::ONE, tags: vec![] }; assert_eq!(amount(order), \"12.50\".parse::<Number>().unwrap());",
-    );
-}
-
-#[test]
-fn generated_decision_table_evaluates_first_match_and_default() {
-    compile_and_test(
-        "namespace pricing\nversion \"1\"\ndecision price(input: Number) -> Number:\n  node result: Number = table FIRST\n    input amount: Number = input\n    output price: Number\n    rule amount > 100 -> 5\n    rule amount > 10 -> 2\n    default 0\n  output result\n",
-        "assert_eq!(price(\"200\".parse().unwrap()).unwrap(), \"5\".parse::<Number>().unwrap()); assert_eq!(price(\"20\".parse().unwrap()).unwrap(), \"2\".parse::<Number>().unwrap()); assert_eq!(price(Number::ZERO).unwrap(), Number::ZERO);",
-    );
-}
-
-#[test]
-fn generated_decision_models_evaluate_dependencies_context_and_knowledge() {
-    compile_and_test(
-        "namespace pricing\nversion \"1\"\ndecision price(input: Number) -> Number:\n  knowledge fee(amount: Number) -> Number = amount\n  node base: Number = literal input\n  node outcome: Number = context\n    entry subtotal: Number = fee(base)\n    result subtotal\n  link base -> outcome\n  output outcome\n",
-        "assert_eq!(price(\"9\".parse().unwrap()).unwrap(), \"9\".parse::<Number>().unwrap());",
-    );
-}
-
-#[test]
-fn generated_decision_tables_cover_hit_policies_and_aggregations() {
-    let mut source = String::from("namespace pricing\nversion \"1\"\n");
-    for (name, policy, rules, priority) in [
-        (
-            "unique",
-            "UNIQUE",
-            "    rule amount > 100 -> 5\n    rule amount > 10 -> 2\n",
-            "",
-        ),
-        (
-            "any",
-            "ANY",
-            "    rule amount > 100 -> 5\n    rule amount > 10 -> 5\n",
-            "",
-        ),
-        (
-            "first",
-            "FIRST",
-            "    rule amount > 100 -> 5\n    rule amount > 10 -> 2\n",
-            "",
-        ),
-        (
-            "priority",
-            "PRIORITY",
-            "    rule amount > 100 -> 5\n    rule amount > 10 -> 2\n",
-            "    priority 2\n    priority 5\n",
-        ),
-        (
-            "rule_order",
-            "RULE_ORDER",
-            "    rule amount > 100 -> 5\n    rule amount > 10 -> 2\n",
-            "",
-        ),
-        (
-            "output_order",
-            "OUTPUT_ORDER",
-            "    rule amount > 100 -> 5\n    rule amount > 10 -> 2\n",
-            "    priority 2\n    priority 5\n",
-        ),
-        (
-            "collect",
-            "COLLECT",
-            "    rule amount > 100 -> 5\n    rule amount > 10 -> 2\n",
-            "",
-        ),
-        (
-            "sum",
-            "COLLECT SUM",
-            "    rule amount > 100 -> 5\n    rule amount > 10 -> 2\n",
-            "",
-        ),
-        (
-            "min",
-            "COLLECT MIN",
-            "    rule amount > 100 -> 5\n    rule amount > 10 -> 2\n",
-            "",
-        ),
-        (
-            "max",
-            "COLLECT MAX",
-            "    rule amount > 100 -> 5\n    rule amount > 10 -> 2\n",
-            "",
-        ),
-        (
-            "count",
-            "COLLECT COUNT",
-            "    rule amount > 100 -> 5\n    rule amount > 10 -> 2\n",
-            "",
-        ),
-    ] {
-        let output = if matches!(name, "rule_order" | "output_order" | "collect") {
-            "List<Number>"
-        } else {
-            "Number"
-        };
-        source.push_str(&format!("decision {name}(input: Number) -> {output}:\n  node result: {output} = table {policy}\n    input amount: Number = input\n    output price: Number\n{priority}{rules}  output result\n"));
-    }
-    compile_and_test(
-        &source,
-        "let value = \"200\".parse().unwrap(); assert!(unique(value).unwrap_err().contains(\"UNIQUE\")); assert_eq!(any(value).unwrap(), \"5\".parse::<Number>().unwrap()); assert_eq!(first(value).unwrap(), \"5\".parse::<Number>().unwrap()); assert_eq!(priority(value).unwrap(), \"2\".parse::<Number>().unwrap()); let pair = vec![\"5\".parse::<Number>().unwrap(), \"2\".parse().unwrap()]; assert_eq!(rule_order(value).unwrap(), pair); assert_eq!(collect(value).unwrap(), pair); assert_eq!(output_order(value).unwrap(), vec![pair[1], pair[0]]); assert_eq!(sum(value).unwrap(), \"7\".parse::<Number>().unwrap()); assert_eq!(min(value).unwrap(), pair[1]); assert_eq!(max(value).unwrap(), pair[0]); assert_eq!(count(value).unwrap(), \"2\".parse::<Number>().unwrap()); assert!(sum(Number::ZERO).unwrap_err().contains(\"no matching\")); assert!(rule_order(Number::ZERO).unwrap().is_empty()); assert_eq!(count(Number::ZERO).unwrap(), Number::ZERO);",
-    );
-}
-
-#[test]
-fn generated_multi_output_table_orders_results_and_rejects_unranked_values() {
-    compile_and_test(
-        "namespace pricing\nversion \"1\"\ntype Quote:\n  price: Number\n  tier: String\ndecision quotes(input: Number) -> List<Quote>:\n  node result: List<Quote> = table OUTPUT_ORDER\n    input amount: Number = input\n    output price: Number\n    output tier: String\n    priority 2, \"regular\"\n    priority 5, \"express\"\n    rule amount > 100 -> 5, \"express\"\n    rule amount > 10 -> 2, \"regular\"\n  output result\n",
-        "let items = quotes(\"200\".parse().unwrap()).unwrap(); assert_eq!(items.len(), 2); assert_eq!(items[0].tier, \"regular\"); assert_eq!(items[1].tier, \"express\"); assert!(quotes(Number::ZERO).unwrap().is_empty());",
-    );
-}
-
-#[test]
-fn collect_count_accepts_multiple_output_columns() {
-    compile_and_test(
-        "namespace pricing\nversion \"1\"\ntype Quote:\n  price: Number\n  tier: String\ndecision count(input: Number) -> Number:\n  node result: Number = table COLLECT COUNT\n    input amount: Number = input\n    output price: Number\n    output tier: String\n    rule amount > 100 -> 5, \"express\"\n    rule amount > 10 -> 2, \"regular\"\n  output result\n",
-        "assert_eq!(count(\"200\".parse().unwrap()).unwrap(), \"2\".parse::<Number>().unwrap());",
-    );
-}
-
-#[test]
-fn collect_count_uses_configured_default_on_no_match() {
-    compile_and_test(
-        "namespace pricing\nversion \"1\"\ndecision count(input: Number) -> Number:\n  node result: Number = table COLLECT COUNT\n    input amount: Number = input\n    output tier: String\n    rule amount > 100 -> \"express\"\n    default 42\n  output result\n",
-        "assert_eq!(count(Number::ZERO).unwrap(), \"42\".parse::<Number>().unwrap()); assert_eq!(count(\"200\".parse().unwrap()).unwrap(), Number::ONE);",
-    );
-}
-
-#[test]
-fn generated_any_and_priority_reject_conflicting_or_unranked_matches() {
-    compile_and_test(
-        "namespace pricing\nversion \"1\"\ndecision any_price(input: Number) -> Number:\n  node result: Number = table ANY\n    input amount: Number = input\n    output price: Number\n    rule amount > 100 -> 5\n    rule amount > 10 -> 2\n  output result\ndecision ranked(input: Number) -> Number:\n  node result: Number = table PRIORITY\n    input amount: Number = input\n    output price: Number\n    priority 2\n    rule amount > 100 -> 5\n    rule amount > 10 -> 2\n  output result\n",
-        "let n = \"200\".parse().unwrap(); assert!(any_price(n).unwrap_err().contains(\"ANY\")); assert!(ranked(n).unwrap_err().contains(\"unranked\"));",
+        r#"namespace orders;
+version "1.0";
+type Order:
+  total: Number;
+  tags: List<String>;
+enum Decision:
+  approved;
+  review;
+decision_task amount { input order: Order; output result: Number = value; literal_expression value { output result: Number; expression 12.50; } }"#,
+        "let order = Order { total: Number::ONE, tags: vec![] }; assert_eq!(amount(order).unwrap(), \"12.50\".parse::<Number>().unwrap());",
     );
 }
 
 #[test]
 fn generated_subprocess_calls_registered_typed_child() {
     compile_and_test_graph(
-        "namespace orders\nversion \"1\"\ntask four(input: Bool) -> Number:\n  return 4\nprocess child(input: Bool) -> Number:\n  node start = start\n  node work = task four(input)\n  node done = end\n  link start -> work\n  link work -> done(work)\nprocess parent(input: Bool) -> Number:\n  node start = start\n  node called = subprocess child(input)\n  node done = end\n  link start -> called\n  link called -> done(called)\n",
-        "let mut definitions = named_graph_definitions(); assert_eq!(definitions.len(), 2); let parent = definitions.remove(1); assert!(blkit::runtime::Registry::new(vec![parent]).is_err()); let registry = blkit::runtime::Registry::new(named_graph_definitions()).unwrap(); let store = blkit::runtime::LocalStore::open(&std::env::temp_dir().join(format!(\"generated-child-{}.db\", std::process::id()))).await.unwrap(); let engine = blkit::runtime::Engine::new(registry, store, 1).unwrap(); let id = engine.start(\"orders\", \"1\", \"parent\", serde_json::json!(true)).await.unwrap(); let result = tokio::time::timeout(std::time::Duration::from_secs(5), async { loop { let status = engine.status(&id).await.unwrap().unwrap(); if status.status != \"pending\" && status.status != \"running\" { break status; } tokio::time::sleep(std::time::Duration::from_millis(10)).await; } }).await.unwrap(); assert_eq!(result.result, Some(serde_json::json!(\"4\")));",
+        r#"namespace orders;
+version "1";
+start_event start { output input: Bool; }
+end_event done { input result: Number; }
+decision_task four { input input: Bool; output result: Number = value; literal_expression value { output result: Number; expression 4; } }
+subprocess called { process child; input input: Bool; output result: Number; }
+process child { flow start -> four; flow four -> done; bind start.input -> four.input; bind four.result -> done.result; }
+process parent { flow start -> called; flow called -> done; bind start.input -> called.input; bind called.result -> done.result; }"#,
+        "let mut definitions = named_graph_definitions(); assert_eq!(definitions.len(), 2); let parent = definitions.remove(1); assert!(blkit::runtime::Registry::new(vec![parent]).is_err()); let registry = blkit::runtime::Registry::new(named_graph_definitions()).unwrap(); let store = blkit::runtime::LocalStore::open(&std::env::temp_dir().join(format!(\"generated-child-{}.db\", std::process::id()))).await.unwrap(); let engine = blkit::runtime::Engine::new(registry, store, 1).unwrap(); let id = engine.start(\"orders\", \"1\", \"parent\", serde_json::json!({\"input\":true})).await.unwrap(); let result = tokio::time::timeout(std::time::Duration::from_secs(5), async { loop { let status = engine.status(&id).await.unwrap().unwrap(); if status.status != \"pending\" && status.status != \"running\" { break status; } tokio::time::sleep(std::time::Duration::from_millis(10)).await; } }).await.unwrap(); assert_eq!(result.result, Some(serde_json::json!(\"4\")));",
     );
 }
 
@@ -324,29 +221,18 @@ fn generated_subprocess_calls_registered_typed_child() {
 fn documented_subprocess_example_routes_success_and_each_child_outcome() {
     compile_and_test_graph(
         include_str!("../examples/subprocess.bl"),
-        "let store = blkit::runtime::LocalStore::open(&std::env::temp_dir().join(format!(\"documented-subprocess-{}.db\", std::process::id()))).await.unwrap(); let engine = blkit::runtime::Engine::new(blkit::runtime::Registry::new(named_graph_definitions()).unwrap(), store, 1).unwrap(); for (input, expected) in [(\"2\", \"2\"), (\"0\", \"100\"), (\"-1\", \"200\"), (\"11\", \"300\")] { let id = engine.start(\"orders\", \"1.0\", \"parent\", serde_json::json!(input)).await.unwrap(); let status = tokio::time::timeout(std::time::Duration::from_secs(5), async { loop { let item = engine.status(&id).await.unwrap().unwrap(); if matches!(item.status.as_str(), \"completed\" | \"failed\" | \"business-error\") { break item; } tokio::time::sleep(std::time::Duration::from_millis(10)).await; } }).await.unwrap(); assert_eq!(status.status, \"completed\", \"{input}: {:?}\", status.error); assert_eq!(status.result, Some(serde_json::json!(expected))); }",
-    );
-}
-
-#[test]
-fn generated_multi_instance_task_evaluates_typed_list() {
-    compile_and_test_graph(
-        "namespace repeaters\nversion \"1\"\ntask echo(input: Number) -> Number:\n  return input\nprocess gather(input: List<Number>) -> List<Number>:\n  node start = start\n  node batch = task echo each input parallel\n  node done = end\n  link start -> batch\n  link batch -> done(batch)\n",
-        "let graph = named_graph_definitions().remove(0); for input in [serde_json::json!([]), serde_json::json!([\"3\",\"1\",\"2\"])] { let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), input); }",
-    );
-}
-
-#[test]
-fn generated_task_loops_cover_zero_and_single_iteration() {
-    compile_and_test_graph(
-        "namespace repeaters\nversion \"1\"\ntask echo(input: Number) -> Number:\n  return input\nprocess skip(input: Number) -> Number:\n  node start = start\n  node repeated = task echo(repeated) repeat_pre(repeated < 3) max_iterations 3 initial input\n  node done = end\n  link start -> repeated\n  link repeated -> done(repeated)\nprocess once(input: Number) -> Number:\n  node start = start\n  node repeated = task echo(input) repeat_post(repeated < 0) max_iterations 3\n  node done = end\n  link start -> repeated\n  link repeated -> done(repeated)\n",
-        "for graph in named_graph_definitions() { let input = serde_json::json!(\"3\"); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), input); }",
+        "let store = blkit::runtime::LocalStore::open(&std::env::temp_dir().join(format!(\"documented-subprocess-{}.db\", std::process::id()))).await.unwrap(); let engine = blkit::runtime::Engine::new(blkit::runtime::Registry::new(named_graph_definitions()).unwrap(), store, 1).unwrap(); for (input, expected) in [(\"2\", \"2\"), (\"0\", \"100\"), (\"-1\", \"200\"), (\"11\", \"300\")] { let id = engine.start(\"orders\", \"1.0\", \"parent\", serde_json::json!({\"input\":input})).await.unwrap(); let status = tokio::time::timeout(std::time::Duration::from_secs(5), async { loop { let item = engine.status(&id).await.unwrap().unwrap(); if matches!(item.status.as_str(), \"completed\" | \"failed\" | \"business-error\") { break item; } tokio::time::sleep(std::time::Duration::from_millis(10)).await; } }).await.unwrap(); assert_eq!(status.status, \"completed\", \"{input}: {:?}\", status.error); assert_eq!(status.result, Some(serde_json::json!(expected))); }",
     );
 }
 
 #[test]
 fn generated_deadline_policy_is_preserved() {
-    let generated = transpile("namespace timing\nversion \"1\"\nprocess later(input: Number) -> Number:\n  deadline queued \"10m\"\n  node start = start\n  node wait = pause_for \"1m\"\n  node done = end\n  link start -> wait\n  link wait -> done(input)\n").unwrap();
+    let generated = transpile(r#"namespace timing;
+version "1";
+start_event start { output input: Number; }
+end_event done { input result: Number; }
+pause_for wait { duration "1m"; }
+process later { deadline queued "10m"; flow start -> wait; flow wait -> done; bind start.input -> done.result; }"#).unwrap();
     assert!(
         generated
             .contains("origin: \"queued\", duration: std::time::Duration::from_millis(600000)")
@@ -356,16 +242,13 @@ fn generated_deadline_policy_is_preserved() {
 #[test]
 fn generated_wait_nodes_checkpoint_once_and_resume() {
     compile_and_test_graph(
-        "namespace timing\nversion \"1\"\nprocess later(input: DateTime) -> DateTime:\n  node start = start\n  node wait = pause_until input\n  node done = end\n  link start -> wait\n  link wait -> done(input)\n",
-        "let graph = named_graph_definitions().remove(0); let input = serde_json::json!(\"2026-10-02T09:30:00+02:00\"); let mut state = graph.checkpoint(&input).unwrap(); assert!(graph.waiting_until(&state).is_some()); graph.resume_due(&input, &mut state, i64::MAX).unwrap(); assert_eq!(state.outcome, Some(input));",
-    );
-}
-
-#[test]
-fn generated_business_rule_node_executes_decision_table() {
-    compile_and_test_graph(
-        "namespace pricing\nversion \"1\"\ndecision price(input: Number) -> Number:\n  node result: Number = table FIRST\n    input amount: Number = input\n    output price: Number\n    rule amount > 100 -> 5\n    default 2\n  output result\nprocess quote(input: Number) -> Number:\n  node start = start\n  node decision = business_rule price(input)\n  node done = end\n  link start -> decision\n  link decision -> done(decision)\n",
-        "let graph = named_graph_definitions().remove(0); let input = serde_json::json!(\"200\"); let mut checkpoint = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut checkpoint).unwrap(), serde_json::json!(\"5\"));",
+        r#"namespace timing;
+version "1";
+start_event start { output input: DateTime; }
+end_event done { input result: DateTime; }
+pause_until wait { input at: DateTime; }
+process later { flow start -> wait; flow wait -> done; bind start.input -> wait.at; bind start.input -> done.result; }"#,
+        "let graph = named_graph_definitions().remove(0); let input = serde_json::json!({\"input\":\"2026-10-02T09:30:00+02:00\"}); let mut state = graph.checkpoint(&input).unwrap(); assert!(graph.waiting_until(&state).is_some()); graph.resume_due(&input, &mut state, i64::MAX).unwrap(); assert_eq!(state.outcome, Some(serde_json::json!(\"2026-10-02T09:30:00+02:00\")));",
     );
 }
 
@@ -373,7 +256,7 @@ fn generated_business_rule_node_executes_decision_table() {
 fn documented_example_compiles() {
     compile_and_test_graph(
         include_str!("../examples/approve.bl"),
-        "let graph = named_graph_definitions().remove(0); let input = serde_json::json!({\"total\":\"1250\",\"blocked\":false}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(\"review\"));",
+        "let graph = named_graph_definitions().remove(0); let input = serde_json::json!({\"input\":{\"total\":\"1250\",\"blocked\":false}}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(\"review\"));",
     );
 }
 
@@ -381,19 +264,40 @@ fn documented_example_compiles() {
 fn pricing_and_iteration_examples_compile_and_execute() {
     compile_and_test_graph(
         include_str!("../examples/pricing.bl"),
-        "let graph = named_graph_definitions().remove(0); for (amount, expected) in [(\"200\", \"5\"), (\"10\", \"2\")] { let input = serde_json::json!(amount); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(expected)); }",
+        "let graph = named_graph_definitions().remove(0); for (amount, expected) in [(\"200\", \"5\"), (\"10\", \"2\")] { let input = serde_json::json!({\"amount\":amount}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(expected)); }",
     );
     compile_and_test_graph(
         include_str!("../examples/iteration.bl"),
-        "let graph = named_graph_definitions(); let gather = graph.iter().find(|item| item.name == \"gather\").unwrap(); let input = serde_json::json!([\"3\", \"1\"]); let mut state = gather.checkpoint(&input).unwrap(); assert_eq!(gather.run(&input, &mut state).unwrap(), input); let repeat = graph.iter().find(|item| item.name == \"repeat_until_timeout\").unwrap(); assert_eq!(repeat.deadline.as_ref().unwrap().duration.as_secs(), 2);",
+        "let graph = named_graph_definitions(); let gather = graph.iter().find(|item| item.name == \"gather\").unwrap(); let input = serde_json::json!({\"values\":[\"3\", \"1\"]}); let mut state = gather.checkpoint(&input).unwrap(); assert_eq!(gather.run(&input, &mut state).unwrap(), serde_json::json!([\"3\", \"1\"])); let repeat = graph.iter().find(|item| item.name == \"repeat_until_timeout\").unwrap(); assert_eq!(repeat.deadline.as_ref().unwrap().duration.as_secs(), 2);",
     );
 }
 
 #[test]
-fn generated_task_branches_with_typed_list_input() {
-    let source = "namespace orders\nversion \"1.0\"\ntype Order:\n  total: Number\n  amounts: List<Number>\nenum Decision:\n  approved\n  review\ntask decide(input: Order) -> Decision:\n  if input.total > 1000 and input.amounts == [1, 2.5]:\n    return Decision.review\n  else:\n    return Decision.approved\n";
-    let assertion = "let order = |total: &str| Order { total: total.parse().unwrap(), amounts: vec![Number::ONE, \"2.5\".parse().unwrap()] }; assert_eq!(decide(order(\"1001\")), Decision::review); assert_eq!(decide(order(\"999\")), Decision::approved);";
-    compile_and_test(source, assertion);
+fn generated_decision_task_branches_with_typed_list_input() {
+    compile_and_test(
+        r#"namespace orders;
+version "1.0";
+type Order:
+  total: Number;
+  amounts: List<Number>;
+enum Decision:
+  approved;
+  review;
+decision_task decide {
+  input request: Order;
+  output result: Decision = choice;
+  decision_table choice {
+    output result: Decision;
+    policy FIRST;
+    input total: Number = request.total;
+    input amounts: List<Number> = request.amounts;
+    output decision: Decision;
+    rule total > 1000 and amounts == [1, 2.5] -> Decision.review;
+    default Decision.approved;
+  }
+}"#,
+        "let order = |total: &str| Order { total: total.parse().unwrap(), amounts: vec![Number::ONE, \"2.5\".parse().unwrap()] }; assert_eq!(decide(order(\"1001\")).unwrap(), Decision::review); assert_eq!(decide(order(\"999\")).unwrap(), Decision::approved);",
+    );
 }
 
 fn compile_and_test_graph(source: &str, assertion: &str) {
@@ -405,7 +309,8 @@ fn compile_and_test_graph(source: &str, assertion: &str) {
     ));
     fs::create_dir_all(directory.join("src")).unwrap();
     let root = env!("CARGO_MANIFEST_DIR").replace('\\', "\\\\");
-    fs::write(directory.join("Cargo.toml"), format!("[package]\nname = \"blkit_generated_graph\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit = {{ path = {root:?} }}\nrust_decimal = {{ version = \"1.39\", features = [\"serde-str\"] }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"time\"] }}\n")).unwrap();
+    let name = directory.file_name().unwrap().to_string_lossy();
+    fs::write(directory.join("Cargo.toml"), format!("[package]\nname = {name:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit = {{ path = {root:?} }}\nrust_decimal = {{ version = \"1.39\", features = [\"serde-str\"] }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"time\"] }}\n")).unwrap();
     fs::write(directory.join("src/lib.rs"), format!("{generated}\n#[cfg(test)] mod checks {{ use super::*; #[tokio::test] async fn graph() {{ {assertion} }} }}")).unwrap();
     let result = Command::new("cargo")
         .args(["test", "--manifest-path"])
@@ -423,35 +328,629 @@ fn compile_and_test_graph(source: &str, assertion: &str) {
 }
 
 #[test]
+fn generated_decision_task_receives_bound_start_port_and_returns_end_port() {
+    compile_and_test_graph(
+        include_str!("../examples/minimal.bl"),
+        r#"let graph = named_graph_definitions().remove(0); let input = serde_json::json!({"amount":"7"}); assert!((graph.decode_input)(input.clone()).is_ok()); assert!((graph.decode_input)(serde_json::json!("7")).is_err()); assert!((graph.decode_input)(serde_json::json!({"amount":"7", "extra":1})).is_err()); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!("7"));"#,
+    );
+}
+
+#[test]
+fn process_rejects_unbound_and_mistyped_decision_inputs() {
+    let source = r#"namespace demo;
+version "1.0";
+start_event start { output amount: Number; }
+decision_task calculate {
+  input amount: Number;
+  output result: Number = compute;
+  literal_expression compute { output result: Number; expression amount; }
+}
+end_event done { input result: Number; }
+process example {
+  flow start -> calculate;
+  flow calculate -> done;
+  bind start.amount -> calculate.amount;
+  bind calculate.result -> done.result;
+}"#;
+    assert!(transpile(source).is_ok());
+    let unbound = source.replace("bind start.amount -> calculate.amount;", "");
+    assert!(transpile(&unbound).unwrap_err().contains("missing binding"));
+    let mismatched = source.replace("input amount: Number;", "input amount: String;");
+    assert!(
+        transpile(&mismatched)
+            .unwrap_err()
+            .contains("type mismatch")
+    );
+}
+
+#[test]
+fn decision_nodes_infer_dependencies_and_validate_output_ports() {
+    let source = r#"namespace demo;
+version "1";
+start_event start { output amount: Number; }
+decision_task calculate {
+  input amount: Number;
+  output result: Number = doubled.result;
+  literal_expression doubled { output result: Number; expression base.result; }
+  literal_expression base { output result: Number; expression amount; }
+}
+end_event done { input result: Number; }
+process example {
+  flow start -> calculate;
+  flow calculate -> done;
+  bind start.amount -> calculate.amount;
+  bind calculate.result -> done.result;
+}"#;
+    compile_and_test_graph(
+        source,
+        r#"let graph = named_graph_definitions().remove(0); let input = serde_json::json!({"amount":"7"}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!("7"));"#,
+    );
+    assert!(
+        transpile(&source.replace("doubled.result;", "doubled.missing;"))
+            .unwrap_err()
+            .contains("output port")
+    );
+    assert!(
+        transpile(&source.replace("expression base.result;", "expression doubled.result;"))
+            .unwrap_err()
+            .contains("cycle")
+    );
+    assert!(
+        transpile(&source.replace("expression amount; }", "expression doubled.result; }"))
+            .unwrap_err()
+            .contains("cycle")
+    );
+    assert!(
+        transpile(&source.replace("expression base.result;", "expression base.missing;"))
+            .unwrap_err()
+            .contains("output port")
+    );
+    assert!(
+        transpile(&source.replace("expression base.result;", "expression absent.result;"))
+            .unwrap_err()
+            .contains("unknown")
+    );
+}
+
+#[test]
+fn decision_tasks_accept_multiple_named_inputs_and_outputs() {
+    compile_and_test_graph(
+        r#"namespace demo;
+version "1";
+start_event start { output amount: Number; output other: Number; }
+decision_task calculate {
+  input amount: Number;
+  input other: Number;
+  output left: Number = original;
+  output right: Number = second.result;
+  literal_expression original { output result: Number; expression amount; }
+  literal_expression second { output result: Number; expression other; }
+}
+end_event done { input left: Number; input right: Number; }
+process example {
+  flow start -> calculate;
+  flow calculate -> done;
+  bind start.amount -> calculate.amount;
+  bind start.other -> calculate.other;
+  bind calculate.left -> done.left;
+  bind calculate.right -> done.right;
+}"#,
+        r#"let graph = named_graph_definitions().remove(0); let input = serde_json::json!({"amount":"7","other":"9"}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!({"left":"7","right":"9"}));"#,
+    );
+}
+
+#[test]
+fn braced_tables_preserve_hit_policies_defaults_and_aggregations() {
+    let mut source = String::from("namespace policies;\nversion \"1\";\n");
+    for (name, policy, ty, priorities) in [
+        ("first", "FIRST", "Number", ""),
+        ("unique", "UNIQUE", "Number", ""),
+        ("any", "ANY", "Number", ""),
+        ("ranked", "PRIORITY", "Number", "priority 5; priority 9;"),
+        ("ordered", "RULE_ORDER", "List<Number>", ""),
+        (
+            "sorted",
+            "OUTPUT_ORDER",
+            "List<Number>",
+            "priority 5; priority 9;",
+        ),
+        ("collected", "COLLECT", "List<Number>", ""),
+        ("sum", "COLLECT SUM", "Number", ""),
+        ("min", "COLLECT MIN", "Number", ""),
+        ("max", "COLLECT MAX", "Number", ""),
+        ("count", "COLLECT COUNT", "Number", ""),
+    ] {
+        source.push_str(&format!("decision_task {name} {{ input amount: Number; output result: {ty} = table.result; decision_table table {{ output result: {ty}; policy {policy}; input value: Number = amount; output price: Number; {priorities} rule value > 5 -> 9; rule value > 1 -> 5; }} }}\n"));
+    }
+    compile_and_test(
+        &source,
+        r#"let n = |v: &str| -> Number { v.parse().unwrap() }; let seven = n("7"); let zero = n("0"); assert_eq!(first(seven).unwrap(), n("9")); assert!(unique(seven).unwrap_err().contains("UNIQUE")); assert!(any(seven).unwrap_err().contains("ANY")); assert_eq!(ranked(seven).unwrap(), n("5")); assert_eq!(ordered(seven).unwrap(), vec![n("9"), n("5")]); assert_eq!(sorted(seven).unwrap(), vec![n("5"), n("9")]); assert_eq!(collected(seven).unwrap(), vec![n("9"), n("5")]); assert_eq!(sum(seven).unwrap(), n("14")); assert_eq!(min(seven).unwrap(), n("5")); assert_eq!(max(seven).unwrap(), n("9")); assert_eq!(count(seven).unwrap(), n("2")); assert!(first(zero).is_err()); assert!(sum(zero).is_err()); assert_eq!(count(zero).unwrap(), n("0"));"#,
+    );
+    let default = r#"namespace policies;
+version "1";
+decision_task first {
+  input amount: Number;
+  output result: Number = table;
+  decision_table table {
+    output result: Number;
+    policy FIRST;
+    input value: Number = amount;
+    output price: Number;
+    rule value > 5 -> 9;
+    default 2;
+  }
+}"#;
+    compile_and_test(default, "assert_eq!(first(0.into()).unwrap(), 2.into());");
+    let agreeing = source.replace("rule value > 1 -> 5;", "rule value > 1 -> 9;");
+    compile_and_test(&agreeing, "assert_eq!(any(7.into()).unwrap(), 9.into());");
+}
+
+#[test]
+fn braced_tables_validate_typed_multicolumn_results_and_unary_tests() {
+    let source = r#"namespace policies;
+version "1";
+type Quote:
+  price: Number;
+  tier: String;
+decision_task quotes {
+  input amount: Number;
+  output result: List<Quote> = table.result;
+  decision_table table {
+    output result: List<Quote>;
+    policy RULE_ORDER;
+    input value: Number = amount;
+    output price: Number;
+    output tier: String;
+    rule value matches (< 10, [20..30]) and value > 5 -> 2, "low";
+    rule value matches (>= 5, [20..30]) -> 3, "high";
+    default 0, "none";
+  }
+}"#;
+    compile_and_test(
+        source,
+        r#"let result = quotes("7".parse().unwrap()).unwrap(); assert_eq!(result, vec![Quote { price: 2.into(), tier: "low".into() }, Quote { price: 3.into(), tier: "high".into() }]); assert_eq!(quotes("-2".parse().unwrap()).unwrap(), vec![Quote { price: 0.into(), tier: "none".into() }]);"#,
+    );
+    let invalid = source
+        .replace("List<Quote>", "Number")
+        .replace("policy RULE_ORDER", "policy COLLECT SUM");
+    assert!(transpile(&invalid).unwrap_err().contains("aggregation"));
+    assert!(
+        transpile(&source.replace("= table.result;", "= table.price;"))
+            .unwrap_err()
+            .contains("output port")
+    );
+    assert!(
+        transpile(&source.replace("default 0, \"none\";", "default \"wrong\", \"none\";"))
+            .unwrap_err()
+            .contains("type mismatch")
+    );
+}
+
+#[test]
+fn braced_contexts_and_knowledge_infer_dependencies_and_evaluate_in_order() {
+    let source = r#"namespace demo;
+version "1";
+decision_task quote {
+  input amount: Number;
+  output result: Number = summary.result;
+  knowledge identity {
+    input value: Number;
+    output result: Number;
+    expression value;
+  }
+  context summary {
+    output result: Number;
+    entry complete: Number = identity(initial);
+    entry initial: Number = identity(base.result);
+    result complete;
+  }
+  literal_expression base { output result: Number; expression amount; }
+}"#;
+    compile_and_test(source, "assert_eq!(quote(7.into()).unwrap(), 7.into());");
+    assert!(
+        transpile(&source.replace("identity(initial)", "identity(missing)"))
+            .unwrap_err()
+            .contains("unknown")
+    );
+    assert!(
+        transpile(&source.replace("identity(base.result)", "identity(complete)"))
+            .unwrap_err()
+            .contains("cycle")
+    );
+    assert!(
+        transpile(&source.replace("identity(initial)", "identity(\"wrong\")"))
+            .unwrap_err()
+            .contains("knowledge argument type")
+    );
+    assert!(
+        transpile(&source.replace("result complete;", "result amount > 0;"))
+            .unwrap_err()
+            .contains("type mismatch")
+    );
+}
+
+#[test]
+fn braced_knowledge_captures_task_inputs_and_infers_node_dependencies() {
+    let source = r#"namespace demo;
+version "1";
+decision_task quote {
+  input amount: Number;
+  output result: Number = answer;
+  knowledge select { input other: Number; output result: Number; expression base.result; }
+  literal_expression answer { output result: Number; expression select(amount); }
+  literal_expression base { output result: Number; expression amount; }
+}"#;
+    compile_and_test(source, "assert_eq!(quote(7.into()).unwrap(), 7.into());");
+    let captured_input = source.replace("expression base.result; }", "expression amount; }");
+    compile_and_test(
+        &captured_input,
+        "assert_eq!(quote(7.into()).unwrap(), 7.into());",
+    );
+    let cyclic = source.replace("expression amount; }", "expression select(amount); }");
+    assert!(transpile(&cyclic).unwrap_err().contains("cycle"));
+}
+
+#[test]
+fn braced_knowledge_cycles_are_rejected() {
+    let source = r#"namespace demo;
+version "1";
+decision_task quote {
+  input amount: Number;
+  output result: Number = answer;
+  knowledge first { input value: Number; output result: Number; expression second(value); }
+  knowledge second { input value: Number; output result: Number; expression first(value); }
+  literal_expression answer { output result: Number; expression first(amount); }
+}"#;
+    assert!(transpile(source).unwrap_err().contains("cycle"));
+}
+
+#[test]
+fn pricing_example_compiles_and_runs_braced_decision_graph() {
+    compile_and_test_graph(
+        include_str!("../examples/pricing.bl"),
+        r#"let graph = named_graph_definitions().remove(0); for (amount, expected) in [("120", "5"), ("10", "2")] { let input = serde_json::json!({"amount":amount}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(expected)); }"#,
+    );
+}
+
+#[test]
+fn braced_xor_routes_bind_only_the_active_branch_and_return_multiple_ports() {
+    let source = r#"namespace routes;
+version "1";
+start_event start { output amount: Number; output label: String; }
+xor_split choice {}
+xor_join chosen { split choice; input value: Number; output result: Number; }
+decision_task high { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression amount; } }
+decision_task low { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression 2; } }
+end_event done { input total: Number; input label: String; }
+process route {
+  flow start -> choice;
+  flow choice -> high when start.amount > 100;
+  flow choice -> low else;
+  flow high -> chosen;
+  flow low -> chosen;
+  flow chosen -> done;
+  bind start.amount -> high.amount;
+  bind start.amount -> low.amount;
+  bind high.result -> chosen.value;
+  bind low.result -> chosen.value;
+  bind chosen.result -> done.total;
+  bind start.label -> done.label;
+}"#;
+    compile_and_test_graph(
+        source,
+        r#"let graph = named_graph_definitions().remove(0); for (amount, expected) in [("120", "120"), ("10", "2")] { let input = serde_json::json!({"amount":amount,"label":"offer"}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!({"total":expected,"label":"offer"})); }"#,
+    );
+    let unavailable = source.replace(
+        "bind chosen.result -> done.total;",
+        "bind high.result -> done.total;",
+    );
+    assert!(transpile(&unavailable).unwrap_err().contains("unavailable"));
+    let route_unavailable = source.replace("when start.amount > 100", "when high.result > 100");
+    assert!(
+        transpile(&route_unavailable)
+            .unwrap_err()
+            .contains("unavailable")
+    );
+    let wrong_shape = source.replace(
+        "end_event done { input total: Number; input label: String; }",
+        "end_event done { input total: Number; input label: Number; }",
+    );
+    assert!(
+        transpile(&wrong_shape)
+            .unwrap_err()
+            .contains("type mismatch")
+    );
+}
+
+#[test]
+fn braced_and_or_routes_join_activated_branches_in_order() {
+    let source = r#"namespace routes;
+version "1";
+type Pair:
+  left: Number;
+  right: Number;
+start_event start { output amount: Number; }
+end_event pair_done { input result: Pair; }
+end_event list_done { input result: List<Number>; }
+and_split fork {}
+and_join both { split fork; input left: Number; input right: Number; output result: Pair; }
+or_split choice {}
+or_join picked { split choice; input value: Number; output result: List<Number>; }
+decision_task high { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression amount; } }
+decision_task low { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression 2; } }
+decision_task fallback { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression 0; } }
+process parallel {
+  flow start -> fork;
+  flow fork -> high as left;
+  flow fork -> low as right;
+  flow high -> both;
+  flow low -> both;
+  flow both -> pair_done;
+  bind start.amount -> high.amount;
+  bind start.amount -> low.amount;
+  bind high.result -> both.left;
+  bind low.result -> both.right;
+  bind both.result -> pair_done.result;
+}
+process optional {
+  flow start -> choice;
+  flow choice -> high when start.amount > 50;
+  flow choice -> low when start.amount > 5;
+  flow choice -> fallback else;
+  flow high -> picked;
+  flow low -> picked;
+  flow fallback -> picked;
+  flow picked -> list_done;
+  bind start.amount -> high.amount;
+  bind start.amount -> low.amount;
+  bind start.amount -> fallback.amount;
+  bind high.result -> picked.value;
+  bind low.result -> picked.value;
+  bind fallback.result -> picked.value;
+  bind picked.result -> list_done.result;
+}"#;
+    compile_and_test_graph(
+        source,
+        r#"let graphs = named_graph_definitions(); let parallel = graphs.iter().find(|graph| graph.name == "parallel").unwrap(); let optional = graphs.iter().find(|graph| graph.name == "optional").unwrap(); let run = |graph: &blkit::compiled_graph::GraphDefinition, amount: &str| { let input = serde_json::json!({"amount":amount}); let mut state = graph.checkpoint(&input).unwrap(); graph.run(&input, &mut state).unwrap() }; assert_eq!(run(parallel, "120"), serde_json::json!({"left":"120","right":"2"})); assert_eq!(run(optional, "120"), serde_json::json!(["120","2"])); assert_eq!(run(optional, "10"), serde_json::json!(["2"])); assert_eq!(run(optional, "2"), serde_json::json!(["0"]));"#,
+    );
+    let crossed = source
+        .replace(
+            "bind high.result -> both.left;",
+            "bind high.result -> both.right;",
+        )
+        .replace(
+            "bind low.result -> both.right;",
+            "bind low.result -> both.left;",
+        );
+    assert!(transpile(&crossed).unwrap_err().contains("branch label"));
+    let missing_branch = source.replace("flow fallback -> picked;", "flow fallback -> list_done;");
+    assert!(
+        transpile(&missing_branch)
+            .unwrap_err()
+            .contains("missing split branch")
+    );
+}
+
+#[test]
+fn braced_xor_routes_bind_inputs_from_the_active_branch() {
+    let source = r#"namespace routes;
+version "1";
+start_event start { output amount: Number; }
+xor_split choice {}
+decision_task high { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression amount; } }
+decision_task low { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression 2; } }
+decision_task settle { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression amount; } }
+end_event done { input result: Number; }
+process route {
+  flow start -> choice;
+  flow choice -> high when start.amount > 100;
+  flow choice -> low else;
+  flow high -> settle;
+  flow low -> settle;
+  flow settle -> done;
+  bind start.amount -> high.amount;
+  bind start.amount -> low.amount;
+  bind high.result -> settle.amount;
+  bind low.result -> settle.amount;
+  bind settle.result -> done.result;
+}"#;
+    compile_and_test_graph(
+        source,
+        r#"let graph = named_graph_definitions().remove(0); for (amount, expected) in [("120", "120"), ("10", "2")] { let input = serde_json::json!({"amount":amount}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(expected)); }"#,
+    );
+    assert!(
+        transpile(&source.replace(
+            "bind low.result -> settle.amount;",
+            "bind high.result -> settle.amount;"
+        ))
+        .unwrap_err()
+        .contains("ambiguous")
+    );
+}
+
+#[test]
+fn braced_process_rejects_ambiguous_bindings_and_incompatible_normal_ends() {
+    let source = include_str!("../examples/minimal.bl");
+    let ambiguous = source.replace(
+        "bind start.amount -> calculate.amount;",
+        "bind start.amount -> calculate.amount; bind start.amount -> calculate.amount;",
+    );
+    assert!(transpile(&ambiguous).unwrap_err().contains("ambiguous"));
+    let different_end = source.replace("end_event done { input result: Number; }", "end_event done { input result: Number; } end_event alternative { input other: Number; } xor_split choice {}")
+        .replace("flow calculate -> done;", "flow calculate -> choice; flow choice -> done when start.amount > 0; flow choice -> alternative else;")
+        .replace("bind calculate.result -> done.result;", "bind calculate.result -> done.result; bind calculate.result -> alternative.other;");
+    assert!(
+        transpile(&different_end)
+            .unwrap_err()
+            .contains("end event port shape")
+    );
+}
+
+#[test]
+fn braced_exceptional_events_retry_deadline_and_waits_lower_to_runtime() {
+    compile_and_test_graph(
+        r#"namespace routes;
+version "1";
+start_event start { output amount: Number; output until: DateTime; }
+end_event done { input result: Number; }
+error_event failure {}
+cancel_event stopped {}
+terminate_event halted {}
+pause_for hold { duration "1ms"; }
+pause_until later { input at: DateTime; }
+process pause {
+  retry max_retries 2 retry_for "10s" retry_delay "1ms" backoff exponential;
+  deadline queued "20s";
+  flow start -> hold;
+  flow hold -> later;
+  flow later -> done;
+  bind start.until -> later.at;
+  bind start.amount -> done.result;
+}
+process error { flow start -> failure; }
+process cancel { flow start -> stopped; }
+process terminate { flow start -> halted; }"#,
+        r#"let graphs = named_graph_definitions(); let wait = graphs.iter().find(|graph| graph.name == "pause").unwrap(); assert_eq!(wait.retry.as_ref().unwrap().max_retries, 2); assert_eq!(wait.deadline.as_ref().unwrap().duration.as_secs(), 20); let input = serde_json::json!({"amount":"7","until":"2020-01-01T00:00:00Z"}); let mut state = wait.checkpoint(&input).unwrap(); let first = wait.waiting_until(&state).unwrap(); wait.resume_due(&input, &mut state, first).unwrap(); let second = wait.waiting_until(&state).unwrap(); wait.resume_due(&input, &mut state, second).unwrap(); assert_eq!(wait.run(&input, &mut state).unwrap(), serde_json::json!("7")); for (name, terminal) in [("error", "failure"), ("cancel", "stopped"), ("terminate", "halted")] { let graph = graphs.iter().find(|graph| graph.name == name).unwrap(); let mut state = graph.checkpoint(&input).unwrap(); assert!(graph.run(&input, &mut state).unwrap_err().contains(terminal)); }"#,
+    );
+}
+
+#[test]
+fn braced_subprocess_routes_normal_and_exceptional_outcomes() {
+    compile_and_test_graph(
+        r#"namespace routes;
+version "1";
+start_event start { output amount: Number; }
+end_event done { input result: Number; }
+end_event handled_success { input result: Number; }
+error_event broken {}
+subprocess child_call { process child; input amount: Number; output result: Number; }
+subprocess failed_call { process failing; input amount: Number; output result: Number; }
+decision_task passthrough { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression amount; } }
+decision_task recover { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression 0; } }
+process child { flow start -> passthrough; flow passthrough -> done; bind start.amount -> passthrough.amount; bind passthrough.result -> done.result; }
+process failing { flow start -> broken; }
+process parent { flow start -> child_call; flow child_call -> done; bind start.amount -> child_call.amount; bind child_call.result -> done.result; }
+process handled { flow start -> failed_call; flow failed_call -> handled_success; flow failed_call -> recover on error; flow recover -> done; bind start.amount -> failed_call.amount; bind failed_call.result -> handled_success.result; bind start.amount -> recover.amount; bind recover.result -> done.result; }"#,
+        r#"let graphs = named_graph_definitions(); let path = std::env::temp_dir().join(format!("braced-subprocess-{}.db", std::process::id())); let _ = std::fs::remove_file(&path); let store = blkit::runtime::LocalStore::open(&path).await.unwrap(); let engine = blkit::runtime::Engine::new(blkit::runtime::Registry::new(graphs).unwrap(), store.clone(), 1).unwrap(); for (name, expected) in [("parent", "7"), ("handled", "0")] { let id = engine.start("routes", "1", name, serde_json::json!({"amount":"7"})).await.unwrap(); let actual = tokio::time::timeout(std::time::Duration::from_secs(3), async { loop { let status = engine.status(&id).await.unwrap().unwrap(); if status.status == "completed" { break status.result.unwrap(); } if status.status == "failed" { panic!("{name} failed: {:?}", status.error); } tokio::time::sleep(std::time::Duration::from_millis(5)).await; } }).await.unwrap(); assert_eq!(actual, serde_json::json!(expected)); } drop(engine); drop(store); std::fs::remove_file(path).unwrap();"#,
+    );
+}
+
+#[test]
+fn braced_wait_policies_and_outcome_routes_reject_invalid_inputs() {
+    let source = include_str!("../examples/minimal.bl");
+    let retry = source.replace("process example {", "process example { retry max_retries 1 retry_for \"0s\" retry_delay \"1s\" backoff exponential;");
+    assert!(transpile(&retry).unwrap_err().contains("retry_for"));
+    let wait = source
+        .replace(
+            "end_event done",
+            "pause_until hold { input at: DateTime; } end_event done",
+        )
+        .replace(
+            "flow start -> calculate;",
+            "flow start -> hold; flow hold -> calculate; bind start.amount -> hold.at;",
+        );
+    assert!(transpile(&wait).unwrap_err().contains("type mismatch"));
+    let outcome = source.replace(
+        "flow calculate -> done;",
+        "flow calculate -> done on error;",
+    );
+    assert!(
+        transpile(&outcome)
+            .unwrap_err()
+            .contains("outcome flow requires subprocess")
+    );
+}
+
+#[test]
+fn braced_decision_task_loops_are_bounded_and_respect_pre_post_checks() {
+    let source = r#"namespace loops;
+version "1";
+start_event start { output amount: Number; }
+end_event done { input result: Number; }
+decision_task echo { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression amount; } }
+process post { repeat_post echo while echo.result < 3 max_iterations 2; flow start -> echo; flow echo -> done; bind start.amount -> echo.amount; bind echo.result -> done.result; }
+process pre { repeat_pre echo while echo.result < 3 initial 7 max_iterations 2; flow start -> echo; flow echo -> done; bind start.amount -> echo.amount; bind echo.result -> done.result; }"#;
+    compile_and_test_graph(
+        source,
+        r#"let graphs = named_graph_definitions(); let post = graphs.iter().find(|graph| graph.name == "post").unwrap(); let pre = graphs.iter().find(|graph| graph.name == "pre").unwrap(); let input = serde_json::json!({"amount":"7"}); let mut state = post.checkpoint(&input).unwrap(); assert_eq!(post.run(&input, &mut state).unwrap(), serde_json::json!("7")); let small = serde_json::json!({"amount":"1"}); let mut state = post.checkpoint(&small).unwrap(); assert!(post.run(&small, &mut state).unwrap_err().contains("task-iteration-limit")); let mut state = pre.checkpoint(&small).unwrap(); assert!(pre.ready(&state).is_empty()); assert_eq!(pre.run(&small, &mut state).unwrap(), serde_json::json!("7"));"#,
+    );
+    let zero = source.replace("max_iterations 2", "max_iterations 0");
+    assert!(transpile(&zero).unwrap_err().contains("max_iterations"));
+    let missing_initial = source.replace(" initial 7", "");
+    assert!(transpile(&missing_initial).unwrap_err().contains("initial"));
+    let bad_initial = source.replace("initial 7", "initial \"bad\"");
+    assert!(
+        transpile(&bad_initial)
+            .unwrap_err()
+            .contains("type mismatch")
+    );
+    let duration = source.replace("max_iterations 2", "max_duration \"10s\"");
+    assert!(transpile(&duration).is_ok());
+    let zero_duration = source.replace("max_iterations 2", "max_duration \"0s\"");
+    assert!(
+        transpile(&zero_duration)
+            .unwrap_err()
+            .contains("max_duration")
+    );
+}
+
+#[test]
+fn braced_decision_task_multi_instance_supports_sequential_and_parallel() {
+    compile_and_test_graph(
+        r#"namespace loops;
+version "1";
+start_event start { output amounts: List<Number>; }
+end_event done { input result: List<Number>; }
+decision_task echo { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression amount; } }
+process sequential { multi_instance echo each start.amounts sequential; flow start -> echo; flow echo -> done; bind start.amounts -> echo.amount; bind echo.result -> done.result; }
+process parallel { multi_instance echo each start.amounts parallel; flow start -> echo; flow echo -> done; bind start.amounts -> echo.amount; bind echo.result -> done.result; }"#,
+        r#"let graphs = named_graph_definitions(); let input = serde_json::json!({"amounts":["1","2"]}); for (name, ready) in [("sequential",1), ("parallel",2)] { let graph = graphs.iter().find(|graph| graph.name == name).unwrap(); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.ready(&state).len(), ready); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(["1","2"])); }"#,
+    );
+}
+
+#[test]
 fn string_errors_propagate_through_named_graph_tasks_and_routes() {
     compile_and_test_graph(
-        r#"namespace string_graph
-version "1"
-type Request:
-  text: String
-  pattern: String
-task verify(input: Request) -> Bool:
-  return matches(input.text, input.pattern)
-process execute(input: Request) -> Bool:
-  node start = start
-  node checked = task verify(input)
-  node done = end
-  link start -> checked
-  link checked -> done(checked)
-process route(input: Request) -> Bool:
-  node start = start
-  node choice = xor_split
-  node yes = task verify(input)
-  node no = task verify(input)
-  node join = xor_join(choice)
-  node done = end
-  link start -> choice
-  link choice -> yes when matches(input.text, input.pattern)
-  link choice -> no else
-  link yes -> join(yes)
-  link no -> join(no)
-  link join -> done(join)
-"#,
+        r#"namespace string_graph;
+version "1";
+start_event start { output text: String; output pattern: String; }
+end_event done { input result: Bool; }
+xor_split choice {}
+xor_join joined { split choice; input value: Bool; output result: Bool; }
+decision_task verify {
+  input text: String;
+  input pattern: String;
+  output result: Bool = check;
+  literal_expression check { output result: Bool; expression matches(text, pattern); }
+}
+decision_task fallback {
+  input text: String;
+  input pattern: String;
+  output result: Bool = check;
+  literal_expression check { output result: Bool; expression matches(text, pattern); }
+}
+process execute {
+  flow start -> verify;
+  flow verify -> done;
+  bind start.text -> verify.text;
+  bind start.pattern -> verify.pattern;
+  bind verify.result -> done.result;
+}
+process route {
+  flow start -> choice;
+  flow choice -> verify when matches(start.text, start.pattern);
+  flow choice -> fallback else;
+  flow verify -> joined;
+  flow fallback -> joined;
+  flow joined -> done;
+  bind start.text -> verify.text;
+  bind start.pattern -> verify.pattern;
+  bind start.text -> fallback.text;
+  bind start.pattern -> fallback.pattern;
+  bind verify.result -> joined.value;
+  bind fallback.result -> joined.value;
+  bind joined.result -> done.result;
+}"#,
         r#"let graphs = named_graph_definitions(); for name in ["execute", "route"] { let graph = graphs.iter().find(|g| g.name == name).unwrap(); let good = serde_json::json!({"text":"abc", "pattern":"b"}); let mut state = graph.checkpoint(&good).unwrap(); assert_eq!(graph.run(&good, &mut state).unwrap(), serde_json::json!(true)); let bad = serde_json::json!({"text":"abc", "pattern":"["}); assert!(graph.checkpoint(&bad).and_then(|mut state| graph.run(&bad, &mut state)).is_err(), "{name} swallowed invalid regex"); }"#,
     );
 }
@@ -459,30 +958,38 @@ process route(input: Request) -> Bool:
 #[test]
 fn string_errors_propagate_through_multi_instance_and_task_loops() {
     compile_and_test_graph(
-        r#"namespace string_graph
-version "1"
-task initial(input: String) -> String:
-  return charAt(input, 1)
-process batch(input: List<String>) -> List<String>:
-  node start = start
-  node many = task initial each input sequential
-  node done = end
-  link start -> many
-  link many -> done(many)
-process cycle(input: String) -> String:
-  node start = start
-  node one = task initial(input) repeat_post(one == "") max_iterations 2
-  node done = end
-  link start -> one
-  link one -> done(one)
-"#,
-        r#"let graphs = named_graph_definitions(); for (name, good, bad, result) in [("batch", serde_json::json!(["ab", "cd"]), serde_json::json!(["ab", ""]), serde_json::json!(["a", "c"])), ("cycle", serde_json::json!("ab"), serde_json::json!(""), serde_json::json!("a"))] { let graph = graphs.iter().find(|g| g.name == name).unwrap(); let mut state = graph.checkpoint(&good).unwrap(); assert_eq!(graph.run(&good, &mut state).unwrap(), result); assert!(graph.checkpoint(&bad).and_then(|mut state| graph.run(&bad, &mut state)).is_err(), "{name} swallowed invalid position"); }"#,
+        r#"namespace string_graph;
+version "1";
+start_event list_start { output input: List<String>; }
+start_event text_start { output input: String; }
+end_event list_done { input result: List<String>; }
+end_event text_done { input result: String; }
+decision_task initial { input input: String; output result: String = value; literal_expression value { output result: String; expression charAt(input, 1); } }
+process batch {
+  multi_instance initial each list_start.input sequential;
+  flow list_start -> initial;
+  flow initial -> list_done;
+  bind list_start.input -> initial.input;
+  bind initial.result -> list_done.result;
+}
+process cycle {
+  repeat_post initial while initial.result == "" max_iterations 2;
+  flow text_start -> initial;
+  flow initial -> text_done;
+  bind text_start.input -> initial.input;
+  bind initial.result -> text_done.result;
+}"#,
+        r#"let graphs = named_graph_definitions(); for (name, good, bad, result) in [("batch", serde_json::json!({"input":["ab", "cd"]}), serde_json::json!({"input":["ab", ""]}), serde_json::json!(["a", "c"])), ("cycle", serde_json::json!({"input":"ab"}), serde_json::json!({"input":""}), serde_json::json!("a"))] { let graph = graphs.iter().find(|g| g.name == name).unwrap(); let mut state = graph.checkpoint(&good).unwrap(); assert_eq!(graph.run(&good, &mut state).unwrap(), result); assert!(graph.checkpoint(&bad).and_then(|mut state| graph.run(&bad, &mut state)).is_err(), "{name} swallowed invalid position"); }"#,
     );
 }
 
 #[test]
 fn invalid_retry_policy_is_rejected_before_rust_generation() {
-    let source = "namespace orders\nversion \"1.0\"\nprocess route(input: Number) -> Number:\n  retry max_retries 2 retry_for \"0s\" retry_delay \"1s\" backoff exponential\n  node start = start\n  node done = end\n  link start -> done(input)\n";
+    let source = r#"namespace orders;
+version "1.0";
+start_event start { output input: Number; }
+end_event done { input result: Number; }
+process route { retry max_retries 2 retry_for "0s" retry_delay "1s" backoff exponential; flow start -> done; bind start.input -> done.result; }"#;
     assert!(transpile(source).unwrap_err().contains("retry_for"));
     assert!(
         transpile(&source.replace(
@@ -496,19 +1003,56 @@ fn invalid_retry_policy_is_rejected_before_rust_generation() {
 
 #[test]
 fn generated_named_graph_carries_identity_retry_and_runs_gateway() {
-    let source = "namespace orders\nversion \"1.0\"\ntask echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> Number:\n  retry max_retries 2 retry_for \"10s\" retry_delay \"1s\" backoff exponential\n  node start = start\n  node gate = xor_split\n  node high = task echo(input)\n  node low = task echo(input)\n  node joined = xor_join(gate)\n  node done = end\n  link start -> gate\n  link gate -> high when input > 10\n  link gate -> low else\n  link high -> joined(high)\n  link low -> joined(low)\n  link joined -> done(joined)\n";
     compile_and_test_graph(
-        source,
-        "let graph = named_graph_definitions().remove(0); assert_eq!((graph.namespace, graph.version, graph.name), (\"orders\", \"1.0\", \"route\")); let retry = graph.retry.as_ref().unwrap(); assert_eq!(retry.max_retries, 2); assert_eq!(retry.retry_for.as_secs(), 10); assert_eq!(retry.retry_delay.as_secs(), 1); assert_eq!(retry.backoff, \"exponential\"); let input = serde_json::json!(\"12\"); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(\"12\"));",
+        r#"namespace orders;
+version "1.0";
+start_event start { output input: Number; }
+end_event done { input result: Number; }
+xor_split gate {}
+xor_join joined { split gate; input value: Number; output result: Number; }
+decision_task echo { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression input; } }
+decision_task high { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression input; } }
+process route {
+  retry max_retries 2 retry_for "10s" retry_delay "1s" backoff exponential;
+  flow start -> gate;
+  flow gate -> high when start.input > 10;
+  flow gate -> echo else;
+  flow high -> joined;
+  flow echo -> joined;
+  flow joined -> done;
+  bind start.input -> high.input;
+  bind start.input -> echo.input;
+  bind high.result -> joined.value;
+  bind echo.result -> joined.value;
+  bind joined.result -> done.result;
+}"#,
+        r#"let graph = named_graph_definitions().remove(0); assert_eq!((graph.namespace, graph.version, graph.name), ("orders", "1.0", "route")); let retry = graph.retry.as_ref().unwrap(); assert_eq!(retry.max_retries, 2); assert_eq!(retry.retry_for.as_secs(), 10); assert_eq!(retry.retry_delay.as_secs(), 1); assert_eq!(retry.backoff, "exponential"); let input = serde_json::json!({"input":"12"}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!("12"));"#,
     );
 }
 
 #[test]
 fn generated_named_graph_emits_exceptional_terminal_nodes_without_retry_by_default() {
-    let source = "namespace orders\nversion \"1.0\"\ntask echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> Number:\n  node start = start\n  node gate = xor_split\n  node good = task echo(input)\n  node joined = xor_join(gate)\n  node done = end\n  node failure = error\n  node stop = cancel\n  node halt = terminate\n  link start -> gate\n  link gate -> good when input > 0\n  link gate -> failure when input == 0\n  link gate -> stop when input < 0\n  link gate -> halt else\n  link good -> joined(good)\n  link joined -> done(joined)\n";
     compile_and_test_graph(
-        source,
-        "let graph = named_graph_definitions().remove(0); assert!(graph.retry.is_none()); assert!(graph.nodes.iter().any(|node| matches!(node.kind, blkit::compiled_graph::GraphNodeKind::Error))); assert!(graph.nodes.iter().any(|node| matches!(node.kind, blkit::compiled_graph::GraphNodeKind::Cancel))); assert!(graph.nodes.iter().any(|node| matches!(node.kind, blkit::compiled_graph::GraphNodeKind::Terminate))); let input = serde_json::json!(\"2\"); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(\"2\"));",
+        r#"namespace orders;
+version "1.0";
+start_event start { output input: Number; }
+end_event done { input result: Number; }
+error_event failure {}
+cancel_event stop {}
+terminate_event halt {}
+xor_split gate {}
+decision_task echo { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression input; } }
+process route {
+  flow start -> gate;
+  flow gate -> echo when start.input > 0;
+  flow gate -> failure when start.input == 0;
+  flow gate -> stop when start.input < 0;
+  flow gate -> halt else;
+  flow echo -> done;
+  bind start.input -> echo.input;
+  bind echo.result -> done.result;
+}"#,
+        r#"let graph = named_graph_definitions().remove(0); assert!(graph.retry.is_none()); assert!(graph.nodes.iter().any(|node| matches!(node.kind, blkit::compiled_graph::GraphNodeKind::Error))); assert!(graph.nodes.iter().any(|node| matches!(node.kind, blkit::compiled_graph::GraphNodeKind::Cancel))); assert!(graph.nodes.iter().any(|node| matches!(node.kind, blkit::compiled_graph::GraphNodeKind::Terminate))); let input = serde_json::json!({"input":"2"}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!("2"));"#,
     );
 }
 
@@ -522,16 +1066,33 @@ fn generated_named_graph_compiles_as_a_runtime_definition() {
 
 #[test]
 fn graph_generated_identifiers_do_not_shadow_user_names() {
-    let source = "namespace t\nversion \"1\"\ntask echo(item: Number) -> Number:\n  return item\nprocess route(values: Number) -> Number:\n  node start = start\n  node echo = task echo(values)\n  node next = task echo(echo)\n  node done = end\n  link start -> echo\n  link echo -> next\n  link next -> done(next)\n";
     compile_and_test_graph(
-        source,
-        "let graph = named_graph_definitions().remove(0); let input = serde_json::json!(\"7\"); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(\"7\"));",
+        r#"namespace t;
+version "1";
+start_event start { output values: Number; }
+end_event done { input result: Number; }
+decision_task echo { input item: Number; output result: Number = value; literal_expression value { output result: Number; expression item; } }
+decision_task next { input item: Number; output result: Number = value; literal_expression value { output result: Number; expression item; } }
+process route {
+  flow start -> echo;
+  flow echo -> next;
+  flow next -> done;
+  bind start.values -> echo.item;
+  bind echo.result -> next.item;
+  bind next.result -> done.result;
+}"#,
+        r#"let graph = named_graph_definitions().remove(0); let input = serde_json::json!({"values":"7"}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!("7"));"#,
     );
 }
 
 #[test]
 fn generated_definition_name_is_reserved_in_graph_programs() {
-    let source = "namespace t\nversion \"1\"\ntask graph_definitions(item: Number) -> Number:\n  return item\nprocess route(input: Number) -> Number:\n  node start = start\n  node result = task graph_definitions(input)\n  node done = end\n  link start -> result\n  link result -> done(result)\n";
+    let source = r#"namespace t;
+version "1";
+start_event start { output item: Number; }
+end_event done { input result: Number; }
+decision_task graph_definitions { input item: Number; output result: Number = value; literal_expression value { output result: Number; expression item; } }
+process route { flow start -> graph_definitions; flow graph_definitions -> done; bind start.item -> graph_definitions.item; bind graph_definitions.result -> done.result; }"#;
     assert!(
         transpile(source)
             .unwrap_err()

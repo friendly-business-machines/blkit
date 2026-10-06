@@ -164,14 +164,29 @@ fn emit_table(
 }
 
 pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut String) {
-    out.push_str(&format!(
-        "pub fn {}({}: {}) -> Result<{}, String> {{\n",
-        model.name,
-        model.input,
-        rust_type(&model.input_type),
+    let inputs = if model.braced {
+        model
+            .inputs
+            .iter()
+            .map(|(name, ty)| format!("{name}: {}", rust_type(ty)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else {
+        format!("{}: {}", model.input, rust_type(&model.input_type))
+    };
+    let output = if model.braced && model.outputs.len() > 1 {
+        "serde_json::Value".into()
+    } else {
         rust_type(&model.output)
+    };
+    out.push_str(&format!(
+        "pub fn {}({inputs}) -> Result<{output}, String> {{\n",
+        model.name
     ));
     for item in &model.knowledge {
+        if item.braced {
+            continue;
+        }
         let fallible = expr_fallible(&item.body, &model.knowledge);
         out.push_str(&format!(
             "fn {}({}) -> {} {{ {}{}{} }}\n",
@@ -231,5 +246,17 @@ pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut 
             emitted.insert(&node.name);
         }
     }
-    out.push_str(&format!("Ok({})\n}}\n", model.output_node));
+    if model.braced && model.outputs.len() > 1 {
+        let fields = model
+            .outputs
+            .iter()
+            .map(|(port, _, reference)| {
+                format!("{port:?}: {}", reference.split('.').next().unwrap())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!("Ok(serde_json::json!({{{fields}}}))\n}}\n"));
+    } else {
+        out.push_str(&format!("Ok({})\n}}\n", model.output_node));
+    }
 }

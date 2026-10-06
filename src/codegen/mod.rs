@@ -4,7 +4,7 @@ use crate::{
     Program, Type,
     decision::{DecisionKind, DecisionModel, DecisionTable, Knowledge},
     expr::{Expr, Stmt},
-    graph::NodeKind,
+    graph::{NodeKind, PeerKind},
     semantic,
 };
 
@@ -61,6 +61,37 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
         Expr::String(value) => format!("String::from({value:?})"),
         Expr::Bool(value) => value.to_string(),
         Expr::Name(name) => format!("({name}).clone()"),
+        Expr::Call(name, args)
+            if knowledge
+                .iter()
+                .any(|model| model.name == *name && model.braced) =>
+        {
+            let model = knowledge.iter().find(|model| model.name == *name).unwrap();
+            let arguments = args
+                .iter()
+                .zip(&model.params)
+                .enumerate()
+                .map(|(index, (arg, (_, ty)))| {
+                    format!(
+                        "let __bl_knowledge_arg_{index}: {} = {};",
+                        rust_type(ty),
+                        emit_expr_with(arg, program, knowledge)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let params = model
+                .params
+                .iter()
+                .enumerate()
+                .map(|(index, (param, _))| format!("let {param} = __bl_knowledge_arg_{index};"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "{{ {arguments} {params} {} }}",
+                emit_expr_with(&model.body, program, knowledge)
+            )
+        }
         Expr::Call(name, args)
             if matches!(name.as_str(), "date" | "time" | "dateTime")
                 && !knowledge.iter().any(|item| item.name == *name) =>
@@ -386,8 +417,26 @@ pub fn generate(program: &Program) -> Result<String, String> {
             .iter()
             .chain(&program.tasks)
             .any(|item| datetime(&item.input_type) || datetime(&item.output))
+        || program.peer_nodes.iter().any(|node| {
+            let (inputs, outputs) = match &node.kind {
+                PeerKind::Start { outputs } => (&[][..], outputs.as_slice()),
+                PeerKind::End { inputs } => (inputs.as_slice(), &[][..]),
+                PeerKind::Split { .. }
+                | PeerKind::Terminal { .. }
+                | PeerKind::PauseFor(_)
+                | PeerKind::PauseUntil { .. } => (&[][..], &[][..]),
+                PeerKind::Subprocess {
+                    inputs, outputs, ..
+                } => (inputs.as_slice(), outputs.as_slice()),
+                PeerKind::Join {
+                    inputs, outputs, ..
+                } => (inputs.as_slice(), outputs.as_slice()),
+            };
+            inputs.iter().chain(outputs).any(|(_, ty)| datetime(ty))
+        })
         || program.decisions.iter().any(|item| {
-            datetime(&item.input_type)
+            item.inputs.iter().any(|(_, ty)| datetime(ty))
+                || item.outputs.iter().any(|(_, ty, _)| datetime(ty))
                 || datetime(&item.output)
                 || item.knowledge.iter().any(|model| {
                     datetime(&model.output) || model.params.iter().any(|(_, ty)| datetime(ty))
@@ -415,7 +464,7 @@ pub fn generate(program: &Program) -> Result<String, String> {
     let has_named = program
         .processes
         .iter()
-        .any(|item| item.named_graph.is_some());
+        .any(|item| item.named_graph.is_some() || item.source_graph.is_some());
     let serde = if has_named {
         ", serde::Serialize, serde::Deserialize"
     } else {
@@ -442,7 +491,7 @@ pub fn generate(program: &Program) -> Result<String, String> {
         program
             .processes
             .iter()
-            .filter(|item| item.named_graph.is_none()),
+            .filter(|item| item.named_graph.is_none() && item.source_graph.is_none()),
     ) {
         if has_named {
             out.push_str("#[allow(unused_variables)]\n");

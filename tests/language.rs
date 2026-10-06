@@ -1,24 +1,142 @@
 use blkit::{parse, transpile, validate};
 
-const HEADER: &str = "namespace orders\nversion \"1.0\"\n";
+const HEADER: &str = "namespace orders;\nversion \"1.0\";\n";
+
+#[test]
+fn headers_and_domain_members_require_semicolons_outside_quotes() {
+    let source = "namespace demo; version \"1;0\";\ntype Order:\n  amount: Number;\nenum Status:\n  ready;\n";
+    let program = parse(source).unwrap();
+    assert_eq!(program.version, "1;0");
+    assert_eq!(program.records[0].fields.len(), 1);
+    assert_eq!(program.enums[0].variants, ["ready"]);
+    for broken in [
+        source.replace("namespace demo;", "namespace demo"),
+        source.replace("amount: Number;", "amount: Number"),
+        source.replace("  ready;", "  ready"),
+    ] {
+        assert!(parse(&broken).is_err(), "accepted: {broken}");
+    }
+}
+
+#[test]
+fn braced_peers_and_semicolon_statements_parse() {
+    let source = r#"namespace demo; version "1;0";
+start_event start { output amount: Number; }
+decision_task calculate {
+  input amount: Number;
+  output result: Number = compute;
+  literal_expression compute { output result: Number; expression amount; }
+}
+end_event done { input result: Number; }
+process example {
+  flow start -> calculate;
+  flow calculate -> done;
+  bind start.amount -> calculate.amount;
+  bind calculate.result -> done.result;
+}"#;
+    let program = parse(source).unwrap();
+    assert_eq!(program.namespace, "demo");
+    assert_eq!(program.version, "1;0");
+    assert_eq!(program.processes.len(), 1);
+    assert_eq!(program.peer_nodes.len(), 2);
+    assert!(matches!(
+        &program.peer_nodes[0].kind,
+        blkit::graph::PeerKind::Start { outputs }
+            if outputs[0].0 == "amount" && outputs[0].1.to_string() == "Number"
+    ));
+    assert_eq!(program.decisions.len(), 1);
+    assert_eq!(program.decisions[0].nodes.len(), 1);
+    assert_eq!(program.decisions[0].input, "amount");
+    assert_eq!(program.decisions[0].outputs[0].2, "compute");
+    let graph = program.processes[0].source_graph.as_ref().unwrap();
+    assert_eq!(graph.flows[0], ("start".into(), "calculate".into()));
+    assert_eq!(graph.flows.len(), 2);
+    assert_eq!(graph.bindings.len(), 2);
+    assert_eq!(graph.bindings[0].output, "amount");
+}
+
+#[test]
+fn missing_braces_and_semicolons_fail_parsing() {
+    let source = r#"namespace demo;
+version "1.0";
+start_event start { output amount: Number; }
+end_event done { input result: Number; }
+process example { flow start -> done; bind start.amount -> done.result; }"#;
+    parse(source).unwrap();
+    for (broken, expected) in [
+        (
+            source.replace("flow start -> done;", "flow start -> done"),
+            "invalid flow",
+        ),
+        (
+            source.replace("output amount: Number;", "output amount: Number"),
+            "missing semicolon",
+        ),
+        (
+            source.replace(
+                "bind start.amount -> done.result; }",
+                "bind start.amount -> done.result;",
+            ),
+            "unclosed brace",
+        ),
+    ] {
+        let error = parse(&broken).unwrap_err();
+        assert!(error.contains(expected), "{broken}: {error}");
+    }
+}
+
+#[test]
+fn legacy_declaration_and_node_keywords_are_rejected() {
+    let source = format!(
+        "{HEADER}process example(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n"
+    );
+    for legacy in [
+        source.clone(),
+        format!("{HEADER}task echo(input: Number) -> Number:\n  return input\n"),
+        format!(
+            "{HEADER}decision result(input: Number) -> Number:\n  node value: Number = literal input\n  output value\n"
+        ),
+        "namespace demo; version \"1.0\"; process p { node work = start; }".into(),
+        "namespace demo; version \"1.0\"; process p { link start -> done; }".into(),
+    ] {
+        assert!(parse(&legacy).is_err(), "accepted: {legacy}");
+    }
+}
+
+fn decision_expression(input_type: &str, output_type: &str, expression: &str) -> String {
+    format!(
+        "{HEADER}decision_task check {{ input input: {input_type}; output result: {output_type} = value; literal_expression value {{ output result: {output_type}; expression {expression}; }} }}"
+    )
+}
 
 #[test]
 fn declarations_and_typed_process_parse() {
     let source = format!(
-        "{HEADER}\ntype Order:\n  total: Number\n  tags: List<String>\n\nenum Decision:\n  approved\n  review\n\nprocess approve(input: Order) -> Decision:\n  node start = start\n  node done = end\n  link start -> done(Decision.approved)\n"
+        "{HEADER}type Order:
+  total: Number;
+  tags: List<String>;
+enum Decision:
+  approved;
+  review;
+start_event start {{ output order: Order; }}
+end_event done {{ input decision: Decision; }}
+decision_task approve {{ input order: Order; output decision: Decision = value; literal_expression value {{ output result: Decision; expression Decision.approved; }} }}
+process approval {{ flow start -> approve; flow approve -> done; bind start.order -> approve.order; bind approve.decision -> done.decision; }}"
     );
     let ast = parse(&source).unwrap();
     assert_eq!(ast.namespace, "orders");
     assert_eq!(ast.version, "1.0");
     assert_eq!(ast.records.len(), 1);
     assert_eq!(ast.enums.len(), 1);
+    assert_eq!(ast.decisions.len(), 1);
     assert_eq!(ast.processes.len(), 1);
+    validate(&ast).unwrap();
 }
 
 #[test]
 fn decision_model_parses_literal_context_dependencies_and_knowledge() {
     let source = format!(
-        "{HEADER}decision price(input: Number) -> Number:\n  knowledge add(a: Number, b: Number) -> Number = a\n  node base: Number = literal input\n  node final: Number = context\n    entry subtotal: Number = base\n    result subtotal\n  link base -> final\n  output final\n"
+        "{HEADER}decision_task price {{ input amount: Number; output result: Number = final; knowledge add {{ input a: Number; input b: Number; output result: Number; expression a; }} literal_expression base {{ output result: Number; expression amount; }} context final {{ output result: Number; entry subtotal: Number = add(base.result, amount); result subtotal; }} }}"
     );
     let model = &parse(&source).unwrap().decisions[0];
     assert_eq!(model.name, "price");
@@ -31,15 +149,15 @@ fn decision_model_parses_literal_context_dependencies_and_knowledge() {
 #[test]
 fn malformed_decision_declarations_fail_during_parsing() {
     let source = format!(
-        "{HEADER}decision price(input: Number) -> Number:\n  node value: Number = context\n    result input\n  output value\n"
+        "{HEADER}decision_task price {{ input amount: Number; output result: Number = value; context value {{ output result: Number; result amount; }} }}"
     );
     for broken in [
-        source.replace("    result input", "   result input"),
-        source.replace("  output value", "  output value extra"),
+        source.replace("result amount;", "result amount"),
         source.replace(
-            "  node value: Number = context",
-            "  node value: Number = mystery",
+            "output result: Number = value;",
+            "output result: Number = value extra;",
         ),
+        source.replace("context value {", "mystery value {"),
     ] {
         assert!(parse(&broken).is_err(), "accepted: {broken}");
     }
@@ -48,65 +166,23 @@ fn malformed_decision_declarations_fail_during_parsing() {
 #[test]
 fn decision_models_validate_dependent_types_and_knowledge_calls() {
     let source = format!(
-        "{HEADER}decision price(input: Number) -> Number:\n  knowledge fee(amount: Number) -> Number = amount\n  node base: Number = literal input\n  node outcome: Number = context\n    entry subtotal: Number = fee(base)\n    result subtotal\n  link base -> outcome\n  output outcome\n"
+        "{HEADER}decision_task price {{ input amount: Number; output result: Number = outcome; knowledge fee {{ input value: Number; output result: Number; expression value; }} literal_expression base {{ output result: Number; expression amount; }} context outcome {{ output result: Number; entry subtotal: Number = fee(base.result); result subtotal; }} }}"
     );
     validate(&parse(&source).unwrap()).unwrap();
     for (broken, expected) in [
-        (
-            source.replace("fee(base)", "fee(true)"),
-            "knowledge argument",
-        ),
-        (
-            source.replace("fee(base)", "unknown(base)"),
-            "unknown knowledge",
-        ),
-        (
-            source.replace("entry subtotal: Number", "entry subtotal: Bool"),
-            "decision result type",
-        ),
-        (
-            source.replace("entry subtotal: Number", "entry subtotal: Mystery"),
-            "unknown type",
-        ),
-        (
-            source.replace("  link base -> outcome\n", ""),
-            "unknown name",
-        ),
-        (
-            source.replace(
-                "knowledge fee(amount: Number) -> Number = amount",
-                "knowledge fee(amount: Number) -> Number = fee(amount)",
-            ),
-            "knowledge cycle",
-        ),
-        (
-            source.replace("link base -> outcome", "link unknown -> outcome"),
-            "unknown decision node",
-        ),
-        (
-            source.replace(
-                "  output outcome",
-                "  link outcome -> base\n  output outcome",
-            ),
-            "decision cycle",
-        ),
-        (
-            source.replace("result subtotal", "result missing"),
-            "unknown name",
-        ),
-        (
-            source.replace("node outcome: Number", "node outcome: Bool"),
-            "decision result type",
-        ),
-        (
-            source.replace(
-                "  output outcome",
-                "  node base: Number = literal input\n  output outcome",
-            ),
-            "duplicate",
-        ),
+        (source.replace("fee(base.result)", "fee(true)"), "knowledge argument"),
+        (source.replace("fee(base.result)", "unknown(base.result)"), "unknown knowledge"),
+        (source.replace("entry subtotal: Number", "entry subtotal: Bool"), "decision result type"),
+        (source.replace("entry subtotal: Number", "entry subtotal: Mystery"), "unknown type"),
+        (source.replace("fee(base.result)", "fee(missing)"), "unknown name"),
+        (source.replace("expression value;", "expression fee(value);"), "knowledge cycle"),
+        (source.replace("fee(base.result)", "fee(absent.result)"), "unknown"),
+        (source.replace("expression amount;", "expression outcome.result;"), "decision cycle"),
+        (source.replace("result subtotal;", "result missing;"), "unknown name"),
+        (source.replace("context outcome { output result: Number;", "context outcome { output result: Bool;"), "decision output type mismatch"),
+        (source.replace("context outcome {", "literal_expression base { output result: Number; expression amount; } context outcome {"), "duplicate"),
     ] {
-        let error = validate(&parse(&broken).unwrap()).unwrap_err();
+        let error = parse(&broken).and_then(|program| validate(&program)).unwrap_err();
         assert!(error.contains(expected), "{broken}: {error}");
     }
 }
@@ -114,10 +190,12 @@ fn decision_models_validate_dependent_types_and_knowledge_calls() {
 #[test]
 fn knowledge_calls_are_scoped_to_their_decision_model() {
     let source = format!(
-        "{HEADER}decision first(input: Number) -> Number:\n  knowledge fee(amount: Number) -> Number = amount\n  node result: Number = literal fee(input)\n  output result\ndecision second(input: Bool) -> Bool:\n  knowledge fee(amount: Bool) -> Bool = amount\n  node result: Bool = literal fee(input)\n  output result\n"
+        "{HEADER}decision_task first {{ input amount: Number; output result: Number = value; knowledge fee {{ input amount: Number; output result: Number; expression amount; }} literal_expression value {{ output result: Number; expression fee(amount); }} }} decision_task second {{ input flag: Bool; output result: Bool = value; knowledge fee {{ input flag: Bool; output result: Bool; expression flag; }} literal_expression value {{ output result: Bool; expression fee(flag); }} }}"
     );
     validate(&parse(&source).unwrap()).unwrap();
-    let outside = format!("{source}task misuse(input: Number) -> Number:\n  return fee(input)\n");
+    let outside = format!(
+        "{source}decision_task misuse {{ input amount: Number; output result: Number = value; literal_expression value {{ output result: Number; expression fee(amount); }} }}"
+    );
     assert!(
         validate(&parse(&outside).unwrap())
             .unwrap_err()
@@ -128,7 +206,10 @@ fn knowledge_calls_are_scoped_to_their_decision_model() {
 #[test]
 fn decision_tables_parse_expressions_multiple_outputs_and_defaults() {
     let source = format!(
-        "{HEADER}type Quote:\n  price: Number\n  tier: String\ndecision quote(input: Number) -> Quote:\n  node result: Quote = table PRIORITY\n    input amount: Number = input\n    output price: Number\n    output tier: String\n    priority 5, \"express\"\n    priority 2, \"regular\"\n    rule amount > 100 -> 5, \"express\"\n    rule amount <= 100 -> 2, \"regular\"\n    default 0, \"none\"\n  output result\n"
+        "{HEADER}type Quote:
+  price: Number;
+  tier: String;
+decision_task quote {{ input amount: Number; output result: Quote = table; decision_table table {{ output result: Quote; policy PRIORITY; input value: Number = amount; output price: Number; output tier: String; priority 5, \"express\"; priority 2, \"regular\"; rule value > 100 -> 5, \"express\"; rule value <= 100 -> 2, \"regular\"; default 0, \"none\"; }} }}"
     );
     let program = parse(&source).unwrap();
     validate(&program).unwrap();
@@ -140,17 +221,17 @@ fn decision_tables_parse_expressions_multiple_outputs_and_defaults() {
         ),
         (
             source.replace(
-                "rule amount > 100 -> 5, \"express\"",
-                "rule amount > 100 -> 5",
+                "rule value > 100 -> 5, \"express\"",
+                "rule value > 100 -> 5",
             ),
             "output",
         ),
         (
-            source.replace("table PRIORITY", "table COLLECT SUM"),
+            source.replace("policy PRIORITY", "policy COLLECT SUM"),
             "aggregation",
         ),
         (
-            source.replace("    priority 2, \"regular\"", "    priority 5, \"express\""),
+            source.replace("priority 2, \"regular\"", "priority 5, \"express\""),
             "duplicate priority",
         ),
     ] {
@@ -162,31 +243,60 @@ fn decision_tables_parse_expressions_multiple_outputs_and_defaults() {
 }
 
 #[test]
+fn pause_until_requires_a_bound_datetime_port() {
+    let source = r#"namespace timing; version "1";
+start_event start { output until: DateTime; output number: Number; }
+pause_until hold { input at: DateTime; }
+end_event done { input result: DateTime; }
+process later {
+  flow start -> hold;
+  flow hold -> done;
+  bind start.until -> hold.at;
+  bind start.until -> done.result;
+}"#;
+    transpile(source).unwrap();
+    let missing = source.replace("bind start.until -> hold.at;", "");
+    assert!(transpile(&missing).unwrap_err().contains("missing binding"));
+    let mismatched = source.replace(
+        "bind start.until -> hold.at;",
+        "bind start.number -> hold.at;",
+    );
+    assert!(
+        transpile(&mismatched)
+            .unwrap_err()
+            .contains("type mismatch")
+    );
+    let obsolete = source.replace("input at: DateTime;", "at start.until;");
+    assert!(parse(&obsolete).is_err());
+}
+
+#[test]
 fn datetime_comparisons_and_wait_expressions_are_typed() {
     let source = format!(
-        "{HEADER}type Window:\n  opens: DateTime\n  closes: DateTime\ntask early(input: Window) -> Bool:\n  return input.opens < input.closes\nprocess later(input: Window) -> Window:\n  node start = start\n  node delay = pause_for \"10m\"\n  node until = pause_until input.closes\n  node done = end\n  link start -> delay\n  link delay -> until\n  link until -> done(input)\n"
+        "{HEADER}type Window:
+  opens: DateTime;
+  closes: DateTime;
+start_event start {{ output window: Window; output closes: DateTime; }} pause_for delay {{ duration \"10m\"; }} pause_until until {{ input at: DateTime; }} end_event done {{ input result: Bool; }} decision_task early {{ input input: Window; output result: Bool = value; literal_expression value {{ output result: Bool; expression input.opens < input.closes; }} }} process later {{ flow start -> early; flow early -> delay; flow delay -> until; flow until -> done; bind start.window -> early.input; bind start.closes -> until.at; bind early.result -> done.result; }}"
     );
-    validate(&parse(&source).unwrap()).unwrap();
+    transpile(&source).unwrap();
     for (broken, expected) in [
         (
-            source.replace("pause_until input.closes", "pause_until true"),
-            "DateTime",
+            source.replace(
+                "bind start.closes -> until.at;",
+                "bind start.window -> until.at;",
+            ),
+            "type mismatch",
         ),
         (
-            source.replace("pause_for \"10m\"", "pause_for \"0s\""),
+            source.replace("duration \"10m\"", "duration \"0s\""),
             "duration",
         ),
         (
-            source.replace(
-                "return input.opens < input.closes",
-                "return input.opens < true",
-            ),
+            source.replace("input.opens < input.closes", "input.opens < true"),
             "matching types",
         ),
     ] {
-        let error = parse(&broken)
-            .and_then(|program| validate(&program))
-            .unwrap_err();
+        let error = transpile(&broken).unwrap_err();
         assert!(error.contains(expected), "{broken}: {error}");
     }
 }
@@ -194,7 +304,11 @@ fn datetime_comparisons_and_wait_expressions_are_typed() {
 #[test]
 fn temporal_types_and_literal_constructors_validate() {
     let source = format!(
-        "{HEADER}type Clock:\n  day: Date\n  time: Time\n  instant: DateTime\ntask valid(input: Clock) -> Bool:\n  return input.day < date(\"2026-10-02\") and input.time <= time(\"09:30:00.250\") and input.instant == dateTime(\"2026-10-02T09:30:00+02:00\")\n"
+        "{HEADER}type Clock:
+  day: Date;
+  time: Time;
+  instant: DateTime;
+decision_task check {{ input input: Clock; output result: Bool = value; literal_expression value {{ output result: Bool; expression input.day < date(\"2026-10-02\") and input.time <= time(\"09:30:00.250\") and input.instant == dateTime(\"2026-10-02T09:30:00+02:00\"); }} }}"
     );
     transpile(&source).unwrap();
     for (from, to) in [
@@ -230,7 +344,7 @@ fn ranges_parse_boundaries_and_infer_temporal_types() {
         "[1..2.0] == [1..2.0]",
         "input in (null..null) == true",
     ] {
-        let source = format!("{HEADER}task check(input: Number) -> Bool:\n  return {expr}\n");
+        let source = decision_expression("Number", "Bool", expr);
         transpile(&source).unwrap_or_else(|e| panic!("{expr}: {e}"));
     }
     for (ty, literal) in [
@@ -238,9 +352,7 @@ fn ranges_parse_boundaries_and_infer_temporal_types() {
         ("DateTime", "dateTime(\"2026-10-02T09:30:00Z\")"),
         ("Time", "time(\"09:30:00\")"),
     ] {
-        let source = format!(
-            "{HEADER}task check(input: {ty}) -> Bool:\n  return input in [{literal}..null)\n"
-        );
+        let source = decision_expression(ty, "Bool", &format!("input in [{literal}..null)"));
         transpile(&source).unwrap_or_else(|e| panic!("{ty}: {e}"));
     }
     for expr in [
@@ -250,12 +362,11 @@ fn ranges_parse_boundaries_and_infer_temporal_types() {
         "null == null",
         "[null..null] == [null..null]",
     ] {
-        let source = format!("{HEADER}task check(input: Number) -> Bool:\n  return {expr}\n");
+        let source = decision_expression("Number", "Bool", expr);
         assert!(transpile(&source).is_err(), "accepted: {expr}");
     }
     for expr in ["[1, 2.5]", "[1.25, 2.50]"] {
-        let source =
-            format!("{HEADER}task items(input: Number) -> List<Number>:\n  return {expr}\n");
+        let source = decision_expression("Number", "List<Number>", expr);
         transpile(&source).unwrap();
     }
 }
@@ -282,7 +393,7 @@ fn range_relations_reject_mismatched_and_non_range_arguments() {
         ("includes(input, input)", false),
         ("starts(input, [null..null])", true),
     ] {
-        let source = format!("{HEADER}task check(input: Number) -> Bool:\n  return {expr}\n");
+        let source = decision_expression("Number", "Bool", expr);
         assert_eq!(transpile(&source).is_ok(), valid, "{expr}");
     }
 }
@@ -290,20 +401,18 @@ fn range_relations_reject_mismatched_and_non_range_arguments() {
 #[test]
 fn decision_table_unary_tests_are_typed_and_table_only() {
     let base = format!(
-        "{HEADER}decision price(input: Number) -> Number:\n  node result: Number = table FIRST\n    input amount: Number = input\n    output price: Number\n    rule amount matches (< 10, [20..30]) or amount > 100 -> 5\n    default 0\n  output result\n"
+        "{HEADER}decision_task price {{ input amount: Number; output result: Number = table; decision_table table {{ output result: Number; policy FIRST; input value: Number = amount; output price: Number; rule value matches (< 10, [20..30]) or value > 100 -> 5; default 0; }} }}"
     );
     transpile(&base).unwrap();
     for broken in [
         base.replace("(< 10, [20..30])", "()"),
         base.replace("(< 10, [20..30])", "(< 10, [date(\"2026-01-01\")..null))"),
-        base.replace("amount matches", "unknown matches"),
+        base.replace("value matches", "unknown matches"),
         base.replace("(< 10, [20..30])", "(< 10, >= date(\"2026-01-01\"))"),
     ] {
         assert!(transpile(&broken).is_err(), "accepted: {broken}");
     }
-    let outside = format!(
-        "{HEADER}task test(input: Number) -> Bool:\n  return input matches (< 10, [20..30])\n"
-    );
+    let outside = decision_expression("Number", "Bool", "input matches (< 10, [20..30])");
     assert!(transpile(&outside).is_err());
     for (ty, literal) in [
         ("Date", "date(\"2026-01-01\")"),
@@ -311,7 +420,7 @@ fn decision_table_unary_tests_are_typed_and_table_only() {
         ("Time", "time(\"09:00:00\")"),
     ] {
         let source = format!(
-            "{HEADER}decision eligible(input: {ty}) -> Bool:\n  node result: Bool = table FIRST\n    input value: {ty} = input\n    output approved: Bool\n    rule value matches ([{literal}..null), >= {literal}) -> true\n    default false\n  output result\n"
+            "{HEADER}decision_task eligible {{ input value: {ty}; output result: Bool = table; decision_table table {{ output result: Bool; policy FIRST; input day: {ty} = value; output approved: Bool; rule day matches ([{literal}..null), >= {literal}) -> true; default false; }} }}"
         );
         transpile(&source).unwrap_or_else(|e| panic!("{ty}: {e}"));
     }
@@ -321,7 +430,12 @@ fn decision_table_unary_tests_are_typed_and_table_only() {
 fn generated_range_helpers_cannot_collide_with_declarations() {
     for name in ["BlRange", "BlRangeValue", "lower_cmp", "upper_cmp"] {
         let source = format!(
-            "{HEADER}type {name}:\n  value: Number\ntask check(input: {name}) -> Bool:\n  return input.value in [1..2]\n"
+            "{HEADER}type {name}:
+  value: Number;
+{}",
+            decision_expression(name, "Bool", "input.value in [1..2]")
+                .strip_prefix(HEADER)
+                .unwrap()
         );
         assert!(
             transpile(&source).is_err(),
@@ -333,45 +447,72 @@ fn generated_range_helpers_cannot_collide_with_declarations() {
 #[test]
 fn missing_header_is_reported() {
     assert!(
-        parse("version \"1.0\"\n")
+        parse("version \"1.0\";\n")
             .unwrap_err()
             .contains("namespace")
     );
-    assert!(parse("namespace orders\n").unwrap_err().contains("version"));
-}
-
-#[test]
-fn malformed_signature_is_reported() {
-    let source =
-        format!("{HEADER}process approve(input Order) -> Decision:\n  return Decision.approved\n");
-    assert!(parse(&source).unwrap_err().contains("process signature"));
-}
-
-#[test]
-fn nested_branch_and_boolean_expression_parse() {
-    let source = format!(
-        "{HEADER}task approve(input: Order) -> Decision:\n  if input.total > 1000 and not input.blocked:\n    if input.tags == [\"vip\", \"repeat\"]:\n      return Decision.review\n    else:\n      return Decision.approved\n  else:\n    return Decision.rejected\n"
+    assert!(
+        parse("namespace orders;\n")
+            .unwrap_err()
+            .contains("version")
     );
+}
+
+#[test]
+fn legacy_process_signature_is_rejected() {
+    let source = format!("{HEADER}process approve(input Order) -> Decision {{ }}");
+    assert!(parse(&source).unwrap_err().contains("declaration name"));
+}
+
+#[test]
+fn decision_boolean_expression_replaces_legacy_task_branches() {
+    // Generic if/return bodies are unsupported; express the predicate in a decision node.
+    let source = format!("{HEADER}type Order:
+  total: Number;
+  blocked: Bool;
+  tags: List<String>;
+enum Decision:
+  approved;
+  review;
+decision_task approve {{ input input: Order; output result: Bool = value; literal_expression value {{ output result: Bool; expression input.total > 1000 and not input.blocked and input.tags == [\"vip\", \"repeat\"]; }} }}");
     let ast = parse(&source).unwrap();
-    assert_eq!(ast.tasks[0].body.len(), 1);
+    validate(&ast).unwrap();
+    assert_eq!(ast.decisions[0].nodes.len(), 1);
+    assert!(
+        parse(&format!(
+            "{HEADER}task approve(input: Order) -> Decision:
+  if true:
+    return Decision.review
+"
+        ))
+        .is_err()
+    );
 }
 
 #[test]
 fn malformed_expression_is_rejected() {
-    let source =
-        format!("{HEADER}task approve(input: Order) -> Decision:\n  return input.total >\n");
+    let source = decision_expression("Number", "Bool", "input >");
     assert!(parse(&source).unwrap_err().contains("expression"));
 }
 
 #[test]
 fn known_declarations_resolve_and_duplicates_fail() {
     let source = format!(
-        "{HEADER}type Order:\n  total: Number\nenum Decision:\n  approved\nprocess approve(input: Order) -> Decision:\n  node start = start\n  node done = end\n  link start -> done(Decision.approved)\n"
+        "{HEADER}type Order:
+  total: Number;
+enum Decision:
+  approved;
+{}",
+        decision_expression("Order", "Decision", "Decision.approved")
+            .strip_prefix(HEADER)
+            .unwrap()
     );
     validate(&parse(&source).unwrap()).unwrap();
     let duplicate = source.replace(
         "enum Decision:",
-        "type Order:\n  total: Number\nenum Decision:",
+        "type Order:
+  total: Number;
+enum Decision:",
     );
     assert!(
         validate(&parse(&duplicate).unwrap())
@@ -384,7 +525,12 @@ fn known_declarations_resolve_and_duplicates_fail() {
 fn unknown_and_deferred_types_are_rejected() {
     for ty in ["Mystery", "Table<Number>"] {
         let source = format!(
-            "{HEADER}type Order:\n  total: {ty}\ntask echo(input: Order) -> Order:\n  return input\n"
+            "{HEADER}type Order:
+  total: {ty};
+{}",
+            decision_expression("Order", "Order", "input")
+                .strip_prefix(HEADER)
+                .unwrap()
         );
         assert!(validate(&parse(&source).unwrap()).unwrap_err().contains(ty));
     }
@@ -392,11 +538,15 @@ fn unknown_and_deferred_types_are_rejected() {
 
 #[test]
 fn expression_types_and_list_elements_are_checked() {
-    let valid = format!(
-        "{HEADER}type Order:\n  total: Number\n  blocked: Bool\nenum Decision:\n  approved\n  review\ntask decide(input: Order) -> Decision:\n  if input.total > 1000 and not input.blocked:\n    return Decision.review\n  else:\n    return Decision.approved\ntask amounts(input: Order) -> List<Number>:\n  return [1, 2.5]\n"
-    );
-    validate(&parse(&valid).unwrap()).unwrap();
-    let bad = valid.replace("[1, 2.5]", "[1, \"two\"]");
+    let source = format!("{HEADER}type Order:
+  total: Number;
+  blocked: Bool;
+enum Decision:
+  approved;
+  review;
+decision_task decide {{ input input: Order; output result: Bool = value; literal_expression value {{ output result: Bool; expression input.total > 1000 and not input.blocked; }} }} decision_task amounts {{ input input: Order; output result: List<Number> = value; literal_expression value {{ output result: List<Number>; expression [1, 2.5]; }} }}");
+    validate(&parse(&source).unwrap()).unwrap();
+    let bad = source.replace("[1, 2.5]", "[1, \"two\"]");
     assert!(
         validate(&parse(&bad).unwrap())
             .unwrap_err()
@@ -406,15 +556,44 @@ fn expression_types_and_list_elements_are_checked() {
 
 #[test]
 fn generated_rust_names_are_checked() {
-    for declarations in [
-        "task match(input: Number) -> Number:\n  return input\n",
-        "type Vec:\n  value: Number\ntask echo(input: Vec) -> Vec:\n  return input\n",
-        "type NAMESPACE:\n  value: Number\ntask echo(input: NAMESPACE) -> NAMESPACE:\n  return input\n",
-        "type Order:\n  match: Number\ntask echo(input: Order) -> Order:\n  return input\n",
-        "enum Decision:\n  match\ntask echo(input: Number) -> Decision:\n  return Decision.match\n",
-        "task echo(match: Number) -> Number:\n  return match\n",
+    for source in [
+        decision_expression("Number", "Number", "input")
+            .replace("decision_task check", "decision_task match"),
+        format!(
+            "{HEADER}type Vec:
+  value: Number;
+{}",
+            decision_expression("Vec", "Vec", "input")
+                .strip_prefix(HEADER)
+                .unwrap()
+        ),
+        format!(
+            "{HEADER}type NAMESPACE:
+  value: Number;
+{}",
+            decision_expression("NAMESPACE", "NAMESPACE", "input")
+                .strip_prefix(HEADER)
+                .unwrap()
+        ),
+        format!(
+            "{HEADER}type Order:
+  match: Number;
+{}",
+            decision_expression("Order", "Order", "input")
+                .strip_prefix(HEADER)
+                .unwrap()
+        ),
+        format!(
+            "{HEADER}enum Decision:
+  match;
+{}",
+            decision_expression("Number", "Decision", "Decision.match")
+                .strip_prefix(HEADER)
+                .unwrap()
+        ),
+        decision_expression("Number", "Number", "match")
+            .replace("input input: Number;", "input match: Number;"),
     ] {
-        let source = format!("{HEADER}{declarations}");
         assert!(
             transpile(&source).is_err(),
             "accepted invalid generated name: {source}"
@@ -424,7 +603,7 @@ fn generated_rust_names_are_checked() {
 
 #[test]
 fn empty_list_equality_does_not_depend_on_operand_order() {
-    let left = format!("{HEADER}task empty(input: List<Number>) -> Bool:\n  return [] == input\n");
+    let left = decision_expression("List<Number>", "Bool", "[] == input");
     let right = left.replace("[] == input", "input == []");
     validate(&parse(&left).unwrap()).unwrap();
     validate(&parse(&right).unwrap()).unwrap();
@@ -433,7 +612,12 @@ fn empty_list_equality_does_not_depend_on_operand_order() {
 #[test]
 fn by_value_record_cycles_fail_but_list_recursion_is_allowed() {
     let direct = format!(
-        "{HEADER}type Node:\n  next: Node\ntask echo(input: Node) -> Node:\n  return input\n"
+        "{HEADER}type Node:
+  next: Node;
+{}",
+        decision_expression("Node", "Node", "input")
+            .strip_prefix(HEADER)
+            .unwrap()
     );
     assert!(
         validate(&parse(&direct).unwrap())
@@ -441,7 +625,14 @@ fn by_value_record_cycles_fail_but_list_recursion_is_allowed() {
             .contains("recursive")
     );
     let indirect = format!(
-        "{HEADER}type A:\n  b: B\ntype B:\n  a: A\ntask echo(input: A) -> A:\n  return input\n"
+        "{HEADER}type A:
+  b: B;
+type B:
+  a: A;
+{}",
+        decision_expression("A", "A", "input")
+            .strip_prefix(HEADER)
+            .unwrap()
     );
     assert!(
         validate(&parse(&indirect).unwrap())
@@ -453,34 +644,50 @@ fn by_value_record_cycles_fail_but_list_recursion_is_allowed() {
 }
 
 #[test]
-fn every_branch_must_return() {
-    let base =
-        format!("{HEADER}task decide(input: Number) -> Number:\n  if input > 10:\n    return 1\n");
+fn decision_expression_requires_a_result() {
+    // Generic if/return branches have no authored task kind; a decision node requires an expression.
+    let base = decision_expression("Number", "Number", "input");
+    let missing = base.replace("expression input;", "");
     assert!(
-        validate(&parse(&base).unwrap())
+        parse(&missing)
             .unwrap_err()
-            .contains("missing return")
+            .contains("missing literal expression")
     );
-    let complete = format!("{base}  else:\n    return 2\n");
-    validate(&parse(&complete).unwrap()).unwrap();
+    validate(&parse(&base).unwrap()).unwrap();
 }
 
 #[test]
-fn field_variant_and_return_errors_are_reported() {
+fn field_variant_and_result_errors_are_reported() {
     let base = format!(
-        "{HEADER}type Order:\n  total: Number\nenum Decision:\n  approved\ntask decide(input: Order) -> Decision:\n  return Decision.approved\n"
+        "{HEADER}type Order:
+  total: Number;
+enum Decision:
+  approved;
+{}",
+        decision_expression("Order", "Decision", "Decision.approved")
+            .strip_prefix(HEADER)
+            .unwrap()
     );
     for (broken, expected) in [
         (
-            base.replace("Decision.approved", "Decision.missing"),
+            base.replace(
+                "expression Decision.approved;",
+                "expression Decision.missing;",
+            ),
             "variant",
         ),
-        (base.replace("Decision.approved", "input.missing"), "field"),
         (
-            base.replace("Decision.approved", "input.total"),
-            "return type",
+            base.replace("expression Decision.approved;", "expression input.missing;"),
+            "field",
         ),
-        (base.replace("Decision.approved", "1 and true"), "Bool"),
+        (
+            base.replace("expression Decision.approved;", "expression input.total;"),
+            "decision result type",
+        ),
+        (
+            base.replace("expression Decision.approved;", "expression 1 and true;"),
+            "Bool",
+        ),
     ] {
         assert!(
             validate(&parse(&broken).unwrap())
@@ -492,13 +699,15 @@ fn field_variant_and_return_errors_are_reported() {
 
 #[test]
 fn string_operators_parse_and_typecheck_without_changing_range_or_equality() {
-    use blkit::expr::{Expr, Stmt};
+    use blkit::expr::Expr;
     let source = format!(
-        "{HEADER}task compose(input: String) -> String:\n  return \"foo\" + input + \"bar\"\ntask member(input: String) -> Bool:\n  return input in [\"active\", \"pending\"]\ntask negative(input: String) -> Bool:\n  return -1 == -1\ntask compare(input: String) -> Bool:\n  return \"a\" + \"b\" == \"ab\"\n"
+        "{HEADER}decision_task compose {{ input input: String; output result: String = value; literal_expression value {{ output result: String; expression \"foo\" + input + \"bar\"; }} }} decision_task member {{ input input: String; output result: Bool = value; literal_expression value {{ output result: Bool; expression input in [\"active\", \"pending\"]; }} }} decision_task negative {{ input input: String; output result: Bool = value; literal_expression value {{ output result: Bool; expression -1 == -1; }} }} decision_task compare {{ input input: String; output result: Bool = value; literal_expression value {{ output result: Bool; expression \"a\" + \"b\" == \"ab\"; }} }}"
     );
     let program = parse(&source).unwrap();
     validate(&program).unwrap();
-    let Stmt::Return(Expr::Binary(_, op, _)) = &program.tasks[3].body[0] else {
+    let blkit::decision::DecisionKind::Literal(Expr::Binary(_, op, _)) =
+        &program.decisions[3].nodes[0].kind
+    else {
         panic!("expected comparison");
     };
     assert_eq!(op, "==", "concatenation binds more tightly than equality");
@@ -512,8 +721,7 @@ fn string_operators_parse_and_typecheck_without_changing_range_or_equality() {
             "accepted {broken}"
         );
     }
-    let range = format!("{HEADER}task range(input: Number) -> Bool:\n  return input in [1..5]\n");
-    validate(&parse(&range).unwrap()).unwrap();
+    validate(&parse(&decision_expression("Number", "Bool", "input in [1..5]")).unwrap()).unwrap();
 }
 
 #[test]
@@ -553,12 +761,10 @@ fn string_builtin_signatures_and_literal_regexes_are_validated() {
         ("repeat(\"ab\", 2)", "String"),
     ];
     for (expr, ty) in good {
-        let source = format!("{HEADER}task good(input: String) -> {ty}:\n  return {expr}\n");
+        let source = decision_expression("String", ty, expr);
         validate(&parse(&source).unwrap()).unwrap_or_else(|e| panic!("{expr}: {e}"));
     }
-    let decision = format!(
-        "{HEADER}decision find(input: String) -> List<List<String>>:\n  node result: List<List<String>> = literal extract(input, \"(a)\")\n  output result\n"
-    );
+    let decision = decision_expression("String", "List<List<String>>", "extract(input, \"(a)\")");
     validate(&parse(&decision).unwrap()).unwrap();
     for (expr, diagnostic) in [
         ("string([1])", "string"),
@@ -572,7 +778,7 @@ fn string_builtin_signatures_and_literal_regexes_are_validated() {
         ("padLeading(\"a\", \"3\")", "Number"),
         ("contains(\"abc\", 1)", "contains"),
     ] {
-        let source = format!("{HEADER}task bad(input: String) -> String:\n  return {expr}\n");
+        let source = decision_expression("String", "String", expr);
         let error = validate(&parse(&source).unwrap()).unwrap_err();
         assert!(error.contains(diagnostic), "{expr}: {error}");
     }

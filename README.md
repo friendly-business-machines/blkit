@@ -4,12 +4,24 @@
 Experimental compiler and single-node development server for type-safe `.bl` business processes. The compiler emits Rust; the dev server runs a compiled process graph.
 
 ```sh
-cargo run -- examples/approve.bl /tmp/approve.rs
+cargo run -- examples/minimal.bl /tmp/minimal.rs
 ```
 
-The generated file can be included in a Rust crate with dependencies on `blkit`, `serde` (derive), `serde_json`, and `rust_decimal` (serde-str), and `chrono` (serde) when temporal types or constructors are used. Compile that crate with `cargo build` or `cargo test`. The example in [`examples/approve.bl`](examples/approve.bl) is compiled and executed by the test suite.
+The generated file can be included in a Rust crate with dependencies on `blkit`, `serde` (derive), `serde_json`, and `rust_decimal` (serde-str), and `chrono` (serde) when temporal types or constructors are used. Compile that crate with `cargo build` or `cargo test`. [`examples/minimal.bl`](examples/minimal.bl) is compiled and executed by the test suite.
+
+## Minimal braced process
+
+`minimal.bl` declares a `start_event` with an `amount: Number` output, a `decision_task` with a typed `literal_expression`, an `end_event` with a `result: Number` input, and a `process` that references those peer declarations. Headers, ports, expressions, `flow` and `bind` statements end in semicolons; declarations use braces. `flow` controls execution order (`start -> calculate -> done`); `bind` routes the value of one typed output port into an input port, independently of execution order.
+
+The generated Rust exposes `named_graph_definitions()`. For `example`, pass JSON `{"amount":"7"}` to `decode_input` and `checkpoint`, then `run` with the same input and checkpoint: the completed result is the JSON string `"7"` (a one-port normal end returns its port value, not an object). Start inputs are **always** JSON objects keyed by output port, even with one port; `"7"` alone is invalid. A normal end with multiple input ports returns a JSON object keyed by port.
 
 The `blkit` CLI accepts `blkit SOURCE.bl OUTPUT.rs` for one file, `blkit transpile [PROJECT_DIR]` to generate a Rust Cargo project, and `blkit update [PROJECT_DIR]` to refresh its lockfile. Project commands default to the current directory. `blkit build` is no longer supported: compile the generated project yourself with Cargo. Run `blkit --help` or `blkit transpile --help` for usage, `blkit --version` for the CLI version, or `blkit --completions bash` to print shell completion (also supports `elvish`, `fish`, `powershell`, and `zsh`). From this checkout, replace `blkit` with `cargo run --` in these examples. Project `transpile` and `update` show a temporary spinner on an interactive stderr terminal; errors include the file or project path on stderr. Redirected stderr, `NO_COLOR`, and `CLICOLOR=0` disable styling and animation, so scripts receive plain diagnostics. Completion scripts go to stdout without progress output.
+
+## Braced decisions and inferred dependencies
+
+[`examples/pricing.bl`](examples/pricing.bl) compiles with `cargo run -- examples/pricing.bl /tmp/pricing.rs`. Its `decision_task price` declares typed input/output ports and a `decision_table tier` with `policy FIRST;`, typed input/output columns, ordered `rule ... -> ...;` statements, and `default 2;`. The `context quoted` node contains a typed `entry offer: Number = tier.result;` and `result offer;`. The reference to `tier.result` establishes the dependency automatically—there is no decision `link`. The task's `output result: Number = quoted;` uses sole-output shorthand for `quoted.result`; when qualifying a node output, use `node.port`. Braced `knowledge` definitions use `input`, `output`, and `expression` statements and may be called from decision expressions and contexts. All statements end with semicolons.
+
+The `quote` process accepts `{"amount":"120"}` and returns `"5"`; `{"amount":"10"}` returns `"2"`. The `Number` JSON values are strings. A table with multiple output columns declares a record-valued result port (or `List<Record>` for multi-result policies); its column names are not separate decision-node ports.
 
 ## Build a blkit project
 
@@ -25,81 +37,51 @@ build_target = "crate"
 Create `types.bl`:
 
 ```bl
-namespace orders
-version "1"
+namespace orders;
+version "1";
 type Order:
-  amount: Number
-task echo(input: Order) -> Order:
-  return input
+  amount: Number;
+start_event start { output input: Order; }
+end_event done { input result: Order; }
 ```
 
 Create `process.bl`:
 
 ```bl
-namespace orders
-version "1"
-process route(input: Order) -> Order:
-  node start = start
-  node value = task echo(input)
-  node done = end
-  link start -> value
-  link value -> done(value)
-```
-
-Run `blkit transpile` from the directory containing `blkit.toml` (or `blkit transpile /path/to/project`; from a blkit checkout, `cargo run -- transpile /path/to/project`). This generates `.blkit/Cargo.toml` and Rust source, **not a compiled library**. Run `cargo build --manifest-path .blkit/Cargo.toml` yourself, locally or on a build machine with the generated project and its dependencies. The generated library exposes `orders::named_graph_definitions()` and can be used by another Rust crate with `orders = { path = "/path/to/project/.blkit" }` in its `Cargo.toml`. Transpilation discovers `.bl` files recursively, excluding hidden directories, `.blkit/`, and `target/`; files with the same namespace and version share types, tasks, and decisions, while different namespace/version pairs remain isolated. Every discovered source must validate.
-
-Custom async tasks live in Cargo extension crates listed under `[dependencies]` in `blkit.toml`. For example, add `payments = { version = "0.1.0", path = "payments" }` to `[dependencies]`; `payments/Cargo.toml` declares a `payments` package at version `0.1.0` with `serde_json = "1"`. Add `payments/blkit-tasks.toml`:
-
-```toml
-[[tasks]]
-name = "charge"
-function = "charge"
-input = "Order"
-output = "Receipt"
-```
-
-In `payments/src/lib.rs`, export:
-
-```rust
-pub async fn charge(_input: serde_json::Value) -> Result<serde_json::Value, String> {
-    Ok(serde_json::json!({"id": "ok"}))
+namespace orders;
+version "1";
+decision_task echo {
+  input input: Order;
+  output result: Order = identity;
+  literal_expression identity { output result: Order; expression input; }
+}
+process route {
+  flow start -> echo;
+  flow echo -> done;
+  bind start.input -> echo.input;
+  bind echo.result -> done.result;
 }
 ```
 
-In `orders.bl` (alongside the project manifest), declare the types and process:
+Run `blkit transpile` from the directory containing `blkit.toml` (or `blkit transpile /path/to/project`; from a blkit checkout, `cargo run -- transpile /path/to/project`). This generates `.blkit/Cargo.toml` and Rust source, **not a compiled library**. Run `cargo build --manifest-path .blkit/Cargo.toml` yourself, locally or on a build machine with the generated project and its dependencies. The generated library exposes `orders::named_graph_definitions()` and can be used by another Rust crate with `orders = { path = "/path/to/project/.blkit" }` in its `Cargo.toml`. Transpilation discovers `.bl` files recursively, excluding hidden directories, `.blkit/`, and `target/`; files with the same namespace and version share types, decision tasks, events, graph peers, and processes, while different namespace/version pairs remain isolated. Every discovered source must validate. Decision-only transpilation requires no Cargo installation.
 
-```bl
-namespace orders
-version "1"
-type Order:
-  amount: Number
-type Receipt:
-  id: String
-process charge_order(input: Order) -> Receipt:
-  node start = start
-  node paid = task payments.charge(input)
-  node done = end
-  link start -> paid
-  link paid -> done(paid)
-```
-
-Run `blkit transpile`, then build the generated project with Cargo. A Rust consumer can start this process with `Engine::new(Registry::new(orders::named_graph_definitions())?, LocalStore::open("orders.db").await?, 2)?` and `engine.start("orders", "1", "charge_order", serde_json::json!({"amount": "5"})).await?`; the completed result is `{"id":"ok"}`. Use `Engine` or `DistributedWorker` to execute async graphs: the synchronous `GraphDefinition::run` helper rejects async task nodes instead of blocking. Missing providers fail transpilation; incompatible Rust callables fail the user's Cargo build; invalid input/output JSON or a provider `Err` fails execution (subject to the process retry policy). The descriptor's types resolve in the process namespace/version. Task effects are **at least once**: retries or worker loss can call the task again after an effect but before its result commits. Make external effects idempotent (for example, use a stable idempotency key); cancellation or timeout drops an in-flight async future but cannot undo effects already made.
+Run `blkit transpile`, then build the generated project with Cargo. A Rust consumer can start `route` with `Engine::new(Registry::new(orders::named_graph_definitions())?, LocalStore::open("orders.db").await?, 2)?` and `engine.start("orders", "1", "route", serde_json::json!({"input":{"amount":"5"}})).await?`; the result is `{"amount":"5"}`. Legacy generic `task` declarations and crate-backed `node paid = task payments.charge(input)` calls are **not supported** by the new source grammar. Configured Cargo dependencies can still be updated explicitly, but new sources cannot call them until a kind-specific task form is implemented. Remove or redesign these calls before migrating; transpilation rejects them instead of silently resolving an extension.
 
 For a distributed worker, set `build_target = "worker"` in `blkit.toml`, run `blkit transpile` and `cargo build --manifest-path .blkit/Cargo.toml`, then start `.blkit/target/debug/orders-worker "$POSTGRES_URL" 32 5000` (`orders` is the project name; optional arguments are maximum concurrent tasks and lease milliseconds). If `CARGO_TARGET_DIR` is set, use `$CARGO_TARGET_DIR/debug/orders-worker` instead. `POSTGRES_URL` is a PostgreSQL connection URL, for example `postgres://postgres:postgres@127.0.0.1:5432/orders`; the database must be reachable and writable. The worker registers only the compiled namespace/version/process identities and runs matching queued work. It **does not expose HTTP**: deploy a separate distributed API using the same generated library, `DistributedControl::new(PostgresStore::connect(url).await?, orders::named_graph_definitions())`, and `server::router_distributed`. The repository's `blkit-api` binary embeds `examples/graph.bl`, not your project definitions, so it is not that API as-is.
 
-For one local server (no PostgreSQL or separate API), set `build_target = "server"` and transpile the example `orders.bl` above, then build it with Cargo:
+For one local server (no PostgreSQL or separate API), set `build_target = "server"` and transpile the `types.bl` and `process.bl` example above, then build it with Cargo:
 
 ```sh
 blkit transpile
 cargo build --manifest-path .blkit/Cargo.toml
 .blkit/target/debug/orders-server ./orders.db 32 127.0.0.1:3000
 # In another shell:
-curl -sS -X POST -H 'content-type: application/json' -d '{"amount":"5"}' http://127.0.0.1:3000/processes/orders/1/charge_order/instances
+curl -sS -X POST -H 'content-type: application/json' -d '{"input":{"amount":"5"}}' http://127.0.0.1:3000/processes/orders/1/route/instances
 # Use the returned id:
 curl -sS http://127.0.0.1:3000/instances/ID
 ```
 
-The completed result is `{"id":"ok"}`. Server arguments are optional: local database file (default `blkit.db`), concurrent task limit (default `32`), and bind address (default `127.0.0.1:3000`). If `CARGO_TARGET_DIR` is set, the binary is at `$CARGO_TARGET_DIR/debug/orders-server`. The local server persists checkpoints and recovers interrupted work on restart; unlike a distributed worker, it uses a local database and hosts REST in the same process. The HTTP router has no authentication; keep the default loopback bind unless a trusted proxy supplies access control and TLS.
+The completed result is `{"amount":"5"}`. Server arguments are optional: local database file (default `blkit.db`), concurrent task limit (default `32`), and bind address (default `127.0.0.1:3000`). If `CARGO_TARGET_DIR` is set, the binary is at `$CARGO_TARGET_DIR/debug/orders-server`. The local server persists checkpoints and recovers interrupted work on restart; unlike a distributed worker, it uses a local database and hosts REST in the same process. The HTTP router has no authentication; keep the default loopback bind unless a trusted proxy supplies access control and TLS.
 
 ### Generated worker/server operational logs
 
@@ -112,45 +94,43 @@ BLKIT_LOG_OUTPUTS=stdout,file,otlp BLKIT_LOG_FILE=./worker.log OTEL_EXPORTER_OTL
 
 A selected output receives operational events independently of the others. OTLP export is best effort: collector outages and abrupt termination can lose records without stopping instance execution. Files append across restarts without rotation; operators own rotation and retention. Blkit logs do not contain process input or result payloads, but cannot sanitize logs from third-party task crates. **Persisted instance status, errors, and checkpoints** remain the source of truth for execution outcomes; operational logs are not an event history.
 
-Commit `blkit.toml`, your `.bl` files, `.blkit/.gitignore`, and `.blkit/Cargo.lock` once Cargo creates the lockfile; generated Cargo manifest, source, and build artifacts are ignored. Referenced custom task crates require Cargo to be installed even when transpiling locally and building elsewhere, because blkit uses Cargo metadata to find their task descriptors. Built-in-only projects can be transpiled without Cargo installed. If you change dependency requirements, run `blkit update` (or `blkit update /path/to/project`) to refresh the lockfile before `blkit transpile` and a later Cargo build. The project blkit version must exactly match the CLI version; `.bl` `version` identifies a business process, not the CLI. Generated manifests currently reference the CLI checkout's local blkit source when available; builds on another machine must have that source (or adjust the manifest to use a published blkit crate), along with any local path dependencies. Compiling and linking extension Rust callables is the user's Cargo build's responsibility.
+Commit `blkit.toml`, your `.bl` files, `.blkit/.gitignore`, and `.blkit/Cargo.lock` once Cargo creates the lockfile; generated Cargo manifest, source, and build artifacts are ignored. If you change dependency requirements, run `blkit update` (or `blkit update /path/to/project`) to refresh the lockfile before a later Cargo build. The project blkit version must exactly match the CLI version; `.bl` `version` identifies a business process, not the CLI. Generated manifests currently reference the CLI checkout's local blkit source when available; builds on another machine must have that source (or adjust the manifest to use a published blkit crate), along with any local path dependencies.
 
-A source file begins with `namespace name` and `version "text"`. Indent blocks by two spaces. Declare records with `type Name:` and `field: Type`, enums with `enum Name:` and one variant per line, tasks with `task name(input: Type) -> Type:`, and processes with `process name(input: Type) -> Type:`. Tasks use typed `return` statements; processes must link to a named `end` (or exceptional terminal). Supported types: `Bool`, `String`, decimal `Number`, ISO `Date` (`YYYY-MM-DD`), offset-free `Time` (`HH:MM:SS` with optional fractional seconds), offset-aware RFC 3339 `DateTime` (explicit `Z` or numeric offset), `List<T>`, and declared records/enums. JSON temporal values are strings in those formats; invalid calendar dates, times outside 00:00:00–23:59:59, leap seconds, time offsets and offset-free datetimes are rejected. Typed expression literals are `date("2026-10-02")`, `time("09:30:00.250")`, and `dateTime("2026-10-02T08:30:00Z")`; each requires a valid quoted literal (ordinary strings remain `String`). `DateTime` comparisons use instants, so different offsets representing the same instant compare equal. Task expressions support literals (including `[1, 2.5]`), input fields, enum variants, parentheses, `not`, `and`, `or`, equality/comparisons, and `if`/`else`. A standalone table value type, null, and external functions are not supported; decision tables are supported inside decision models.
+A source file begins with `namespace name;` and `version "text";`. Records use `type Name:` with semicolon-terminated `field: Type;` members, and enums use `enum Name:` with semicolon-terminated variants. `decision_task name { ... }` declares typed input/output ports and braced decision nodes; `process name { ... }` routes between declared peers using `flow` and `bind` statements. There are no generic `task` declarations, implicit returns, or legacy graph nodes. Supported types: `Bool`, `String`, decimal `Number`, ISO `Date` (`YYYY-MM-DD`), offset-free `Time` (`HH:MM:SS` with optional fractional seconds), offset-aware RFC 3339 `DateTime` (explicit `Z` or numeric offset), `List<T>`, and declared records/enums. JSON temporal values are strings in those formats; invalid calendar dates, times outside 00:00:00–23:59:59, leap seconds, time offsets and offset-free datetimes are rejected. Typed expression literals are `date("2026-10-02")`, `time("09:30:00.250")`, and `dateTime("2026-10-02T08:30:00Z")`; each requires a valid quoted literal (ordinary strings remain `String`). `DateTime` comparisons use instants, so different offsets representing the same instant compare equal. Decision expressions support literals (including `[1, 2.5]`), input fields, enum variants, parentheses, `not`, `and`, `or`, and equality/comparisons. A standalone table value type, null, and external functions are not supported; decision tables are available in `decision_table` nodes.
 
 String expressions support `"foo" + "bar"`, `"order-" + string(123)`, case-sensitive `==` and `!=` (not `=`), and `"active" in ["active", "pending"]`. `+` binds more tightly than comparisons; `in` also retains range membership. `string(from)` converts scalar `String`, `Number`, `Bool`, `Date`, `Time`, or `DateTime`; `stringJoin(List<String>, separator)` joins with a literal separator.
 
 String functions: `stringLength(s)`, `substring(s, start[, length])`, `substringBefore(s, match)`, `substringAfter(s, match)`, `upperCase(s)`, `lowerCase(s)`, `trim(s)`, `trimLeading(s)`, `trimTrailing(s)`, `contains(s, match)`, `startsWith(s, match)`, `endsWith(s, match)`, `matches(s, pattern[, flags])`, `replace(s, pattern, repl[, flags])`, `split(s, delimiter)` or `split(s, delimiters: List<String>)`, `extract(s, pattern[, flags])`, `isBlank(s)`, `isEmpty(s)`, `indexOf(s, match)`, `charAt(s, position)`, `reverse(s)`, `padLeading(s, length[, padChar])`, `padTrailing(s, length[, padChar])`, and `repeat(s, times)`. Positions count visible Unicode characters, start at **1**, and negative positions count from the end (`-1` is last); `indexOf` returns `0` when absent. `substring` lengths, padding lengths, and repeat counts must be nonnegative integers; invalid positions and counts produce execution errors. Literal search and `split` do not interpret regular expressions. Regex `matches` searches anywhere; `replace` replaces every match and supports `$1` capture substitution; `extract` returns `List<List<String>>`, grouped by match, with participating capture groups (or full matches when none are declared). Regex flags: `i` (case insensitive), `m` (multiline), `s` (dot matches newline). `.bl` double-quoted strings do **not** interpret escapes, so use a single backslash in a regex such as `"order-(\d+)"`.
 
-Generated Rust tasks using potentially fallible string functions (`string`, `matches`, `substring`, `charAt`, `split`, `replace`, `extract`, `padLeading`, `padTrailing`, or `repeat`) now return `Result<T, String>` even though their `.bl` signature remains `-> T`. Direct Rust callers should use `?` or handle `Err`; infallible tasks retain their existing Rust return type. Process graphs and decisions report these errors as execution failures rather than panicking.
+Generated Rust decision tasks return `Result<T, String>`; handle fallible string operations with `?` or `Err`. Processes report expression errors as execution failures rather than panicking.
 
 Ranges use `[a..b]`, `(a..b)`, `[a..b)`, or `(a..b]` for inclusive/exclusive endpoints. For example, `input in [1..5]`, `input in (1..5]`, and `input between 1 and 5` return `Bool`; `between` includes both ends. Use `null` only for an unbounded range endpoint, such as `input in [1..null)` or `input in (null..null)`; `null` is not a general value. Endpoints must share a type (`Number`, `Date`, `DateTime`, or `Time`), for example `input in [date("2026-10-02")..null)`. Statically reversed bounds are rejected; runtime-reversed bounds are empty. Ranges can be compared using `==` and `!=` (not `=`). `before(A, B)`/`after(A, B)` compare strictly ordered ranges; `meets(A, B)`/`metBy(A, B)` compare touching finite endpoints even when open. `overlaps(A, B)` needs a common value (empty ranges never overlap), while `overlapsBefore(A, B)` means A starts first, B starts before A ends, and A ends before B; `overlapsAfter` reverses the arguments. Unbounded starts sort before finite starts and unbounded ends after finite ends. `coincides(A, B)` compares effective endpoints and inclusion. Point functions take `includes(range, value)`, `during(value, range)`, `starts(value, range)`, `startedBy(range, value)`, `finishes(value, range)`, and `finishedBy(range, value)`; start/end points must be finite and included. For example, `starts(1, [1..5])` is true and `starts(1, (1..5])` is false.
 
-A process uses named nodes and explicit, ordered `link` declarations (see [`examples/graph.bl`](examples/graph.bl)). A task node calls a typed task. A `business_rule` node calls a typed `.bl` decision model; [`examples/pricing.bl`](examples/pricing.bl) shows a table-driven quote with an expression-based input column and no-match default. Compile it with `cargo run -- examples/pricing.bl /tmp/pricing.rs`. Decision models can also contain `literal` and `context` nodes connected by `link` dependencies and typed `knowledge` functions; tables support `UNIQUE`, `ANY`, `FIRST`, `PRIORITY`, `RULE_ORDER`, `OUTPUT_ORDER`, and `COLLECT` (including `SUM`, `MIN`, `MAX`, `COUNT`). In table rules only, an input column may use comma-separated OR tests: `rule amount matches (< 10, [20..30]) -> 1` or `rule amount matches ([2..5], (2..5]) -> 1`. Each alternative compares the column with a same-type scalar or range; temporal columns use typed bounds such as `rule day matches ([date("2026-01-01")..date("2026-01-31")], >= date("2026-12-01")) -> true`. Combine the condition with `and`/`or` as usual; `matches` lists cannot appear in task expressions or table outputs. Existing Boolean rules and hit policies still apply. `and_split`, `or_split`, and `xor_split` pair with matching joins; AND links carry record-field labels (`as field`), and OR/XOR links carry Boolean conditions (`when ...`) with a final `else` fallback. A normal `end` receives the process's declared output type; `error`, `cancel`, and `terminate` are named process-wide terminals without payloads. For example:
+A `process` refers to peer `start_event`, `decision_task`, gateway, and `end_event` declarations using ordered `flow` edges. Separate typed `bind` edges connect output ports to input ports. [`examples/graph.bl`](examples/graph.bl) runs `decide`, `parallel`, and `offers`: XOR selects one route, AND combines labelled branches into a record, and OR collects selected branches in declaration order. A start is always a JSON object (`{"total":"1200"}`); the resulting `decide` value is `"review"`, `parallel` returns `{"left":"1200","right":"1200"}`, and `offers` returns `["1200","1200"]`. For example:
 
 ```bl
-process decide(input: Order) -> Decision:
-  node start = start
-  node amount = task total(input)
-  node route = xor_split
-  node high = task review(input)
-  node low = task approve(input)
-  node chosen = xor_join(route)
-  node done = end
-  link start -> amount
-  link amount -> route
-  link route -> high when amount > 1000
-  link route -> low else
-  link high -> chosen(high)
-  link low -> chosen(low)
-  link chosen -> done(chosen)
+start_event start { output total: Number; }
+end_event done { input result: Number; }
+decision_task echo {
+  input total: Number;
+  output result: Number = value;
+  literal_expression value { output result: Number; expression total; }
+}
+process pass_through {
+  flow start -> echo;
+  flow echo -> done;
+  bind start.total -> echo.total;
+  bind echo.result -> done.result;
+}
 ```
 
-A `node called = subprocess child(input)` invokes a process in the same namespace and version, including one declared in another project `.bl` file. Give it one normal success link; optionally route a child's named `error`, `cancel`, or `terminate` with `link called -> handler on error`, `on cancel`, or `on terminate`. These handler links carry no child output. Unhandled child outcomes propagate with their terminal name, while parent cancellation and deadlines cannot be caught. Parent and child share one instance and task-capacity limit, with child progress checkpointed for waits, retries, and recovery. See [`examples/subprocess.bl`](examples/subprocess.bl): `cargo run -- examples/subprocess.bl /tmp/subprocess.rs` compiles it; running `parent` with Number inputs `2`, `0`, `-1`, and `11` produces `"2"`, `"100"`, `"200"`, and `"300"` respectively. Load *both* generated definitions into `Registry::new` (or `DistributedWorker`) to execute the parent.
+A `subprocess called { process child; input input: Number; output result: Number; }` peer invokes a same-namespace/version child process. `flow called -> done;` routes a normal completion, while `flow called -> recover on error;`, `on cancel`, and `on terminate` handle child terminal outcomes. Child terminal values are not bound to handlers. Unhandled outcomes propagate with their terminal name; parent cancellation and deadlines cannot be caught. Parent and child share one instance and task-capacity limit. [`examples/subprocess.bl`](examples/subprocess.bl) compiles with `cargo run -- examples/subprocess.bl /tmp/subprocess.rs`; running `parent` with `{"input":"2"}`, `{"input":"0"}`, `{"input":"-1"}`, and `{"input":"11"}` returns `"2"`, `"100"`, `"200"`, and `"300"`. Register both generated processes to run the parent.
 
-Optionally declare `retry max_retries 2 retry_for "10m" retry_delay "1s" backoff exponential` before the nodes. `max_retries` counts additional attempts; both the first-failure time window and retry count must permit another attempt. Delays start at the declared minimum and double on later retries. Without a declaration, execution errors fail without retry. Named `error`, `cancel`, and `terminate` are business outcomes, not retryable execution errors. A process may declare `deadline queued "10m"` or `deadline first_claimed "10m"` before its nodes. `node hold = pause_for "1m"` and `node hold = pause_until input.closes_at` persist a wake time once; `pause_until` requires a `DateTime`. Waits release worker claims and survive restart without restarting their timer. A deadline expires even while queued, retrying, waiting, or executing; it produces `business-error` with reserved `terminal_name: "timeout"`, without retrying. In-flight synchronous work is cooperative: it may finish executing, but cannot commit after timeout.
+Optionally declare `retry max_retries 2 retry_for "10m" retry_delay "1s" backoff exponential;` and `deadline queued "10m";` (or `first_claimed`) inside a process before flows. `max_retries` counts additional attempts; retry windows and delays are enforced by the runtime. Named `error_event`, `cancel_event`, and `terminate_event` are business outcomes, not retryable execution errors. Peers `pause_for hold { duration "1m"; }` and `pause_until hold { input at: DateTime; }` persist their wake time; bind a `DateTime` with `bind start.closes_at -> hold.at;`. Waits release worker claims and survive restart. Deadlines produce `business-error` with reserved `terminal_name: "timeout"` without retrying.
 
-Task nodes can repeat with `repeat_pre(repeated < 3) max_iterations 3 initial input` (zero iterations yields the typed initial value) or `repeat_post(repeated < 3) max_duration "1m"`; both bounds may be supplied, and exceeding one returns `business-error` with `terminal_name: "task-iteration-limit"`. Multi-instance nodes use `node batch = task echo each input parallel` (or `sequential`) when `input` is a `List<T>`; each item is passed to the typed task and the ordered `List<U>` result is available as `batch`. Empty lists yield empty results. [`examples/iteration.bl`](examples/iteration.bl) includes a cyclic graph with a required two-second deadline and a parallel multi-instance process. Its positive-input cycle repeats until timeout; the example is a limit demonstration, not productive work. Compile it with `cargo run -- examples/iteration.bl /tmp/blkit-iteration.rs`. External Rust/Python tasks are not supported yet.
+A process can use `repeat_pre echo while echo.result < 3 initial 0 max_iterations 3;` (zero iterations yields the typed initial value) or `repeat_post echo while echo.result < 3 max_duration "1m";`; one or both positive bounds are required. Exceeding a bound produces `business-error` with `terminal_name: "task-iteration-limit"`. For a single-input `decision_task`, `multi_instance echo each start.values parallel;` (or `sequential`) takes a `List<T>` and produces an ordered `List<U>`; an empty list yields an empty result. [`examples/iteration.bl`](examples/iteration.bl) demonstrates a cyclic route with a required two-second deadline and a parallel multi-instance process. Its positive-input cycle repeats until timeout; it is a limit demonstration, not productive work. Compile it with `cargo run -- examples/iteration.bl /tmp/blkit-iteration.rs`.
 
-**Breaking syntax change:** old single-body process `return` and implicit `run`/`join` sequencing are rejected. Migrate business expressions into typed tasks and explicitly link each process route to its terminal. Distributed API and worker binaries are described below.
+**Breaking syntax change:** legacy `task`, `decision`, `node =`, and `link` declarations are rejected. Use named `decision_task` peers, braced processes, typed bindings, and explicit flows. Distributed API and worker binaries are described below.
 
 ## Run the development server
 

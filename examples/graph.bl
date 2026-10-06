@@ -1,69 +1,78 @@
-namespace orders
-version "1.0"
-
-type Order:
-  total: Number
+namespace orders;
+version "1.0";
 
 type Pair:
-  left: Number
-  right: Number
+  left: Number;
+  right: Number;
 
 enum Decision:
-  approved
-  review
+  approved;
+  review;
 
-task total(input: Order) -> Number:
-  return input.total
+start_event start { output total: Number; }
+end_event decision_done { input result: Decision; }
+end_event pair_done { input result: Pair; }
+end_event offers_done { input result: List<Number>; }
 
-task approve(input: Order) -> Decision:
-  return Decision.approved
+xor_split decision_route {}
+xor_join chosen { split decision_route; input value: Decision; output result: Decision; }
+and_split parallel_fork {}
+and_join both { split parallel_fork; input left: Number; input right: Number; output result: Pair; }
+or_split offer_fork {}
+or_join results { split offer_fork; input value: Number; output result: List<Number>; }
 
-task review(input: Order) -> Decision:
-  return Decision.review
+decision_task review_order {
+  input total: Number;
+  output result: Decision = choice;
+  decision_table choice {
+    output result: Decision;
+    policy FIRST;
+    input amount: Number = total;
+    output decision: Decision;
+    rule amount > 1000 -> Decision.review;
+    default Decision.approved;
+  }
+}
 
-process decide(input: Order) -> Decision:
-  node start = start
-  node amount = task total(input)
-  node route = xor_split
-  node high = task review(input)
-  node low = task approve(input)
-  node chosen = xor_join(route)
-  node done = end
-  link start -> amount
-  link amount -> route
-  link route -> high when amount > 1000
-  link route -> low else
-  link high -> chosen(high)
-  link low -> chosen(low)
-  link chosen -> done(chosen)
+decision_task left { input total: Number; output result: Number = amount; literal_expression amount { output result: Number; expression total; } }
+decision_task right { input total: Number; output result: Number = amount; literal_expression amount { output result: Number; expression total; } }
+decision_task fallback { input total: Number; output result: Number = amount; literal_expression amount { output result: Number; expression total; } }
 
-process parallel(input: Order) -> Pair:
-  node start = start
-  node fork = and_split
-  node left = task total(input)
-  node right = task total(input)
-  node both = and_join(fork): Pair
-  node done = end
-  link start -> fork
-  link fork -> left as left
-  link fork -> right as right
-  link left -> both(left)
-  link right -> both(right)
-  link both -> done(both)
+process decide {
+  flow start -> review_order;
+  flow review_order -> decision_done;
+  bind start.total -> review_order.total;
+  bind review_order.result -> decision_done.result;
+}
 
-process offers(input: Order) -> List<Number>:
-  node start = start
-  node fork = or_split
-  node first = task total(input)
-  node second = task total(input)
-  node fallback = task total(input)
-  node results = or_join(fork)
-  node done = end
-  link start -> fork
-  link fork -> first when input.total > 500
-  link fork -> second when input.total > 1000
-  link fork -> fallback else
-  link first -> results(first)
-  link second -> results(second)
-  link fallback -> results(fallback)
-  link results -> done(results)
+process parallel {
+  flow start -> parallel_fork;
+  flow parallel_fork -> left as left;
+  flow parallel_fork -> right as right;
+  flow left -> both;
+  flow right -> both;
+  flow both -> pair_done;
+  bind start.total -> left.total;
+  bind start.total -> right.total;
+  bind left.result -> both.left;
+  bind right.result -> both.right;
+  bind both.result -> pair_done.result;
+}
+
+process offers {
+  flow start -> offer_fork;
+  flow offer_fork -> left when start.total > 500;
+  flow offer_fork -> right when start.total > 1000;
+  flow offer_fork -> fallback else;
+  flow left -> results;
+  flow right -> results;
+  flow fallback -> results;
+  flow results -> offers_done;
+  bind start.total -> left.total;
+  bind start.total -> right.total;
+  bind start.total -> fallback.total;
+  bind left.result -> results.value;
+  bind right.result -> results.value;
+  bind fallback.result -> results.value;
+  bind results.result -> offers_done.result;
+}

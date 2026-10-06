@@ -1,23 +1,34 @@
-namespace orders
-version "1.0"
+namespace orders;
+version "1.0";
 
 type Order:
-  total: Number
-  blocked: Bool
+  total: Number;
+  blocked: Bool;
 
 enum Decision:
-  approved
-  review
+  approved;
+  review;
 
-task decide(input: Order) -> Decision:
-  if input.total > 1000 and not input.blocked:
-    return Decision.review
-  else:
-    return Decision.approved
+start_event start { output input: Order; }
+end_event done { input result: Decision; }
 
-process approve(input: Order) -> Decision:
-  node start = start
-  node decision = task decide(input)
-  node done = end
-  link start -> decision
-  link decision -> done(decision)
+decision_task decide {
+  input input: Order;
+  output result: Decision = choice;
+  decision_table choice {
+    output result: Decision;
+    policy FIRST;
+    input amount: Number = input.total;
+    input blocked: Bool = input.blocked;
+    output decision: Decision;
+    rule amount > 1000 and not blocked -> Decision.review;
+    default Decision.approved;
+  }
+}
+
+process approve {
+  flow start -> decide;
+  flow decide -> done;
+  bind start.input -> decide.input;
+  bind decide.result -> done.result;
+}

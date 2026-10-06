@@ -1,47 +1,52 @@
-namespace orders
-version "1.0"
+namespace orders;
+version "1.0";
 
-task echo(input: Number) -> Number:
-  return input
+start_event start { output input: Number; }
+end_event child_done { input result: Number; }
+end_event done { input result: Number; }
+end_event error_done { input result: Number; }
+end_event cancel_done { input result: Number; }
+end_event terminate_done { input result: Number; }
+error_event failed {}
+cancel_event cancelled {}
+terminate_event halted {}
+xor_split gate {}
+xor_join joined { split gate; input value: Number; output result: Number; }
+subprocess called { process child; input input: Number; output result: Number; }
 
-task recover_error(input: Number) -> Number:
-  return 100
+decision_task echo { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression input; } }
+decision_task recover_error { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression 100; } }
+decision_task recover_cancel { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression 200; } }
+decision_task recover_terminate { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression 300; } }
 
-task recover_cancel(input: Number) -> Number:
-  return 200
+process child {
+  flow start -> gate;
+  flow gate -> failed when start.input == 0;
+  flow gate -> cancelled when start.input < 0;
+  flow gate -> halted when start.input > 10;
+  flow gate -> echo else;
+  flow echo -> joined;
+  flow joined -> child_done;
+  bind start.input -> echo.input;
+  bind echo.result -> joined.value;
+  bind joined.result -> child_done.result;
+}
 
-task recover_terminate(input: Number) -> Number:
-  return 300
-
-process child(input: Number) -> Number:
-  node start = start
-  node gate = xor_split
-  node work = task echo(input)
-  node joined = xor_join(gate)
-  node done = end
-  node failed = error
-  node cancelled = cancel
-  node halted = terminate
-  link start -> gate
-  link gate -> failed when input == 0
-  link gate -> cancelled when input < 0
-  link gate -> halted when input > 10
-  link gate -> work else
-  link work -> joined(work)
-  link joined -> done(joined)
-
-process parent(input: Number) -> Number:
-  node start = start
-  node called = subprocess child(input)
-  node error_route = task recover_error(input)
-  node cancel_route = task recover_cancel(input)
-  node terminate_route = task recover_terminate(input)
-  node done = end
-  link start -> called
-  link called -> done(called)
-  link called -> error_route on error
-  link called -> cancel_route on cancel
-  link called -> terminate_route on terminate
-  link error_route -> done(error_route)
-  link cancel_route -> done(cancel_route)
-  link terminate_route -> done(terminate_route)
+process parent {
+  flow start -> called;
+  flow called -> done;
+  flow called -> recover_error on error;
+  flow called -> recover_cancel on cancel;
+  flow called -> recover_terminate on terminate;
+  flow recover_error -> error_done;
+  flow recover_cancel -> cancel_done;
+  flow recover_terminate -> terminate_done;
+  bind start.input -> called.input;
+  bind start.input -> recover_error.input;
+  bind start.input -> recover_cancel.input;
+  bind start.input -> recover_terminate.input;
+  bind called.result -> done.result;
+  bind recover_error.result -> error_done.result;
+  bind recover_cancel.result -> cancel_done.result;
+  bind recover_terminate.result -> terminate_done.result;
+}

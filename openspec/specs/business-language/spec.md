@@ -33,42 +33,19 @@ The language SHALL support business-domain record declarations, enum declaration
 - **THEN** validation fails with a diagnostic identifying the unknown type
 
 ### Requirement: Source-defined tasks and decisions are shared within a project scope
-A project build SHALL resolve source-defined tasks and decision models across `.bl` files with matching namespace and process version before validating process graphs, independently of source-file order. Declarations from another namespace or process version SHALL NOT become visible implicitly; duplicate declaration names within a scope SHALL be rejected. Standalone single-file compilation SHALL retain its existing resolution behavior.
+A project build SHALL resolve peer `start_event`, `end_event`, `decision_task`, process, and domain-type declarations across `.bl` files with matching namespace and process version before validating process graphs, independently of source-file order. Declarations from another namespace or version SHALL NOT become visible implicitly; duplicate peer names within a scope SHALL be rejected. Standalone single-file compilation SHALL resolve peers from that file alone. Generic `task` and `decision` declarations SHALL NOT be accepted.
 
 #### Scenario: Cross-file task call
-- **WHEN** one file defines a typed task and another file in the same namespace and version calls it from a process node
-- **THEN** validation accepts the call and the generated graph invokes that task
+- **WHEN** one file defines a typed `decision_task` and another file in the same scope has a process whose `flow` and `bind` reference it
+- **THEN** validation accepts the references irrespective of source-file order
 
 #### Scenario: Cross-file decision call
-- **WHEN** a process uses a business-rule node naming a decision defined in another file with the same namespace and version
-- **THEN** validation accepts and emits the decision call
+- **WHEN** a process references a decision task in another file with matching namespace and version
+- **THEN** validation accepts and emits its decision evaluation
 
 #### Scenario: Duplicate or out-of-scope declaration
-- **WHEN** two files in one scope define the same declaration name, or a process references a task only defined in a different namespace or version
+- **WHEN** two files in one scope define the same peer name, or a process references a decision task only defined in another namespace or version
 - **THEN** project validation rejects the duplicate or unknown reference before emitting Rust
-
-### Requirement: Process graphs may invoke crate-qualified custom task nodes
-A project-backed `.bl` process SHALL be able to call a configured extension crate's task using a crate-qualified task reference. Each extension crate SHALL supply discoverable task signatures identifying callable names and `.bl` input/output types; the project manifest SHALL NOT duplicate those task declarations. The compiler SHALL resolve the signature for the call's namespace/version scope and check the argument, result type, and downstream uses before emitting Rust. External tasks SHALL NOT introduce new split, join, terminal, or routing node kinds. Existing source-defined task declarations SHALL remain supported.
-
-#### Scenario: Valid custom task call
-- **WHEN** `payments` is a configured crate advertising `charge(Order) -> Receipt`, and a process links `node payment = task payments.charge(input)` to a compatible downstream node
-- **THEN** validation succeeds and the compiled graph calls the linked crate's task when `payment` runs
-
-#### Scenario: Missing or invalid provider metadata
-- **WHEN** a task references an unconfigured crate, an unadvertised callable, missing provider signatures, or a signature referring to a type absent from the caller's namespace/version scope
-- **THEN** validation fails before Rust generation with a diagnostic identifying the provider, task, or type
-
-#### Scenario: Incompatible task argument or result use
-- **WHEN** a process passes an incompatible argument to a crate task or uses its advertised output as an incompatible type
-- **THEN** validation fails before Rust generation with a diagnostic identifying the task and mismatch
-
-#### Scenario: Provider does not implement its advertised signature
-- **WHEN** the configured crate advertises a task but does not expose a callable compatible with the external-task interface
-- **THEN** the project build fails rather than producing a runnable graph
-
-#### Scenario: Source-defined tasks remain valid
-- **WHEN** a source-defined task is used in a project alongside crate-qualified task nodes
-- **THEN** its existing graph syntax and validation behavior are unchanged
 
 ### Requirement: MVP built-in types are fixed
 The language SHALL provide the built-in user-facing types `Bool`, `String`, `Number`, `Date`, `DateTime`, `Time`, and `List<T>`. `Date` SHALL represent a Gregorian calendar date encoded as `YYYY-MM-DD`. `Time` SHALL represent a timezone-free wall-clock time encoded as `HH:MM:SS` with optional fractional seconds, in the range 00:00:00 through 23:59:59.999...; leap seconds and offsets SHALL be rejected. `DateTime` SHALL represent a timezone-aware instant; serialized inputs SHALL accept an RFC 3339 timestamp with an explicit offset and reject missing or invalid offsets. Comparisons of `Date` and `Time` SHALL use chronological order within their respective types; comparisons of `DateTime` SHALL compare instants, not textual representations. `.bl` expressions SHALL provide typed `date("YYYY-MM-DD")`, `time("HH:MM:SS[.fraction]")`, and `dateTime("RFC3339-with-offset")` constructors, rejecting invalid constant text at compile time. These constructors SHALL require string literals; plain quoted text remains `String`.
@@ -102,34 +79,23 @@ The language SHALL provide the built-in user-facing types `Bool`, `String`, `Num
 - **THEN** validation fails with a diagnostic identifying the unsupported type
 
 ### Requirement: Processes have typed input and output
-A process declaration SHALL define a name, exactly one typed input parameter, and one output type for normal `end` nodes. Routes ending at `error`, `cancel`, or `terminate` SHALL NOT need to produce that normal output type.
+A process SHALL be declared as `process <name> { ... }` without parenthesized parameters or an arrow output type. It SHALL have exactly one reachable `start_event` in this change. Its incoming JSON value SHALL be a JSON object with keys and values matching that start event's outputs; every declared start output SHALL be present, with no unknown keys. A normal result SHALL come from a referenced `end_event` whose declared input ports are bound to compatible outputs. All reachable normal end events of the same process SHALL declare the same result shape and types. One normal end input SHALL produce that input's value directly; multiple inputs SHALL produce a JSON object keyed by port names. Exceptional terminal routes SHALL NOT require normal end inputs.
 
 #### Scenario: Valid process signature
-- **WHEN** a process is declared with `process approve_order(input: Order) -> Decision`
-- **THEN** validation accepts the signature when `Order` and `Decision` are valid types
+- **WHEN** `start_event start { output amount: Number; }`, `end_event done { input result: Number; }`, and a process connect the ports through a decision task
+- **THEN** start input `{"amount": 3}` validates and a normal `done` produces its bound numeric value
 
 #### Scenario: Invalid process signature type
-- **WHEN** a process signature references an unknown input or output type
-- **THEN** validation fails with a diagnostic identifying the invalid type reference
+- **WHEN** start input is a scalar, lacks a declared port, contains an unknown key, or has an incompatible value type
+- **THEN** validation rejects the start request before an instance begins
 
 #### Scenario: Exceptional route
-- **WHEN** one route supplies `Decision` to an `end` node and another route reaches an `error` node
-- **THEN** validation accepts both routes without treating the error as a `Decision`
+- **WHEN** a route reaches a named error, cancel, or terminate event rather than a normal end event
+- **THEN** that outcome does not require an end-event result value
 
-### Requirement: Process bodies support minimal deterministic control flow
-Task bodies SHALL support field access, enum variant references, literals, comparisons, boolean operations, `if`/`else` branching, and `return` statements sufficient to express deterministic business decisions. A process SHALL express control flow through its named graph nodes and links rather than a single-body `return` statement.
-
-#### Scenario: Branching process returns expected enum type
-- **WHEN** a process graph links to a task returning `Decision` that returns `Decision.review` in one branch and `Decision.approved` in another branch
-- **THEN** validation accepts the task body and process graph
-
-#### Scenario: Return type mismatch
-- **WHEN** a task returns a value that does not match its declared task output type
-- **THEN** validation fails with a diagnostic identifying the return type mismatch
-
-#### Scenario: Process-level return is not a terminal event
-- **WHEN** a process body ends with `return value` rather than linking to an `end` node
-- **THEN** validation rejects the process and identifies the required explicit terminal node
+#### Scenario: Ambiguous process shape
+- **WHEN** a process has two reachable start events or two normal end events with incompatible input-port shapes
+- **THEN** validation fails before generation
 
 ### Requirement: Rust generation follows successful validation
 The compiler SHALL generate Rust output only after parsing, name validation, graph validation, and type validation have succeeded.
@@ -147,50 +113,50 @@ The compiler SHALL generate Rust output only after parsing, name validation, gra
 - **THEN** the generated Rust compiles and the registered process can be invoked to return the expected result for each branch
 
 ### Requirement: Processes declare their task graph in `.bl`
-The language SHALL support source-defined typed tasks and process graphs consisting of named start, task, business-rule, intermediate wait, gateway, join, and terminal nodes connected by explicit directed links. The compiler SHALL reject unknown or duplicate nodes, unreachable nodes or terminals, dead-end routes, invalid gateway split/join pairing, and links whose values do not match their targets' declared types. Process graphs SHALL permit backward links, provided that any graph containing a directed cycle declares a positive process deadline; decision requirement graphs SHALL remain acyclic. Backward links SHALL NOT enter a start node or cause unmatched gateway joins, and references used on each route SHALL be typed and available for that activation. Process-level single-body declarations and implicit sequential `run`/`return` syntax SHALL NOT be accepted; task bodies SHALL retain typed `return`.
+The language SHALL support process graphs assembled from named peer start, decision-task, gateway, join, wait, subprocess, and terminal nodes connected by explicit `flow` and typed `bind` statements. Graph nodes SHALL use their specific kind as the declaration keyword and enclose their properties in `{ ... }`; only `decision_task` SHALL be an authored task kind in this change. The compiler SHALL reject unknown or duplicate nodes, unreachable nodes or terminals, dead-end routes, invalid gateway split/join pairing, and unavailable/mistyped bindings. Cycles SHALL require a positive process deadline; backward flow SHALL NOT enter a start event or cause unmatched joins. An old `node <name> = <kind>` declaration, `link`, generic `task`, business-rule call, process signature, implicit sequencing, or process-level `return` SHALL NOT be accepted.
 
 #### Scenario: Valid source-defined process map
-- **WHEN** a `.bl` process explicitly links named tasks and gateways in a finite, type-compatible graph from start to terminal nodes
-- **THEN** validation accepts the graph without a separately authored Rust process map
+- **WHEN** a process connects a start event, a decision task, and an end event with typed flow and bindings
+- **THEN** validation accepts the graph without redeclaring any of those nodes inside the process
 
 #### Scenario: Invalid graph link
-- **WHEN** a process graph references a missing node, strands an activated route, passes an incompatible value, or loops through a join without matching activation
-- **THEN** validation fails with a diagnostic identifying the offending node or link
+- **WHEN** flow references a missing peer, strands a route, or bind references an unavailable output
+- **THEN** validation fails before emitting Rust
 
 #### Scenario: Bounded cyclic graph
-- **WHEN** a process has a backward edge and a declared positive process deadline, with a reachable exit and valid typed routes
-- **THEN** validation accepts repeated visits to the same node
+- **WHEN** a graph contains a reachable backward flow, a valid exit, and a positive process deadline
+- **THEN** repeated node visits are accepted
 
 #### Scenario: Cycle without deadline
-- **WHEN** a process graph has a directed cycle and no process deadline
-- **THEN** validation rejects the graph before Rust is emitted
+- **WHEN** a graph has a directed cycle without a positive process deadline
+- **THEN** validation rejects it before Rust generation
 
 #### Scenario: Existing process stays valid
-- **WHEN** an existing `.bl` process is migrated from a single body or implicit `run`/`join`/`return` sequence to named nodes and explicit links
-- **THEN** its typed business behavior can still validate and execute; unmigrated process syntax is rejected with a diagnostic
+- **WHEN** an existing process is migrated to braced peers, typed `flow` and `bind`, and supported decision-task nodes
+- **THEN** its business behavior can still validate and execute, while its unmigrated legacy syntax is rejected
 
 ### Requirement: Gateway conditions and joins are typed
-The language SHALL support named, explicitly linked AND, OR, and XOR split and join gateways in a `.bl` process map. AND splits SHALL activate all outgoing branches; XOR splits SHALL activate the first matching branch in outgoing-link declaration order; OR splits SHALL activate every matching branch. Conditions SHALL be `Bool` expressions that can reference process input and upstream task outputs available on every route to that gateway. XOR and OR splits SHALL provide a fallback when no condition matches. Joins SHALL account for the branches activated for that instance: AND waits for all incoming branches and combines their results into a declared record, XOR accepts the selected branch's result of a common type, and OR waits for every selected branch and produces a `List<T>` of compatible branch results in split-link declaration order. Every route to a normal `end` SHALL produce its declared output type.
+The language SHALL support named, explicitly connected AND, OR, and XOR split and join gateways in a `.bl` process map. Each gateway SHALL use a kind-specific braced declaration; `flow` statements SHALL carry typed branch conditions, ordered fallbacks, and AND branch labels as applicable; typed `bind` statements SHALL carry required values separately. AND splits SHALL activate all outgoing branches; XOR splits SHALL activate the first matching branch in outgoing-flow declaration order; OR splits SHALL activate every matching branch. Conditions SHALL be `Bool` expressions that can reference start-event outputs and upstream task outputs available on every route to that gateway. XOR and OR splits SHALL provide a fallback when no condition matches. Joins SHALL account for the branches activated for that instance: AND waits for all incoming branches and combines their results into a declared record, XOR accepts the selected branch's result of a common type, and OR waits for every selected branch and produces a `List<T>` of compatible branch results in split-flow declaration order. Every route to a normal end event SHALL bind compatible values to its required input ports.
 
 #### Scenario: Conditions use task output and input
-- **WHEN** an XOR gateway uses a completed task's output and the process input to choose between two links
-- **THEN** validation accepts its `Bool` conditions and exactly one branch is selected at execution
+- **WHEN** an XOR gateway's `flow` condition uses a completed decision-task output and a start-event output
+- **THEN** validation accepts its `Bool` condition and selects exactly one branch
 
 #### Scenario: Inclusive parallel routing
 - **WHEN** two OR conditions match
-- **THEN** both branches become active and the OR join waits for both, but not for inactive branches
+- **THEN** both branches activate and the OR join waits for both, but not for inactive branches
 
 #### Scenario: Invalid reference or route
-- **WHEN** a condition references a task result unavailable on that route or a branch cannot produce the declared normal-end output type
-- **THEN** validation fails before code is generated
+- **WHEN** a condition uses an unavailable output or a normal end-event input cannot be bound on a reachable route
+- **THEN** validation fails before generation
 
 #### Scenario: Multiple XOR conditions match
-- **WHEN** an XOR gateway has more than one true condition
-- **THEN** the first matching outgoing link in source order is selected
+- **WHEN** multiple XOR conditions match
+- **THEN** the first matching outgoing flow in declaration order is selected
 
 #### Scenario: Inclusive join output
-- **WHEN** an OR gateway selects two branches returning values of the same declared type
-- **THEN** its join produces a typed list of those values in split-link declaration order
+- **WHEN** an OR gateway selects two branches of the same declared output type
+- **THEN** its join produces a typed list in split-flow declaration order
 
 ### Requirement: Compiler emits the validated process graph
 After successful validation, the compiler SHALL emit Rust representing `.bl`-defined tasks, named nodes, explicit typed links, gateway routes, terminal events, retry policy, and process identity for runtime registration. The runtime SHALL NOT need to reconstruct or infer a process map from individual compiled functions. The generated business logic SHALL be linked into a binary at build time rather than compiled by a running worker.
@@ -223,29 +189,29 @@ A `.bl` process SHALL optionally declare `max retries` (additional attempts afte
 - **THEN** validation fails before Rust is emitted
 
 ### Requirement: Process graphs may call a typed subprocess
-A named node `node <name> = subprocess <process>(<input>)` SHALL invoke a process declared in the caller's namespace and version. The call argument SHALL match the child's declared input type; the child's normal output SHALL be the node's output type and be available only on its normal-success route. Standalone transpilation SHALL resolve processes in its single source; project builds SHALL resolve processes across sources in the same scope. Unknown, out-of-scope, or type-incompatible calls SHALL fail before Rust generation. Existing `task` nodes SHALL continue to resolve tasks, not processes.
+A peer subprocess node SHALL invoke a process in the caller's namespace and version. It SHALL declare typed input and normal-output ports and a braced body; its incoming values SHALL be supplied by `bind`, not by positional call arguments. A normal child result SHALL be available only on its success route, and its port bindings SHALL be type checked. Standalone compilation SHALL resolve its child from the file; project builds SHALL resolve processes across the same scope. Unknown, out-of-scope, incompatible, or recursive process calls SHALL fail before Rust generation.
 
 #### Scenario: Typed successful call
-- **WHEN** a caller links `node result = subprocess calculate(input)` to a normal successor using `result`, and `calculate` takes the input type and returns the successor's required type
-- **THEN** validation succeeds and the generated graph calls the child's process graph
+- **WHEN** a parent flows through a subprocess peer, binds its input from a compatible output, and binds its normal result to a successor
+- **THEN** validation succeeds and the generated graph executes the child
 
 #### Scenario: Invalid call
-- **WHEN** the named process is absent from the same namespace/version, the argument has an incompatible type, or a success-only result is referenced on an exceptional route
+- **WHEN** the child is missing, a bound input is incompatible, or a success-only output is used on an exceptional route
 - **THEN** validation fails before emitting Rust
 
 ### Requirement: Subprocess outcomes have explicit per-kind routes
-A subprocess node SHALL have exactly one ordinary link for normal completion and MAY have at most one exceptional outgoing link each of the forms `link <node> -> <target> on error`, `on cancel`, and `on terminate`. These links SHALL carry no child output or value; ordinary links SHALL run only after a normal child `end`. Duplicate or inappropriate `on` links SHALL fail validation. If an outcome has no matching exceptional link, it SHALL propagate to the parent instance; caught child outcomes SHALL allow the parent graph to continue. A child `error` SHALL retain its terminal name on propagation. External cancellation of the parent and expiry of the parent's own deadline SHALL NOT be catchable by these links.
+A subprocess node SHALL have exactly one ordinary success `flow` and MAY have at most one exceptional outgoing `flow` each with `on error`, `on cancel`, or `on terminate`. Exceptional flows SHALL carry no child output; ordinary flows SHALL run only after a normal child end event. Duplicate or inappropriate outcome flows SHALL fail validation. Unhandled child outcomes SHALL propagate to the parent; caught child outcomes SHALL permit parent continuation. A child error SHALL retain its terminal name when propagated. External parent cancellation and parent deadline expiry SHALL NOT be catchable by child outcome flows.
 
 #### Scenario: Catch only modeled error
-- **WHEN** a child reaches a named `error` and the parent has an `on error` link
+- **WHEN** a child reaches a named error event and its parent has `flow called -> handler on error;`
 - **THEN** only that handler route activates without a normal child output
 
 #### Scenario: Unhandled child terminal
-- **WHEN** a child reaches `terminate` and the parent has no `on terminate` link
-- **THEN** the parent instance terminates rather than taking the normal route
+- **WHEN** a child reaches terminate and its parent has no `on terminate` flow
+- **THEN** the parent terminates rather than taking its normal route
 
 #### Scenario: Invalid exceptional routing
-- **WHEN** a non-subprocess node declares an `on error` link or a subprocess declares two `on cancel` links
+- **WHEN** a non-subprocess node declares `on error` or a subprocess declares two `on cancel` flows
 - **THEN** validation rejects the graph
 
 ### Requirement: Subprocess call graphs cannot recurse
@@ -260,56 +226,49 @@ The compiler SHALL reject direct and indirect cycles between process calls in th
 - **THEN** validation rejects the cycle before Rust generation
 
 ### Requirement: Process graphs end in named terminal nodes
-A process graph SHALL connect via explicit links to named terminal nodes of kind `end`, `error`, `cancel`, or `terminate`. A normal `end` SHALL receive a value of the process's declared output type; a named `error` node SHALL itself identify the business error and SHALL require no payload. `cancel` and `terminate` SHALL require no output. For a top-level process, these terminals apply to the whole instance. For a subprocess, its terminal ends that child scope and either follows a corresponding parent handler route or propagates to the parent; no transaction compensation is implied.
+A process graph SHALL connect through `flow` to named, braced terminal-event peers of kind `end_event`, `error_event`, `cancel_event`, or `terminate_event`. A normal end event SHALL require bound, typed input ports; a named error event SHALL identify the business error and require no normal output; cancel and terminate events SHALL require no normal output. Top-level terminals SHALL apply to the instance; child terminals SHALL end only the child scope before handling or propagation. No compensation is implied.
 
 #### Scenario: Normal typed end
-- **WHEN** a valid route links a `Decision` value into a named `end` node in a process returning `Decision`
-- **THEN** validation accepts the typed output
+- **WHEN** a reachable `end_event done { input result: Number; }` receives a compatible bound result
+- **THEN** validation accepts the output
 
 #### Scenario: Modeled business error
-- **WHEN** a route links to a named `error` node
-- **THEN** validation accepts the error node without requiring a process output value on that route
+- **WHEN** a route flows to a named `error_event` peer
+- **THEN** validation accepts it without a normal result on that route
 
 #### Scenario: Incompatible normal end
-- **WHEN** a route sends `Bool` to an `end` node of a process returning `Decision`
-- **THEN** validation rejects the link
+- **WHEN** a `Bool` output is bound to a `Number` end-event input
+- **THEN** validation rejects the binding
 
 #### Scenario: Child terminal is scoped
-- **WHEN** a subprocess reaches `cancel` and its caller handles `on cancel`
-- **THEN** the child scope ends and the parent can follow its handler route
-
-### Requirement: Business-rule nodes invoke decision models
-A `.bl` process SHALL be able to call a source-declared typed decision model through a named business-rule node. Its argument and returned value SHALL be type checked like a task node and made available to downstream expressions and links. An unknown model or incompatible type SHALL be rejected before generation.
-
-#### Scenario: Decision-guided route
-- **WHEN** a business-rule node evaluates a discount model and a downstream gateway checks its typed result
-- **THEN** the process selects a route using the evaluated decision result
+- **WHEN** a subprocess reaches `cancel_event` and its caller handles `on cancel`
+- **THEN** the child scope ends and the parent follows its handler
 
 ### Requirement: Intermediate waits and process deadlines are source-configurable
-A process SHALL support `pause for` with a positive duration literal using the existing retry-duration units and `pause until` with a `DateTime` expression derived from available typed values. The deadline policy SHALL select a positive duration measured either since the instance was queued or since it was first claimed by a worker. The compiler SHALL reject waits with invalid types and policies with invalid or ambiguous origins. The reserved terminal name `timeout` SHALL be unavailable for user-declared nodes. Source declarations use `node hold = pause_for "1m"` or `node hold = pause_until input.closes_at`, and `deadline queued "10m"` or `deadline first_claimed "10m"` before graph nodes.
+A process SHALL support pause-for with a positive duration literal and pause-until with a `DateTime` value supplied by a typed binding. Waits SHALL use kind-specific peer declarations with braced bodies, and the process deadline policy SHALL be a semicolon-terminated statement in its braced process body selecting a positive duration since queued or first claimed. The compiler SHALL reject invalid duration/type/origin; `timeout` remains reserved as a terminal name. Waits SHALL retain their existing durable runtime behavior.
 
 #### Scenario: Dynamic pause until
-- **WHEN** `pause until` refers to a `DateTime` field in the process input
-- **THEN** validation accepts it and generates a wait node that uses that instant
+- **WHEN** a pause-until peer receives a `DateTime` input through `bind`
+- **THEN** validation accepts the wait
 
 #### Scenario: Wrong wait type
-- **WHEN** `pause until` receives a `Number` expression
-- **THEN** validation rejects the wait before generation
+- **WHEN** a pause-until peer receives a `Number` binding
+- **THEN** validation rejects it before generation
 
 ### Requirement: Task iteration is explicit and bounded
-A task node SHALL support a conditional loop checked before each iteration or after each iteration; it SHALL declare at least one positive maximum iteration count or elapsed iteration duration. A task node SHALL also support sequential or parallel multi-instance execution over a typed `List<T>`, passing one item per invocation and producing a `List<U>` result in input order. A task-loop condition SHALL be a typed `Bool` expression and all loop-result references SHALL have an unambiguous type and availability. Invalid bounds, mismatched element types, or ambiguous repeated-output references SHALL fail validation. Source syntax is `node repeated = task echo(repeated) repeat_pre(repeated < 3) max_iterations 3 initial input`, `node repeated = task echo(input) repeat_post(repeated < 3) max_duration "1m"`, or `node batch = task echo each input parallel` (also `sequential`); count and duration bounds MAY be combined.
+A `decision_task` used in a process SHALL support a conditional loop checked before or after each invocation and SHALL declare at least one positive maximum iteration count or elapsed duration. It SHALL support sequential or parallel multi-instance execution over a typed `List<T>`, passing each item through the named input port and yielding ordered typed results. Conditions SHALL be `Bool` expressions with unambiguous availability; typed `bind` statements SHALL supply inputs and initial results where needed. Invalid bounds, element types, or repeated-output references SHALL fail validation. Old generic `node ... = task ... repeat_*` syntax SHALL be rejected.
 
 #### Scenario: Post-check loop
-- **WHEN** a bounded post-check loop has a condition that is false after the first invocation
-- **THEN** the task runs once and its output is available downstream
+- **WHEN** a bounded post-check decision task's condition is false after its first invocation
+- **THEN** it runs once and exposes its output downstream
 
 #### Scenario: Pre-check loop
-- **WHEN** a pre-check condition is false before the first invocation
-- **THEN** no task invocation occurs and the node yields a declared type-correct no-iteration result
+- **WHEN** a pre-check condition is initially false with a type-correct initial result
+- **THEN** the task is not invoked and the initial result is available downstream
 
 #### Scenario: Sequential and parallel instances
-- **WHEN** a list of three items enters a sequential or parallel multi-instance task
-- **THEN** the task is invoked once for each item and results are returned in input order
+- **WHEN** a three-element list enters a sequential or parallel decision task
+- **THEN** it runs once per item and returns outputs in input order
 
 ### Requirement: Same-type range expressions have explicit boundaries
 `.bl` SHALL accept interval expressions `[a..b]`, `(a..b)`, `[a..b)`, and `(a..b]`, where finite endpoints have the same type from `Number`, `Date`, `DateTime`, or `Time`. At least one finite bound SHALL establish the range's type; if both are `null`, a type SHALL be supplied by context (for example, the value tested for membership). `[`/`]` SHALL include the corresponding endpoint, and `(`/`)` SHALL exclude it. The literal `null` SHALL denote an unbounded endpoint only inside a range expression; it SHALL NOT introduce a nullable value type. An omitted bound SHALL have no inclusion semantics. Both bounds MAY be unbounded. Statically reversed finite bounds SHALL fail compilation. Reversed finite bounds discovered only at evaluation SHALL describe an empty range rather than silently swapping bounds. Equal finite bounds SHALL describe a singleton only when both ends are inclusive; otherwise they SHALL describe an empty range.
@@ -434,8 +393,34 @@ The language SHALL provide `string(from)` for `String`, `Number`, `Bool`, `Date`
 - **THEN** evaluation SHALL report an error
 
 ### Requirement: Fallible string expressions report execution errors through generated calls
-Typed `.bl` signatures SHALL continue to declare their normal output types. Generated Rust calls containing runtime-fallible string expressions MAY return `Result<Output, String>` instead of plain `Output`; callers SHALL receive an error for invalid runtime string operations instead of a silent fallback or process panic. Existing valid `.bl` programs without fallible string expressions SHALL retain their behavior.
+Named, typed `.bl` output port declarations SHALL continue to describe their normal types. Generated Rust calls containing runtime-fallible string expressions MAY return `Result<Output, String>` instead of plain `Output`; callers SHALL receive an execution error for invalid runtime string operations instead of a silent fallback or process panic. Valid supported `.bl` programs without fallible expressions SHALL retain their evaluation behavior.
 
 #### Scenario: Dynamic invalid regex in a graph
-- **WHEN** a process or decision evaluates `matches(input, pattern)` with an invalid runtime `pattern`
-- **THEN** its execution SHALL report an error rather than returning `false`, `[]`, or crashing the process
+- **WHEN** a decision task evaluates `matches(input, pattern)` with an invalid runtime `pattern`
+- **THEN** its execution reports an error rather than returning `false`, `[]`, or crashing the process
+
+### Requirement: Declarations and statements have explicit delimiters
+A `.bl` source SHALL end every statement, including namespace/version, field, variant, port, expression, rule, `flow`, and `bind` statements, with `;`. A declaration or control block SHALL close with `}` rather than indentation or a terminating semicolon. Processes and peer graph nodes SHALL have braced bodies, including empty bodies. Decision-task bodies and their kind-specific decision nodes SHALL be braced. Existing record and enum declaration layouts MAY retain their current colon/indentation structure, but their member statements SHALL end in `;`. Whitespace and newlines alone SHALL NOT terminate statements. A semicolon inside a quoted literal SHALL NOT terminate a statement.
+
+#### Scenario: Braces and semicolons
+- **WHEN** a source uses `namespace demo;`, `version "1.0";`, and `process p { flow start -> done; }` with braced peer nodes
+- **THEN** the source passes delimiter validation
+
+#### Scenario: Missing delimiter
+- **WHEN** a `flow` lacks `;`, a braced declaration lacks `}`, or a declaration uses the old colon/indentation form where braces are required
+- **THEN** compilation fails with a syntax diagnostic and emits no Rust
+
+### Requirement: Process flow and data bindings are separate
+A process body SHALL reference named peer nodes using `flow <source> -> <target>;` for execution order and `bind <source>.<output> -> <target>.<input>;` for data transfer. A `flow` SHALL NOT implicitly pass data; a `bind` SHALL NOT imply execution order. Each bound input used on an activated route SHALL have a compatible source output available before its target executes. Unknown nodes/ports, incompatible types, unavailable outputs, missing required inputs, and ambiguous bindings SHALL fail validation. Nodes SHALL NOT be redefined in a process body. A source node with exactly one output MAY be named without `.output` in a value reference; a multi-output source SHALL use a qualified output name.
+
+#### Scenario: Distinct edges
+- **WHEN** a process contains `flow start -> calculate;`, `flow calculate -> done;`, `bind start.my_input_number -> calculate.amount;`, and `bind calculate.result -> done.result;` with valid peers
+- **THEN** the task runs after `start`, and the bound values reach the matching typed inputs
+
+#### Scenario: Data does not schedule tasks
+- **WHEN** a process binds an output to a task input but provides no executable control-flow path to that task
+- **THEN** validation rejects the graph rather than treating the binding as a flow edge
+
+#### Scenario: Missing or mistyped input
+- **WHEN** a decision-task input has no binding on an activated route or a `Number` output is bound to a `String` input
+- **THEN** validation fails before generating Rust

@@ -260,6 +260,7 @@ impl Project {
                 .chain(parsed.enums.iter().map(|d| &d.name))
                 .chain(parsed.tasks.iter().map(|d| &d.name))
                 .chain(parsed.decisions.iter().map(|d| &d.name))
+                .chain(parsed.peer_nodes.iter().map(|d| &d.name))
                 .chain(parsed.processes.iter().map(|d| &d.name));
             match groups.entry(key) {
                 std::collections::btree_map::Entry::Vacant(entry) => {
@@ -282,6 +283,7 @@ impl Project {
                     merged.enums.extend(parsed.enums);
                     merged.tasks.extend(parsed.tasks);
                     merged.decisions.extend(parsed.decisions);
+                    merged.peer_nodes.extend(parsed.peer_nodes);
                     merged.processes.extend(parsed.processes);
                 }
             }
@@ -382,7 +384,11 @@ impl Project {
         }
         lib.push_str("pub fn named_graph_definitions() -> Vec<blkit::compiled_graph::GraphDefinition> {\n    let mut definitions = Vec::new();\n");
         for (index, program) in programs.iter().enumerate() {
-            if program.processes.iter().any(|p| p.named_graph.is_some()) {
+            if program
+                .processes
+                .iter()
+                .any(|p| p.named_graph.is_some() || p.source_graph.is_some())
+            {
                 lib.push_str(&format!(
                     "    definitions.extend(scope_{index}::named_graph_definitions());\n"
                 ));

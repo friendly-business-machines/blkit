@@ -1,45 +1,6 @@
-# project-build Specification
+# Spec Delta
 
-## Purpose
-
-Defines a user-facing blkit project that builds `.bl` sources into a reusable Rust crate or packaged executables without requiring authors to maintain generated Rust by hand.
-
-## Requirements
-
-### Requirement: Projects discover sources and select one build target
-A blkit project SHALL discover its `.bl` files under the project root without a source list in its manifest, and SHALL require exactly one `build_target` value from `crate`, `worker`, or `server`. Each target SHALL use the same validated generated process definitions from every discovered source. `blkit transpile [PROJECT_DIR]` SHALL generate a Cargo project in `PROJECT_DIR/.blkit` for the selected target, defaulting `PROJECT_DIR` to the current directory, without invoking `cargo build` or claiming a compiled artifact. A `crate` target SHALL generate a reusable Rust library; a `worker` target SHALL generate a distributed worker binary entry point; a `server` target SHALL generate a local REST server binary entry point. Users SHALL NOT need to author the generated Cargo project, but SHALL invoke Cargo themselves to compile it. `blkit build` SHALL NOT remain an alias for project transpilation.
-
-#### Scenario: Reusable crate
-- **WHEN** a project with valid `.bl` sources selects `crate` and the user invokes `blkit transpile`
-- **THEN** `.blkit` contains a Cargo manifest and library source exposing the process definitions, and the CLI does not compile the library
-
-#### Scenario: Worker target
-- **WHEN** a project selects `worker` and the user invokes `blkit transpile`
-- **THEN** `.blkit` contains a Cargo manifest and worker source using the project's process definitions, which the user can compile with Cargo into a distributed worker that claims only matching process identities from PostgreSQL and requires a separate distributed API for REST access
-
-#### Scenario: All-in-one server target
-- **WHEN** a project selects `server` and the user invokes `blkit transpile`
-- **THEN** `.blkit` contains a Cargo manifest and server source using the project's process definitions, which the user can compile with Cargo into a local REST server that executes processes using a durable local store without PostgreSQL or a separate worker
-
-#### Scenario: User builds locally or elsewhere
-- **WHEN** transpilation succeeds for any target
-- **THEN** the user can invoke `cargo build --manifest-path PROJECT_DIR/.blkit/Cargo.toml` locally or on another machine with the generated project and its required inputs, and blkit has not run `cargo build`
-
-#### Scenario: Old project command
-- **WHEN** the user invokes `blkit build`
-- **THEN** the CLI rejects the removed command rather than compiling a binary or silently transpiling
-
-#### Scenario: Exactly one target
-- **WHEN** `build_target` is absent, names an unsupported target, or specifies multiple targets
-- **THEN** transpilation fails with an actionable diagnostic rather than reporting a successful generated project
-
-#### Scenario: Discover every source
-- **WHEN** a project contains two `.bl` files in different directories and declares no source paths
-- **THEN** transpilation discovers and validates both, and generates one Cargo project for the selected target with all compiled process definitions
-
-#### Scenario: No sources or invalid source
-- **WHEN** the project has no discoverable `.bl` file or one discovered source is invalid
-- **THEN** transpilation fails with an actionable diagnostic and does not report a successful generated project
+## MODIFIED Requirements
 
 ### Requirement: Multi-file projects compile shared declaration scopes
 All discovered `.bl` files with the same namespace and process version SHALL form one declaration scope. Types, `start_event`, `end_event`, `decision_task`, other kind-specific graph-node peers, and processes declared in one such file SHALL be available to processes in another such file without depending on source-file order. Files with different namespaces or process versions SHALL have separate scopes and SHALL NOT implicitly share declarations. Project transpilation SHALL reject duplicate peer declarations within a scope and duplicate namespace/version/process identities; it SHALL NOT report successful partial generation when any discovered file fails validation. Generic `task` and `decision` declarations SHALL be rejected rather than treated as shared peers.

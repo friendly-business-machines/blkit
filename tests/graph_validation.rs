@@ -1,462 +1,344 @@
-use blkit::{parse, transpile, validate};
+use blkit::{
+    graph::{Peer, PeerKind},
+    parse, transpile, validate,
+};
 
-const SUBPROCESS: &str = "namespace orders\nversion \"1.0\"\ntask echo(input: Number) -> Number:\n  return input\nprocess child(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\nprocess parent(input: Number) -> Number:\n  node start = start\n  node called = subprocess child(input)\n  node recovered = task echo(input)\n  node done = end\n  link start -> called\n  link called -> done(called)\n  link called -> recovered on error\n  link recovered -> done(recovered)\n";
+const SIMPLE: &str = r#"namespace routes;
+version "1";
+start_event start { output amount: Number; }
+decision_task echo { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression amount; } }
+end_event done { input result: Number; }
+process route {
+  flow start -> echo;
+  flow echo -> done;
+  bind start.amount -> echo.amount;
+  bind echo.result -> done.result;
+}"#;
 
-#[test]
-fn subprocess_routes_are_typed_and_scoped() {
-    validate(&parse(SUBPROCESS).unwrap()).unwrap();
-    let invalid = |source: &str| validate(&parse(source).unwrap()).unwrap_err();
-    assert!(
-        invalid(&SUBPROCESS.replace("echo(input)\n  node done", "echo(called)\n  node done"))
-            .contains("unknown name")
-    );
-    assert!(
-        invalid(&SUBPROCESS.replace("subprocess child(input)", "subprocess child(true)"))
-            .contains("input type")
-    );
-    assert!(
-        invalid(&SUBPROCESS.replace("subprocess child(input)", "subprocess missing(input)"))
-            .contains("unknown process")
-    );
-    assert!(invalid(&SUBPROCESS.replace("done(called)", "done(true)")).contains("end output"));
-    let wrong_output = SUBPROCESS
-        .replace(
-            "process child(input: Number) -> Number:",
-            "process child(input: Number) -> Bool:",
-        )
-        .replacen("link start -> done(input)", "link start -> done(true)", 1);
-    assert!(invalid(&wrong_output).contains("end output"));
-}
+const XOR: &str = r#"namespace routes;
+version "1";
+start_event start { output amount: Number; }
+end_event done { input result: Number; }
+xor_split gate {}
+xor_join chosen { split gate; input value: Number; output result: Number; }
+decision_task high { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression amount; } }
+decision_task low { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression 2; } }
+process route {
+  flow start -> gate;
+  flow gate -> high when start.amount > 10;
+  flow gate -> low else;
+  flow high -> chosen;
+  flow low -> chosen;
+  flow chosen -> done;
+  bind start.amount -> high.amount;
+  bind start.amount -> low.amount;
+  bind high.result -> chosen.value;
+  bind low.result -> chosen.value;
+  bind chosen.result -> done.result;
+}"#;
 
-#[test]
-fn subprocess_links_require_one_success_route_and_unique_unvalued_handlers() {
-    let invalid = |source: &str| validate(&parse(source).unwrap()).unwrap_err();
+fn reject(source: &str, expected: &str) {
+    let error = transpile(source).unwrap_err();
     assert!(
-        invalid(&SUBPROCESS.replace("  link called -> done(called)\n", "")).contains("success")
-    );
-    assert!(
-        invalid(&SUBPROCESS.replace(
-            "  link called -> recovered on error\n",
-            "  link called -> recovered on error\n  link called -> recovered on error\n"
-        ))
-        .contains("duplicate")
-    );
-    assert!(
-        invalid(&SUBPROCESS.replace("recovered on error", "recovered(true) on error"))
-            .contains("payload")
-    );
-    assert!(parse(&SUBPROCESS.replace("recovered on error", "recovered on cancel else")).is_err());
-    let all_handlers = SUBPROCESS.replace("  node done = end\n  link start -> called", "  node cancelled = task echo(input)\n  node terminated = task echo(input)\n  node done = end\n  link start -> called")
-        .replace("  link recovered -> done(recovered)", "  link recovered -> done(recovered)\n  link called -> cancelled on cancel\n  link cancelled -> done(cancelled)\n  link called -> terminated on terminate\n  link terminated -> done(terminated)");
-    validate(&parse(&all_handlers).unwrap()).unwrap();
-    assert!(
-        invalid(&SUBPROCESS.replace(
-            "link recovered -> done(recovered)",
-            "link recovered -> done(recovered) on error"
-        ))
-        .contains("subprocess")
-    );
-    assert!(
-        invalid(&SUBPROCESS.replace(
-            "link recovered -> done(recovered)",
-            "link recovered -> done(recovered)\n  link called -> done(called)"
-        ))
-        .contains("success")
+        error.contains(expected),
+        "expected {expected:?}, got {error}"
     );
 }
 
 #[test]
-fn subprocess_process_calls_must_be_acyclic_even_with_deadlines() {
-    let recursive = SUBPROCESS.replace("node start = start\n  node done = end\n  link start -> done(input)", "deadline queued \"1m\"\n  node start = start\n  node again = subprocess child(input)\n  node done = end\n  link start -> again\n  link again -> done(again)");
-    assert!(
-        validate(&parse(&recursive).unwrap())
-            .unwrap_err()
-            .contains("recursive")
+fn subprocess_outcomes_require_valid_routes_and_typed_bindings() {
+    let source = include_str!("../examples/subprocess.bl");
+    transpile(source).unwrap();
+    reject(
+        &source.replace("process child;", "process missing;"),
+        "unknown subprocess",
     );
-    let indirect = SUBPROCESS.replace("node start = start\n  node done = end\n  link start -> done(input)", "node start = start\n  node again = subprocess parent(input)\n  node done = end\n  link start -> again\n  link again -> done(again)");
-    assert!(
-        validate(&parse(&indirect).unwrap())
-            .unwrap_err()
-            .contains("recursive")
+    reject(
+        &source.replace(
+            "bind start.input -> called.input;",
+            "bind start.input -> called.missing;",
+        ),
+        "unknown binding input",
     );
-    let acyclic = SUBPROCESS.replace("node start = start\n  node done = end\n  link start -> done(input)", "node start = start\n  node again = subprocess leaf(input)\n  node done = end\n  link start -> again\n  link again -> done(again)")
-        + "process leaf(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n";
-    validate(&parse(&acyclic).unwrap()).unwrap();
+    reject(
+        &source.replace(
+            "flow called -> recover_error on error;",
+            "flow called -> recover_error on error; flow called -> recover_error on error;",
+        ),
+        "duplicate",
+    );
+    reject(
+        &source.replace(
+            "flow called -> recover_error on error;",
+            "flow called -> recover_error on unknown;",
+        ),
+        "outcome",
+    );
 }
 
-const EXPLICIT: &str = "namespace orders\nversion \"1.0\"\ntask echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> Number:\n  node start = start\n  node first = task echo(input)\n  node done = end\n  link start -> first\n  link first -> done(first)\n";
-
-const TYPED_XOR: &str = "namespace orders\nversion \"1.0\"\ntask echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> Number:\n  node start = start\n  node gate = xor_split\n  node high = task echo(input)\n  node low = task echo(input)\n  node chosen = xor_join(gate)\n  node done = end\n  link start -> gate\n  link gate -> high when input > 10\n  link gate -> low else\n  link high -> chosen(high)\n  link low -> chosen(low)\n  link chosen -> done(chosen)\n";
+#[test]
+fn subprocess_normal_and_exceptional_outputs_are_exclusive() {
+    let source = include_str!("../examples/subprocess.bl");
+    let duplicate_error = source.replace(
+        "flow called -> recover_error on error;",
+        "flow called -> recover_error on error; flow called -> failed on error;",
+    );
+    reject(&duplicate_error, "duplicate subprocess outcome");
+    let duplicate_success = source.replace(
+        "flow called -> done;",
+        "flow called -> done; flow called -> failed;",
+    );
+    reject(&duplicate_success, "one success");
+    let missing_success = source.replace("flow called -> done;", "");
+    reject(&missing_success, "one success");
+    let exceptional_output = source.replace(
+        "bind start.input -> recover_error.input;",
+        "bind called.result -> recover_error.input;",
+    );
+    reject(&exceptional_output, "unavailable on exceptional route");
+}
 
 #[test]
-fn deadlines_validate_origin_bounds_and_reserved_timeout_name() {
+fn subprocess_process_calls_must_be_acyclic() {
+    let source = r#"namespace routes; version "1";
+start_event start { output amount: Number; }
+end_event done { input result: Number; }
+subprocess called { process child; input amount: Number; output result: Number; }
+process child { flow start -> done; bind start.amount -> done.result; }
+process parent { flow start -> called; flow called -> done; bind start.amount -> called.amount; bind called.result -> done.result; }"#;
+    transpile(source).unwrap();
+    let recursive = source.replace(
+        "process child { flow start -> done; bind start.amount -> done.result; }",
+        "process child { flow start -> called; flow called -> done; bind start.amount -> called.amount; bind called.result -> done.result; }",
+    );
+    reject(&recursive, "recursive");
+}
+
+#[test]
+fn deadlines_require_valid_origin_and_positive_duration() {
     for origin in ["queued", "first_claimed"] {
-        let source = EXPLICIT.replace(
-            "  node start = start",
-            &format!("  deadline {origin} \"5h\"\n  node start = start"),
+        let source = SIMPLE.replace(
+            "process route {",
+            &format!("process route {{ deadline {origin} \"5h\";"),
         );
-        validate(&parse(&source).unwrap()).unwrap();
-        let repeated = source.replace(
-            "  node start = start",
-            "  deadline queued \"5h\"\n  node start = start",
+        transpile(&source).unwrap();
+        assert!(
+            parse(&source.replace(
+                "flow start -> echo;",
+                "deadline queued \"5h\"; flow start -> echo;"
+            ))
+            .is_err()
         );
-        assert!(parse(&repeated).is_err());
     }
     for clause in [
-        "deadline queued \"0s\"",
-        "deadline first_claimed \"nope\"",
-        "deadline unknown \"5h\"",
+        "deadline queued \"0s\";",
+        "deadline first_claimed \"nope\";",
+        "deadline unknown \"5h\";",
     ] {
         assert!(
-            parse(&EXPLICIT.replace(
-                "  node start = start",
-                &format!("  {clause}\n  node start = start")
-            ))
-            .is_err(),
+            parse(&SIMPLE.replace("process route {", &format!("process route {{ {clause}")))
+                .is_err(),
             "{clause}"
         );
     }
-    assert!(
-        validate(
-            &parse(&EXPLICIT.replace("node done = end", "node timeout = error\n  node done = end"))
-                .unwrap()
-        )
-        .unwrap_err()
-        .contains("reserved")
-    );
-    let cycle = EXPLICIT.replace(
-        "  link first -> done(first)",
-        "  link first -> first\n  link first -> done(first)",
-    );
-    assert!(
-        validate(&parse(&cycle).unwrap())
-            .unwrap_err()
-            .contains("deadline")
+    reject(
+        &SIMPLE.replace("end_event done", "error_event timeout {} end_event done"),
+        "reserved",
     );
 }
 
-const CYCLIC: &str = "namespace orders\nversion \"1.0\"\ntask echo(input: Number) -> Number:\n  return input\nprocess repeat(input: Number) -> Number:\n  deadline queued \"1s\"\n  node start = start\n  node gate = xor_split\n  node work = task echo(input)\n  node joined = xor_join(gate)\n  node stop = error\n  link start -> gate\n  link gate -> work when input > 0\n  link gate -> stop else\n  link work -> joined(work)\n  link joined -> gate\n";
-
 #[test]
-fn cyclic_routes_require_deadlines_reachable_exits_and_definite_values() {
-    validate(&parse(CYCLIC).unwrap()).unwrap();
-    assert!(transpile(CYCLIC).is_ok());
-    assert!(
-        validate(&parse(&CYCLIC.replace("  deadline queued \"1s\"\n", "")).unwrap())
-            .unwrap_err()
-            .contains("deadline")
-    );
-    let no_exit = CYCLIC
-        .replace("  node stop = error\n", "  node skip = task echo(input)\n")
-        .replace("link gate -> stop else", "link gate -> skip else")
-        .replace(
-            "link joined -> gate",
-            "link skip -> joined(skip)\n  link joined -> gate",
-        );
-    assert!(
-        validate(&parse(&no_exit).unwrap())
-            .unwrap_err()
-            .contains("exit")
-    );
-    let uninitialized = CYCLIC.replace("when input > 0", "when work > 0");
-    assert!(
-        validate(&parse(&uninitialized).unwrap())
-            .unwrap_err()
-            .contains("unknown name")
-    );
-    let invalid_join = CYCLIC.replace(
-        "link work -> joined(work)",
-        "link start -> joined(input)\n  link work -> joined(work)",
-    );
-    assert!(validate(&parse(&invalid_join).unwrap()).is_err());
+fn cycles_require_deadlines_and_reachable_exit() {
+    let source = include_str!("../examples/iteration.bl");
+    transpile(source).unwrap();
+    reject(&source.replace("deadline queued \"2s\";", ""), "deadline");
+    let no_exit = source.replace("flow gate -> stopped else;", "flow gate -> echo else;");
+    assert!(transpile(&no_exit).is_err());
+    let unavailable = source.replace("when number_start.input > 0", "when echo.result > 0");
+    reject(&unavailable, "unavailable");
 }
 
 #[test]
-fn task_free_cycle_with_deadline_is_a_valid_graph() {
-    let source = "namespace example\nversion \"1\"\nprocess spin(input: Number) -> Number:\n  deadline queued \"1s\"\n  node start = start\n  node gate = xor_split\n  node joined = xor_join(gate)\n  node failed = error\n  link start -> gate\n  link gate -> joined(input) when input > 0\n  link gate -> failed else\n  link joined -> gate\n";
-    validate(&parse(source).unwrap()).unwrap();
-}
-
-#[test]
-fn task_loop_bounds_conditions_and_initial_values_are_typed() {
-    let post = EXPLICIT.replace(
-        "task echo(input)",
-        "task echo(input) repeat_post(first < 3) max_iterations 3",
-    );
-    validate(&parse(&post).unwrap()).unwrap();
-    let pre = EXPLICIT.replace(
-        "task echo(input)",
-        "task echo(input) repeat_pre(first < 3) max_duration \"1m\" initial 0",
-    );
-    validate(&parse(&pre).unwrap()).unwrap();
-    for invalid in [
-        "task echo(input) repeat_post(first < 3) max_iterations 0",
-        "task echo(input) repeat_post(first < 3)",
-        "task echo(input) repeat_pre(first < 3) max_iterations 3",
-        "task echo(input) repeat_pre(1) max_iterations 3 initial 0",
-        "task echo(input) repeat_pre(first < 3) max_iterations 3 initial true",
+fn repetition_and_multi_instance_require_typed_bounded_inputs() {
+    let source = include_str!("../examples/iteration.bl");
+    for property in [
+        "repeat_post echo while echo.result < 3 max_iterations 0;",
+        "repeat_pre echo while echo.result < 3 max_iterations 3;",
+        "repeat_post echo while echo.result < 3;",
+        "repeat_post echo while echo.result < 3 max_duration \"0s\";",
     ] {
-        let source = EXPLICIT.replace("task echo(input)", invalid);
-        assert!(
-            parse(&source)
-                .and_then(|program| validate(&program))
-                .is_err(),
-            "{invalid}"
+        let invalid = source.replace(
+            "deadline queued \"2s\";",
+            &format!("deadline queued \"2s\"; {property}"),
+        );
+        assert!(transpile(&invalid).is_err(), "accepted: {property}");
+    }
+    assert!(
+        parse(&source.replace(
+            "multi_instance echo each list_start.values parallel;",
+            "multi_instance echo each list_start.values random;"
+        ))
+        .is_err()
+    );
+    reject(
+        &source.replace("output values: List<Number>;", "output values: List<Bool>;"),
+        "type mismatch",
+    );
+}
+
+#[test]
+fn bindings_check_types_and_route_availability() {
+    transpile(XOR).unwrap();
+    reject(
+        &XOR.replace("when start.amount > 10", "when start.amount"),
+        "Bool",
+    );
+    reject(
+        &XOR.replace("when start.amount > 10", "when high.result > 10"),
+        "unavailable",
+    );
+    reject(
+        &XOR.replace(
+            "bind chosen.result -> done.result;",
+            "bind high.result -> done.result;",
+        ),
+        "unavailable",
+    );
+    reject(
+        &XOR.replace("input result: Number; }", "input result: Bool; }"),
+        "type mismatch",
+    );
+    reject(
+        &XOR.replace(
+            "bind low.result -> chosen.value;",
+            "bind high.result -> chosen.value;",
+        ),
+        "one binding per incoming branch",
+    );
+}
+
+#[test]
+fn gateway_splits_and_joins_validate_branch_shape() {
+    let source = include_str!("../examples/graph.bl");
+    transpile(source).unwrap();
+    reject(
+        &source.replace(
+            "flow parallel_fork -> right as right;",
+            "flow parallel_fork -> right as left;",
+        ),
+        "branch",
+    );
+    reject(
+        &source.replace("right: Number;", "right: Bool;"),
+        "type mismatch",
+    );
+    reject(
+        &source.replace(
+            "flow offer_fork -> fallback else;",
+            "flow offer_fork -> fallback when start.total > 5000;",
+        ),
+        "else",
+    );
+    reject(
+        &XOR.replace("flow low -> chosen;", "flow low -> done;"),
+        "join",
+    );
+    reject(
+        &XOR.replace(
+            "xor_join chosen { split gate;",
+            "or_join chosen { split gate;",
+        ),
+        "split",
+    );
+}
+
+#[test]
+fn ordinary_nodes_cannot_fork_or_merge_without_gateways() {
+    let fork = SIMPLE
+        .replace(
+            "flow echo -> done;",
+            "flow echo -> done; flow echo -> failure;",
+        )
+        .replace("end_event done", "error_event failure {} end_event done");
+    reject(&fork, "split");
+    reject(&SIMPLE.replace("flow echo -> done;", ""), "end event");
+    let bad_condition = SIMPLE.replace("flow start -> echo;", "flow start -> echo else;");
+    assert!(transpile(&bad_condition).is_err());
+}
+
+#[test]
+fn graph_rejects_missing_duplicate_unreachable_and_invalid_nodes() {
+    transpile(SIMPLE).unwrap();
+    reject(
+        &SIMPLE.replace("flow start -> echo;", "flow start -> absent;"),
+        "unknown",
+    );
+    reject(
+        &SIMPLE.replace(
+            "process route {",
+            "start_event start { output amount: Number; } process route {",
+        ),
+        "duplicate",
+    );
+    let disconnected = SIMPLE.replace("flow start -> echo;", "flow echo -> done;");
+    assert!(transpile(&disconnected).is_err());
+    let wrong_port = SIMPLE.replace(
+        "bind start.amount -> echo.amount;",
+        "bind start.amount -> echo.missing;",
+    );
+    reject(&wrong_port, "unknown binding input");
+}
+
+#[test]
+fn exceptional_terminals_reject_payloads_but_need_no_normal_end() {
+    for kind in ["error", "cancel", "terminate"] {
+        let declaration = format!("{kind}_event failed {{}}");
+        let source = SIMPLE
+            .replace("end_event done { input result: Number; }", &declaration)
+            .replace("flow echo -> done;", "flow echo -> failed;")
+            .replace("bind echo.result -> done.result;", "");
+        transpile(&source).unwrap();
+        reject(
+            &source.replace(
+                &declaration,
+                &format!("{kind}_event failed {{ input result: Number; }}"),
+            ),
+            "terminal",
+        );
+        reject(
+            &source.replace("flow echo -> failed;", "flow echo -> failed on error;"),
+            "subprocess",
         );
     }
 }
 
 #[test]
-fn multi_instance_tasks_require_typed_lists_and_known_mode() {
-    let source = "namespace orders\nversion \"1\"\ntask echo(input: Number) -> Number:\n  return input\nprocess group(input: List<Number>) -> List<Number>:\n  node start = start\n  node batch = task echo each input sequential\n  node done = end\n  link start -> batch\n  link batch -> done(batch)\n";
-    validate(&parse(source).unwrap()).unwrap();
-    validate(&parse(&source.replace("sequential", "parallel")).unwrap()).unwrap();
-    assert!(parse(&source.replace("sequential", "random")).is_err());
-    assert!(
-        validate(
-            &parse(&source.replace(
-                "List<Number>) -> List<Number>",
-                "List<Bool>) -> List<Number>"
-            ))
-            .unwrap()
-        )
-        .is_err()
-    );
-    assert!(
-        validate(
-            &parse(&source.replace(
-                "process group(input: List<Number>)",
-                "process group(input: Number)"
-            ))
-            .unwrap()
-        )
-        .is_err()
-    );
+fn validation_rejects_programmatically_invalid_peer_kinds() {
+    let mut program = parse(SIMPLE).unwrap();
+    program.peer_nodes.push(Peer {
+        name: "invalid".into(),
+        kind: PeerKind::Terminal { kind: "NoSuch" },
+    });
+    assert!(validate(&program).unwrap_err().contains("terminal kind"));
+    program.peer_nodes.pop();
+    program.peer_nodes.push(Peer {
+        name: "invalid".into(),
+        kind: PeerKind::Split { kind: "NoSuch" },
+    });
+    assert!(validate(&program).unwrap_err().contains("gateway kind"));
 }
 
 #[test]
-fn explicit_links_validate_types_and_path_availability() {
-    validate(&parse(TYPED_XOR).unwrap()).unwrap();
-    let invalid = |text: &str| validate(&parse(text).unwrap()).unwrap_err();
-    assert!(invalid(&TYPED_XOR.replace("when input > 10", "when input")).contains("Bool"));
-    assert!(invalid(&TYPED_XOR.replace("echo(input)", "echo(true)")).contains("task input"));
-    assert!(invalid(&TYPED_XOR.replace("done(chosen)", "done(true)")).contains("end"));
-    assert!(
-        invalid(&TYPED_XOR.replace("link low -> chosen(low)", "link low -> chosen(high)"))
-            .contains("unknown name")
-    );
-}
-
-#[test]
-fn gateway_conditions_use_only_values_available_on_every_route() {
-    let source = TYPED_XOR
-        .replace(
-            "node gate = xor_split",
-            "node base = task echo(input)\n  node gate = xor_split",
-        )
-        .replace(
-            "link start -> gate",
-            "link start -> base\n  link base -> gate",
-        )
-        .replace("when input > 10", "when base > input");
-    validate(&parse(&source).unwrap()).unwrap();
-    let unavailable = source.replace("when base > input", "when high > input");
-    assert!(
-        validate(&parse(&unavailable).unwrap())
-            .unwrap_err()
-            .contains("unknown name")
-    );
-}
-
-#[test]
-fn explicit_and_join_matches_branch_labels_to_record_fields() {
-    let source = "namespace orders\nversion \"1.0\"\ntype Pair:\n  left: Number\n  right: Number\ntask echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> Pair:\n  node start = start\n  node split = and_split\n  node left = task echo(input)\n  node right = task echo(input)\n  node both = and_join(split): Pair\n  node done = end\n  link start -> split\n  link split -> left as left\n  link split -> right as right\n  link left -> both(left)\n  link right -> both(right)\n  link both -> done(both)\n";
-    validate(&parse(source).unwrap()).unwrap();
-    let invalid = |text: &str| validate(&parse(text).unwrap()).unwrap_err();
-    assert!(invalid(&source.replace("right: Number", "right: Bool")).contains("AND join"));
-    assert!(invalid(&source.replace("-> right as right", "-> right as left")).contains("branch"));
-}
-
-#[test]
-fn explicit_or_requires_fallback_and_compatible_results() {
-    let source = "namespace orders\nversion \"1.0\"\ntask echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> List<Number>:\n  node start = start\n  node split = or_split\n  node a = task echo(input)\n  node b = task echo(input)\n  node c = task echo(input)\n  node joined = or_join(split)\n  node done = end\n  link start -> split\n  link split -> a when input > 1\n  link split -> b when input > 2\n  link split -> c else\n  link a -> joined(a)\n  link b -> joined(b)\n  link c -> joined(c)\n  link joined -> done(joined)\n";
-    validate(&parse(source).unwrap()).unwrap();
-    let invalid = |text: &str| validate(&parse(text).unwrap()).unwrap_err();
-    assert!(
-        invalid(&source.replace("link split -> c else", "link split -> c when input > 3"))
-            .contains("fallback")
-    );
-    assert!(invalid(&source.replace("joined(c)", "joined(true)")).contains("matching"));
-}
-
-#[test]
-fn normal_split_branches_must_reach_their_matching_join() {
-    let bypass = TYPED_XOR.replace("link low -> chosen(low)", "link low -> done(low)");
-    assert!(
-        validate(&parse(&bypass).unwrap())
-            .unwrap_err()
-            .contains("join")
-    );
-}
-
-#[test]
-fn join_rejects_routes_that_do_not_come_from_its_split() {
-    let extra = TYPED_XOR.replace(
-        "link start -> gate",
-        "link start -> gate\n  link start -> chosen(input)",
-    );
-    assert!(validate(&parse(&extra).unwrap()).is_err());
-}
-
-#[test]
-fn split_rejects_multiple_matching_joins() {
-    let extra = TYPED_XOR
-        .replace(
-            "node done = end",
-            "node other = xor_join(gate)\n  node done = end",
-        )
-        .replace(
-            "link low -> chosen(low)",
-            "link low -> other(low)\n  link other -> chosen(other)",
-        );
-    assert!(
-        validate(&parse(&extra).unwrap())
-            .unwrap_err()
-            .contains("join")
-    );
-}
-
-#[test]
-fn branches_cannot_merge_before_their_join() {
-    let merged = TYPED_XOR.replace("link low -> chosen(low)", "link low -> high");
-    assert!(
-        validate(&parse(&merged).unwrap())
-            .unwrap_err()
-            .contains("join")
-    );
-}
-
-#[test]
-fn ordinary_nodes_cannot_fork_without_a_split() {
-    let fork = EXPLICIT
-        .replace("node done = end", "node other = end\n  node done = end")
-        .replace(
-            "link first -> done(first)",
-            "link first -> done(first)\n  link first -> other(first)",
-        );
-    assert!(
-        validate(&parse(&fork).unwrap())
-            .unwrap_err()
-            .contains("split")
-    );
-}
-
-#[test]
-fn values_are_allowed_only_on_join_and_normal_end_links() {
-    let extra = EXPLICIT.replace("link start -> first", "link start -> first(true)");
-    assert!(
-        validate(&parse(&extra).unwrap())
-            .unwrap_err()
-            .contains("value")
-    );
-}
-
-#[test]
-fn routing_annotations_require_their_matching_gateway() {
-    let fallback = EXPLICIT.replace("link start -> first", "link start -> first else");
-    assert!(
-        validate(&parse(&fallback).unwrap())
-            .unwrap_err()
-            .contains("fallback")
-    );
-    let label = EXPLICIT.replace("link start -> first", "link start -> first as extra");
-    assert!(
-        validate(&parse(&label).unwrap())
-            .unwrap_err()
-            .contains("label")
-    );
-}
-
-#[test]
-fn exceptional_terminals_reject_payloads() {
-    for terminal in ["error", "cancel", "terminate"] {
-        let source = EXPLICIT.replace("node done = end", &format!("node done = {terminal}"));
-        assert!(
-            validate(&parse(&source).unwrap())
-                .unwrap_err()
-                .contains("payload"),
-            "{terminal}"
-        );
-        let valid = source.replace("done(first)", "done");
-        validate(&parse(&valid).unwrap()).unwrap();
+fn legacy_graph_forms_are_not_accepted() {
+    for invalid in [
+        SIMPLE.replace(
+            "flow start -> echo;",
+            "node work = task echo(start.amount);",
+        ),
+        SIMPLE.replace("flow start -> echo;", "link start -> echo;"),
+        SIMPLE.replace("flow echo -> done;", "return echo.result;"),
+    ] {
+        assert!(parse(&invalid).is_err(), "accepted legacy graph: {invalid}");
     }
-}
-
-#[test]
-fn exceptional_branch_does_not_need_normal_end_output() {
-    let source = TYPED_XOR
-        .replace("node low = task echo(input)", "node failure = error")
-        .replace("link gate -> low else", "link gate -> failure else")
-        .replace("  link low -> chosen(low)\n", "");
-    validate(&parse(&source).unwrap()).unwrap();
-}
-
-#[test]
-fn explicit_split_and_join_require_typed_branch_values() {
-    let invalid = |text: &str| validate(&parse(text).unwrap()).unwrap_err();
-    assert!(invalid(&TYPED_XOR.replace("chosen(low)", "chosen(true)")).contains("matching"));
-    assert!(invalid(&TYPED_XOR.replace("xor_join(gate)", "or_join(gate)")).contains("matching"));
-}
-
-#[test]
-fn explicit_graph_rejects_missing_duplicate_and_unreachable_nodes() {
-    validate(&parse(EXPLICIT).unwrap()).unwrap();
-    let invalid = |text: &str| validate(&parse(text).unwrap()).unwrap_err();
-    assert!(
-        invalid(&EXPLICIT.replace("link start -> first", "link start -> missing"))
-            .contains("unknown node")
-    );
-    assert!(
-        invalid(&EXPLICIT.replace("  node done = end", "  node first = end\n  node done = end"))
-            .contains("duplicate node")
-    );
-    assert!(
-        invalid(&EXPLICIT.replace(
-            "  node done = end",
-            "  node unused = error\n  node done = end"
-        ))
-        .contains("unreachable")
-    );
-}
-
-#[test]
-fn explicit_graph_rejects_cycles_dead_ends_and_invalid_joins() {
-    let invalid = |text: &str| validate(&parse(text).unwrap()).unwrap_err();
-    assert!(
-        invalid(&EXPLICIT.replace(
-            "  link first -> done(first)",
-            "  link first -> first\n  link first -> done(first)"
-        ))
-        .contains("cycle")
-    );
-    assert!(invalid(&EXPLICIT.replace("  link first -> done(first)", "")).contains("dead end"));
-    assert!(
-        invalid(&EXPLICIT.replace(
-            "  node first = task echo(input)",
-            "  node first = xor_join(missing)"
-        ))
-        .contains("split")
-    );
-}
-
-const SOURCE: &str = "namespace orders\nversion \"1.0\"\ntask echo(input: Number) -> Number:\n  return input\nprocess route(input: Number) -> Number:\n  run first = echo(input)\n  run second = echo(first)\n  return second\n";
-
-#[test]
-fn old_process_returns_and_implicit_runs_require_explicit_graphs() {
-    assert!(transpile(SOURCE).unwrap_err().contains("explicit"));
-    let single_body = "namespace orders\nversion \"1.0\"\nprocess route(input: Number) -> Number:\n  return input\n";
-    assert!(transpile(single_body).unwrap_err().contains("explicit"));
-    let mixed = EXPLICIT.replace("link first -> done(first)", "return first");
-    assert!(transpile(&mixed).unwrap_err().contains("explicit end"));
-    validate(&parse(EXPLICIT).unwrap()).unwrap();
+    validate(&parse(SIMPLE).unwrap()).unwrap();
 }

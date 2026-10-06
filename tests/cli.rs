@@ -1,5 +1,7 @@
 use std::process::Command;
 
+const SOURCE: &str = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } process route { flow start -> done; bind start.input -> done.result; }";
+
 #[test]
 fn help_explains_source_and_output() {
     let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
@@ -105,7 +107,7 @@ fn valid_source_writes_rust() {
     std::fs::create_dir_all(&directory).unwrap();
     let input = directory.join("input.bl");
     let output = directory.join("output.rs");
-    std::fs::write(&input, "namespace orders\nversion \"1.0\"\nprocess echo(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n").unwrap();
+    std::fs::write(&input, SOURCE).unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
         .args([&input, &output])
         .output()
@@ -138,7 +140,7 @@ fn transpile_generates_projects_without_cargo_or_a_binary() {
             ),
         )
         .unwrap();
-        std::fs::write(directory.join("route.bl"), "namespace orders\nversion \"1\"\nprocess route(input: Number) -> Number:\n  node start = start\n  node done = end\n  link start -> done(input)\n").unwrap();
+        std::fs::write(directory.join("route.bl"), SOURCE).unwrap();
         let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
             .arg("transpile")
             .current_dir(&directory)
@@ -165,12 +167,12 @@ fn transpile_generates_projects_without_cargo_or_a_binary() {
 }
 
 #[test]
-fn transpile_requires_cargo_when_extension_is_referenced() {
+fn transpile_rejects_legacy_extension_calls_without_cargo() {
     let directory =
         std::env::temp_dir().join(format!("blkit-cli-extension-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(directory.join("blkit.toml"), "[project]\nname = \"orders\"\nblkit = \"0.1.0\"\nbuild_target = \"crate\"\n[dependencies]\npayments = { version = \"0.1.0\", path = \"payments\" }\n").unwrap();
-    std::fs::write(directory.join("route.bl"), "namespace orders\nversion \"1\"\nprocess route(input: Number) -> Number:\n  node start = start\n  node work = task payments.charge(input)\n  node done = end\n  link start -> work\n  link work -> done(work)\n").unwrap();
+    std::fs::write(directory.join("route.bl"), "namespace orders; version \"1\"; process route { node work = task payments.charge(input); }").unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
         .arg("transpile")
         .arg(&directory)
@@ -179,8 +181,8 @@ fn transpile_requires_cargo_when_extension_is_referenced() {
         .unwrap();
     assert!(!result.status.success());
     let stderr = String::from_utf8_lossy(&result.stderr);
-    assert!(stderr.contains("cargo metadata"), "{stderr}");
-    assert!(!directory.join(".blkit/target").exists());
+    assert!(stderr.contains("invalid process statement"), "{stderr}");
+    assert!(!directory.join(".blkit/Cargo.toml").exists());
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -243,10 +245,10 @@ fn update_command_reports_invalid_project_manifest() {
 #[test]
 fn invalid_source_produces_diagnostic_without_output() {
     for (case, source, error) in [
-        ("parse", "namespace orders\n", "version"),
+        ("parse", "namespace orders;\n", "version"),
         (
             "type",
-            "namespace orders\nversion \"1.0\"\nprocess echo(input: Unknown) -> Number:\n  node start = start\n  node done = end\n  link start -> done(1)\n",
+            "namespace orders; version \"1\"; start_event start { output input: Unknown; } end_event done { input result: Unknown; } process route { flow start -> done; bind start.input -> done.result; }",
             "Unknown",
         ),
     ] {
@@ -274,7 +276,7 @@ fn errors_include_source_and_project_context_without_terminal_controls() {
     std::fs::create_dir_all(&directory).unwrap();
     let input = directory.join("invalid.bl");
     let output = directory.join("output.rs");
-    std::fs::write(&input, "namespace orders\n").unwrap();
+    std::fs::write(&input, "namespace orders;\n").unwrap();
     std::fs::write(
         directory.join("blkit.toml"),
         "[project]\nname = \"demo\"\nblkit = \"0.1.0\"\nbuild_target = \"invalid\"\n",
