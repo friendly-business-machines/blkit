@@ -317,7 +317,9 @@ fn server_and_worker_build_link_cross_file_subprocesses() {
     let child = "namespace orders; version \"1\"; process child { flow start -> done; bind start.input -> done.result; }";
     for target in ["server", "worker"] {
         let root = project(
-            &MANIFEST.replace("\"crate\"", &format!("\"{target}\"")),
+            &MANIFEST
+                .replace("name = \"orders\"", "name = \"subprocess_fixture\"")
+                .replace("\"crate\"", &format!("\"{target}\"")),
             &[("a-parent.bl", parent), ("z-child.bl", child)],
         );
         blkit::project::Project::load(&root)
@@ -869,7 +871,9 @@ fn generated_binaries_configure_logging_before_runtime_and_report_failures() {
     let source = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } process route { flow start -> done; bind start.input -> done.result; }";
     for role in ["server", "worker"] {
         let root = project(
-            &MANIFEST.replace("\"crate\"", &format!("\"{role}\"")),
+            &MANIFEST
+                .replace("name = \"orders\"", "name = \"logging_fixture\"")
+                .replace("\"crate\"", &format!("\"{role}\"")),
             &[("route.bl", source)],
         );
         blkit::project::Project::load(&root)
@@ -878,8 +882,8 @@ fn generated_binaries_configure_logging_before_runtime_and_report_failures() {
             .unwrap();
         cargo_build(&root).unwrap();
         let binary = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-            || root.join(format!(".blkit/target/debug/orders-{role}")),
-            |target| PathBuf::from(target).join(format!("debug/orders-{role}")),
+            || root.join(format!(".blkit/target/debug/logging_fixture-{role}")),
+            |target| PathBuf::from(target).join(format!("debug/logging_fixture-{role}")),
         );
         let args: Vec<_> = if role == "server" {
             vec![root.join("local.db").to_string_lossy().into_owned()]
@@ -938,7 +942,9 @@ fn project_server_executes_compiled_process_over_loopback_rest() {
     };
     let source = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } decision_task echo { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression input; } } process route { flow start -> echo; flow echo -> done; bind start.input -> echo.input; bind echo.result -> done.result; }";
     let root = project(
-        &MANIFEST.replace("\"crate\"", "\"server\""),
+        &MANIFEST
+            .replace("name = \"orders\"", "name = \"rest_fixture\"")
+            .replace("\"crate\"", "\"server\""),
         &[("route.bl", source)],
     );
     blkit::project::Project::load(&root)
@@ -947,8 +953,8 @@ fn project_server_executes_compiled_process_over_loopback_rest() {
         .unwrap();
     cargo_build(&root).unwrap();
     let binary = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-        || root.join(".blkit/target/debug/orders-server"),
-        |target| PathBuf::from(target).join("debug/orders-server"),
+        || root.join(".blkit/target/debug/rest_fixture-server"),
+        |target| PathBuf::from(target).join("debug/rest_fixture-server"),
     );
     assert!(
         binary.exists(),
@@ -1022,7 +1028,9 @@ async fn project_worker_binary_claims_only_its_compiled_process_version() {
         postgres::Postgres,
         testcontainers::{ImageExt, runners::AsyncRunner},
     };
-    let manifest = MANIFEST.replace("\"crate\"", "\"worker\"");
+    let manifest = MANIFEST
+        .replace("name = \"orders\"", "name = \"worker_fixture\"")
+        .replace("\"crate\"", "\"worker\"");
     let source = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } decision_task echo { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression input; } } process route { flow start -> echo; flow echo -> done; bind start.input -> echo.input; bind echo.result -> done.result; }";
     let root = project(&manifest, &[("route.bl", source)]);
     blkit::project::Project::load(&root)
@@ -1031,8 +1039,8 @@ async fn project_worker_binary_claims_only_its_compiled_process_version() {
         .unwrap();
     cargo_build(&root).unwrap();
     let binary = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-        || root.join(".blkit/target/debug/orders-worker"),
-        |target| PathBuf::from(target).join("debug/orders-worker"),
+        || root.join(".blkit/target/debug/worker_fixture-worker"),
+        |target| PathBuf::from(target).join("debug/worker_fixture-worker"),
     );
     assert!(
         binary.exists(),

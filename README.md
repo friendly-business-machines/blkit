@@ -168,6 +168,14 @@ The first argument is the local in-process Turso database path (default `blkit.d
 
 In VS Code, run **Dev Containers: Reopen in Container** and select the configuration for your host: the existing **blkit (Ubuntu 26.04 LTS)** option is for Fedora Silverblue with rootless Podman; **blkit (Windows + Docker Desktop)** is for Windows VS Code with a Windows checkout and Docker Desktop's WSL 2 backend. Both use the same Dockerfile. The Windows option forwards Docker Desktop's socket without making the host socket world-writable; do not use it from a VS Code Remote–WSL window.
 
+If the checkout is on a Windows-backed mount (such as WSL's `/mnt/c` or a devcontainer's 9p-mounted `/workspaces`), keep Cargo build output on a Linux filesystem. On this setup, the full suite passed with:
+
+```sh
+CARGO_TARGET_DIR=/tmp/blkit-generated-test-target CARGO_BUILD_JOBS=8 cargo test --all --workspace -- --test-threads=4
+```
+
+Project integration tests use distinct generated binary names, so test threads can run in parallel. Moving the target directory is not specific to WSL and is unnecessary when Cargo already builds on a fast Linux filesystem. `/tmp` may be cleared between sessions, so use a persistent Linux filesystem if you need the build cache to survive restarts.
+
 ## PostgreSQL integration tests
 
 Run isolated PostgreSQL tests with the Docker-compatible container-engine socket mounted in the selected devcontainer:
