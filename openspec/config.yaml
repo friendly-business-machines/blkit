@@ -2,7 +2,7 @@ schema: spec-driven
 
 rules:
   tasks:
-    - "Always end tasks.md with a review task: run three independent read-only reviews of the same completed diff using .pi/skills/review-rust-project/SKILL.md, .pi/skills/review-rust-microsoft/SKILL.md, and .pi/skills/review-rust-google/SKILL.md (reviewers must not see each other's findings); have the parent review the three reports and adjudicate every finding (including disagreements) against the code and sources, record which to accept or reject and why, implement accepted changes, then use the existing ponytail-review skill on the revised diff, address its actionable findings, and re-verify affected work. Keep this task unchecked until all stages finish."
+    - "Always end tasks.md with a review task: run four independent read-only reviews of the same completed diff using .pi/skills/review-rust-project/SKILL.md, .pi/skills/review-rust-microsoft/SKILL.md, .pi/skills/review-rust-google/SKILL.md, and .pi/skills/rust-skills/SKILL.md (leonardomso/rust-skills; reviewers must not see each other's findings); have the parent review the four reports and adjudicate every finding (including disagreements) against the code and sources, record which to accept or reject and why, implement accepted changes, then use the existing ponytail-review skill on the revised diff, address its actionable findings, and re-verify affected work. Keep this task unchecked until all stages finish."
 
 # Project context (optional)
 # This is shown to AI when creating artifacts.
