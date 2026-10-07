@@ -18,8 +18,8 @@ mod types;
 use decision::check_decision;
 pub(crate) use graph::named_scopes;
 use graph::{check_named_graph, check_source_graph};
-pub(crate) use types::string_builtin;
 use types::*;
+pub(crate) use types::{builtin, infer_with};
 
 pub fn validate(program: &Program) -> Result<(), String> {
     let mut names: HashSet<&str> = [

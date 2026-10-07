@@ -6,9 +6,10 @@ fn table_item(
     result: &Type,
     program: &Program,
     knowledge: &[Knowledge],
+    env: &HashMap<String, Type>,
 ) -> String {
     if table.outputs.len() == 1 {
-        emit_expr_with(&values[0], program, knowledge)
+        emit_typed_expr(&values[0], program, knowledge, env)
     } else {
         let Type::Named(name) = (if matches!(result, Type::Generic(_, _)) {
             match result {
@@ -28,7 +29,7 @@ fn table_item(
                 .zip(values)
                 .map(|((field, _), expr)| format!(
                     "{field}: {}",
-                    emit_expr_with(expr, program, knowledge)
+                    emit_typed_expr(expr, program, knowledge, env)
                 ))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -41,14 +42,17 @@ fn emit_table(
     result: &Type,
     program: &Program,
     knowledge: &[Knowledge],
+    env: &HashMap<String, Type>,
 ) -> String {
+    let mut env = env.clone();
     let mut code = String::from("{\n");
     for (name, ty, expression) in &table.inputs {
         code.push_str(&format!(
             "let {name}: {} = {};\n",
             rust_type(ty),
-            emit_expr_with(expression, program, knowledge)
+            emit_typed_expr(expression, program, knowledge, &env)
         ));
+        env.insert(name.clone(), ty.clone());
     }
     let item_type = if matches!(
         table.policy.as_str(),
@@ -71,18 +75,18 @@ fn emit_table(
     for (condition, values) in &table.rules {
         code.push_str(&format!(
             "if {} {{ __bl_matches.push({}); }}\n",
-            emit_expr_with(condition, program, knowledge),
+            emit_typed_expr(condition, program, knowledge, &env),
             if table.aggregation.as_deref() == Some("COUNT") {
                 "()".into()
             } else {
-                table_item(table, values, result, program, knowledge)
+                table_item(table, values, result, program, knowledge, &env)
             }
         ));
     }
     let fallback = table
         .default
         .as_ref()
-        .map(|values| table_item(table, values, result, program, knowledge));
+        .map(|values| table_item(table, values, result, program, knowledge, &env));
     let absent = fallback
         .map(|value| format!("Ok({value})"))
         .unwrap_or_else(|| "Err(String::from(\"no matching decision rule\"))".into());
@@ -100,7 +104,7 @@ fn emit_table(
             let priority = table
                 .priorities
                 .iter()
-                .map(|row| table_item(table, row, result, program, knowledge))
+                .map(|row| table_item(table, row, result, program, knowledge, &env))
                 .collect::<Vec<_>>()
                 .join(", ");
             let mut expression = format!(
@@ -115,7 +119,7 @@ fn emit_table(
                     .map(|values| {
                         format!(
                             "vec![{}]",
-                            table_item(table, values, result, program, knowledge)
+                            table_item(table, values, result, program, knowledge, &env)
                         )
                     })
                     .unwrap_or_else(|| "vec![]".into());
@@ -130,7 +134,7 @@ fn emit_table(
                 .map(|values| {
                     format!(
                         "vec![{}]",
-                        table_item(table, values, result, program, knowledge)
+                        table_item(table, values, result, program, knowledge, &env)
                     )
                 })
                 .unwrap_or_else(|| "vec![]".into());
@@ -140,7 +144,7 @@ fn emit_table(
             let absent = table
                 .default
                 .as_ref()
-                .map(|values| emit_expr_with(&values[0], program, knowledge))
+                .map(|values| emit_typed_expr(&values[0], program, knowledge, &env))
                 .unwrap_or_else(|| "Number::ZERO".into());
             format!(
                 "if __bl_matches.is_empty() {{ Ok({absent}) }} else {{ Ok(Number::from(__bl_matches.len() as u64)) }}"
@@ -148,7 +152,9 @@ fn emit_table(
         }
         ("COLLECT", Some("SUM" | "MIN" | "MAX")) => {
             let operation = match table.aggregation.as_deref().unwrap() {
-                "SUM" => "sum::<Number>()",
+                "SUM" => {
+                    "try_fold(Number::ZERO, |sum, value| blkit::number_ops::arithmetic(\"+\", sum, value))?"
+                }
                 "MIN" => "min().unwrap()",
                 _ => "max().unwrap()",
             };
@@ -183,11 +189,29 @@ pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut 
         "pub fn {}({inputs}) -> Result<{output}, String> {{\n",
         model.name
     ));
-    for item in &model.knowledge {
+    let mut env: HashMap<String, Type> = model.inputs.iter().cloned().collect();
+    env.extend(
+        model
+            .nodes
+            .iter()
+            .map(|node| (node.name.clone(), node.output.clone())),
+    );
+    let knowledge: Vec<_> = model
+        .knowledge
+        .iter()
+        .map(|item| {
+            let mut typed = item.clone();
+            let mut local_env = env.clone();
+            local_env.extend(item.params.iter().cloned());
+            typed.body = specialize_expr(&item.body, program, &model.knowledge, &local_env);
+            typed
+        })
+        .collect();
+    for item in &knowledge {
         if item.braced {
             continue;
         }
-        let fallible = expr_fallible(&item.body, &model.knowledge);
+        let fallible = expr_fallible(&item.body, &knowledge);
         out.push_str(&format!(
             "fn {}({}) -> {} {{ {}{}{} }}\n",
             item.name,
@@ -202,7 +226,7 @@ pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut 
                 rust_type(&item.output)
             },
             if fallible { "Ok(" } else { "" },
-            emit_expr_with(&item.body, program, &model.knowledge),
+            emit_expr_with(&item.body, program, &knowledge),
             if fallible { ")" } else { "" }
         ));
     }
@@ -218,24 +242,28 @@ pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut 
                 continue;
             }
             let value = match &node.kind {
-                DecisionKind::Literal(expr) => emit_expr_with(expr, program, &model.knowledge),
-                DecisionKind::Context { entries, result } => format!(
-                    "{{ {} {} }}",
-                    entries
-                        .iter()
-                        .map(|(name, ty, expr)| format!(
+                DecisionKind::Literal(expr) => emit_typed_expr(expr, program, &knowledge, &env),
+                DecisionKind::Context { entries, result } => {
+                    let mut local_env = env.clone();
+                    let mut declarations = Vec::new();
+                    for (name, ty, expr) in entries {
+                        declarations.push(format!(
                             "let {name}: {} = {};",
                             rust_type(ty),
-                            emit_expr_with(expr, program, &model.knowledge)
-                        ))
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                    emit_expr_with(result, program, &model.knowledge)
-                ),
+                            emit_typed_expr(expr, program, &knowledge, &local_env)
+                        ));
+                        local_env.insert(name.clone(), ty.clone());
+                    }
+                    format!(
+                        "{{ {} {} }}",
+                        declarations.join(" "),
+                        emit_typed_expr(result, program, &knowledge, &local_env)
+                    )
+                }
                 DecisionKind::Table(table) => format!(
                     "(|| -> Result<{}, String> {{ {} }})()?",
                     rust_type(&node.output),
-                    emit_table(table, &node.output, program, &model.knowledge)
+                    emit_table(table, &node.output, program, &knowledge, &env)
                 ),
             };
             out.push_str(&format!(

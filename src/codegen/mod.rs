@@ -16,6 +16,35 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
                 && matches!(
                     name.as_str(),
                     "string"
+                        | "round"
+                        | "roundUp"
+                        | "roundDown"
+                        | "roundHalfUp"
+                        | "roundHalfDown"
+                        | "roundHalfEven"
+                        | "floor"
+                        | "ceiling"
+                        | "min"
+                        | "max"
+                        | "sum"
+                        | "mean"
+                        | "median"
+                        | "product"
+                        | "stddev"
+                        | "mode"
+                        | "number"
+                        | "abs"
+                        | "modulo"
+                        | "sqrt"
+                        | "exp"
+                        | "ln"
+                        | "log"
+                        | "clamp"
+                        | "odd"
+                        | "even"
+                        | "isPositive"
+                        | "isNegative"
+                        | "isZero"
                         | "substring"
                         | "charAt"
                         | "padLeading"
@@ -30,8 +59,10 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
                 || args.iter().any(|arg| expr_fallible(arg, knowledge))
         }
         Expr::Field(value, _) | Expr::Not(value) => expr_fallible(value, knowledge),
-        Expr::Binary(left, _, right) => {
-            expr_fallible(left, knowledge) || expr_fallible(right, knowledge)
+        Expr::Binary(left, op, right) => {
+            matches!(op.as_str(), "num+" | "-" | "*" | "/" | "%" | "**")
+                || expr_fallible(left, knowledge)
+                || expr_fallible(right, knowledge)
         }
         Expr::List(items) => items.iter().any(|item| expr_fallible(item, knowledge)),
         Expr::Range(lower, upper, _, _) => lower
@@ -51,16 +82,118 @@ fn body_fallible(body: &[Stmt]) -> bool {
     })
 }
 
+fn specialize_expr(
+    expr: &Expr,
+    program: &Program,
+    knowledge: &[Knowledge],
+    env: &HashMap<String, Type>,
+) -> Expr {
+    let mut result = expr.clone();
+    fn visit(
+        expr: &mut Expr,
+        program: &Program,
+        knowledge: &[Knowledge],
+        env: &HashMap<String, Type>,
+    ) {
+        match expr {
+            Expr::Binary(left, op, right) => {
+                if op == "+"
+                    && semantic::infer_with(left, None, env, program, knowledge).ok()
+                        == Some(Type::Named("Number".into()))
+                {
+                    *op = "num+".into();
+                }
+                visit(left, program, knowledge, env);
+                visit(right, program, knowledge, env);
+            }
+            Expr::Call(name, args) => {
+                if name == "string"
+                    && !knowledge.iter().any(|item| item.name == *name)
+                    && semantic::infer_with(&args[0], None, env, program, knowledge).ok()
+                        == Some(Type::Named("Number".into()))
+                {
+                    *name = "__bl_number_string".into();
+                }
+                if matches!(name.as_str(), "before" | "after" | "meets" | "metBy")
+                    && !knowledge.iter().any(|item| item.name == *name)
+                    && args.len() == 2
+                {
+                    let number = Type::Named("Number".into());
+                    let range = Type::Generic("Range".into(), Box::new(number.clone()));
+                    let point_first = semantic::infer_with(&args[0], None, env, program, knowledge)
+                        .ok()
+                        == Some(number.clone())
+                        && semantic::infer_with(&args[1], Some(&range), env, program, knowledge)
+                            .ok()
+                            == Some(range.clone());
+                    let range_first = semantic::infer_with(&args[1], None, env, program, knowledge)
+                        .ok()
+                        == Some(number)
+                        && semantic::infer_with(&args[0], Some(&range), env, program, knowledge)
+                            .ok()
+                            == Some(range);
+                    if point_first {
+                        *name = format!("__bl_point_{name}");
+                    } else if range_first {
+                        *name = format!("__bl_range_{name}");
+                    }
+                }
+                for arg in args {
+                    visit(arg, program, knowledge, env);
+                }
+            }
+            Expr::List(args) => {
+                for arg in args {
+                    visit(arg, program, knowledge, env);
+                }
+            }
+            Expr::Field(base, _) | Expr::Not(base) => visit(base, program, knowledge, env),
+            Expr::Range(lower, upper, _, _) => {
+                for bound in lower.iter_mut().chain(upper.iter_mut()) {
+                    visit(bound, program, knowledge, env);
+                }
+            }
+            _ => {}
+        }
+    }
+    visit(&mut result, program, knowledge, env);
+    result
+}
+
+fn emit_typed_expr(
+    expr: &Expr,
+    program: &Program,
+    knowledge: &[Knowledge],
+    env: &HashMap<String, Type>,
+) -> String {
+    emit_expr_with(
+        &specialize_expr(expr, program, knowledge, env),
+        program,
+        knowledge,
+    )
+}
+
 fn emit_expr(expr: &Expr, program: &Program) -> String {
     emit_expr_with(expr, program, &[])
 }
 
 fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> String {
     match expr {
-        Expr::Number(value) => format!("Number::from_str_exact({value:?}).unwrap()"),
+        Expr::Number(value) => {
+            let parse = if value.contains(['e', 'E']) {
+                "from_scientific"
+            } else {
+                "from_str_exact"
+            };
+            format!("Number::{parse}({value:?}).unwrap()")
+        }
         Expr::String(value) => format!("String::from({value:?})"),
         Expr::Bool(value) => value.to_string(),
         Expr::Name(name) => format!("({name}).clone()"),
+        Expr::Call(name, args) if name == "__bl_number_string" => format!(
+            "({}).normalize().to_string()",
+            emit_expr_with(&args[0], program, knowledge)
+        ),
         Expr::Call(name, args)
             if knowledge
                 .iter()
@@ -90,6 +223,42 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             format!(
                 "{{ {arguments} {params} {} }}",
                 emit_expr_with(&model.body, program, knowledge)
+            )
+        }
+        Expr::Call(name, args)
+            if name.starts_with("__bl_point_") || name.starts_with("__bl_range_") =>
+        {
+            let point_first = name.starts_with("__bl_point_");
+            let relation = name
+                .strip_prefix(if point_first {
+                    "__bl_point_"
+                } else {
+                    "__bl_range_"
+                })
+                .unwrap();
+            let field = match (point_first, relation) {
+                (true, "before" | "meets") | (false, "after" | "metBy") => "lower",
+                _ => "upper",
+            };
+            let operator = match relation {
+                "before" => "<",
+                "after" => ">",
+                _ => "==",
+            };
+            let a = emit_expr_with(&args[0], program, knowledge);
+            let b = emit_expr_with(&args[1], program, knowledge);
+            let range = if point_first {
+                "__bl_right"
+            } else {
+                "__bl_left"
+            };
+            let comparison = if point_first {
+                format!("__bl_left {operator} *bound")
+            } else {
+                format!("*bound {operator} __bl_right")
+            };
+            format!(
+                "{{ let __bl_left = {a}; let __bl_right = {b}; {range}.{field}.as_ref().is_some_and(|bound| {comparison}) }}"
             )
         }
         Expr::Call(name, args)
@@ -151,8 +320,83 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             }
         }
         Expr::Call(name, args)
-            if semantic::string_builtin(name)
-                && !knowledge.iter().any(|item| item.name == *name) =>
+            if matches!(
+                name.as_str(),
+                "round"
+                    | "roundUp"
+                    | "roundDown"
+                    | "roundHalfUp"
+                    | "roundHalfDown"
+                    | "roundHalfEven"
+                    | "floor"
+                    | "ceiling"
+            ) && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let value = emit_expr_with(&args[0], program, knowledge);
+            let scale = args.get(1).map_or("Number::ZERO".into(), |arg| {
+                emit_expr_with(arg, program, knowledge)
+            });
+            format!("blkit::number_ops::round({value}, {scale}, {name:?})?")
+        }
+        Expr::Call(name, args)
+            if matches!(
+                name.as_str(),
+                "min" | "max" | "sum" | "mean" | "median" | "product" | "stddev" | "mode"
+            ) && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            format!(
+                "blkit::number_ops::aggregate({name:?}, &({}))?",
+                emit_expr_with(&args[0], program, knowledge)
+            )
+        }
+        Expr::Call(name, args)
+            if name == "number" && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let text = emit_expr_with(&args[0], program, knowledge);
+            let separators = if args.len() == 3 {
+                let group = emit_expr_with(&args[1], program, knowledge);
+                let decimal = emit_expr_with(&args[2], program, knowledge);
+                format!("Some((({group}).as_str(), ({decimal}).as_str()))")
+            } else {
+                "None".into()
+            };
+            format!("blkit::number_ops::number(&({text}), {separators})?")
+        }
+        Expr::Call(name, args)
+            if matches!(
+                name.as_str(),
+                "abs"
+                    | "modulo"
+                    | "sqrt"
+                    | "exp"
+                    | "ln"
+                    | "log"
+                    | "clamp"
+                    | "odd"
+                    | "even"
+                    | "isPositive"
+                    | "isNegative"
+                    | "isZero"
+            ) && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let values = args
+                .iter()
+                .map(|arg| emit_expr_with(arg, program, knowledge))
+                .collect::<Vec<_>>();
+            if matches!(
+                name.as_str(),
+                "odd" | "even" | "isPositive" | "isNegative" | "isZero"
+            ) {
+                format!("blkit::number_ops::predicate({name:?}, {})?", values[0])
+            } else {
+                format!(
+                    "blkit::number_ops::math({name:?}, &[{}])?",
+                    values.join(", ")
+                )
+            }
+        }
+        Expr::Call(name, args)
+            if semantic::builtin(name) && !knowledge.iter().any(|item| item.name == *name) =>
         {
             let values: Vec<_> = args
                 .iter()
@@ -286,6 +530,14 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             if op == "+" {
                 return format!(
                     "format!(\"{{}}{{}}\", {}, {})",
+                    emit_expr_with(left, program, knowledge),
+                    emit_expr_with(right, program, knowledge)
+                );
+            }
+            if matches!(op.as_str(), "num+" | "-" | "*" | "/" | "%" | "**") {
+                let operator = if op == "num+" { "+" } else { op };
+                return format!(
+                    "blkit::number_ops::arithmetic({operator:?}, {}, {})?",
                     emit_expr_with(left, program, knowledge),
                     emit_expr_with(right, program, knowledge)
                 );

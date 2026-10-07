@@ -725,6 +725,194 @@ fn string_operators_parse_and_typecheck_without_changing_range_or_equality() {
 }
 
 #[test]
+fn numeric_point_interval_relations_validate_overloads() {
+    for expression in [
+        "before(0, [1..5])",
+        "after(6, [1..5])",
+        "before([1..5], 6)",
+        "meets(1, (1..5])",
+        "metBy([1..5], 1)",
+        "before(0, (null..5])",
+    ] {
+        assert!(
+            transpile(&decision_expression("Number", "Bool", expression)).is_ok(),
+            "rejected: {expression}"
+        );
+    }
+    for expression in [
+        "before(1, 2)",
+        "meets(\"1\", [1..5])",
+        "overlaps(1, [1..5])",
+        "coincides([1..5], 2)",
+    ] {
+        assert!(
+            transpile(&decision_expression("Number", "Bool", expression)).is_err(),
+            "accepted: {expression}"
+        );
+    }
+}
+
+#[test]
+fn numeric_aggregates_require_one_list_and_infer_empty_lists() {
+    for name in [
+        "min", "max", "sum", "mean", "median", "product", "stddev", "mode",
+    ] {
+        for argument in ["[1, 2, 3]", "[]"] {
+            let expression = format!("{name}({argument})");
+            assert!(
+                transpile(&decision_expression("Number", "Number", &expression)).is_ok(),
+                "rejected: {expression}"
+            );
+        }
+        for argument in ["1", "[1, \"x\"]", "[true]", "[1], [2]"] {
+            let expression = format!("{name}({argument})");
+            assert!(
+                transpile(&decision_expression("Number", "Number", &expression)).is_err(),
+                "accepted: {expression}"
+            );
+        }
+    }
+}
+
+#[test]
+fn number_text_conversion_validates_constants_and_types() {
+    for expression in [
+        "number(\"1500.50\")",
+        "number(\"1.500,50\", \".\", \",\")",
+        "number(input)",
+    ] {
+        assert!(
+            transpile(&decision_expression("String", "Number", expression)).is_ok(),
+            "rejected: {expression}"
+        );
+    }
+    for expression in [
+        "number(1)",
+        "number(\"nope\")",
+        "number(\"12.34,50\", \".\", \",\")",
+        "number(\"1\", \"..\", \",\")",
+        "number(\"1\", \".\", \".\")",
+        "number(\"1\", \".\")",
+    ] {
+        assert!(
+            transpile(&decision_expression("String", "Number", expression)).is_err(),
+            "accepted: {expression}"
+        );
+    }
+}
+
+#[test]
+fn numeric_math_calls_are_typed() {
+    for (expression, output) in [
+        ("abs(-10)", "Number"),
+        ("modulo(-10, 3)", "Number"),
+        ("sqrt(16)", "Number"),
+        ("exp(1)", "Number"),
+        ("ln(1)", "Number"),
+        ("log(100)", "Number"),
+        ("log(8, 2)", "Number"),
+        ("clamp(5, 0, 10)", "Number"),
+        ("odd(5)", "Bool"),
+        ("even(2)", "Bool"),
+        ("isPositive(5)", "Bool"),
+        ("isNegative(-3)", "Bool"),
+        ("isZero(0)", "Bool"),
+    ] {
+        assert!(
+            transpile(&decision_expression("Number", output, expression)).is_ok(),
+            "rejected: {expression}"
+        );
+    }
+    for expression in [
+        "sqrt()",
+        "modulo(1)",
+        "clamp(1, 2)",
+        "log(1, 2, 3)",
+        "odd(\"five\")",
+    ] {
+        assert!(
+            transpile(&decision_expression("Number", "Number", expression)).is_err(),
+            "accepted: {expression}"
+        );
+    }
+}
+
+#[test]
+fn numeric_rounding_calls_require_number_arguments_and_scales() {
+    for expression in [
+        "round(2.345, 2)",
+        "roundUp(-5.1, 0)",
+        "roundDown(5.9, 0)",
+        "roundHalfUp(2.5, 0)",
+        "roundHalfDown(2.5, 0)",
+        "roundHalfEven(2.5, 0)",
+        "floor(1.9)",
+        "ceiling(1.9, -1)",
+    ] {
+        let output = transpile(&decision_expression("Number", "Number", expression));
+        assert!(output.is_ok(), "rejected: {expression}: {:?}", output.err());
+    }
+    for expression in [
+        "round(1)",
+        "roundUp(1, 2, 3)",
+        "floor(1, 0.5, 2)",
+        "ceiling(\"x\")",
+        "round(2, 29)",
+    ] {
+        assert!(
+            transpile(&decision_expression("Number", "Number", expression)).is_err(),
+            "accepted: {expression}"
+        );
+    }
+}
+
+#[test]
+fn constant_numeric_errors_fail_validation() {
+    for expression in ["1 / 0", "0 ** -1", "(-1) ** 0.5"] {
+        let source = decision_expression("Number", "Number", expression);
+        assert!(transpile(&source).is_err(), "accepted: {expression}");
+    }
+}
+
+#[test]
+fn number_arithmetic_parses_and_typechecks_with_precedence() {
+    use blkit::expr::{self, Expr};
+    for (expression, output) in [
+        ("1.5e3", "Number"),
+        ("1.5e-3", "Number"),
+        ("-5", "Number"),
+        ("-(7)", "Number"),
+        ("10-4", "Number"),
+        ("2 + 3 * 4", "Number"),
+        ("10 / 4", "Number"),
+        ("9 ** 0.5", "Number"),
+        ("3.0 == 3.00", "Bool"),
+        ("\"a\" + \"b\"", "String"),
+    ] {
+        let source = decision_expression("Number", output, expression);
+        validate(&parse(&source).unwrap()).unwrap_or_else(|error| panic!("{expression}: {error}"));
+    }
+    let Expr::Binary(_, op, right) = expr::expression("-2 ** 3 ** 2").unwrap() else {
+        panic!("expected unary negation");
+    };
+    assert_eq!(op, "-");
+    let Expr::Binary(_, op, right) = *right else {
+        panic!("exponent must bind more tightly than negation");
+    };
+    assert_eq!(op, "**");
+    assert!(matches!(*right, Expr::Binary(_, ref op, _) if op == "**"));
+    for expression in ["3.0 = 3.00", "1 + true", "2 ** \"two\"", "1.5e"] {
+        let source = decision_expression("Number", "Number", expression);
+        assert!(
+            parse(&source)
+                .and_then(|program| validate(&program))
+                .is_err(),
+            "accepted {expression}"
+        );
+    }
+}
+
+#[test]
 fn string_builtin_signatures_and_literal_regexes_are_validated() {
     let good = [
         ("string(123)", "String"),

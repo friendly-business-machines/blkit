@@ -10,6 +10,8 @@ mod decision;
 mod expr;
 #[path = "src/graph.rs"]
 mod graph;
+#[path = "src/number_ops.rs"]
+mod number_ops;
 #[path = "src/semantic/mod.rs"]
 mod semantic;
 use compiler::{Program, Type, identifier, type_ref};
@@ -21,6 +23,7 @@ fn main() {
         "src/decision.rs",
         "src/expr.rs",
         "src/graph.rs",
+        "src/number_ops.rs",
         "src/semantic/mod.rs",
         "src/semantic/decision.rs",
         "src/semantic/graph.rs",

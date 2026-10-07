@@ -85,9 +85,14 @@ fn route_closure(expression: &Expr, program: &Program) -> Result<String, String>
             || program.peer_nodes.iter().any(|peer| peer.name == *name && matches!(&peer.kind, PeerKind::Subprocess { outputs, .. } if outputs.len() > 1))) { format!(".and_then(|value| value.get({port:?}))") } else { String::new() };
         vars.push_str(&format!("let __bl_route_{index}: {} = serde_json::from_value({origin}.get({key:?}){field}.cloned().ok_or(\"route source unavailable\")?).map_err(|e| e.to_string())?;", rust_type(ty)));
     }
+    let env: HashMap<_, _> = refs
+        .iter()
+        .enumerate()
+        .map(|(index, (_, _, ty))| (format!("__bl_route_{index}"), ty.clone()))
+        .collect();
     Ok(format!(
         "std::sync::Arc::new(|source, values| {{ {vars} serde_json::to_value({}).map_err(|e| e.to_string()) }})",
-        emit_expr(&expression, program)
+        emit_typed_expr(&expression, program, &[], &env)
     ))
 }
 
@@ -288,6 +293,8 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
     {
         let graph = process.named_graph.as_ref().unwrap();
         let scopes = semantic::named_scopes(graph, process, program)?;
+        let emit =
+            |expr: &Expr, env: &HashMap<String, Type>| emit_typed_expr(expr, program, &[], env);
         let retry = process.retry.as_ref().map_or("None".into(), |policy| format!("Some(blkit::RetryPolicy {{ max_retries: {}, retry_for: std::time::Duration::from_millis({}), retry_delay: std::time::Duration::from_millis({}), backoff: {:?} }})", policy.max_retries, policy.retry_for.as_millis(), policy.retry_delay.as_millis(), policy.backoff));
         let deadline = process.deadline.as_ref().map_or("None".into(), |policy| format!("Some(blkit::DeadlinePolicy {{ origin: {:?}, duration: std::time::Duration::from_millis({}) }})", policy.origin, policy.duration.as_millis()));
         out.push_str(&format!("blkit::compiled_graph::GraphDefinition {{ namespace: NAMESPACE, version: VERSION, name: {:?}, retry: {retry}, deadline: {deadline}, decode_input: Box::new(|value| {{ let typed: {} = serde_json::from_value(value).map_err(|e| e.to_string())?; serde_json::to_value(typed).map_err(|e| e.to_string()) }}), nodes: vec![\n", process.name, rust_type(&process.input_type)));
@@ -303,7 +310,7 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                     format!(
                         "blkit::compiled_graph::GraphNodeKind::Subprocess {{ process: {child:?}, input: {} }}",
                         graph_closure(
-                            emit_expr(argument, program),
+                            emit(argument, &env),
                             &env,
                             &process.input,
                             &process.input_type
@@ -317,7 +324,7 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                 NodeKind::PauseUntil(expression) => format!(
                     "blkit::compiled_graph::GraphNodeKind::PauseUntil({})",
                     graph_closure(
-                        emit_expr(expression, program),
+                        emit(expression, &scopes[node.name.as_str()]),
                         &scopes[node.name.as_str()],
                         &process.input,
                         &process.input_type
@@ -329,7 +336,7 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                 } => {
                     let mut env = scopes[node.name.as_str()].clone();
                     env.remove(&node.name);
-                    let expression = format!("self::{model}({})?", emit_expr(argument, program));
+                    let expression = format!("self::{model}({})?", emit(argument, &env));
                     format!(
                         "blkit::compiled_graph::GraphNodeKind::Task({})",
                         graph_closure(expression, &env, &process.input, &process.input_type)
@@ -343,7 +350,7 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                     env.remove(&node.name);
                     if let Some(external) = program.external_tasks.get(task) {
                         let input = graph_closure(
-                            emit_expr(argument, program),
+                            emit(argument, &env),
                             &env,
                             &process.input,
                             &process.input_type,
@@ -353,7 +360,7 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                             external_graph_closure(task, external, input)?
                         )
                     } else {
-                        let expression = task_call(task, &emit_expr(argument, program), program);
+                        let expression = task_call(task, &emit(argument, &env), program);
                         format!(
                             "blkit::compiled_graph::GraphNodeKind::Task({})",
                             graph_closure(expression, &env, &process.input, &process.input_type)
@@ -367,12 +374,8 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                 } => {
                     let mut env = scopes[node.name.as_str()].clone();
                     env.remove(&node.name);
-                    let items = graph_closure(
-                        emit_expr(items, program),
-                        &env,
-                        &process.input,
-                        &process.input_type,
-                    );
+                    let items =
+                        graph_closure(emit(items, &env), &env, &process.input, &process.input_type);
                     if let Some(external) = program.external_tasks.get(task) {
                         let argument = format!(
                             "std::sync::Arc::new(|item, _| {{ let typed: {} = serde_json::from_value(item.clone()).map_err(|e| e.to_string())?; serde_json::to_value(typed).map_err(|e| e.to_string()) }})",
@@ -413,7 +416,7 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                     };
                     let (kind, call) = if let Some(external) = program.external_tasks.get(task) {
                         let input = graph_closure(
-                            emit_expr(argument, program),
+                            emit(argument, argument_env),
                             argument_env,
                             &process.input,
                             &process.input_type,
@@ -426,7 +429,7 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                         (
                             "TaskLoop",
                             graph_closure(
-                                task_call(task, &emit_expr(argument, program), program),
+                                task_call(task, &emit(argument, argument_env), program),
                                 argument_env,
                                 &process.input,
                                 &process.input_type,
@@ -434,7 +437,7 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                         )
                     };
                     let condition = graph_closure(
-                        emit_expr(condition, program),
+                        emit(condition, &scopes[node.name.as_str()]),
                         &scopes[node.name.as_str()],
                         &process.input,
                         &process.input_type,
@@ -443,7 +446,7 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                         format!(
                             "Some({})",
                             graph_closure(
-                                emit_expr(value, program),
+                                emit(value, &initial_env),
                                 &initial_env,
                                 &process.input,
                                 &process.input_type
@@ -484,23 +487,13 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
             let value = link.value.as_ref().map_or("None".into(), |expr| {
                 format!(
                     "Some({})",
-                    graph_closure(
-                        emit_expr(expr, program),
-                        env,
-                        &process.input,
-                        &process.input_type
-                    )
+                    graph_closure(emit(expr, env), env, &process.input, &process.input_type)
                 )
             });
             let condition = link.condition.as_ref().map_or("None".into(), |expr| {
                 format!(
                     "Some({})",
-                    graph_closure(
-                        emit_expr(expr, program),
-                        env,
-                        &process.input,
-                        &process.input_type
-                    )
+                    graph_closure(emit(expr, env), env, &process.input, &process.input_type)
                 )
             });
             out.push_str(&format!("blkit::compiled_graph::GraphLink {{ source: {:?}, target: {:?}, value: {value}, condition: {condition}, fallback: {}, label: {:?} }},\n", link.source, link.target, link.fallback, link.outcome.as_ref().or(link.label.as_ref())));

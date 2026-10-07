@@ -22,7 +22,8 @@ fn compile_and_test(source: &str, assertion: &str) {
     ));
     fs::create_dir_all(directory.join("src")).unwrap();
     let name = directory.file_name().unwrap().to_string_lossy();
-    fs::write(directory.join("Cargo.toml"), format!("[package]\nname = {name:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nrust_decimal = \"1.39\"\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\nserde = \"1\"\nserde_json = \"1\"\n")).unwrap();
+    let root = env!("CARGO_MANIFEST_DIR").replace('\\', "\\\\");
+    fs::write(directory.join("Cargo.toml"), format!("[package]\nname = {name:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit = {{ path = {root:?} }}\nrust_decimal = \"1.39\"\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\nserde = \"1\"\nserde_json = \"1\"\n")).unwrap();
     fs::write(directory.join("src/lib.rs"), format!("{generated}\n#[cfg(test)] mod generated_checks {{ use super::*; #[test] fn behavior() {{ {assertion} }} }}")).unwrap();
     let result = Command::new("cargo")
         .args(["test", "--offline", "--manifest-path"])
@@ -37,6 +38,149 @@ fn compile_and_test(source: &str, assertion: &str) {
         String::from_utf8_lossy(&result.stderr)
     );
     fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn numeric_process_route_propagates_arithmetic_errors_and_keeps_number_ports() {
+    compile_and_test_graph(
+        r#"namespace numbers; version "1";
+start_event start { output value: Number; }
+xor_split gate {}
+xor_join joined { split gate; input value: Number; output result: Number; }
+end_event done { input result: Number; }
+decision_task divide { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression 10 / value; } }
+decision_task fallback { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression 0; } }
+process route {
+  flow start -> gate;
+  flow gate -> divide when start.value + 1 > 0 and 10 / start.value > 0;
+  flow gate -> fallback else;
+  flow divide -> joined;
+  flow fallback -> joined;
+  flow joined -> done;
+  bind start.value -> divide.value;
+  bind start.value -> fallback.value;
+  bind divide.result -> joined.value;
+  bind fallback.result -> joined.value;
+  bind joined.result -> done.result;
+}
+"#,
+        r#"let graph = named_graph_definitions().remove(0); for (input, expected) in [("4", "2.50"), ("-5", "0")] { let value = serde_json::json!({"value":input}); let mut state = graph.checkpoint(&value).unwrap(); assert_eq!(graph.run(&value, &mut state).unwrap_or_else(|error| panic!("{input}: {error}")), serde_json::json!(expected)); } for input in ["0", "79228162514264337593543950335"] { let value = serde_json::json!({"value":input}); assert!(graph.checkpoint(&value).and_then(|mut state| graph.run(&value, &mut state)).is_err(), "{input}"); }"#,
+    );
+}
+
+#[test]
+fn generated_numeric_points_compare_finite_range_endpoints() {
+    let mut source = String::from("namespace numbers; version \"1\";\n");
+    for (name, expression) in [
+        ("point_before", "before(value, (1..5])"),
+        ("point_after", "after(value, [1..5])"),
+        ("range_before", "before([1..5], value)"),
+        ("point_meets", "meets(value, (1..5])"),
+        ("range_metby", "metBy([1..5], value)"),
+        ("unbounded", "before(value, (null..5])"),
+        ("unbounded_other", "metBy((null..5], value)"),
+        ("point_before_named", "before(value, [2..5])"),
+    ] {
+        source.push_str(&format!("decision_task {name} {{ input value: Number; output result: Bool = calc; literal_expression calc {{ output result: Bool; expression {expression}; }} }}\n"));
+    }
+    compile_and_test_graph(
+        &source,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert!(point_before(n("0")).unwrap()); assert!(!point_before(n("1")).unwrap()); assert!(point_after(n("6")).unwrap()); assert!(range_before(n("6")).unwrap()); assert!(point_meets(n("1")).unwrap()); assert!(range_metby(n("1")).unwrap()); assert!(!unbounded(n("0")).unwrap()); assert!(!unbounded_other(n("2")).unwrap()); assert!(point_before_named(n("1")).unwrap());"#,
+    );
+}
+
+#[test]
+fn generated_numeric_aggregates_handle_empty_lists_and_sample_stddev() {
+    let mut source = String::from("namespace numbers; version \"1\";\n");
+    for name in [
+        "min", "max", "sum", "mean", "median", "product", "stddev", "mode",
+    ] {
+        source.push_str(&format!("decision_task {name}_values {{ input values: List<Number>; output result: Number = calc; literal_expression calc {{ output result: Number; expression {name}(values); }} }}\n"));
+    }
+    compile_and_test_graph(
+        &source,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; let list = |v: &[&str]| v.iter().map(|s| n(s)).collect(); assert_eq!(min_values(list(&["3","1","2"])).unwrap(), n("1")); assert_eq!(max_values(list(&["3","1","2"])).unwrap(), n("3")); assert_eq!(sum_values(list(&["1","2","3"])).unwrap(), n("6")); assert_eq!(mean_values(list(&["1","2","3"])).unwrap(), n("2")); assert_eq!(median_values(list(&["1","2","3","4"])).unwrap(), n("2.5")); assert_eq!(product_values(list(&["2","3","4"])).unwrap(), n("24")); assert_eq!(stddev_values(list(&["1","2","3"])).unwrap(), n("1")); assert_eq!(mode_values(list(&["3","2","3","2"])).unwrap(), n("2")); assert_eq!(sum_values(vec![]).unwrap(), Number::ZERO); assert_eq!(product_values(vec![]).unwrap(), Number::ONE); for result in [min_values(vec![]), max_values(vec![]), mean_values(vec![]), median_values(vec![]), mode_values(vec![]), stddev_values(vec![]), stddev_values(vec![n("5")]), sum_values(vec![Number::MAX, Number::ONE]), product_values(vec![Number::MAX, n("2")])] { assert!(result.is_err()); }"#,
+    );
+}
+
+#[test]
+fn generated_number_text_conversion_rejects_invalid_dynamic_inputs() {
+    compile_and_test_graph(
+        r#"namespace numbers; version "1";
+decision_task plain { input text: String; output result: Number = calc; literal_expression calc { output result: Number; expression number(text); } }
+decision_task localized { input text: String; output result: Number = calc; literal_expression calc { output result: Number; expression number(text, ".", ","); } }
+"#,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert_eq!(plain("1500.50".into()).unwrap(), n("1500.5")); assert_eq!(localized("1.500,50".into()).unwrap(), n("1500.5")); for text in ["nope", "", "1,000", "1e3"] { assert!(plain(text.into()).is_err(), "{text}"); } for text in ["12.34,50", "1.00,50", "1.500,5,0"] { assert!(localized(text.into()).is_err(), "{text}"); }"#,
+    );
+}
+
+#[test]
+fn generated_numeric_math_and_predicates_report_domain_errors() {
+    let mut source = String::from("namespace numbers; version \"1\";\n");
+    for (name, output, expression) in [
+        ("absolute", "Number", "abs(value)"),
+        ("remainder", "Number", "modulo(value, 3)"),
+        ("root", "Number", "sqrt(value)"),
+        ("exponential", "Number", "exp(value)"),
+        ("natural_log", "Number", "ln(value)"),
+        ("base10", "Number", "log(value)"),
+        ("base2", "Number", "log(value, 2)"),
+        ("bounded", "Number", "clamp(value, 0, 100)"),
+        ("bad_bounds", "Number", "clamp(1, value, 0)"),
+        ("odd_check", "Bool", "odd(value)"),
+        ("even_check", "Bool", "even(value)"),
+        ("positive", "Bool", "isPositive(value)"),
+        ("negative", "Bool", "isNegative(value)"),
+        ("zero", "Bool", "isZero(value)"),
+        ("bad_base", "Number", "log(8, value)"),
+        ("bad_modulo", "Number", "modulo(1, value)"),
+    ] {
+        source.push_str(&format!("decision_task {name} {{ input value: Number; output result: {output} = calc; literal_expression calc {{ output result: {output}; expression {expression}; }} }}\n"));
+    }
+    compile_and_test_graph(
+        &source,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert_eq!(absolute(n("-10")).unwrap(), n("10")); assert_eq!(remainder(n("-10")).unwrap(), n("2")); assert_eq!(root(n("16")).unwrap(), n("4")); assert!(root(Number::MAX).is_ok()); assert!((exponential(n("1")).unwrap() - n("2.718281828459045235360287471")).abs() < n("0.000000000000000000000001")); assert_eq!(natural_log(n("1")).unwrap(), n("0")); assert_eq!(base10(n("100")).unwrap(), n("2")); assert_eq!(base2(n("8")).unwrap(), n("3")); assert_eq!(bounded(n("150")).unwrap(), n("100")); assert!(bad_bounds(n("5")).is_err()); assert!(bad_modulo(n("0")).is_err()); assert!(root(n("-1")).is_err()); assert!(natural_log(n("0")).is_err()); assert!(bad_base(n("1")).is_err()); assert!(odd_check(n("5")).unwrap()); assert!(even_check(n("2")).unwrap()); assert!(odd_check(n("1.5")).is_err()); assert!(positive(n("5")).unwrap()); assert!(negative(n("-3")).unwrap()); assert!(zero(n("0")).unwrap()); assert!(!positive(n("0")).unwrap());"#,
+    );
+}
+
+#[test]
+fn generated_rounding_uses_decimal_ties_and_validates_dynamic_scale() {
+    compile_and_test_graph(
+        r#"namespace numbers;
+version "1";
+decision_task half_up { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression round(value, 2); } }
+decision_task away { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression roundUp(value, 0); } }
+decision_task toward { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression roundDown(value, 0); } }
+decision_task half_down { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression roundHalfDown(value, 0); } }
+decision_task half_even { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression roundHalfEven(value, 0); } }
+decision_task down { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression floor(value, 1); } }
+decision_task up { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression ceiling(value, 1); } }
+decision_task tens { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression round(value, -2); } }
+decision_task tens_away { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression roundUp(value, -1); } }
+decision_task dynamic_scale { input scale: Number; output result: Number = calc; literal_expression calc { output result: Number; expression roundHalfUp(1.25, scale); } }
+"#,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert_eq!(half_up(n("2.345")).unwrap(), n("2.35")); assert_eq!(away(n("5.1")).unwrap(), n("6")); assert_eq!(toward(n("-5.9")).unwrap(), n("-5")); assert_eq!(half_down(n("5.5")).unwrap(), n("5")); assert_eq!(half_even(n("2.5")).unwrap(), n("2")); assert_eq!(down(n("-1.56")).unwrap(), n("-1.6")); assert_eq!(up(n("-1.56")).unwrap(), n("-1.5")); assert_eq!(tens(n("1250")).unwrap(), n("1300")); assert_eq!(tens_away(n("0.0000000000000000000000000001")).unwrap(), n("10")); assert!(dynamic_scale(n("0.5")).is_err()); assert!(dynamic_scale(n("29")).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_number_arithmetic_is_decimal_and_reports_errors() {
+    compile_and_test_graph(
+        r#"namespace numbers;
+version "1";
+decision_task sum { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression value + 0.2; } }
+decision_task overflow { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression value + 1; } }
+decision_task knowledge_sum { input value: Number; output result: Number = calc; knowledge increment { input item: Number; output result: Number; expression item + 1; } literal_expression calc { output result: Number; expression increment(value); } }
+decision_task context_sum { input value: Number; output result: Number = calc; context calc { output result: Number; entry part: Number = value + 1; result part + 1; } }
+decision_task table_sum { input value: Number; output result: Number = calc.result; decision_table calc { output result: Number; policy FIRST; input item: Number = value; output result: Number; rule item == item -> item + 1; } }
+decision_task divide { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression 10 / value; } }
+decision_task power { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression value ** 0.5; } }
+decision_task precedence { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression -2 ** 3 ** 2 + value * 2; } }
+decision_task scientific { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression 1.5e3 + value; } }
+decision_task normalized { input value: Number; output result: String = calc; literal_expression calc { output result: String; expression string(1500.50); } }
+"#,
+        r#"let n = |v: &str| -> Number { v.parse().unwrap() }; assert_eq!(sum(n("0.1")).unwrap(), n("0.3")); assert!(overflow(Number::MAX).is_err()); assert_eq!(knowledge_sum(n("2")).unwrap(), n("3")); assert!(knowledge_sum(Number::MAX).is_err()); assert_eq!(context_sum(n("2")).unwrap(), n("4")); assert!(context_sum(Number::MAX).is_err()); assert_eq!(table_sum(n("2")).unwrap(), n("3")); assert!(table_sum(Number::MAX).is_err()); assert_eq!(divide(n("4")).unwrap(), n("2.5")); assert!(divide(Number::ZERO).is_err()); assert_eq!(power(n("9")).unwrap(), n("3")); assert_eq!(precedence(Number::ZERO).unwrap(), n("-512")); assert_eq!(scientific(Number::ZERO).unwrap(), n("1500")); assert_eq!(normalized(Number::ZERO).unwrap(), "1500.5");"#,
+    );
 }
 
 #[test]

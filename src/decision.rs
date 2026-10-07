@@ -75,7 +75,7 @@ fn expressions(text: &str) -> Result<Vec<Expr>, String> {
     Ok(parts)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Knowledge {
     pub name: String,
     pub params: Vec<(String, Type)>,

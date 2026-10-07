@@ -11,7 +11,7 @@ console = "0.16"
 indicatif = "0.18"
 miette = "7"
 thiserror = "2"
-rust_decimal = { version = "1.39", features = ["serde-str"] }
+rust_decimal = { version = "1.39", features = ["maths", "serde-str"] }
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 unicode-segmentation = "1"
@@ -31,7 +31,7 @@ opentelemetry_sdk = { version = "0.33", default-features = false, features = ["l
 opentelemetry-appender-tracing = "0.33"
 
 [build-dependencies]
-rust_decimal = "1.39"
+rust_decimal = { version = "1.39", features = ["maths"] }
 chrono = "0.4"
 regex = "1"
 

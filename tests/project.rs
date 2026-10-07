@@ -46,6 +46,24 @@ const MANIFEST: &str =
     "[project]\nname = \"orders\"\nblkit = \"0.1.0\"\nbuild_target = \"crate\"\n";
 
 #[test]
+fn numeric_project_builds_checked_arithmetic() {
+    let source = "namespace orders; version \"1\"; start_event start { output value: Number; } end_event done { input result: Number; } decision_task calculate { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression (value + 0.2) / value; } } process route { flow start -> calculate; flow calculate -> done; bind start.value -> calculate.value; bind calculate.result -> done.result; }";
+    let root = project(MANIFEST, &[("numbers.bl", source)]);
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_blkit"))
+        .args(["transpile"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    cargo_build(&root).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn braced_project_merges_forward_peer_declarations_without_cargo() {
     let route = "namespace orders;\nversion \"1\";\nprocess route { flow start -> decide; flow decide -> done; bind start.amount -> decide.amount; bind decide.result -> done.result; }\n";
     let peers = "namespace orders;\nversion \"1\";\nstart_event start { output amount: Number; }\nend_event done { input result: Number; }\ndecision_task decide { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression amount; } }\n";

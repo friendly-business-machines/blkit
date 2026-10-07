@@ -110,7 +110,7 @@ pub(super) fn check_decision(
         for name in found {
             if !knowledge_names.contains(name)
                 && !range_relation(name)
-                && !string_builtin(name)
+                && !builtin(name)
                 && !matches!(name, "date" | "time" | "dateTime")
             {
                 return Err(format!("unknown knowledge model: {name}"));
@@ -185,7 +185,7 @@ pub(super) fn check_decision(
             for name in called {
                 if !knowledge_names.contains(name)
                     && !range_relation(name)
-                    && !string_builtin(name)
+                    && !builtin(name)
                     && !matches!(name, "date" | "time" | "dateTime")
                 {
                     return Err(format!("unknown knowledge model: {name}"));

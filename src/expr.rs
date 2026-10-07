@@ -85,17 +85,11 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
             if !closed {
                 return Err("unterminated string expression".into());
             }
-        } else if ch.is_ascii_alphanumeric()
-            || ch == '_'
-            || (ch == '-' && chars.peek().is_some_and(char::is_ascii_digit))
-        {
-            while chars
-                .peek()
-                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
-            {
+        } else if ch.is_ascii_digit() {
+            while chars.peek().is_some_and(char::is_ascii_digit) {
                 token.push(chars.next().unwrap());
             }
-            if (ch.is_ascii_digit() || ch == '-') && chars.peek() == Some(&'.') {
+            if chars.peek() == Some(&'.') {
                 let mut lookahead = chars.clone();
                 lookahead.next();
                 if lookahead.peek().is_some_and(char::is_ascii_digit) {
@@ -105,11 +99,31 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
                     }
                 }
             }
+            if chars.peek().is_some_and(|c| *c == 'e' || *c == 'E') {
+                token.push(chars.next().unwrap());
+                if chars.peek().is_some_and(|c| *c == '+' || *c == '-') {
+                    token.push(chars.next().unwrap());
+                }
+                if !chars.peek().is_some_and(char::is_ascii_digit) {
+                    return Err("invalid number exponent".into());
+                }
+                while chars.peek().is_some_and(char::is_ascii_digit) {
+                    token.push(chars.next().unwrap());
+                }
+            }
+        } else if ch.is_ascii_alphabetic() || ch == '_' {
+            while chars
+                .peek()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
+            {
+                token.push(chars.next().unwrap());
+            }
         } else if (ch == '.' && chars.peek() == Some(&'.'))
             || ("!=<>".contains(ch) && chars.peek() == Some(&'='))
+            || (ch == '*' && chars.peek() == Some(&'*'))
         {
             token.push(chars.next().unwrap());
-        } else if !".[](),<>+".contains(ch) {
+        } else if !".[](),<>+-*/".contains(ch) {
             return Err(format!("invalid character in expression: {ch}"));
         }
         result.push(token);
@@ -149,6 +163,12 @@ impl Parser {
             "true" => Expr::Bool(true),
             "false" => Expr::Bool(false),
             "not" => Expr::Not(Box::new(self.parse(4)?)),
+            "-" => Expr::Binary(
+                Box::new(Expr::Number("0".into())),
+                "-".into(),
+                Box::new(self.parse(6)?),
+            ),
+            "+" => self.parse(6)?,
             "(" | "[" => {
                 let lower = if self.peek() == Some("null") {
                     self.take();
@@ -199,20 +219,7 @@ impl Parser {
             _ if first.starts_with('"') && first.ends_with('"') && first.len() >= 2 => {
                 Expr::String(first[1..first.len() - 1].into())
             }
-            _ if first
-                .strip_prefix('-')
-                .unwrap_or(&first)
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_digit())
-                && first
-                    .strip_prefix('-')
-                    .unwrap_or(&first)
-                    .chars()
-                    .all(|c| c.is_ascii_digit() || c == '.') =>
-            {
-                Expr::Number(first)
-            }
+            _ if first.starts_with(|c: char| c.is_ascii_digit()) => Expr::Number(first),
             _ if super::identifier(&first) => Expr::Name(first),
             _ => return Err(format!("invalid expression token: {first}")),
         };
@@ -250,7 +257,9 @@ impl Parser {
                 Some("and") => 2,
                 Some("==" | "!=" | ">" | ">=" | "<" | "<=" | "in" | "between") => 3,
                 Some("matches") if !self.columns.is_empty() => 3,
-                Some("+") => 4,
+                Some("+" | "-") => 4,
+                Some("*" | "/") => 5,
+                Some("**") => 7,
                 _ => break,
             };
             if priority < minimum {
@@ -295,7 +304,7 @@ impl Parser {
                     .unwrap();
                 continue;
             }
-            let right = self.parse(priority + 1)?;
+            let right = self.parse(priority + u8::from(op != "**"))?;
             left = if op == "between" {
                 self.expect("and")?;
                 let upper = self.parse(priority + 1)?;

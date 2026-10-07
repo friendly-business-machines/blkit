@@ -137,7 +137,26 @@ pub(super) fn infer(
     infer_with(expr, expected, env, program, &[])
 }
 
-pub(super) fn infer_with(
+fn constant_number(expr: &Expr) -> Option<Result<Decimal, String>> {
+    match expr {
+        Expr::Number(value) => Some(
+            if value.contains(['e', 'E']) {
+                Decimal::from_scientific(value)
+            } else {
+                Decimal::from_str_exact(value)
+            }
+            .map_err(|e| e.to_string()),
+        ),
+        Expr::Binary(left, op, right) if matches!(op.as_str(), "+" | "-" | "*" | "/" | "**") => {
+            let a = constant_number(left)?;
+            let b = constant_number(right)?;
+            Some(a.and_then(|a| b.and_then(|b| crate::number_ops::arithmetic(op, a, b))))
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn infer_with(
     expr: &Expr,
     expected: Option<&Type>,
     env: &HashMap<String, Type>,
@@ -148,7 +167,12 @@ pub(super) fn infer_with(
     let named = |name: &str| Type::Named(name.into());
     match expr {
         Number(value) => {
-            Decimal::from_str(value).map_err(|_| format!("invalid Number: {value}"))?;
+            if value.contains(['e', 'E']) {
+                Decimal::from_scientific(value)
+            } else {
+                Decimal::from_str_exact(value)
+            }
+            .map_err(|_| format!("invalid Number: {value}"))?;
             Ok(named("Number"))
         }
         String(_) => Ok(named("String")),
@@ -176,6 +200,19 @@ pub(super) fn infer_with(
                 let [first, second] = args.as_slice() else {
                     return Err(format!("{name} requires two arguments"));
                 };
+                if matches!(name.as_str(), "before" | "after" | "meets" | "metBy") {
+                    let number = named("Number");
+                    let range_type = Type::Generic("Range".into(), Box::new(number.clone()));
+                    for (point, range) in [(first, second), (second, first)] {
+                        if infer_with(point, None, env, program, knowledge).ok()
+                            == Some(number.clone())
+                            && infer_with(range, Some(&range_type), env, program, knowledge).ok()
+                                == Some(range_type.clone())
+                        {
+                            return Ok(named("Bool"));
+                        }
+                    }
+                }
                 let (value, range) =
                     if matches!(name.as_str(), "includes" | "startedBy" | "finishedBy") {
                         (second, first)
@@ -232,6 +269,131 @@ pub(super) fn infer_with(
             }
             let text = named("String");
             let number = named("Number");
+            if matches!(
+                name.as_str(),
+                "min" | "max" | "sum" | "mean" | "median" | "product" | "stddev" | "mode"
+            ) {
+                let [values] = args.as_slice() else {
+                    return Err(format!("{name} requires one List<Number> argument"));
+                };
+                let list = Type::Generic("List".into(), Box::new(number.clone()));
+                if infer_with(values, Some(&list), env, program, knowledge)? != list {
+                    return Err(format!("{name} requires List<Number>"));
+                }
+                return Ok(number);
+            }
+            if name == "number" {
+                if !matches!(args.len(), 1 | 3) {
+                    return Err("number requires one or three String arguments".into());
+                }
+                for arg in args {
+                    if infer_with(arg, Some(&text), env, program, knowledge)? != text {
+                        return Err("number requires String arguments".into());
+                    }
+                }
+                if let [Expr::String(group), Expr::String(decimal)] = &args[1..] {
+                    crate::number_ops::number("0", Some((group, decimal)))?;
+                }
+                if let Some(values) = args
+                    .iter()
+                    .map(|arg| match arg {
+                        Expr::String(value) => Some(value.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()
+                {
+                    crate::number_ops::number(
+                        values[0],
+                        if values.len() == 3 {
+                            Some((values[1], values[2]))
+                        } else {
+                            None
+                        },
+                    )?;
+                }
+                return Ok(number);
+            }
+            if matches!(
+                name.as_str(),
+                "round"
+                    | "roundUp"
+                    | "roundDown"
+                    | "roundHalfUp"
+                    | "roundHalfDown"
+                    | "roundHalfEven"
+                    | "floor"
+                    | "ceiling"
+            ) {
+                let optional = matches!(name.as_str(), "floor" | "ceiling");
+                if args.len() != 2 && !(optional && args.len() == 1) {
+                    return Err(format!(
+                        "{name} requires {} Number arguments",
+                        if optional { "one or two" } else { "two" }
+                    ));
+                }
+                for arg in args {
+                    if infer_with(arg, Some(&number), env, program, knowledge)? != number {
+                        return Err(format!("{name} requires Number arguments"));
+                    }
+                }
+                if let Some(Some(scale)) = args.get(1).map(constant_number) {
+                    crate::number_ops::round(Decimal::ZERO, scale?, name)?;
+                }
+                return Ok(number);
+            }
+            if matches!(
+                name.as_str(),
+                "abs"
+                    | "modulo"
+                    | "sqrt"
+                    | "exp"
+                    | "ln"
+                    | "log"
+                    | "clamp"
+                    | "odd"
+                    | "even"
+                    | "isPositive"
+                    | "isNegative"
+                    | "isZero"
+            ) {
+                let valid_arity = match name.as_str() {
+                    "modulo" => args.len() == 2,
+                    "log" => matches!(args.len(), 1 | 2),
+                    "clamp" => args.len() == 3,
+                    _ => args.len() == 1,
+                };
+                if !valid_arity {
+                    return Err(format!("invalid {name} argument count"));
+                }
+                for arg in args {
+                    if infer_with(arg, Some(&number), env, program, knowledge)? != number {
+                        return Err(format!("{name} requires Number arguments"));
+                    }
+                }
+                if let Some(constants) =
+                    args.iter().map(constant_number).collect::<Option<Vec<_>>>()
+                {
+                    let constants = constants.into_iter().collect::<Result<Vec<_>, _>>()?;
+                    if matches!(
+                        name.as_str(),
+                        "odd" | "even" | "isPositive" | "isNegative" | "isZero"
+                    ) {
+                        crate::number_ops::predicate(name, constants[0])?;
+                    } else {
+                        crate::number_ops::math(name, &constants)?;
+                    }
+                }
+                return Ok(
+                    if matches!(
+                        name.as_str(),
+                        "odd" | "even" | "isPositive" | "isNegative" | "isZero"
+                    ) {
+                        named("Bool")
+                    } else {
+                        number
+                    },
+                );
+            }
             let boolean = named("Bool");
             let texts = Type::Generic("List".into(), Box::new(text.clone()));
             if name == "string" {
@@ -460,9 +622,20 @@ pub(super) fn infer_with(
             if lhs != rhs {
                 return Err(format!("{op} requires matching types, got {lhs} and {rhs}"));
             }
+            if lhs == named("Number") && matches!(op.as_str(), "+" | "-" | "*" | "/" | "**") {
+                if op == "/"
+                    && constant_number(right).is_some_and(|value| value == Ok(Decimal::ZERO))
+                {
+                    return Err("division by zero".into());
+                }
+                if let Some(Err(error)) = constant_number(expr) {
+                    return Err(format!("invalid constant arithmetic: {error}"));
+                }
+            }
             match op.as_str() {
                 "and" | "or" if lhs == named("Bool") => Ok(named("Bool")),
                 "+" if lhs == named("String") => Ok(named("String")),
+                "+" | "-" | "*" | "/" | "**" if lhs == named("Number") => Ok(named("Number")),
                 "==" | "!=" => Ok(named("Bool")),
                 ">" | ">=" | "<" | "<="
                     if lhs == named("Number")
@@ -490,10 +663,39 @@ pub(super) fn valid_time_format(value: &str) -> bool {
         && (b.len() == 8 || (b.len() > 9 && b[8] == b'.' && b[9..].iter().all(u8::is_ascii_digit)))
 }
 
-pub(crate) fn string_builtin(name: &str) -> bool {
+pub(crate) fn builtin(name: &str) -> bool {
     matches!(
         name,
-        "string"
+        "round"
+            | "roundUp"
+            | "roundDown"
+            | "roundHalfUp"
+            | "roundHalfDown"
+            | "roundHalfEven"
+            | "floor"
+            | "ceiling"
+            | "min"
+            | "max"
+            | "sum"
+            | "mean"
+            | "median"
+            | "product"
+            | "stddev"
+            | "mode"
+            | "number"
+            | "abs"
+            | "modulo"
+            | "sqrt"
+            | "exp"
+            | "ln"
+            | "log"
+            | "clamp"
+            | "odd"
+            | "even"
+            | "isPositive"
+            | "isNegative"
+            | "isZero"
+            | "string"
             | "stringJoin"
             | "stringLength"
             | "substring"

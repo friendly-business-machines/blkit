@@ -6,6 +6,7 @@ pub mod distributed;
 pub mod expr;
 pub mod graph;
 pub mod logging;
+pub mod number_ops;
 pub mod postgres_store;
 pub mod project;
 pub mod runtime;
