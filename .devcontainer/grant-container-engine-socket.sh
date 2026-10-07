@@ -13,20 +13,39 @@ host_socket=/var/run/docker-host.sock
 if [[ -S "$host_socket" ]]; then
   # Docker Desktop presents a root:root socket. Forward it without changing
   # host permissions or granting vscode membership in the root group.
-  sudo socat "UNIX-LISTEN:$socket,fork,mode=600,user=vscode" "UNIX-CONNECT:$host_socket" &
-  proxy=$!
+  start_proxy() {
+    sudo socat "UNIX-LISTEN:$socket,unlink-early,fork,mode=600,user=vscode" "UNIX-CONNECT:$host_socket" &
+    proxy=$!
+  }
+  start_proxy
   for _ in {1..50}; do
-    if [[ -S "$socket" && -w "$socket" ]]; then
-      exec "$@"
+    if curl -fsS --noproxy '*' --max-time 1 --unix-socket "$socket" http://localhost/_ping >/dev/null 2>&1; then
+      break
     fi
     if ! kill -0 "$proxy" 2>/dev/null; then
-      echo "Container engine socket proxy exited" >&2
+      echo "Container engine socket proxy exited during startup" >&2
       exit 1
     fi
     sleep 0.1
   done
-  echo "Container engine socket proxy did not start" >&2
-  exit 1
+  if ! curl -fsS --noproxy '*' --max-time 1 --unix-socket "$socket" http://localhost/_ping >/dev/null 2>&1; then
+    echo "Container engine socket proxy did not connect" >&2
+    exit 1
+  fi
+
+  "$@" &
+  command=$!
+  trap 'kill "$command" "$proxy" 2>/dev/null || true; wait "$command" "$proxy" 2>/dev/null || true' EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  while true; do
+    completed=
+    if wait -n -p completed "$command" "$proxy"; then status=0; else status=$?; fi
+    if [[ "$completed" == "$command" ]]; then exit "$status"; fi
+    if [[ "$completed" != "$proxy" ]]; then exit "$status"; fi
+    echo "Container engine socket proxy exited; restarting" >&2
+    start_proxy
+  done
 fi
 
 if [[ ! -S "$socket" ]]; then
