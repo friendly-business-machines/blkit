@@ -21,3 +21,7 @@
 - Do not use or reintroduce `pi-plan`; it has been removed. Avoid overlapping
   planning/task systems unless a tool is explicitly needed by the active
   workflow.
+- For full-suite verification, run `cargo test --all --workspace -- --test-threads=1`
+  with a command/tool timeout of at least 90 minutes (5,400 seconds). Concurrent
+  PostgreSQL container startups can exhaust resources; a command timeout does
+  not establish that the tests passed or failed.
