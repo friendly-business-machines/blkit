@@ -108,10 +108,16 @@ pub(super) fn check_decision(
         let mut found = vec![];
         calls(&item.body, &mut found);
         for name in found {
+            if name == "dateTime" {
+                return Err("dateTime(...) was renamed to datetime(...)".into());
+            }
             if !knowledge_names.contains(name)
                 && !range_relation(name)
                 && !builtin(name)
-                && !matches!(name, "date" | "time" | "dateTime")
+                && !matches!(
+                    name,
+                    "date" | "time" | "datetime" | "today" | "now" | "dtDuration" | "ymDuration"
+                )
             {
                 return Err(format!("unknown knowledge model: {name}"));
             }
@@ -183,10 +189,22 @@ pub(super) fn check_decision(
             let mut called = vec![];
             calls(expression, &mut called);
             for name in called {
+                if name == "dateTime" {
+                    return Err("dateTime(...) was renamed to datetime(...)".into());
+                }
                 if !knowledge_names.contains(name)
                     && !range_relation(name)
                     && !builtin(name)
-                    && !matches!(name, "date" | "time" | "dateTime")
+                    && !matches!(
+                        name,
+                        "date"
+                            | "time"
+                            | "datetime"
+                            | "today"
+                            | "now"
+                            | "dtDuration"
+                            | "ymDuration"
+                    )
                 {
                     return Err(format!("unknown knowledge model: {name}"));
                 }

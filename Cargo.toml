@@ -29,11 +29,14 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "std"] }
 opentelemetry-otlp = { version = "0.33", default-features = false, features = ["logs", "http-proto", "reqwest-blocking-client"] }
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["logs"] }
 opentelemetry-appender-tracing = "0.33"
+chrono-tz = "0.10"
 
 [build-dependencies]
 rust_decimal = { version = "1.39", features = ["maths"] }
 chrono = "0.4"
 regex = "1"
+chrono-tz = "0.10"
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

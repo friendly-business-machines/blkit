@@ -123,7 +123,7 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
             || (ch == '*' && chars.peek() == Some(&'*'))
         {
             token.push(chars.next().unwrap());
-        } else if !".[](),<>+-*/".contains(ch) {
+        } else if !".[](),<>+-*/=".contains(ch) {
             return Err(format!("invalid character in expression: {ch}"));
         }
         result.push(token);
@@ -230,9 +230,41 @@ impl Parser {
                 };
                 self.take();
                 let mut args = Vec::new();
+                let mut named = Vec::new();
                 if self.peek() != Some(")") {
                     loop {
-                        args.push(self.parse(0)?);
+                        let option = self
+                            .peek()
+                            .filter(|token| super::identifier(token))
+                            .filter(|_| {
+                                self.tokens
+                                    .get(self.index + 1)
+                                    .is_some_and(|token| token == "=")
+                            })
+                            .map(str::to_owned);
+                        if let Some(option) = option {
+                            if !matches!(
+                                name.as_str(),
+                                "calendarDrop" | "calendarKeep" | "calendarMerge"
+                            ) {
+                                return Err("named arguments are only supported by calendar transformations".into());
+                            }
+                            if named.contains(&option) {
+                                return Err(format!("duplicate named argument: {option}"));
+                            }
+                            named.push(option.clone());
+                            self.take();
+                            self.expect("=")?;
+                            args.push(Expr::Call(
+                                format!("__bl_named_{option}"),
+                                vec![self.parse(0)?],
+                            ));
+                        } else {
+                            if !named.is_empty() {
+                                return Err("positional argument after named argument".into());
+                            }
+                            args.push(self.parse(0)?);
+                        }
                         if self.peek() != Some(",") {
                             break;
                         }

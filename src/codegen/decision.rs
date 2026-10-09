@@ -189,6 +189,7 @@ pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut 
         "pub fn {}({inputs}) -> Result<{output}, String> {{\n",
         model.name
     ));
+    let body_start = out.len();
     let mut env: HashMap<String, Type> = model.inputs.iter().cloned().collect();
     env.extend(
         model
@@ -286,5 +287,11 @@ pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut 
         out.push_str(&format!("Ok(serde_json::json!({{{fields}}}))\n}}\n"));
     } else {
         out.push_str(&format!("Ok({})\n}}\n", model.output_node));
+    }
+    if out[body_start..].contains("__bl_temporal_clock") {
+        out.insert_str(
+            body_start,
+            "let __bl_temporal_clock = chrono::Local::now();\n",
+        );
     }
 }

@@ -14,6 +14,7 @@ mod semantic;
 pub mod server;
 mod store;
 pub mod string_ops;
+pub mod temporal;
 
 pub use compiler::{
     DeadlinePolicy, Enum, Process, Program, Record, RetryPolicy, Type, parse, transpile,

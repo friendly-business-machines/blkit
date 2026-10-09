@@ -302,22 +302,119 @@ start_event start {{ output window: Window; output closes: DateTime; }} pause_fo
 }
 
 #[test]
+fn financial_dates_reject_invalid_basis_types_and_date_only_include_time() {
+    for (kind, expression) in [
+        ("Date", "daysBetween(input, input, true)"),
+        ("Date", "monthsBetween(input, input, \"bad\")"),
+        ("Date", "yearsBetween(input, input, \"calendar\", true)"),
+        ("Date", "financialYear(input, \"bad\")"),
+        ("Date", "financialYearQuarter(input, 13)"),
+        ("DateTime", "monthsBetween(input, input, \"calendar\", 1)"),
+    ] {
+        let output = if expression.starts_with("financialYear") {
+            "String"
+        } else {
+            "Number"
+        };
+        let source = decision_expression(kind, output, expression);
+        assert!(transpile(&source).is_err(), "accepted: {expression}");
+    }
+}
+
+#[test]
+fn calendar_named_arguments_reject_unknown_duplicate_and_misplaced_options() {
+    for expression in [
+        "calendarDrop(input, date(\"2025-04-18\"), unknown=\"overlap\")",
+        "calendarDrop(input, date(\"2025-04-18\"), rangeMatch=\"bad\")",
+        "calendarDrop(input, date(\"2025-04-18\"), rangeMatch=\"overlap\", rangeMatch=\"equality\")",
+        "calendarKeep(input, \"A\", rangeMatch=\"overlap\", \"B\")",
+        "calendarKeep(input, pattern(\"[\"))",
+        "calendarDrop(input, 7)",
+        "calendarMerge([input], dedupeBy=\"invalid\")",
+        "calendarMerge([input], tiebreak=\"invalid\")",
+        "calendarMerge([input], dedupeBy=\"value\", dedupeBy=\"valueAndName\")",
+        "input = input",
+        "calendarDrop(input, {rangeMatch: \"overlap\"})",
+    ] {
+        let source = decision_expression("Calendar", "Calendar", expression);
+        assert!(transpile(&source).is_err(), "accepted: {expression}");
+    }
+}
+
+#[test]
+fn temporal_constructor_migration_and_components_are_typed() {
+    for (input, output, expr) in [
+        ("Number", "Date", "date(2025, 2, 28)"),
+        ("Number", "Time", "time(14, 30, 0)"),
+        ("Date", "DateTime", "datetime(input, time(14, 30, 0))"),
+        ("DateTime", "Date", "date(input)"),
+        ("DateTime", "Time", "time(input)"),
+        ("Number", "Date", "today()"),
+        ("Number", "DateTime", "now()"),
+        ("Date", "Number", "input.isoWeekOfYear"),
+        ("Date", "String", "input.isoYearWeek"),
+        ("Time", "Number", "input.hour"),
+    ] {
+        let source = decision_expression(input, output, expr);
+        transpile(&source).unwrap_or_else(|error| panic!("{expr}: {error}"));
+    }
+    for (output, expr) in [
+        ("DateTime", "dateTime(\"2026-10-02T09:30:00Z\")"),
+        ("Date", "date(2025, 2)"),
+        ("Time", "time(24, 1, 0)"),
+        ("Date", "date(2025, 2, 30)"),
+        (
+            "DateTime",
+            "datetime(date(\"2025-01-01Z\"), time(\"12:00:00\"))",
+        ),
+        ("Bool", "date(\"2025-01-01\") = date(\"2025-01-01\")"),
+    ] {
+        let source = decision_expression("Number", output, expr);
+        let error = transpile(&source).expect_err(&format!("accepted: {expr}"));
+        if expr.starts_with("dateTime(") {
+            assert!(error.contains("datetime"), "{error}");
+        }
+    }
+}
+
+#[test]
+fn temporal_literals_accept_the_same_formats_as_typed_json() {
+    for (ty, literal) in [
+        ("Date", "date(\"2026-10-02+05:30\")"),
+        ("Date", "date(\"2026-10-02[Europe/Paris]\")"),
+        ("Time", "time(\"24:00:00\")"),
+        ("Time", "time(\"09:30:00[Europe/Paris]\")"),
+        ("DateTime", "datetime(\"2026-10-02T09:30:00\")"),
+        (
+            "DateTime",
+            "datetime(\"2026-10-02T09:30:00[Europe/Paris]\")",
+        ),
+    ] {
+        let source = decision_expression(ty, ty, literal);
+        transpile(&source).unwrap_or_else(|error| panic!("{literal}: {error}"));
+    }
+}
+
+#[test]
 fn temporal_types_and_literal_constructors_validate() {
     let source = format!(
         "{HEADER}type Clock:
   day: Date;
   time: Time;
   instant: DateTime;
-decision_task check {{ input input: Clock; output result: Bool = value; literal_expression value {{ output result: Bool; expression input.day < date(\"2026-10-02\") and input.time <= time(\"09:30:00.250\") and input.instant == dateTime(\"2026-10-02T09:30:00+02:00\"); }} }}"
+decision_task check {{ input input: Clock; output result: Bool = value; literal_expression value {{ output result: Bool; expression input.day < date(\"2026-10-02\") and input.time <= time(\"09:30:00.250\") and input.instant == datetime(\"2026-10-02T09:30:00+02:00\"); }} }}"
     );
     transpile(&source).unwrap();
     for (from, to) in [
         ("2026-10-02", "2026-02-30"),
         ("2026-10-02", "2026-1-2"),
-        ("09:30:00.250", "24:00:00"),
+        ("09:30:00.250", "24:00:01"),
         ("09:30:00.250", "9:30:00"),
-        ("09:30:00.250", "09:30:00+02:00"),
-        ("2026-10-02T09:30:00+02:00", "2026-10-02T09:30:00"),
+        ("09:30:00.250", "09:30:00+99:00"),
+        (
+            "2026-10-02T09:30:00+02:00",
+            "2025-03-30T02:30:00[Europe/Paris]",
+        ),
         ("date(\"2026-10-02\")", "date(input.day)"),
     ] {
         assert!(
@@ -349,7 +446,7 @@ fn ranges_parse_boundaries_and_infer_temporal_types() {
     }
     for (ty, literal) in [
         ("Date", "date(\"2026-10-02\")"),
-        ("DateTime", "dateTime(\"2026-10-02T09:30:00Z\")"),
+        ("DateTime", "datetime(\"2026-10-02T09:30:00Z\")"),
         ("Time", "time(\"09:30:00\")"),
     ] {
         let source = decision_expression(ty, "Bool", &format!("input in [{literal}..null)"));
@@ -416,7 +513,7 @@ fn decision_table_unary_tests_are_typed_and_table_only() {
     assert!(transpile(&outside).is_err());
     for (ty, literal) in [
         ("Date", "date(\"2026-01-01\")"),
-        ("DateTime", "dateTime(\"2026-01-01T00:00:00Z\")"),
+        ("DateTime", "datetime(\"2026-01-01T00:00:00Z\")"),
         ("Time", "time(\"09:00:00\")"),
     ] {
         let source = format!(
@@ -919,7 +1016,7 @@ fn string_builtin_signatures_and_literal_regexes_are_validated() {
         ("string(true)", "String"),
         ("string(date(\"2026-01-01\"))", "String"),
         ("string(time(\"12:30:00\"))", "String"),
-        ("string(dateTime(\"2026-01-01T00:00:00Z\"))", "String"),
+        ("string(datetime(\"2026-01-01T00:00:00Z\"))", "String"),
         ("stringJoin([], \",\")", "String"),
         ("stringLength(\"é\")", "Number"),
         ("substring(\"abc\", -1)", "String"),

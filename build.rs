@@ -14,6 +14,8 @@ mod graph;
 mod number_ops;
 #[path = "src/semantic/mod.rs"]
 mod semantic;
+#[path = "src/temporal.rs"]
+mod temporal;
 use compiler::{Program, Type, identifier, type_ref};
 
 fn main() {
@@ -24,6 +26,11 @@ fn main() {
         "src/expr.rs",
         "src/graph.rs",
         "src/number_ops.rs",
+        "src/temporal.rs",
+        "src/temporal/duration.rs",
+        "src/temporal/calendar.rs",
+        "src/temporal/business.rs",
+        "src/temporal/financial.rs",
         "src/semantic/mod.rs",
         "src/semantic/decision.rs",
         "src/semantic/graph.rs",

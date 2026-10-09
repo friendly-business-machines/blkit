@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
-use chrono::{DateTime, NaiveDate, NaiveTime, Timelike};
+use chrono::{DateTime, NaiveDate, NaiveTime};
 use rust_decimal::Decimal;
 
 use crate::{
@@ -23,7 +23,17 @@ pub(crate) use types::{builtin, infer_with};
 
 pub fn validate(program: &Program) -> Result<(), String> {
     let mut names: HashSet<&str> = [
-        "Bool", "String", "Number", "Date", "DateTime", "Time", "List",
+        "Bool",
+        "String",
+        "Number",
+        "Date",
+        "DateTime",
+        "Time",
+        "DTDuration",
+        "YMDuration",
+        "Calendar",
+        "CalendarEntry",
+        "List",
     ]
     .into_iter()
     .collect();

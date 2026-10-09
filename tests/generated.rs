@@ -263,6 +263,368 @@ decision_task table_test {
 }
 
 #[test]
+fn generated_financial_differences_and_fiscal_years() {
+    compile_and_test(
+        r#"namespace finance; version "1";
+decision_task days { input a: Date; input b: Date; output result: Number = out; literal_expression out { output result: Number; expression daysBetween(a, b); } }
+decision_task precise_days { input a: DateTime; input b: DateTime; output result: Number = out; literal_expression out { output result: Number; expression daysBetween(a, b, true); } }
+decision_task months { input a: Date; input b: Date; input basis: String; output result: Number = out; literal_expression out { output result: Number; expression monthsBetween(a, b, basis); } }
+decision_task years { input a: Date; input b: Date; input basis: String; output result: Number = out; literal_expression out { output result: Number; expression yearsBetween(a, b, basis); } }
+decision_task precise_months { input a: DateTime; input b: DateTime; output result: Number = out; literal_expression out { output result: Number; expression monthsBetween(a, b, "calendar", true); } }
+decision_task precise_years { input a: DateTime; input b: DateTime; output result: Number = out; literal_expression out { output result: Number; expression yearsBetween(a, b, true); } }
+decision_task precise_isda { input a: DateTime; input b: DateTime; output result: Number = out; literal_expression out { output result: Number; expression yearsBetween(a, b, "actual/actual", true); } }
+decision_task fy { input value: Date; input basis: String; output result: String = out; literal_expression out { output result: String; expression financialYear(value, basis); } }
+decision_task fyq { input value: Date; input basis: String; output result: String = out; literal_expression out { output result: String; expression financialYearQuarter(value, basis); } }
+decision_task fy_month { input value: Date; output result: String = out; literal_expression out { output result: String; expression financialYearQuarter(value, 7); } }"#,
+        r#"let d = |text: &str| text.parse::<Date>().unwrap();
+let decimal = |text: &str| Number::from_str_exact(text).unwrap();
+assert_eq!(days(d("2025-01-01"), d("2025-03-15")).unwrap(), Number::from(73));
+assert_eq!(days(d("2025-03-15"), d("2025-01-01")).unwrap(), Number::from(-73));
+assert!((days(d("2025-01-01+14:00"), d("2025-01-01-12:00")).unwrap() - decimal("26") / decimal("24")).abs() < decimal("0.00000001"));
+assert_eq!(precise_days("2025-01-15T00:00:00".parse().unwrap(), "2025-01-16T12:00:00".parse().unwrap()).unwrap(), decimal("1.5"));
+assert!((precise_months("2025-01-01T00:00:00".parse().unwrap(), "2025-01-16T12:00:00".parse().unwrap()).unwrap() - decimal("15.5") / decimal("31")).abs() < decimal("0.00000001"));
+assert!((precise_years("2025-01-01T00:00:00".parse().unwrap(), "2025-01-16T12:00:00".parse().unwrap()).unwrap() - decimal("15.5") / decimal("365")).abs() < decimal("0.00000001"));
+assert!((months(d("2024-01-10"), d("2025-07-25"), "calendar".into()).unwrap() - decimal("18.4839")).abs() < decimal("0.0001"));
+assert!((years(d("2024-01-10"), d("2025-07-25"), "calendar".into()).unwrap() - decimal("1.5370")).abs() < decimal("0.0001"));
+assert_eq!(years(d("2024-01-01"), d("2025-01-01"), "actual/actual".into()).unwrap(), Number::ONE);
+assert_eq!(years(d("2023-12-31"), d("2024-01-02"), "actual/actual".into()).unwrap(), Number::ONE / decimal("365") + Number::ONE / decimal("366"));
+assert_eq!(precise_isda("2023-12-31T12:00:00".parse().unwrap(), "2024-01-01T12:00:00".parse().unwrap()).unwrap(), decimal("0.5") / decimal("365") + decimal("0.5") / decimal("366"));
+assert!((precise_isda("2025-01-01T10:00:00+14:00".parse().unwrap(), "2025-01-01T09:00:00-12:00".parse().unwrap()).unwrap() - decimal("25") / (decimal("24") * decimal("365"))).abs() < decimal("0.00000001"));
+assert_eq!(years(d("2024-02-28"), d("2024-03-01"), "actual/365".into()).unwrap(), decimal("2") / decimal("365"));
+assert_eq!(months(d("2025-02-28"), d("2025-03-31"), "30/360".into()).unwrap(), Number::ONE);
+assert!(months(d("2025-02-28"), d("2025-03-31"), "30E/360".into()).unwrap() > Number::ONE);
+assert_eq!(years(d("2025-01-01"), d("2026-01-01"), "actual/360".into()).unwrap(), decimal("365") / decimal("360"));
+assert!(months(d("2025-01-01"), d("2025-01-02"), "invalid".into()).is_err());
+assert_eq!(fy(d("2024-06-30"), "AU".into()).unwrap(), "FY2024");
+assert_eq!(fy(d("2024-07-01"), "AU".into()).unwrap(), "FY2025");
+assert_eq!(fyq(d("2025-01-15"), "AU".into()).unwrap(), "FY2025Q3");
+assert_eq!(fy_month(d("2024-08-01")).unwrap(), "FY2025Q1");
+assert_eq!(fyq(d("2025-04-05"), "UK".into()).unwrap(), "FY2025Q4");
+assert_eq!(fyq(d("2025-04-06"), "UK".into()).unwrap(), "FY2026Q1");
+assert!(fy(d("2025-01-01"), "bad".into()).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_business_dates_handle_holidays_boundaries_and_datetime_fields() {
+    compile_and_test(
+        r#"namespace business; version "1";
+decision_task next_business { input value: Date; input holidays: Calendar; output result: Date = out; literal_expression out { output result: Date; expression nextBusinessDay(value, holidays); } }
+decision_task add_business { input value: Date; input holidays: Calendar; output result: Date = out; literal_expression out { output result: Date; expression addBusinessDays(value, 2, holidays); } }
+decision_task zero_business { input value: Date; input holidays: Calendar; output result: Date = out; literal_expression out { output result: Date; expression subtractBusinessDays(value, 0, holidays); } }
+decision_task strict_business { input value: Date; input holidays: Calendar; output result: Date = out; literal_expression out { output result: Date; expression addBusinessDays(value, 1, holidays, true); } }
+decision_task holiday { input value: Date; input holidays: Calendar; output result: Bool = out; literal_expression out { output result: Bool; expression isPublicHoliday(value, holidays) and not isBusinessDay(value, holidays); } }
+decision_task last_day { input value: Date; output result: Date = out; literal_expression out { output result: Date; expression lastDayOfMonth(value); } }
+decision_task first_weekday { input value: Date; output result: Date = out; literal_expression out { output result: Date; expression firstDayOfWeekInMonth(value, 1); } }
+decision_task last_weekday { input value: Date; output result: Date = out; literal_expression out { output result: Date; expression nthDayOfWeekInMonth(value, -1, 1); } }
+decision_task next_monday { input value: Date; output result: Date = out; literal_expression out { output result: Date; expression nextDayOfWeek(value, 1); } }
+decision_task next_weekday { input value: Date; output result: Date = out; literal_expression out { output result: Date; expression nextWeekday(value); } }
+decision_task weekday_count { input a: Date; input b: Date; output result: Number = out; literal_expression out { output result: Number; expression weekdaysBetween(a, b); } }
+decision_task business_count { input a: Date; input b: Date; input holidays: Calendar; output result: Number = out; literal_expression out { output result: Number; expression businessDaysBetween(a, b, holidays); } }
+decision_task weekdays_datetime { input a: DateTime; input b: DateTime; output result: Number = out; literal_expression out { output result: Number; expression weekdaysBetween(a, b); } }
+decision_task datetime_business { input value: DateTime; input holidays: Calendar; output result: DateTime = out; literal_expression out { output result: DateTime; expression nextBusinessDay(value, holidays); } }
+decision_task datetime_weekday { input value: DateTime; output result: DateTime = out; literal_expression out { output result: DateTime; expression nextWeekday(value); } }
+decision_task prev_business { input value: Date; input holidays: Calendar; output result: Date = out; literal_expression out { output result: Date; expression prevBusinessDay(value, holidays); } }
+decision_task subtract_business { input value: Date; input holidays: Calendar; output result: Date = out; literal_expression out { output result: Date; expression subtractBusinessDays(value, 2, holidays); } }
+decision_task first_next_month { input value: Date; output result: Date = out; literal_expression out { output result: Date; expression firstDayOfNextMonth(value); } }
+decision_task last_prev_month { input value: Date; output result: Date = out; literal_expression out { output result: Date; expression lastDayOfPrevMonth(value); } }
+decision_task last_friday { input value: Date; output result: Date = out; literal_expression out { output result: Date; expression lastDayOfWeekInMonth(value, 5); } }
+decision_task prev_monday { input value: Date; output result: Date = out; literal_expression out { output result: Date; expression prevDayOfWeek(value, 1); } }
+decision_task weekend { input value: Date; output result: Bool = out; literal_expression out { output result: Bool; expression isWeekend(value); } }"#,
+        r##"let holidays: Calendar = serde_json::from_str(r#"{"validFrom":"2025-04-01","validTo":"2025-04-30","entries":[{"value":"2025-04-18","name":"Good Friday"},{"value":"2025-04-21","name":"Easter Monday"}]}"#).unwrap();
+let d = |text: &str| text.parse::<Date>().unwrap();
+assert_eq!(next_business(d("2025-04-17"), holidays.clone()).unwrap().to_string(), "2025-04-22");
+assert_eq!(add_business(d("2025-04-17"), holidays.clone()).unwrap().to_string(), "2025-04-23");
+assert_eq!(zero_business(d("2025-04-18"), holidays.clone()).unwrap().to_string(), "2025-04-18");
+assert!(holiday(d("2025-04-18"), holidays.clone()).unwrap());
+assert_eq!(last_day(d("2024-02-10")).unwrap().to_string(), "2024-02-29");
+assert_eq!(first_weekday(d("2025-05-10")).unwrap().to_string(), "2025-05-05");
+assert_eq!(last_weekday(d("2025-05-10")).unwrap().to_string(), "2025-05-26");
+assert_eq!(next_monday(d("2025-04-21")).unwrap().to_string(), "2025-04-28");
+assert_eq!(next_weekday(d("2025-05-02")).unwrap().to_string(), "2025-05-05");
+assert_eq!(weekday_count(d("2025-04-17"), d("2025-04-23")).unwrap(), Number::from(5));
+assert_eq!(business_count(d("2025-04-17"), d("2025-04-23"), holidays.clone()).unwrap(), Number::from(3));
+assert!(weekdays_datetime("2025-04-17T10:00:00".parse().unwrap(), "2025-04-18T10:00:00Z".parse().unwrap()).is_err());
+assert_eq!(datetime_business("2025-04-17T14:30:00".parse().unwrap(), holidays.clone()).unwrap().to_string(), "2025-04-22T14:30:00");
+assert_eq!(datetime_weekday("2025-05-02T14:30:00+01:00".parse().unwrap()).unwrap().to_string(), "2025-05-05T14:30:00+01:00");
+assert_eq!(prev_business(d("2025-04-22"), holidays.clone()).unwrap().to_string(), "2025-04-17");
+assert_eq!(subtract_business(d("2025-04-23"), holidays.clone()).unwrap().to_string(), "2025-04-17");
+assert_eq!(first_next_month(d("2025-01-31")).unwrap().to_string(), "2025-02-01");
+assert_eq!(last_prev_month(d("2025-03-15")).unwrap().to_string(), "2025-02-28");
+assert_eq!(last_friday(d("2025-05-10")).unwrap().to_string(), "2025-05-30");
+assert_eq!(prev_monday(d("2025-04-21")).unwrap().to_string(), "2025-04-14");
+assert!(weekend(d("2025-04-19")).unwrap());
+assert_eq!(weekday_count(d("2025-04-23"), d("2025-04-17")).unwrap(), Number::from(5));
+assert!(strict_business(d("2025-04-30"), holidays.clone()).unwrap_err().contains("bl.CalendarRangeError"));
+assert!(next_business(d("2025-04-30"), holidays).is_ok());"##,
+    );
+}
+
+#[test]
+fn generated_calendar_filters_merge_and_named_options_are_checked() {
+    compile_and_test(
+        r#"namespace schedules; version "1";
+decision_task drop_name { input c: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarDrop(c, "Good Friday"); } }
+decision_task keep_pattern { input c: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarKeep(c, pattern("^Easter.*")); } }
+decision_task keep_list { input c: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarKeep(c, [date("2025-04-18"), date("2025-04-21")]); } }
+decision_task drop_overlap { input c: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarDrop(c, [date("2025-04-19")..date("2025-04-22")], rangeMatch="overlap"); } }
+decision_task drop_exact_range { input c: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarDrop(c, [date("2025-04-18")..date("2025-04-20")]); } }
+decision_task keep_within { input c: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarKeep(c, [date("2025-04-18")..date("2025-04-20")], rangeMatch="entryWithin"); } }
+decision_task keep_enclosing { input c: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarKeep(c, [date("2025-04-19")..date("2025-04-19")], rangeMatch="entryEncloses"); } }
+decision_task mixed_targets { input c: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarKeep(c, [date("2025-04-18"), pattern("^Easter")]); } }
+decision_task merge { input c: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarMerge([c, c], dedupeBy="value", tiebreak="first"); } }
+decision_task merge_named { input a: Calendar; input b: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarMerge([a, b], tiebreak="name", dedupeBy="value"); } }
+decision_task merge_by_both { input a: Calendar; input b: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarMerge([a, b], dedupeBy="valueAndName"); } }"#,
+        r##"let c: Calendar = serde_json::from_str(r#"{"validFrom":"2025-01-01","validTo":"2025-12-31","entries":[{"value":"2025-04-18","name":"Good Friday"},{"value":{"start":"2025-04-18","end":"2025-04-20","includeStart":true,"includeEnd":true},"name":"Easter break"},{"value":"2025-04-21","name":"Easter Monday"}]}"#).unwrap();
+assert_eq!(drop_name(c.clone()).unwrap().entries().len(), 2);
+assert_eq!(keep_pattern(c.clone()).unwrap().entries().len(), 2);
+assert_eq!(keep_list(c.clone()).unwrap().entries().len(), 2);
+assert_eq!(drop_overlap(c.clone()).unwrap().entries().len(), 1);
+assert_eq!(drop_exact_range(c.clone()).unwrap().entries().len(), 2);
+assert_eq!(keep_within(c.clone()).unwrap().entries().len(), 2);
+assert_eq!(keep_enclosing(c.clone()).unwrap().entries().len(), 1);
+assert_eq!(mixed_targets(c.clone()).unwrap().entries().len(), 3);
+assert_eq!(merge(c.clone()).unwrap().entries().len(), 3);
+let mut changed = serde_json::to_value(&c).unwrap();
+changed["entries"][0]["name"] = "A name".into();
+let changed: Calendar = serde_json::from_value(changed).unwrap();
+assert_eq!(merge_by_both(c.clone(), changed.clone()).unwrap().entries().len(), 4);
+let chosen = merge_named(c.clone(), changed).unwrap();
+assert_eq!(chosen.entries().len(), 3);
+assert_eq!(chosen.entries()[0].name.as_deref(), Some("A name"));
+let zoned: Calendar = serde_json::from_str(r#"{"validFrom":"2025-01-01Z","validTo":"2025-12-31Z","entries":[]}"#).unwrap();
+assert!(merge_named(c.clone(), zoned).is_err());
+assert_eq!(c.entries().len(), 3);"##,
+    );
+}
+
+#[test]
+fn generated_calendar_queries_cover_ranges_bounds_names_and_traversal() {
+    compile_and_test(
+        r#"namespace schedules; version "1";
+decision_task size { input c: Calendar; output result: Number = out; literal_expression out { output result: Number; expression count(c); } }
+decision_task empty { input c: Calendar; output result: Bool = out; literal_expression out { output result: Bool; expression isEmpty(c); } }
+decision_task labels { input c: Calendar; output result: List<String> = out; literal_expression out { output result: List<String>; expression names(c); } }
+decision_task found { input c: Calendar; output result: List<CalendarEntry> = out; literal_expression out { output result: List<CalendarEntry>; expression find(c, "Good Friday"); } }
+decision_task values { input c: Calendar; output result: List<CalendarEntry> = out; literal_expression out { output result: List<CalendarEntry>; expression entries(c); } }
+decision_task covered { input c: Calendar; output result: Bool = out; literal_expression out { output result: Bool; expression date("2025-04-19") in c; } }
+decision_task matching { input c: Calendar; output result: List<CalendarEntry> = out; literal_expression out { output result: List<CalendarEntry>; expression entriesFor(c, date("2025-04-19")); } }
+decision_task intersecting { input c: Calendar; output result: Bool = out; literal_expression out { output result: Bool; expression overlaps(c, [date("2025-04-19")..date("2025-04-22")]); } }
+decision_task within { input c: Calendar; output result: List<CalendarEntry> = out; literal_expression out { output result: List<CalendarEntry>; expression entriesIn(c, [date("2025-04-19")..date("2025-04-22")]); } }
+decision_task next_one { input c: Calendar; output result: CalendarEntry = out; literal_expression out { output result: CalendarEntry; expression next(c, date("2025-04-19")); } }
+decision_task next_two { input c: Calendar; output result: CalendarEntry = out; literal_expression out { output result: CalendarEntry; expression next(c, date("2025-04-01"), 2); } }
+decision_task previous { input c: Calendar; output result: CalendarEntry = out; literal_expression out { output result: CalendarEntry; expression prev(c, date("2025-04-21")); } }
+decision_task invalid_n { input c: Calendar; output result: CalendarEntry = out; literal_expression out { output result: CalendarEntry; expression next(c, date("2025-04-01"), 0); } }
+decision_task label { input e: CalendarEntry; output result: String = out; literal_expression out { output result: String; expression entryName(e); } }
+decision_task in_bounds { input c: Calendar; output result: Bool = out; literal_expression out { output result: Bool; expression date("2025-04-18") in validRange(c); } }
+decision_task start { input c: Calendar; output result: Bool = out; literal_expression out { output result: Bool; expression validFrom(c) == date("2025-01-01") and validTo(c) == date("2025-12-31"); } }
+decision_task value { input c: Calendar; output result: Bool = out; literal_expression out { output result: Bool; expression entryValue(next(c, date("2025-04-01"))) == date("2025-04-18"); } }
+decision_task range_value { input e: CalendarEntry; output result: Bool = out; literal_expression out { output result: Bool; expression date("2025-04-19") in entryValue(e) and entryValue(e) == [date("2025-04-18")..date("2025-04-20")]; } }"#,
+        r##"let text = r#"{"validFrom":"2025-01-01","validTo":"2025-12-31","entries":[{"value":"2025-04-18","name":"Good Friday"},{"value":{"start":"2025-04-18","end":"2025-04-20","includeStart":true,"includeEnd":true},"name":"Weekend"},{"value":"2025-04-21","name":"Easter Monday"},{"value":"2025-05-01","name":"Weekend"}]}"#;
+let c: Calendar = serde_json::from_str(text).unwrap();
+assert_eq!(size(c.clone()).unwrap(), Number::from(4));
+assert!(!empty(c.clone()).unwrap());
+assert_eq!(labels(c.clone()).unwrap(), ["Good Friday", "Weekend", "Easter Monday"]);
+assert_eq!(found(c.clone()).unwrap().len(), 1);
+assert_eq!(values(c.clone()).unwrap().len(), 4);
+assert!(covered(c.clone()).unwrap());
+assert_eq!(matching(c.clone()).unwrap().len(), 1);
+assert!(intersecting(c.clone()).unwrap());
+assert_eq!(within(c.clone()).unwrap().len(), 2);
+assert_eq!(next_two(c.clone()).unwrap().name.as_deref(), Some("Weekend"));
+assert_eq!(next_one(c.clone()).unwrap().name.as_deref(), Some("Easter Monday"));
+assert_eq!(previous(c.clone()).unwrap().name.as_deref(), Some("Weekend"));
+assert!(invalid_n(c.clone()).is_err());
+assert_eq!(label(found(c.clone()).unwrap()[0].clone()).unwrap(), "Good Friday");
+assert!(start(c.clone()).unwrap() && in_bounds(c.clone()).unwrap() && value(c.clone()).unwrap());
+assert!(range_value(c.entries()[1].clone()).unwrap());
+assert!(!range_value(c.entries()[0].clone()).unwrap());
+assert!(label(serde_json::from_value(serde_json::json!({"value":"2025-04-18"})).unwrap()).is_err());"##,
+    );
+}
+
+#[test]
+fn generated_calendar_ports_accept_validated_json_and_roundtrip() {
+    compile_and_test(
+        r#"namespace schedules; version "1";
+decision_task echo { input input: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression input; } }
+decision_task identical { input input: Calendar; output result: Bool = out; literal_expression out { output result: Bool; expression input == input; } }"#,
+        r##"let text = r#"{"validFrom":"2025-01-01","validTo":"2025-12-31","entries":[{"value":"2025-04-18","name":"Good Friday"}]}"#;
+        let calendar: Calendar = serde_json::from_str(text).unwrap();
+        assert!(identical(calendar.clone()).unwrap());
+        assert_eq!(serde_json::to_value(echo(calendar).unwrap()).unwrap(), serde_json::from_str::<serde_json::Value>(text).unwrap());
+        assert!(serde_json::from_str::<Calendar>(&text.replace("2025-04-18", "2025-02-30")).is_err());"##,
+    );
+}
+
+#[test]
+fn generated_duration_rounding_and_between_are_signed_and_typed() {
+    compile_and_test(
+        r#"namespace intervals; version "1";
+decision_task half_up { input value: DTDuration; output result: DTDuration = out; literal_expression out { output result: DTDuration; expression roundHalfUp(value, dtDuration("PT15M")); } }
+decision_task half_down { input value: DTDuration; output result: DTDuration = out; literal_expression out { output result: DTDuration; expression roundHalfDown(value, dtDuration("PT15M")); } }
+decision_task half_even { input value: DTDuration; output result: DTDuration = out; literal_expression out { output result: DTDuration; expression roundHalfEven(value, dtDuration("PT15M")); } }
+decision_task variable_step { input step: DTDuration; output result: DTDuration = out; literal_expression out { output result: DTDuration; expression roundHalfUp(dtDuration("PT22M30S"), step); } }
+decision_task away { input value: YMDuration; output result: YMDuration = out; literal_expression out { output result: YMDuration; expression roundUp(value, ymDuration("P1Y")); } }
+decision_task positive { input value: DTDuration; output result: DTDuration = out; literal_expression out { output result: DTDuration; expression abs(value); } }
+decision_task negative { input value: DTDuration; output result: Bool = out; literal_expression out { output result: Bool; expression isNegative(value); } }
+decision_task days_between { input from: Date; output result: DTDuration = out; literal_expression out { output result: DTDuration; expression dtDurationBetween(from, date("2025-03-28")); } }
+decision_task months_between { input from: Date; output result: YMDuration = out; literal_expression out { output result: YMDuration; expression ymDurationBetween(from, date("2013-08-24")); } }
+decision_task months_zoned { input from: DateTime; input to: DateTime; output result: YMDuration = out; literal_expression out { output result: YMDuration; expression ymDurationBetween(from, to); } }"#,
+        r#"let tie: DTDuration = "PT22M30S".parse().unwrap();
+assert_eq!(half_up(tie).unwrap().to_string(), "PT30M");
+assert_eq!(half_down(tie).unwrap().to_string(), "PT15M");
+assert_eq!(half_even(tie).unwrap().to_string(), "PT30M");
+assert_eq!(half_even("PT7M30S".parse().unwrap()).unwrap().to_string(), "PT0S");
+assert_eq!(half_even("-PT22M30S".parse().unwrap()).unwrap().to_string(), "-PT30M");
+assert!(variable_step("PT0S".parse().unwrap()).is_err());
+assert!(variable_step("-PT15M".parse().unwrap()).is_err());
+assert_eq!(away("-P1M".parse().unwrap()).unwrap().to_string(), "-P1Y");
+assert_eq!(positive("-PT20S".parse().unwrap()).unwrap().to_string(), "PT20S");
+assert!(negative("-PT20S".parse().unwrap()).unwrap());
+assert!(!negative("PT0S".parse().unwrap()).unwrap());
+assert_eq!(days_between("2025-01-01".parse().unwrap()).unwrap().to_string(), "P86D");
+assert_eq!(months_between("2011-12-22".parse().unwrap()).unwrap().to_string(), "P1Y8M");
+assert_eq!(months_between("2014-09-24".parse().unwrap()).unwrap().to_string(), "-P1Y1M");
+assert_eq!(months_zoned("2025-02-01T00:30:00+14:00".parse().unwrap(), "2025-01-31T23:30:00-12:00".parse().unwrap()).unwrap().to_string(), "P0M");"#,
+    );
+}
+
+#[test]
+fn generated_temporal_zones_and_membership_preserve_instant_and_reject_mixing() {
+    compile_and_test(
+        r#"namespace zones; version "1";
+decision_task reoffset { input value: DateTime; output result: DateTime = out; literal_expression out { output result: DateTime; expression withOffset(value, dtDuration("PT2H")); } }
+decision_task rezone { input value: DateTime; output result: DateTime = out; literal_expression out { output result: DateTime; expression withTimezone(value, "Europe/Paris"); } }
+decision_task strip { input value: DateTime; output result: DateTime = out; literal_expression out { output result: DateTime; expression withoutOffset(value); } }
+decision_task strip_all { input value: Date; output result: Date = out; literal_expression out { output result: Date; expression withoutOffsetOrTimezone(value); } }
+decision_task strip_iana { input value: DateTime; output result: DateTime = out; literal_expression out { output result: DateTime; expression withoutTimezone(value); } }
+decision_task reoffset_time { input value: Time; output result: Time = out; literal_expression out { output result: Time; expression withOffset(value, dtDuration("PT2H")); } }
+decision_task ranged { input value: DateTime; output result: Bool = out; literal_expression out { output result: Bool; expression value between datetime("2025-01-01T00:00:00Z") and datetime("2025-01-03T00:00:00Z"); } }
+decision_task listed { input value: DateTime; output result: Bool = out; literal_expression out { output result: Bool; expression value in [datetime("2025-01-01T00:00:00Z")]; } }"#,
+        r#"assert_eq!(reoffset("2025-03-28T14:30:00+01:00".parse().unwrap()).unwrap().to_string(), "2025-03-28T15:30:00+02:00");
+assert_eq!(rezone("2025-03-28T14:30:00Z".parse().unwrap()).unwrap().to_string(), "2025-03-28T15:30:00[Europe/Paris]");
+assert!(rezone("2025-03-28T14:30:00".parse().unwrap()).is_err());
+assert_eq!(strip("2025-03-28T14:30:00+01:00".parse().unwrap()).unwrap().to_string(), "2025-03-28T14:30:00");
+assert_eq!(strip_all("2025-03-28[Europe/Paris]".parse().unwrap()).unwrap().to_string(), "2025-03-28");
+assert_eq!(strip_iana("2025-03-28T14:30:00[Europe/Paris]".parse().unwrap()).unwrap().to_string(), "2025-03-28T14:30:00");
+assert_eq!(reoffset_time("14:30:00+01:00".parse().unwrap()).unwrap().to_string(), "15:30:00+02:00");
+assert!(reoffset_time("14:30:00".parse().unwrap()).is_err());
+assert!(ranged("2025-01-02T00:00:00Z".parse().unwrap()).unwrap());
+assert!(ranged("2025-01-02T00:00:00".parse().unwrap()).is_err());
+assert!(listed("2025-01-01T00:00:00".parse().unwrap()).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_temporal_point_arithmetic_and_comparison_are_checked() {
+    compile_and_test(
+        r#"namespace dates; version "1";
+decision_task clamp { input value: Date; output result: Date = out; literal_expression out { output result: Date; expression value + ymDuration("P1M"); } }
+decision_task wrap { input value: Time; output result: Time = out; literal_expression out { output result: Time; expression value + dtDuration("PT2H"); } }
+decision_task midnight_gap { input value: Date; output result: DTDuration = out; literal_expression out { output result: DTDuration; expression value - date("2025-03-28-05:00"); } }
+decision_task cross_dst { input value: DateTime; output result: DateTime = out; literal_expression out { output result: DateTime; expression value + dtDuration("PT2H"); } }
+decision_task month_datetime { input value: DateTime; output result: DateTime = out; literal_expression out { output result: DateTime; expression value + ymDuration("P1M"); } }
+decision_task high_precision { input value: Time; output result: Time = out; literal_expression out { output result: Time; expression value + dtDuration("PT0.1234567891S"); } }
+decision_task mixed { input value: DateTime; output result: Bool = out; literal_expression out { output result: Bool; expression value == datetime("2025-01-01T00:00:00Z"); } }
+decision_task whole_days { input value: Date; output result: Date = out; literal_expression out { output result: Date; expression value + dtDuration("PT25H"); } }
+decision_task fraction_month { input value: Date; output result: Date = out; literal_expression out { output result: Date; expression value + ymDuration("P0.5M"); } }
+decision_task skipped_midnight { input value: Date; output result: Date = out; literal_expression out { output result: Date; expression value + dtDuration("P1D"); } }
+decision_task high_precision_datetime { input value: DateTime; output result: DateTime = out; literal_expression out { output result: DateTime; expression value + dtDuration("PT0.1234567891S"); } }
+decision_task compare_time { input value: Time; output result: Bool = out; literal_expression out { output result: Bool; expression value < time("12:00:00Z"); } }"#,
+        r#"assert_eq!(clamp("2025-01-31".parse().unwrap()).unwrap().to_string(), "2025-02-28");
+assert_eq!(wrap("23:00:00".parse().unwrap()).unwrap().to_string(), "01:00:00");
+assert_eq!(midnight_gap("2025-03-28+05:30".parse().unwrap()).unwrap().to_string(), "-PT10H30M");
+assert_eq!(cross_dst("2025-03-30T01:30:00[Europe/Paris]".parse().unwrap()).unwrap().to_string(), "2025-03-30T04:30:00[Europe/Paris]");
+assert_eq!(month_datetime("2025-01-31T12:00:00".parse().unwrap()).unwrap().to_string(), "2025-02-28T12:00:00");
+assert!(high_precision("12:00:00".parse().unwrap()).is_err());
+assert!(mixed("2025-01-01T00:00:00".parse().unwrap()).is_err());
+assert_eq!(whole_days("2025-01-31".parse().unwrap()).unwrap().to_string(), "2025-02-01");
+assert!(fraction_month("2025-01-31".parse().unwrap()).is_err());
+assert!(skipped_midnight("2011-12-29[Pacific/Apia]".parse().unwrap()).is_err());
+assert!(high_precision_datetime("2025-01-31T12:00:00".parse().unwrap()).is_err());
+assert!(compare_time("12:00:00+01:00".parse().unwrap()).unwrap());
+assert!(compare_time("12:00:00".parse().unwrap()).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_temporal_constructors_properties_and_clock_share_one_evaluation() {
+    compile_and_test(
+        r#"namespace timing; version "1";
+decision_task make_date { input value: Number; output result: Date = out; literal_expression out { output result: Date; expression date(2025, 2, value); } }
+decision_task dynamic_date { input value: String; output result: Date = out; literal_expression out { output result: Date; expression date(value); } }
+decision_task fractional_second { input value: Number; output result: Time = out; literal_expression out { output result: Time; expression time(14, 30, value); } }
+decision_task make_time { input offset: DTDuration; output result: Time = out; literal_expression out { output result: Time; expression time(14, 30, 0, offset); } }
+decision_task make_datetime { input day: Date; output result: DateTime = out; literal_expression out { output result: DateTime; expression datetime(day, time("14:30:00")); } }
+decision_task year_week { input day: Date; output result: String = out; literal_expression out { output result: String; expression day.isoYearWeek; } }
+decision_task calendar_props { input day: Date; output result: Bool = out; literal_expression out { output result: Bool; expression day.year == 2025 and day.month == 12 and day.day == 29 and day.dayOfYear == 363 and day.weekOfYear == 52 and day.isoWeekOfYear == 1 and day.quarter == 4 and day.yearQuarter == "2025Q4" and day.dayName == "Monday" and day.dayNameShort == "Mon" and day.monthName == "December" and day.monthNameShort == "Dec"; } }
+decision_task clock_props { input moment: DateTime; output result: Bool = out; literal_expression out { output result: Bool; expression moment.hour == 14 and moment.minute == 30 and moment.second == 0.25 and moment.timezone == "Europe/Paris"; } }
+decision_task offset { input day: Date; output result: DTDuration = out; literal_expression out { output result: DTDuration; expression day.offset; } }
+decision_task stable_now { input value: Bool; output result: Bool = out; literal_expression out { output result: Bool; expression now() == now() and today() == today(); } }
+decision_task stable_knowledge { input value: Bool; output result: Bool = out; knowledge read_clock { input item: Bool; output result: Bool; expression now() == now() and today() == today(); } literal_expression out { output result: Bool; expression read_clock(value); } }"#,
+        r#"let n = |text: &str| text.parse::<Number>().unwrap();
+        assert_eq!(make_date(n("28")).unwrap().to_string(), "2025-02-28");
+        assert!(make_date(n("30")).is_err());
+        assert_eq!(dynamic_date("2025-02-28".into()).unwrap().to_string(), "2025-02-28");
+        assert!(dynamic_date("2025-02-30".into()).is_err());
+        assert_eq!(fractional_second(n("0.25")).unwrap().to_string(), "14:30:00.250");
+        assert!(fractional_second(n("4294967296")).is_err());
+        assert_eq!(make_time("PT2H".parse().unwrap()).unwrap().to_string(), "14:30:00+02:00");
+        assert_eq!(make_datetime("2025-03-28".parse().unwrap()).unwrap().to_string(), "2025-03-28T14:30:00");
+        assert!(make_datetime("2025-03-28Z".parse().unwrap()).is_err());
+        assert_eq!(year_week("2025-12-29".parse().unwrap()).unwrap(), "2026W1");
+        assert!(calendar_props("2025-12-29".parse().unwrap()).unwrap());
+        assert!(clock_props("2025-02-28T14:30:00.250[Europe/Paris]".parse().unwrap()).unwrap());
+        assert_eq!(offset("2025-03-28+05:30".parse().unwrap()).unwrap().to_string(), "PT5H30M");
+        assert!(stable_now(true).unwrap());
+        assert!(stable_knowledge(true).unwrap());"#,
+    );
+}
+
+#[test]
+fn generated_duration_expressions_use_typed_values_and_checked_decimal_arithmetic() {
+    compile_and_test(
+        r#"namespace durations; version "1";
+decision_task parse_time { input text: String; output result: DTDuration = value; literal_expression value { output result: DTDuration; expression dtDuration(text); } }
+decision_task divide_time { input factor: Number; output result: DTDuration = value; literal_expression value { output result: DTDuration; expression dtDuration("PT1H") / factor; } }
+decision_task combine_time { input value: DTDuration; output result: Number = total; literal_expression total { output result: Number; expression (value + dtDuration("PT30M")).totalMinutes; } }
+decision_task months { input factor: Number; output result: YMDuration = value; literal_expression value { output result: YMDuration; expression ymDuration("P1Y") / factor; } }
+decision_task years { input value: YMDuration; output result: Number = total; literal_expression total { output result: Number; expression value.totalYears; } }"#,
+        r#"let n = |text: &str| text.parse::<Number>().unwrap();
+        assert_eq!(parse_time("p1.5d".into()).unwrap().to_string(), "P1DT12H");
+        assert!(parse_time("PT1e2S".into()).is_err());
+        assert_eq!(divide_time(n("7")).unwrap().total_seconds(), n("514.28571428571428571428571429"));
+        assert!(divide_time(Number::ZERO).is_err());
+        assert_eq!(combine_time("PT30M".parse().unwrap()).unwrap(), n("60"));
+        assert_eq!(years(months(n("4")).unwrap()).unwrap(), n("0.25"));
+        assert_eq!(serde_json::to_value("PT0.1234567891S".parse::<DTDuration>().unwrap()).unwrap(), serde_json::json!("PT0.1234567891S"));"#,
+    );
+}
+
+#[test]
+fn generated_temporal_json_preserves_naive_offsets_and_iana_zones() {
+    compile_and_test(
+        r#"namespace timing; version "1";
+decision_task preserve_date { input value: Date; output result: Date = copy; literal_expression copy { output result: Date; expression value; } }
+decision_task preserve_time { input value: Time; output result: Time = copy; literal_expression copy { output result: Time; expression value; } }
+decision_task preserve_datetime { input value: DateTime; output result: DateTime = copy; literal_expression copy { output result: DateTime; expression value; } }"#,
+        r#"for (day, time, instant) in [
+            ("2026-10-02", "24:00:00", "2026-10-02T09:30:00"),
+            ("2026-10-02+05:30", "09:30:00+02:00", "2026-10-02T09:30:00+02:00"),
+            ("2026-10-02[Europe/Paris]", "09:30:00[Europe/Paris]", "2026-10-02T09:30:00[Europe/Paris]"),
+        ] {
+            let date: Date = serde_json::from_value(serde_json::json!(day)).unwrap();
+            let time_value: Time = serde_json::from_value(serde_json::json!(time)).unwrap();
+            let datetime: DateTime = serde_json::from_value(serde_json::json!(instant)).unwrap();
+            assert_eq!(serde_json::to_value(preserve_date(date).unwrap()).unwrap(), serde_json::json!(day));
+            assert_eq!(serde_json::to_value(preserve_time(time_value).unwrap()).unwrap(), serde_json::json!(if time == "24:00:00" { "00:00:00" } else { time }));
+            assert_eq!(serde_json::to_value(preserve_datetime(datetime).unwrap()).unwrap(), serde_json::json!(instant));
+        }"#,
+    );
+}
+
+#[test]
 fn generated_temporal_values_roundtrip_and_order() {
     compile_and_test(
         r#"namespace timing;
@@ -274,7 +636,7 @@ type Clock:
 decision_task later {
   input value: Clock;
   output result: Bool = checked;
-  literal_expression checked { output result: Bool; expression value.day < date("2026-10-03") and value.time < time("12:00:00") and value.instant == dateTime("2026-10-02T08:30:00Z"); }
+  literal_expression checked { output result: Bool; expression value.day < date("2026-10-03") and value.time < time("12:00:00") and value.instant == datetime("2026-10-02T08:30:00Z"); }
 }
 decision_task before {
   input opens: DateTime;
@@ -282,7 +644,7 @@ decision_task before {
   output result: Bool = checked;
   literal_expression checked { output result: Bool; expression opens < closes; }
 }"#,
-        r#"let day: Date = serde_json::from_value(serde_json::json!("2026-10-02")).unwrap(); let time: Time = serde_json::from_value(serde_json::json!("09:30:00.250")).unwrap(); let instant: DateTime = serde_json::from_value(serde_json::json!("2026-10-02T09:30:00+01:00")).unwrap(); assert!(later(Clock { day, time, instant }).unwrap()); assert_eq!(serde_json::to_value(day).unwrap(), serde_json::json!("2026-10-02")); assert_eq!(serde_json::to_value(time).unwrap(), serde_json::json!("09:30:00.250")); assert!(before("2026-10-02T09:30:00+02:00".parse().unwrap(), "2026-10-02T08:31:00+01:00".parse().unwrap()).unwrap()); for invalid in ["2026-02-30", "not-a-date", "2026-1-2"] { assert!(serde_json::from_value::<Date>(serde_json::json!(invalid)).is_err()); } for invalid in ["24:00:00", "09:30:00+02:00", "23:59:60", "9:30:00"] { assert!(serde_json::from_value::<Time>(serde_json::json!(invalid)).is_err(), "{invalid}"); } assert!(serde_json::from_value::<DateTime>(serde_json::json!("2026-10-02T09:30:00")).is_err());"#,
+        r#"let day: Date = serde_json::from_value(serde_json::json!("2026-10-02")).unwrap(); let time: Time = serde_json::from_value(serde_json::json!("09:30:00.250")).unwrap(); let instant: DateTime = serde_json::from_value(serde_json::json!("2026-10-02T09:30:00+01:00")).unwrap(); assert!(later(Clock { day, time, instant }).unwrap()); assert_eq!(serde_json::to_value(day).unwrap(), serde_json::json!("2026-10-02")); assert_eq!(serde_json::to_value(time).unwrap(), serde_json::json!("09:30:00.250")); assert!(before("2026-10-02T09:30:00+02:00".parse().unwrap(), "2026-10-02T08:31:00+01:00".parse().unwrap()).unwrap()); for invalid in ["2026-02-30", "not-a-date", "2026-1-2"] { assert!(serde_json::from_value::<Date>(serde_json::json!(invalid)).is_err()); } for invalid in ["24:00:01", "09:30:00+99:00", "23:59:60", "9:30:00"] { assert!(serde_json::from_value::<Time>(serde_json::json!(invalid)).is_err(), "{invalid}"); } assert!(serde_json::from_value::<DateTime>(serde_json::json!("2025-03-30T02:30:00[Europe/Paris]")).is_err());"#,
     );
 }
 
@@ -299,7 +661,7 @@ decision_task exclusive { input value: Number; output result: Bool = check; lite
 decision_task upper_open { input value: Number; output result: Bool = check; literal_expression check { output result: Bool; expression value in [1..null); } }
 decision_task dynamic { input bounds: Bounds; output result: Bool = check; literal_expression check { output result: Bool; expression bounds.low in [bounds.low..bounds.high]; } }
 decision_task relations { input value: Number; output result: Bool = check; literal_expression check { output result: Bool; expression before([1..2], [3..4]) and meets([1..2], [2..3]) and overlaps([5..10], [1..6]) and includes([1..10], 5) and not (starts(1, (1..5])) and overlaps((null..5), [4..null)) and not (overlaps([value..1], [1..2])); } }
-decision_task instant { input value: DateTime; output result: Bool = check; literal_expression check { output result: Bool; expression value in [dateTime("2026-10-02T09:00:00+01:00")..null); } }
+decision_task instant { input value: DateTime; output result: Bool = check; literal_expression check { output result: Bool; expression value in [datetime("2026-10-02T09:00:00+01:00")..null); } }
 decision_task adjacent { input value: Date; output result: Bool = check; literal_expression check { output result: Bool; expression not (overlaps((date("2026-01-01")..date("2026-01-03")), [date("2026-01-03")..null))) and not (overlaps((date("2026-01-01")..date("2026-01-02")), [date("2026-01-01")..date("2026-01-02")])); } }"#,
         r#"let n = |text: &str| text.parse::<Number>().unwrap(); assert!(inclusive(n("1")).unwrap()); assert!(inclusive(n("5")).unwrap()); assert!(!exclusive(n("1")).unwrap()); assert!(exclusive(n("3")).unwrap()); assert!(!exclusive(n("5")).unwrap()); assert!(upper_open(n("100")).unwrap()); assert!(!dynamic(Bounds { low: n("5"), high: n("1") }).unwrap()); assert!(relations(n("5")).unwrap()); assert!(instant("2026-10-02T08:30:00Z".parse().unwrap()).unwrap()); assert!(adjacent("2026-01-01".parse().unwrap()).unwrap());"#,
     );

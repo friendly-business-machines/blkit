@@ -12,55 +12,107 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
     match expr {
         Expr::Call(name, args) => {
             let shadowed = knowledge.iter().find(|item| item.name == *name);
-            (shadowed.is_none()
-                && matches!(
+            (name.starts_with("__bl_calendar_")
+                || matches!(
                     name.as_str(),
-                    "string"
-                        | "round"
-                        | "roundUp"
-                        | "roundDown"
-                        | "roundHalfUp"
-                        | "roundHalfDown"
-                        | "roundHalfEven"
-                        | "floor"
-                        | "ceiling"
-                        | "min"
-                        | "max"
-                        | "sum"
-                        | "mean"
-                        | "median"
-                        | "product"
-                        | "stddev"
-                        | "mode"
-                        | "number"
-                        | "abs"
-                        | "modulo"
-                        | "sqrt"
-                        | "exp"
-                        | "ln"
-                        | "log"
-                        | "clamp"
-                        | "odd"
-                        | "even"
-                        | "isPositive"
-                        | "isNegative"
-                        | "isZero"
-                        | "substring"
-                        | "charAt"
-                        | "padLeading"
-                        | "padTrailing"
-                        | "repeat"
-                        | "split"
-                        | "matches"
-                        | "replace"
-                        | "extract"
-                ))
+                    "calendarDrop"
+                        | "calendarKeep"
+                        | "calendarMerge"
+                        | "daysBetween"
+                        | "monthsBetween"
+                        | "yearsBetween"
+                        | "financialYear"
+                        | "financialYearQuarter"
+                        | "isWeekday"
+                        | "isWeekend"
+                        | "isPublicHoliday"
+                        | "isBusinessDay"
+                        | "lastDayOfMonth"
+                        | "firstDayOfMonth"
+                        | "lastDayOfPrevMonth"
+                        | "firstDayOfNextMonth"
+                        | "firstDayOfWeekInMonth"
+                        | "lastDayOfWeekInMonth"
+                        | "nthDayOfWeekInMonth"
+                        | "nextDayOfWeek"
+                        | "prevDayOfWeek"
+                        | "nextWeekday"
+                        | "prevWeekday"
+                        | "nextBusinessDay"
+                        | "prevBusinessDay"
+                        | "addBusinessDays"
+                        | "subtractBusinessDays"
+                        | "weekdaysBetween"
+                        | "businessDaysBetween"
+                )
+                || name.starts_with("__bl_temporal_")
+                || name.starts_with("__bl_duration_op_")
+                || name.starts_with("__bl_dtDurationBetween_")
+                || name.starts_with("__bl_ymDurationBetween_")
+                || name == "__bl_with_offset_time"
+                || matches!(
+                    name.as_str(),
+                    "__bl_date_parts" | "__bl_time_parts" | "__bl_datetime_parts"
+                )
+                || (shadowed.is_none()
+                    && matches!(
+                        name.as_str(),
+                        "string"
+                            | "round"
+                            | "roundUp"
+                            | "roundDown"
+                            | "roundHalfUp"
+                            | "roundHalfDown"
+                            | "roundHalfEven"
+                            | "floor"
+                            | "ceiling"
+                            | "min"
+                            | "max"
+                            | "sum"
+                            | "mean"
+                            | "median"
+                            | "product"
+                            | "stddev"
+                            | "mode"
+                            | "number"
+                            | "dtDuration"
+                            | "ymDuration"
+                            | "date"
+                            | "time"
+                            | "datetime"
+                            | "withOffset"
+                            | "withTimezone"
+                            | "abs"
+                            | "modulo"
+                            | "sqrt"
+                            | "exp"
+                            | "ln"
+                            | "log"
+                            | "clamp"
+                            | "odd"
+                            | "even"
+                            | "isPositive"
+                            | "isNegative"
+                            | "isZero"
+                            | "substring"
+                            | "charAt"
+                            | "padLeading"
+                            | "padTrailing"
+                            | "repeat"
+                            | "split"
+                            | "matches"
+                            | "replace"
+                            | "extract"
+                    )))
                 || shadowed.is_some_and(|item| expr_fallible(&item.body, knowledge))
                 || args.iter().any(|arg| expr_fallible(arg, knowledge))
         }
         Expr::Field(value, _) | Expr::Not(value) => expr_fallible(value, knowledge),
         Expr::Binary(left, op, right) => {
-            matches!(op.as_str(), "num+" | "-" | "*" | "/" | "%" | "**")
+            (matches!(op.as_str(), "num+" | "-" | "*" | "/" | "%" | "**")
+                || op.starts_with("duration")
+                || op.starts_with("point")
+                || op.starts_with("calendar"))
                 || expr_fallible(left, knowledge)
                 || expr_fallible(right, knowledge)
         }
@@ -97,16 +149,141 @@ fn specialize_expr(
     ) {
         match expr {
             Expr::Binary(left, op, right) => {
-                if op == "+"
-                    && semantic::infer_with(left, None, env, program, knowledge).ok()
-                        == Some(Type::Named("Number".into()))
+                let lhs = semantic::infer_with(left, None, env, program, knowledge).ok();
+                let rhs = semantic::infer_with(right, None, env, program, knowledge).ok();
+                if op == "in"
+                    && matches!(lhs, Some(Type::Named(ref name)) if matches!(name.as_str(), "Date" | "DateTime"))
                 {
-                    *op = "num+".into();
+                    if rhs == Some(Type::Named("Calendar".into())) {
+                        *op = "calendarin".into();
+                    }
+                    if rhs == Some(Type::Named("CalendarRange".into())) {
+                        *op = "calendarinrange".into();
+                    }
+                    if rhs == Some(Type::Named("CalendarValue".into())) {
+                        *op = "calendarinvalue".into();
+                    }
+                }
+                if matches!(op.as_str(), "==" | "!=") {
+                    let internal = |ty: &Option<Type>| matches!(ty, Some(Type::Named(name)) if matches!(name.as_str(), "CalendarPoint" | "CalendarValue"));
+                    let point = |ty: &Option<Type>| matches!(ty, Some(Type::Named(name)) if matches!(name.as_str(), "Date" | "DateTime"));
+                    if internal(&lhs) && point(&rhs) {
+                        *op = format!("calendar_eq_left_{op}");
+                    } else if internal(&rhs) && point(&lhs) {
+                        *op = format!("calendar_eq_right_{op}");
+                    } else if lhs == Some(Type::Named("CalendarValue".into()))
+                        && matches!(rhs, Some(Type::Generic(ref kind, _)) if kind == "Range")
+                    {
+                        *op = format!("calendar_eq_range_left_{op}");
+                    } else if rhs == Some(Type::Named("CalendarValue".into()))
+                        && matches!(lhs, Some(Type::Generic(ref kind, _)) if kind == "Range")
+                    {
+                        *op = format!("calendar_eq_range_right_{op}");
+                    }
+                }
+                let duration = |ty: &Option<Type>| matches!(ty, Some(Type::Named(name)) if matches!(name.as_str(), "DTDuration" | "YMDuration"));
+                if duration(&lhs) && matches!(op.as_str(), "+" | "-" | "*" | "/") {
+                    *op = format!("duration{op}");
+                } else if duration(&rhs) && matches!(op.as_str(), "*" | "-") {
+                    *op = format!("duration_right{op}");
+                } else if let Some(Type::Named(name)) = &lhs {
+                    if matches!(name.as_str(), "Date" | "Time" | "DateTime") {
+                        if op == "in" {
+                            let range =
+                                Type::Generic("Range".into(), Box::new(Type::Named(name.clone())));
+                            if semantic::infer_with(right, Some(&range), env, program, knowledge)
+                                .ok()
+                                == Some(range)
+                            {
+                                *op = format!("pointin_{name}");
+                            } else {
+                                *op = "pointinlist".into();
+                            }
+                        } else if matches!(op.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=") {
+                            *op = format!("pointcmp{op}");
+                        } else if let Some(Type::Named(other)) = &rhs {
+                            if matches!(other.as_str(), "DTDuration" | "YMDuration")
+                                && matches!(op.as_str(), "+" | "-")
+                            {
+                                *op = format!("point_{name}_{other}_{op}");
+                            } else if other == name && op == "-" {
+                                *op = format!("pointdiff_{name}");
+                            }
+                        }
+                    } else if op == "+" && name == "Number" {
+                        *op = "num+".into();
+                    }
                 }
                 visit(left, program, knowledge, env);
                 visit(right, program, knowledge, env);
             }
             Expr::Call(name, args) => {
+                if !knowledge.iter().any(|item| item.name == *name) {
+                    let kind = args.first().and_then(|arg| {
+                        semantic::infer_with(arg, None, env, program, knowledge).ok()
+                    });
+                    if kind == Some(Type::Named("Calendar".into()))
+                        && matches!(
+                            name.as_str(),
+                            "count"
+                                | "isEmpty"
+                                | "entries"
+                                | "names"
+                                | "find"
+                                | "contains"
+                                | "entriesFor"
+                                | "overlaps"
+                                | "entriesIn"
+                                | "validFrom"
+                                | "validTo"
+                                | "validRange"
+                                | "next"
+                                | "prev"
+                        )
+                    {
+                        let suffix = if matches!(name.as_str(), "overlaps" | "entriesIn")
+                            && matches!(args.get(1).and_then(|arg| semantic::infer_with(arg, None, env, program, knowledge).ok()), Some(Type::Named(ty)) if ty == "CalendarRange")
+                        {
+                            "_calendar"
+                        } else {
+                            ""
+                        };
+                        *name = format!("__bl_calendar_{name}{suffix}");
+                    } else if kind == Some(Type::Named("CalendarEntry".into()))
+                        && matches!(name.as_str(), "entryName" | "entryValue")
+                    {
+                        *name = format!("__bl_calendar_{name}");
+                    } else if matches!(name.as_str(), "date" | "time")
+                        && kind == Some(Type::Named("DateTime".into()))
+                    {
+                        *name = format!("__bl_extract_{name}");
+                    } else if name == "date" && args.len() == 3 {
+                        *name = "__bl_date_parts".into();
+                    } else if name == "time" && matches!(args.len(), 3 | 4) {
+                        *name = "__bl_time_parts".into();
+                    } else if name == "datetime" && args.len() == 2 {
+                        *name = "__bl_datetime_parts".into();
+                    } else if name == "withOffset" && kind == Some(Type::Named("Time".into())) {
+                        *name = "__bl_with_offset_time".into();
+                    } else if matches!(
+                        name.as_str(),
+                        "abs"
+                            | "isNegative"
+                            | "round"
+                            | "roundUp"
+                            | "roundDown"
+                            | "roundHalfUp"
+                            | "roundHalfDown"
+                            | "roundHalfEven"
+                    ) && matches!(kind, Some(Type::Named(ref ty)) if matches!(ty.as_str(), "DTDuration" | "YMDuration"))
+                    {
+                        *name = format!("__bl_duration_op_{name}");
+                    } else if matches!(name.as_str(), "dtDurationBetween" | "ymDurationBetween")
+                        && let Some(Type::Named(kind)) = kind
+                    {
+                        *name = format!("__bl_{name}_{kind}");
+                    }
+                }
                 if name == "string"
                     && !knowledge.iter().any(|item| item.name == *name)
                     && semantic::infer_with(&args[0], None, env, program, knowledge).ok()
@@ -147,7 +324,42 @@ fn specialize_expr(
                     visit(arg, program, knowledge, env);
                 }
             }
-            Expr::Field(base, _) | Expr::Not(base) => visit(base, program, knowledge, env),
+            Expr::Field(base, field) => {
+                if let Ok(Type::Named(name)) =
+                    semantic::infer_with(base, None, env, program, knowledge)
+                {
+                    if matches!(name.as_str(), "DTDuration" | "YMDuration") {
+                        *expr = Expr::Call(format!("__bl_duration_{field}"), vec![*base.clone()]);
+                    } else if matches!(name.as_str(), "Date" | "Time" | "DateTime") {
+                        let class = if field == "offset" {
+                            "offset"
+                        } else if matches!(
+                            field.as_str(),
+                            "timezone"
+                                | "dayName"
+                                | "dayNameShort"
+                                | "monthName"
+                                | "monthNameShort"
+                                | "isoYearWeek"
+                                | "yearQuarter"
+                        ) {
+                            "text"
+                        } else {
+                            "number"
+                        };
+                        *expr = Expr::Call(
+                            format!("__bl_temporal_{class}_{field}"),
+                            vec![*base.clone()],
+                        );
+                    }
+                }
+                match expr {
+                    Expr::Call(_, args) => visit(&mut args[0], program, knowledge, env),
+                    Expr::Field(base, _) => visit(base, program, knowledge, env),
+                    _ => unreachable!(),
+                }
+            }
+            Expr::Not(base) => visit(base, program, knowledge, env),
             Expr::Range(lower, upper, _, _) => {
                 for bound in lower.iter_mut().chain(upper.iter_mut()) {
                     visit(bound, program, knowledge, env);
@@ -173,6 +385,33 @@ fn emit_typed_expr(
     )
 }
 
+fn emit_calendar_target(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> String {
+    match expr {
+        Expr::List(items) => format!(
+            "blkit::temporal::CalendarTarget::Any(vec![{}])",
+            items
+                .iter()
+                .map(|item| emit_calendar_target(item, program, knowledge))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Expr::Call(name, args) if name == "pattern" => format!(
+            "blkit::temporal::CalendarTarget::pattern(&({}))?",
+            emit_expr_with(&args[0], program, knowledge)
+        ),
+        Expr::Range(..) => {
+            let r = emit_expr_with(expr, program, knowledge);
+            format!(
+                "{{ let r = {r}; blkit::temporal::CalendarTarget::Range(r.lower.map(Into::into), r.upper.map(Into::into), r.include_lower, r.include_upper) }}"
+            )
+        }
+        _ => format!(
+            "blkit::temporal::CalendarTarget::from({})",
+            emit_expr_with(expr, program, knowledge)
+        ),
+    }
+}
+
 fn emit_expr(expr: &Expr, program: &Program) -> String {
     emit_expr_with(expr, program, &[])
 }
@@ -190,6 +429,282 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
         Expr::String(value) => format!("String::from({value:?})"),
         Expr::Bool(value) => value.to_string(),
         Expr::Name(name) => format!("({name}).clone()"),
+        Expr::Call(name, args)
+            if matches!(
+                name.as_str(),
+                "daysBetween"
+                    | "monthsBetween"
+                    | "yearsBetween"
+                    | "financialYear"
+                    | "financialYearQuarter"
+            ) && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let values = args
+                .iter()
+                .map(|arg| emit_expr_with(arg, program, knowledge))
+                .collect::<Vec<_>>();
+            if matches!(name.as_str(), "financialYear" | "financialYearQuarter") {
+                format!(
+                    "blkit::temporal::financial::financial_year({}, {}, {})?",
+                    values[0],
+                    values[1],
+                    name == "financialYearQuarter"
+                )
+            } else if values.len() == 2 {
+                format!(
+                    "blkit::temporal::financial::difference({}, {}, {name:?}, \"calendar\", false)?",
+                    values[0], values[1]
+                )
+            } else if values.len() == 3 {
+                format!(
+                    "blkit::temporal::financial::difference_three({}, {}, {name:?}, {})?",
+                    values[0], values[1], values[2]
+                )
+            } else {
+                format!(
+                    "blkit::temporal::financial::difference({}, {}, {name:?}, &({}), {})?",
+                    values[0], values[1], values[2], values[3]
+                )
+            }
+        }
+        Expr::Call(name, args)
+            if matches!(
+                name.as_str(),
+                "isWeekday"
+                    | "isWeekend"
+                    | "isPublicHoliday"
+                    | "isBusinessDay"
+                    | "lastDayOfMonth"
+                    | "firstDayOfMonth"
+                    | "lastDayOfPrevMonth"
+                    | "firstDayOfNextMonth"
+                    | "firstDayOfWeekInMonth"
+                    | "lastDayOfWeekInMonth"
+                    | "nthDayOfWeekInMonth"
+                    | "nextDayOfWeek"
+                    | "prevDayOfWeek"
+                    | "nextWeekday"
+                    | "prevWeekday"
+                    | "nextBusinessDay"
+                    | "prevBusinessDay"
+                    | "addBusinessDays"
+                    | "subtractBusinessDays"
+                    | "weekdaysBetween"
+                    | "businessDaysBetween"
+            ) && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let values = args
+                .iter()
+                .map(|arg| emit_expr_with(arg, program, knowledge))
+                .collect::<Vec<_>>();
+            let is_count = matches!(name.as_str(), "weekdaysBetween" | "businessDaysBetween");
+            let is_predicate = matches!(
+                name.as_str(),
+                "isWeekday" | "isWeekend" | "isPublicHoliday" | "isBusinessDay"
+            );
+            let numeric = match name.as_str() {
+                "nthDayOfWeekInMonth" => 2,
+                "firstDayOfWeekInMonth"
+                | "lastDayOfWeekInMonth"
+                | "nextDayOfWeek"
+                | "prevDayOfWeek"
+                | "addBusinessDays"
+                | "subtractBusinessDays" => 1,
+                _ => 0,
+            };
+            let offset = if is_count { 2 } else { 1 };
+            let first = if numeric > 0 {
+                format!("Some({})", values[offset])
+            } else {
+                "None".into()
+            };
+            let second = if numeric > 1 {
+                format!("Some({})", values[offset + 1])
+            } else {
+                "None".into()
+            };
+            let calendar_index = offset + numeric;
+            let calendar = if name == "isPublicHoliday"
+                || matches!(
+                    name.as_str(),
+                    "isBusinessDay"
+                        | "nextBusinessDay"
+                        | "prevBusinessDay"
+                        | "addBusinessDays"
+                        | "subtractBusinessDays"
+                        | "businessDaysBetween"
+                ) && values.len() > calendar_index
+            {
+                format!("Some(&({}))", values[calendar_index])
+            } else {
+                "None".into()
+            };
+            let strict = if values.len() > calendar_index + 1 {
+                values[calendar_index + 1].clone()
+            } else {
+                "false".into()
+            };
+            if is_predicate {
+                format!(
+                    "blkit::temporal::business::predicate({}, {name:?}, {calendar})?",
+                    values[0]
+                )
+            } else if is_count {
+                format!(
+                    "blkit::temporal::business::count_between({}, {}, {calendar}, {strict})?",
+                    values[0], values[1]
+                )
+            } else {
+                format!(
+                    "blkit::temporal::business::operation({}, {name:?}, {first}, {second}, {calendar}, {strict})?",
+                    values[0]
+                )
+            }
+        }
+        Expr::Call(name, args)
+            if matches!(
+                name.as_str(),
+                "calendarDrop" | "calendarKeep" | "calendarMerge"
+            ) && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            if name == "calendarMerge" {
+                let calendars = emit_expr_with(&args[0], program, knowledge);
+                let mut dedupe = "None".to_string();
+                let mut tiebreak = "String::from(\"first\")".to_string();
+                for option in &args[1..] {
+                    let Expr::Call(key, value) = option else {
+                        unreachable!()
+                    };
+                    let emitted = emit_expr_with(&value[0], program, knowledge);
+                    if key == "__bl_named_dedupeBy" {
+                        dedupe = format!("Some({emitted})");
+                    } else {
+                        tiebreak = emitted;
+                    }
+                }
+                format!(
+                    "{{ let dedupe: Option<String> = {dedupe}; blkit::temporal::Calendar::merge({calendars}, dedupe.as_deref(), &({tiebreak}))? }}"
+                )
+            } else {
+                let calendar = emit_expr_with(&args[0], program, knowledge);
+                let target = emit_calendar_target(&args[1], program, knowledge);
+                let mode = args
+                    .get(2)
+                    .map_or("String::from(\"equality\")".to_string(), |option| {
+                        let Expr::Call(_, values) = option else {
+                            unreachable!()
+                        };
+                        emit_expr_with(&values[0], program, knowledge)
+                    });
+                format!(
+                    "({calendar}).filter(&({target}), {}, &({mode}))?",
+                    name == "calendarKeep"
+                )
+            }
+        }
+        Expr::Call(name, args) if name.starts_with("__bl_calendar_") => {
+            let name = name.strip_prefix("__bl_calendar_").unwrap();
+            let a = emit_expr_with(&args[0], program, knowledge);
+            let b = args
+                .get(1)
+                .map(|arg| emit_expr_with(arg, program, knowledge));
+            match name {
+                "count" => format!("({a}).count()"),
+                "isEmpty" => format!("({a}).is_empty()"),
+                "entries" => format!("({a}).entries()"),
+                "names" => format!("({a}).names()"),
+                "find" => format!("({a}).find(&({}))", b.unwrap()),
+                "contains" => format!("({a}).contains({})?", b.unwrap()),
+                "entriesFor" => format!("({a}).entries_for({})?", b.unwrap()),
+                "validFrom" => format!("({a}).valid_from().clone()"),
+                "validTo" => format!("({a}).valid_to().clone()"),
+                "validRange" => format!("({a}).valid_range()"),
+                "entryName" => format!("blkit::temporal::entry_name(&({a}))?"),
+                "entryValue" => format!("({a}).value.clone()"),
+                "next" | "prev" => format!(
+                    "({a}).adjacent({}, {}, {})?",
+                    b.unwrap(),
+                    args.get(2)
+                        .map_or("Number::ONE".to_string(), |arg| emit_expr_with(
+                            arg, program, knowledge
+                        )),
+                    name == "next"
+                ),
+                "overlaps" | "entriesIn" | "overlaps_calendar" | "entriesIn_calendar" => {
+                    let method = if name.starts_with("overlaps") {
+                        "overlaps"
+                    } else {
+                        "entries_in"
+                    };
+                    let range = b.unwrap();
+                    let fields = if name.ends_with("_calendar") {
+                        "Some(r.start), Some(r.end), r.include_start, r.include_end"
+                    } else {
+                        "r.lower.map(Into::into), r.upper.map(Into::into), r.include_lower, r.include_upper"
+                    };
+                    format!("{{ let r = {range}; ({a}).{method}({fields})? }}")
+                }
+                _ => unreachable!(),
+            }
+        }
+        Expr::Call(name, args) if name.starts_with("__bl_temporal_") => {
+            let field = name.rsplit('_').next().unwrap();
+            let value = emit_expr_with(&args[0], program, knowledge);
+            if field == "offset" {
+                format!(
+                    "blkit::temporal::offset_property(&({value}), __bl_temporal_clock.clone())?"
+                )
+            } else if name.starts_with("__bl_temporal_text_") {
+                format!("blkit::temporal::text_property(&({value}), {field:?})?")
+            } else {
+                format!("blkit::temporal::number_property(&({value}), {field:?})?")
+            }
+        }
+        Expr::Call(name, args) if name.starts_with("__bl_duration_op_") => {
+            let operation = name.strip_prefix("__bl_duration_op_").unwrap();
+            let value = emit_expr_with(&args[0], program, knowledge);
+            match operation {
+                "abs" => format!("({value}).abs()"),
+                "isNegative" => format!("({value}).is_negative()"),
+                _ => format!(
+                    "({value}).checked_round({}, {operation:?})?",
+                    emit_expr_with(&args[1], program, knowledge)
+                ),
+            }
+        }
+        Expr::Call(name, args)
+            if name.starts_with("__bl_dtDurationBetween_")
+                || name.starts_with("__bl_ymDurationBetween_") =>
+        {
+            let method = match name.as_str() {
+                "__bl_dtDurationBetween_Date" => "dt_between_dates",
+                "__bl_dtDurationBetween_DateTime" => "dt_between_datetimes",
+                "__bl_ymDurationBetween_Date" => "ym_between_dates",
+                "__bl_ymDurationBetween_DateTime" => "ym_between_datetimes",
+                _ => unreachable!(),
+            };
+            format!(
+                "blkit::temporal::{method}({}, {})?",
+                emit_expr_with(&args[0], program, knowledge),
+                emit_expr_with(&args[1], program, knowledge)
+            )
+        }
+        Expr::Call(name, args) if name.starts_with("__bl_duration_") => {
+            let field = name.strip_prefix("__bl_duration_").unwrap();
+            let method = match field {
+                "totalSeconds" => "total_seconds",
+                "totalMinutes" => "total_minutes",
+                "totalHours" => "total_hours",
+                "totalDays" => "total_days",
+                "totalMonths" => "total_months",
+                "totalYears" => "total_years",
+                _ => field,
+            };
+            format!(
+                "({}).{method}()",
+                emit_expr_with(&args[0], program, knowledge)
+            )
+        }
         Expr::Call(name, args) if name == "__bl_number_string" => format!(
             "({}).normalize().to_string()",
             emit_expr_with(&args[0], program, knowledge)
@@ -261,20 +776,99 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 "{{ let __bl_left = {a}; let __bl_right = {b}; {range}.{field}.as_ref().is_some_and(|bound| {comparison}) }}"
             )
         }
+        Expr::Call(name, args) if name == "__bl_with_offset_time" => format!(
+            "blkit::temporal::with_offset_time({}, {}, __bl_temporal_clock.clone())?",
+            emit_expr_with(&args[0], program, knowledge),
+            emit_expr_with(&args[1], program, knowledge)
+        ),
+        Expr::Call(name, args) if name == "withOffset" => format!(
+            "blkit::temporal::with_offset_datetime({}, {})?",
+            emit_expr_with(&args[0], program, knowledge),
+            emit_expr_with(&args[1], program, knowledge)
+        ),
+        Expr::Call(name, args) if name == "withTimezone" => format!(
+            "blkit::temporal::with_timezone({}, &({}))?",
+            emit_expr_with(&args[0], program, knowledge),
+            emit_expr_with(&args[1], program, knowledge)
+        ),
         Expr::Call(name, args)
-            if matches!(name.as_str(), "date" | "time" | "dateTime")
+            if matches!(
+                name.as_str(),
+                "withoutOffset" | "withoutTimezone" | "withoutOffsetOrTimezone"
+            ) =>
+        {
+            format!(
+                "blkit::temporal::strip_zone({}, {name:?})",
+                emit_expr_with(&args[0], program, knowledge)
+            )
+        }
+        Expr::Call(name, args) if name == "__bl_date_parts" => {
+            let a = args
+                .iter()
+                .map(|arg| emit_expr_with(arg, program, knowledge))
+                .collect::<Vec<_>>();
+            format!(
+                "blkit::temporal::date_from_parts({}, {}, {})?",
+                a[0], a[1], a[2]
+            )
+        }
+        Expr::Call(name, args) if name == "__bl_time_parts" => {
+            let a = args
+                .iter()
+                .map(|arg| emit_expr_with(arg, program, knowledge))
+                .collect::<Vec<_>>();
+            let offset = a
+                .get(3)
+                .map_or("None".to_string(), |value| format!("Some({value})"));
+            format!(
+                "blkit::temporal::time_from_parts({}, {}, {}, {offset})?",
+                a[0], a[1], a[2]
+            )
+        }
+        Expr::Call(name, args) if name == "__bl_datetime_parts" => format!(
+            "blkit::temporal::combine({}, {})?",
+            emit_expr_with(&args[0], program, knowledge),
+            emit_expr_with(&args[1], program, knowledge)
+        ),
+        Expr::Call(name, args) if name == "__bl_extract_date" => format!(
+            "blkit::temporal::extract_date({})",
+            emit_expr_with(&args[0], program, knowledge)
+        ),
+        Expr::Call(name, args) if name == "__bl_extract_time" => format!(
+            "blkit::temporal::extract_time({})",
+            emit_expr_with(&args[0], program, knowledge)
+        ),
+        Expr::Call(name, _) if name == "today" => {
+            "blkit::temporal::today(__bl_temporal_clock.clone())".into()
+        }
+        Expr::Call(name, _) if name == "now" => {
+            "blkit::temporal::now(__bl_temporal_clock.clone())".into()
+        }
+        Expr::Call(name, args)
+            if matches!(name.as_str(), "dtDuration" | "ymDuration")
                 && !knowledge.iter().any(|item| item.name == *name) =>
         {
-            let Expr::String(value) = &args[0] else {
-                unreachable!()
+            let value = emit_expr_with(&args[0], program, knowledge);
+            let ty = if name == "dtDuration" {
+                "DTDuration"
+            } else {
+                "YMDuration"
             };
-            match name.as_str() {
-                "date" => format!("{value:?}.parse::<Date>().unwrap()"),
-                "time" => format!(
-                    "Time(chrono::NaiveTime::parse_from_str({value:?}, \"%H:%M:%S%.f\").unwrap())"
-                ),
-                _ => format!("chrono::DateTime::parse_from_rfc3339({value:?}).unwrap()"),
-            }
+            format!("({value}).parse::<{ty}>()?")
+        }
+        Expr::Call(name, args)
+            if matches!(name.as_str(), "date" | "time" | "datetime")
+                && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let ty = match name.as_str() {
+                "date" => "Date",
+                "time" => "Time",
+                _ => "DateTime",
+            };
+            format!(
+                "({}).parse::<{ty}>()?",
+                emit_expr_with(&args[0], program, knowledge)
+            )
         }
         Expr::Call(name, args)
             if matches!(
@@ -520,12 +1114,133 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
         ),
         Expr::Not(value) => format!("(!{})", emit_expr_with(value, program, knowledge)),
         Expr::Binary(left, op, right) => {
+            if matches!(
+                op.as_str(),
+                "calendarin" | "calendarinrange" | "calendarinvalue"
+            ) {
+                let a = emit_expr_with(left, program, knowledge);
+                let b = emit_expr_with(right, program, knowledge);
+                return if op == "calendarin" {
+                    format!("({b}).contains({a})?")
+                } else {
+                    format!("({b}).contains(&({a}).into())?")
+                };
+            }
+            if let Some(rest) = op.strip_prefix("calendar_eq_range_") {
+                let (internal, range) = if rest.starts_with("left_") {
+                    (left, right)
+                } else {
+                    (right, left)
+                };
+                let a = emit_expr_with(internal, program, knowledge);
+                let b = emit_expr_with(range, program, knowledge);
+                let result = format!(
+                    "{{ let r = {b}; ({a}).equals_range(r.lower.map(Into::into), r.upper.map(Into::into), r.include_lower, r.include_upper)? }}"
+                );
+                return if rest.ends_with("!=") {
+                    format!("!({result})")
+                } else {
+                    result
+                };
+            }
+            if let Some(rest) = op.strip_prefix("calendar_eq_") {
+                let (side, operator) = rest.split_once('_').unwrap();
+                let (internal, point) = if side == "left" {
+                    (left, right)
+                } else {
+                    (right, left)
+                };
+                let internal = emit_expr_with(internal, program, knowledge);
+                let point = emit_expr_with(point, program, knowledge);
+                let result = format!("({internal}).equals_point({point})?");
+                return if operator == "!=" {
+                    format!("!({result})")
+                } else {
+                    result
+                };
+            }
             if op == "in" {
                 return format!(
                     "({}).contains(&({}))",
                     emit_expr_with(right, program, knowledge),
                     emit_expr_with(left, program, knowledge)
                 );
+            }
+            if op.starts_with("point") {
+                let a = emit_expr_with(left, program, knowledge);
+                let b = emit_expr_with(right, program, knowledge);
+                if op == "pointinlist" {
+                    return format!(
+                        "{{ let value = {a}; ({b}).iter().try_fold(false, |found, item| if found {{ Ok(true) }} else {{ blkit::temporal::compare_checked(&value, item, __bl_temporal_clock.clone()).map(|order| order.is_eq()) }})? }}"
+                    );
+                }
+                if let Some(kind) = op.strip_prefix("pointin_") {
+                    let adjacent = if kind == "Date" {
+                        "lower.zone == upper.zone && lower.date.succ_opt() == Some(upper.date)"
+                    } else {
+                        "false"
+                    };
+                    return format!(
+                        "{{ let value = {a}; let range = {b}; let empty = if let (Some(lower), Some(upper)) = (range.lower.as_ref(), range.upper.as_ref()) {{ let order = blkit::temporal::compare_checked(lower, upper, __bl_temporal_clock.clone())?; order.is_gt() || (order.is_eq() && !(range.include_lower && range.include_upper)) || (!range.include_lower && !range.include_upper && ({adjacent})) }} else {{ false }}; !empty && match range.lower.as_ref() {{ Some(bound) => {{ let order = blkit::temporal::compare_checked(&value, bound, __bl_temporal_clock.clone())?; if range.include_lower {{ order.is_ge() }} else {{ order.is_gt() }} }}, None => true }} && match range.upper.as_ref() {{ Some(bound) => {{ let order = blkit::temporal::compare_checked(&value, bound, __bl_temporal_clock.clone())?; if range.include_upper {{ order.is_le() }} else {{ order.is_lt() }} }}, None => true }} }}"
+                    );
+                }
+                if let Some(operator) = op.strip_prefix("pointcmp") {
+                    let condition = match operator {
+                        "==" => "is_eq()",
+                        "!=" => "is_ne()",
+                        "<" => "is_lt()",
+                        "<=" => "is_le()",
+                        ">" => "is_gt()",
+                        ">=" => "is_ge()",
+                        _ => unreachable!(),
+                    };
+                    return format!(
+                        "blkit::temporal::compare_checked(&({a}), &({b}), __bl_temporal_clock.clone())?.{condition}"
+                    );
+                }
+                if let Some(kind) = op.strip_prefix("pointdiff_") {
+                    let method = if kind == "Date" {
+                        "subtract_dates"
+                    } else {
+                        "subtract_datetimes"
+                    };
+                    return format!("blkit::temporal::{method}({a}, {b})?");
+                }
+                let (_, ty, dur, operator) = {
+                    let mut parts = op.split('_');
+                    (
+                        parts.next(),
+                        parts.next().unwrap(),
+                        parts.next().unwrap(),
+                        parts.next().unwrap(),
+                    )
+                };
+                let method = match (ty, dur) {
+                    ("Date", "DTDuration") => "add_date_dt",
+                    ("Date", "YMDuration") => "add_date_ym",
+                    ("Time", "DTDuration") => "add_time_dt",
+                    ("DateTime", "DTDuration") => "add_datetime_dt",
+                    ("DateTime", "YMDuration") => "add_datetime_ym",
+                    _ => unreachable!(),
+                };
+                return if operator == "-" {
+                    format!("blkit::temporal::{method}({a}, ({b}).checked_mul(-Number::ONE)?)?")
+                } else {
+                    format!("blkit::temporal::{method}({a}, {b})?")
+                };
+            }
+            if op.starts_with("duration") {
+                let a = emit_expr_with(left, program, knowledge);
+                let b = emit_expr_with(right, program, knowledge);
+                return match op.as_str() {
+                    "duration+" => format!("({a}).checked_add({b})?"),
+                    "duration-" => format!("({a}).checked_sub({b})?"),
+                    "duration*" => format!("({a}).checked_mul({b})?"),
+                    "duration/" => format!("({a}).checked_div({b})?"),
+                    "duration_right*" => format!("({b}).checked_mul({a})?"),
+                    "duration_right-" => format!("({b}).checked_mul(-Number::ONE)?"),
+                    _ => unreachable!(),
+                };
             }
             if op == "+" {
                 return format!(
@@ -650,66 +1365,9 @@ mod graph;
 
 pub fn generate(program: &Program) -> Result<String, String> {
     let mut out = format!(
-        "pub type Number = rust_decimal::Decimal;\npub const NAMESPACE: &str = {:?};\npub const VERSION: &str = {:?};\n",
+        "pub type Number = rust_decimal::Decimal;\n#[allow(unused_imports)] pub use blkit::temporal::{{Date, Time, DateTime, DTDuration, YMDuration, Calendar, CalendarEntry}};\npub const NAMESPACE: &str = {:?};\npub const VERSION: &str = {:?};\n",
         program.namespace, program.version,
     );
-    fn datetime(ty: &Type) -> bool {
-        match ty {
-            Type::Named(name) => name == "DateTime",
-            Type::Generic(_, inner) => datetime(inner),
-        }
-    }
-    if program
-        .records
-        .iter()
-        .flat_map(|r| &r.fields)
-        .any(|(_, ty)| datetime(ty))
-        || program
-            .processes
-            .iter()
-            .chain(&program.tasks)
-            .any(|item| datetime(&item.input_type) || datetime(&item.output))
-        || program.peer_nodes.iter().any(|node| {
-            let (inputs, outputs) = match &node.kind {
-                PeerKind::Start { outputs } => (&[][..], outputs.as_slice()),
-                PeerKind::End { inputs } => (inputs.as_slice(), &[][..]),
-                PeerKind::Split { .. }
-                | PeerKind::Terminal { .. }
-                | PeerKind::PauseFor(_)
-                | PeerKind::PauseUntil { .. } => (&[][..], &[][..]),
-                PeerKind::Subprocess {
-                    inputs, outputs, ..
-                } => (inputs.as_slice(), outputs.as_slice()),
-                PeerKind::Join {
-                    inputs, outputs, ..
-                } => (inputs.as_slice(), outputs.as_slice()),
-            };
-            inputs.iter().chain(outputs).any(|(_, ty)| datetime(ty))
-        })
-        || program.decisions.iter().any(|item| {
-            item.inputs.iter().any(|(_, ty)| datetime(ty))
-                || item.outputs.iter().any(|(_, ty, _)| datetime(ty))
-                || datetime(&item.output)
-                || item.knowledge.iter().any(|model| {
-                    datetime(&model.output) || model.params.iter().any(|(_, ty)| datetime(ty))
-                })
-                || item.nodes.iter().any(|node| {
-                    datetime(&node.output)
-                        || match &node.kind {
-                            DecisionKind::Table(table) => {
-                                table.inputs.iter().any(|(_, ty, _)| datetime(ty))
-                                    || table.outputs.iter().any(|(_, ty)| datetime(ty))
-                            }
-                            DecisionKind::Context { entries, .. } => {
-                                entries.iter().any(|(_, ty, _)| datetime(ty))
-                            }
-                            DecisionKind::Literal(_) => false,
-                        }
-                })
-        })
-    {
-        out.push_str("pub type DateTime = chrono::DateTime<chrono::FixedOffset>;\n");
-    }
     for model in &program.decisions {
         decision::emit_decision(model, program, &mut out);
     }
@@ -788,11 +1446,11 @@ pub fn generate(program: &Program) -> Result<String, String> {
             }
         }
         out.push_str(r#"
-trait BlRangeValue: Ord + Clone {
+trait BlRangeValue: PartialOrd + Clone {
     fn adjacent(&self, _next: &Self) -> bool { false }
 }
 impl BlRangeValue for Number {}
-impl BlRangeValue for chrono::DateTime<chrono::FixedOffset> {}
+impl BlRangeValue for DateTime {}
 #[derive(Debug, Clone)]
 struct BlRange<T> { lower: Option<T>, upper: Option<T>, include_lower: bool, include_upper: bool }
 impl<T: BlRangeValue> BlRange<T> {
@@ -844,11 +1502,11 @@ impl<T: BlRangeValue> BlRange<T> {
         !Self { lower, upper, include_lower, include_upper }.empty()
     }
 }
-fn lower_cmp<T: Ord>(a: Option<&T>, b: Option<&T>) -> std::cmp::Ordering {
-    match (a, b) { (None, None) => std::cmp::Ordering::Equal, (None, _) => std::cmp::Ordering::Less, (_, None) => std::cmp::Ordering::Greater, (Some(a), Some(b)) => a.cmp(b) }
+fn lower_cmp<T: PartialOrd>(a: Option<&T>, b: Option<&T>) -> std::cmp::Ordering {
+    match (a, b) { (None, None) => std::cmp::Ordering::Equal, (None, _) => std::cmp::Ordering::Less, (_, None) => std::cmp::Ordering::Greater, (Some(a), Some(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal) }
 }
-fn upper_cmp<T: Ord>(a: Option<&T>, b: Option<&T>) -> std::cmp::Ordering {
-    match (a, b) { (None, None) => std::cmp::Ordering::Equal, (None, _) => std::cmp::Ordering::Greater, (_, None) => std::cmp::Ordering::Less, (Some(a), Some(b)) => a.cmp(b) }
+fn upper_cmp<T: PartialOrd>(a: Option<&T>, b: Option<&T>) -> std::cmp::Ordering {
+    match (a, b) { (None, None) => std::cmp::Ordering::Equal, (None, _) => std::cmp::Ordering::Greater, (_, None) => std::cmp::Ordering::Less, (Some(a), Some(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal) }
 }
 impl<T: BlRangeValue> PartialEq for BlRange<T> {
     fn eq(&self, other: &Self) -> bool {
@@ -859,111 +1517,8 @@ impl<T: BlRangeValue> PartialEq for BlRange<T> {
 }
 "#);
     }
-    fn date(ty: &Type) -> bool {
-        match ty {
-            Type::Named(name) => name == "Date",
-            Type::Generic(_, inner) => date(inner),
-        }
-    }
-    if out.contains(".parse::<Date>()")
-        || program
-            .records
-            .iter()
-            .flat_map(|r| &r.fields)
-            .any(|(_, ty)| date(ty))
-        || program
-            .processes
-            .iter()
-            .chain(&program.tasks)
-            .any(|item| date(&item.input_type) || date(&item.output))
-        || program.decisions.iter().any(|item| {
-            date(&item.input_type)
-                || date(&item.output)
-                || item
-                    .knowledge
-                    .iter()
-                    .any(|model| date(&model.output) || model.params.iter().any(|(_, ty)| date(ty)))
-                || item.nodes.iter().any(|node| {
-                    date(&node.output)
-                        || match &node.kind {
-                            DecisionKind::Table(table) => {
-                                table.inputs.iter().any(|(_, ty, _)| date(ty))
-                                    || table.outputs.iter().any(|(_, ty)| date(ty))
-                            }
-                            DecisionKind::Context { entries, .. } => {
-                                entries.iter().any(|(_, ty, _)| date(ty))
-                            }
-                            DecisionKind::Literal(_) => false,
-                        }
-                })
-        })
-    {
-        if out.contains("struct BlRange<T>") {
-            out.push_str("impl BlRangeValue for Date { fn adjacent(&self, next: &Self) -> bool { self.0.succ_opt() == Some(next.0) } }\n");
-        }
-        out.push_str(
-            r#"
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Date(pub chrono::NaiveDate);
-impl std::str::FromStr for Date {
-    type Err = String;
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        let value = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").map_err(|e| e.to_string())?;
-        if text.len() != 10 || value.format("%Y-%m-%d").to_string() != text {
-            return Err(String::from("expected YYYY-MM-DD"));
-        }
-        Ok(Self(value))
-    }
-}
-impl serde::Serialize for Date {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.0.format("%Y-%m-%d").to_string())
-    }
-}
-impl<'de> serde::Deserialize<'de> for Date {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
-        text.parse().map_err(serde::de::Error::custom)
-    }
-}
-"#,
-        );
-    }
-    if out.contains("Time(")
-        || out.contains(": Time")
-        || out.contains("-> Time")
-        || out.contains("<Time>")
-    {
-        if out.contains("struct BlRange<T>") {
-            out.push_str("impl BlRangeValue for Time {}\n");
-        }
-        out.push_str(
-            r#"
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Time(pub chrono::NaiveTime);
-impl serde::Serialize for Time {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.0.to_string())
-    }
-}
-impl<'de> serde::Deserialize<'de> for Time {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
-        let b = text.as_bytes();
-        if b.len() < 8 || b[2] != b':' || b[5] != b':' || ![0, 1, 3, 4, 6, 7].iter().all(|&i| b[i].is_ascii_digit())
-            || !(b.len() == 8 || (b.len() > 9 && b[8] == b'.' && b[9..].iter().all(u8::is_ascii_digit))) {
-            return Err(serde::de::Error::custom("expected HH:MM:SS[.fraction]"));
-        }
-        let time = chrono::NaiveTime::parse_from_str(&text, "%H:%M:%S%.f")
-            .map_err(serde::de::Error::custom)?;
-        if chrono::Timelike::nanosecond(&time) >= 1_000_000_000 {
-            return Err(serde::de::Error::custom("leap seconds are not supported"));
-        }
-        Ok(Self(time))
-    }
-}
-"#,
-        );
+    if out.contains("struct BlRange<T>") {
+        out.push_str("impl BlRangeValue for Date { fn adjacent(&self, next: &Self) -> bool { self.zone() == next.zone() && self.date().succ_opt() == Some(next.date()) } }\nimpl BlRangeValue for Time {}\n");
     }
     Ok(out)
 }

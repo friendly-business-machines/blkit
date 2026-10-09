@@ -196,6 +196,402 @@ pub(crate) fn infer_with(
                 }
                 return Ok(definition.output.clone());
             }
+            if matches!(
+                name.as_str(),
+                "daysBetween"
+                    | "monthsBetween"
+                    | "yearsBetween"
+                    | "financialYear"
+                    | "financialYearQuarter"
+            ) {
+                let Some(first) = args.first() else {
+                    return Err(format!("{name} requires Date or DateTime"));
+                };
+                let point = infer_with(first, None, env, program, knowledge)?;
+                if !matches!(point, Type::Named(ref ty) if matches!(ty.as_str(), "Date" | "DateTime"))
+                {
+                    return Err(format!("{name} requires Date or DateTime"));
+                }
+                let is_datetime = point == named("DateTime");
+                if matches!(name.as_str(), "financialYear" | "financialYearQuarter") {
+                    if args.len() != 2 {
+                        return Err(format!("{name} requires a financial year basis"));
+                    }
+                    let basis = infer_with(&args[1], None, env, program, knowledge)?;
+                    if basis != named("String") && basis != named("Number") {
+                        return Err("invalid financial year basis type".into());
+                    }
+                    if let Expr::String(value) = &args[1]
+                        && !matches!(
+                            value.as_str(),
+                            "AU" | "UK" | "US" | "IN" | "JP" | "CA" | "NZ"
+                        )
+                    {
+                        return Err(format!("invalid financial year basis: {value}"));
+                    }
+                    if let Expr::Number(value) = &args[1]
+                        && !matches!(value.parse::<u32>(), Ok(1..=12))
+                    {
+                        return Err(format!("invalid financial year month: {value}"));
+                    }
+                    return Ok(named("String"));
+                }
+                if args.len() < 2 || args.len() > if name == "daysBetween" { 3 } else { 4 } {
+                    return Err(format!("invalid {name} argument count"));
+                }
+                if infer_with(&args[1], Some(&point), env, program, knowledge)? != point {
+                    return Err(format!("{name} requires two matching points"));
+                }
+                let options = &args[2..];
+                if name == "daysBetween" {
+                    if let Some(flag) = options.first()
+                        && (!is_datetime
+                            || infer_with(flag, Some(&named("Bool")), env, program, knowledge)?
+                                != named("Bool"))
+                    {
+                        return Err("includeTime requires DateTime and Bool".into());
+                    }
+                } else {
+                    let mut remaining = options;
+                    if let Some(basis) = remaining.first()
+                        && infer_with(basis, None, env, program, knowledge)? == named("String")
+                    {
+                        if let Expr::String(value) = basis
+                            && !matches!(
+                                value.as_str(),
+                                "calendar"
+                                    | "actual/365"
+                                    | "actual/360"
+                                    | "actual/actual"
+                                    | "30/360"
+                                    | "30E/360"
+                            )
+                        {
+                            return Err(format!("invalid day-count basis: {value}"));
+                        }
+                        remaining = &remaining[1..];
+                    }
+                    if let Some(flag) = remaining.first()
+                        && (!is_datetime
+                            || remaining.len() != 1
+                            || infer_with(flag, Some(&named("Bool")), env, program, knowledge)?
+                                != named("Bool"))
+                    {
+                        return Err("includeTime requires DateTime and Bool".into());
+                    }
+                }
+                return Ok(named("Number"));
+            }
+            if matches!(
+                name.as_str(),
+                "isWeekday"
+                    | "isWeekend"
+                    | "isPublicHoliday"
+                    | "isBusinessDay"
+                    | "lastDayOfMonth"
+                    | "firstDayOfMonth"
+                    | "lastDayOfPrevMonth"
+                    | "firstDayOfNextMonth"
+                    | "firstDayOfWeekInMonth"
+                    | "lastDayOfWeekInMonth"
+                    | "nthDayOfWeekInMonth"
+                    | "nextDayOfWeek"
+                    | "prevDayOfWeek"
+                    | "nextWeekday"
+                    | "prevWeekday"
+                    | "nextBusinessDay"
+                    | "prevBusinessDay"
+                    | "addBusinessDays"
+                    | "subtractBusinessDays"
+                    | "weekdaysBetween"
+                    | "businessDaysBetween"
+            ) {
+                let Some(value) = args.first() else {
+                    return Err(format!("{name} requires Date or DateTime"));
+                };
+                let point = infer_with(value, None, env, program, knowledge)?;
+                if !matches!(point, Type::Named(ref kind) if matches!(kind.as_str(), "Date" | "DateTime"))
+                {
+                    return Err(format!("{name} requires Date or DateTime"));
+                }
+                let number = named("Number");
+                let calendar = named("Calendar");
+                let boolean = named("Bool");
+                let mut index = 1;
+                if matches!(name.as_str(), "weekdaysBetween" | "businessDaysBetween") {
+                    if args.get(index).is_none_or(|arg| {
+                        infer_with(arg, Some(&point), env, program, knowledge).ok()
+                            != Some(point.clone())
+                    }) {
+                        return Err(format!("{name} requires two matching points"));
+                    }
+                    index += 1;
+                }
+                let numeric = match name.as_str() {
+                    "nthDayOfWeekInMonth" => 2,
+                    "firstDayOfWeekInMonth"
+                    | "lastDayOfWeekInMonth"
+                    | "nextDayOfWeek"
+                    | "prevDayOfWeek"
+                    | "addBusinessDays"
+                    | "subtractBusinessDays" => 1,
+                    _ => 0,
+                };
+                for arg in args.iter().skip(index).take(numeric) {
+                    if infer_with(arg, Some(&number), env, program, knowledge)? != number {
+                        return Err(format!("{name} requires Number"));
+                    }
+                }
+                if args.len() < index + numeric {
+                    return Err(format!("{name} requires {numeric} Number arguments"));
+                }
+                index += numeric;
+                let accepts_calendar = matches!(
+                    name.as_str(),
+                    "isPublicHoliday"
+                        | "isBusinessDay"
+                        | "nextBusinessDay"
+                        | "prevBusinessDay"
+                        | "addBusinessDays"
+                        | "subtractBusinessDays"
+                        | "businessDaysBetween"
+                );
+                if name == "isPublicHoliday" && args.len() == index {
+                    return Err("isPublicHoliday requires Calendar".into());
+                }
+                if accepts_calendar && args.len() > index {
+                    if infer_with(&args[index], Some(&calendar), env, program, knowledge)?
+                        != calendar
+                    {
+                        return Err(format!("{name} requires Calendar"));
+                    }
+                    index += 1;
+                }
+                let strict = matches!(
+                    name.as_str(),
+                    "nextBusinessDay"
+                        | "prevBusinessDay"
+                        | "addBusinessDays"
+                        | "subtractBusinessDays"
+                        | "businessDaysBetween"
+                );
+                if strict && args.len() > index {
+                    if infer_with(&args[index], Some(&boolean), env, program, knowledge)? != boolean
+                    {
+                        return Err("strictCalendarRange requires Bool".into());
+                    }
+                    index += 1;
+                }
+                if args.len() != index {
+                    return Err(format!("invalid {name} argument count"));
+                }
+                return Ok(
+                    if matches!(
+                        name.as_str(),
+                        "isWeekday" | "isWeekend" | "isPublicHoliday" | "isBusinessDay"
+                    ) {
+                        boolean
+                    } else if matches!(name.as_str(), "weekdaysBetween" | "businessDaysBetween") {
+                        number
+                    } else {
+                        point
+                    },
+                );
+            }
+            if matches!(
+                name.as_str(),
+                "calendarDrop" | "calendarKeep" | "calendarMerge"
+            ) {
+                let calendar = named("Calendar");
+                if name == "calendarMerge" {
+                    let Some(list) = args.first() else {
+                        return Err("calendarMerge requires List<Calendar>".into());
+                    };
+                    let expected = Type::Generic("List".into(), Box::new(calendar.clone()));
+                    if infer_with(list, Some(&expected), env, program, knowledge)? != expected {
+                        return Err("calendarMerge requires List<Calendar>".into());
+                    }
+                    for option in &args[1..] {
+                        let Expr::Call(key, values) = option else {
+                            return Err("calendarMerge options must be named".into());
+                        };
+                        if !matches!(key.as_str(), "__bl_named_dedupeBy" | "__bl_named_tiebreak")
+                            || values.len() != 1
+                        {
+                            return Err(format!("unknown calendarMerge option: {key}"));
+                        }
+                        if infer_with(&values[0], Some(&named("String")), env, program, knowledge)?
+                            != named("String")
+                        {
+                            return Err(format!("{key} requires String"));
+                        }
+                        if let Expr::String(value) = &values[0] {
+                            let valid = if key.ends_with("dedupeBy") {
+                                matches!(value.as_str(), "value" | "valueAndName")
+                            } else {
+                                matches!(value.as_str(), "first" | "name")
+                            };
+                            if !valid {
+                                return Err(format!("invalid {key}: {value}"));
+                            }
+                        }
+                    }
+                } else {
+                    let [first, target, options @ ..] = args.as_slice() else {
+                        return Err(format!("{name} requires Calendar and target"));
+                    };
+                    if infer_with(first, Some(&calendar), env, program, knowledge)? != calendar {
+                        return Err(format!("{name} requires Calendar"));
+                    }
+                    fn check_target(
+                        expr: &Expr,
+                        env: &HashMap<std::string::String, Type>,
+                        program: &Program,
+                        knowledge: &[Knowledge],
+                    ) -> Result<(), std::string::String> {
+                        match expr {
+                            Expr::List(items) => {
+                                for item in items {
+                                    check_target(item, env, program, knowledge)?;
+                                }
+                                Ok(())
+                            }
+                            Expr::Call(name, args) if name == "pattern" => {
+                                let [pattern] = args.as_slice() else {
+                                    return Err("pattern requires one String".into());
+                                };
+                                if infer_with(pattern, None, env, program, knowledge)?
+                                    != Type::Named("String".into())
+                                {
+                                    return Err("pattern requires String".into());
+                                }
+                                if let Expr::String(value) = pattern {
+                                    regex::Regex::new(value).map_err(|e| e.to_string())?;
+                                }
+                                Ok(())
+                            }
+                            other => {
+                                let ty = infer_with(other, None, env, program, knowledge)?;
+                                if matches!(ty, Type::Named(ref kind) if matches!(kind.as_str(), "String" | "Date" | "DateTime"))
+                                    || matches!(ty, Type::Generic(ref kind, ref inner) if kind == "Range" && matches!(inner.as_ref(), Type::Named(point) if matches!(point.as_str(), "Date" | "DateTime")))
+                                {
+                                    Ok(())
+                                } else {
+                                    Err(format!("invalid calendar target: {ty}"))
+                                }
+                            }
+                        }
+                    }
+                    check_target(target, env, program, knowledge)?;
+                    if options.len() > 1 {
+                        return Err(format!("{name} accepts only rangeMatch"));
+                    }
+                    if let Some(option) = options.first() {
+                        let Expr::Call(key, values) = option else {
+                            return Err("rangeMatch must be named".into());
+                        };
+                        if key != "__bl_named_rangeMatch" || values.len() != 1 {
+                            return Err(format!("unknown {name} option: {key}"));
+                        }
+                        if infer_with(&values[0], Some(&named("String")), env, program, knowledge)?
+                            != named("String")
+                        {
+                            return Err("rangeMatch requires String".into());
+                        }
+                        if let Expr::String(value) = &values[0]
+                            && !matches!(
+                                value.as_str(),
+                                "equality" | "entryWithin" | "entryEncloses" | "overlap"
+                            )
+                        {
+                            return Err(format!("invalid rangeMatch: {value}"));
+                        }
+                    }
+                }
+                return Ok(calendar);
+            }
+            if matches!(name.as_str(), "entryName" | "entryValue") {
+                let [entry] = args.as_slice() else {
+                    return Err(format!("{name} requires one CalendarEntry"));
+                };
+                if infer_with(entry, None, env, program, knowledge)? != named("CalendarEntry") {
+                    return Err(format!("{name} requires CalendarEntry"));
+                }
+                return Ok(named(if name == "entryName" {
+                    "String"
+                } else {
+                    "CalendarValue"
+                }));
+            }
+            if matches!(
+                name.as_str(),
+                "count"
+                    | "isEmpty"
+                    | "entries"
+                    | "names"
+                    | "find"
+                    | "contains"
+                    | "entriesFor"
+                    | "overlaps"
+                    | "entriesIn"
+                    | "validFrom"
+                    | "validTo"
+                    | "validRange"
+                    | "next"
+                    | "prev"
+            ) && args.first().is_some_and(|arg| {
+                infer_with(arg, None, env, program, knowledge).ok() == Some(named("Calendar"))
+            }) {
+                let [_, rest @ ..] = args.as_slice() else {
+                    unreachable!()
+                };
+                let point = |arg: &Expr| -> Result<(), std::string::String> {
+                    if matches!(infer_with(arg, None, env, program, knowledge)?, Type::Named(kind) if matches!(kind.as_str(), "Date" | "DateTime"))
+                    {
+                        Ok(())
+                    } else {
+                        Err(format!("{name} requires a Date or DateTime point"))
+                    }
+                };
+                let result = match (name.as_str(), rest) {
+                    ("count", []) => named("Number"),
+                    ("isEmpty", []) | ("contains", [_]) | ("overlaps", [_]) => named("Bool"),
+                    ("entries", []) | ("find", [_]) | ("entriesFor", [_]) | ("entriesIn", [_]) => {
+                        Type::Generic("List".into(), Box::new(named("CalendarEntry")))
+                    }
+                    ("names", []) => Type::Generic("List".into(), Box::new(named("String"))),
+                    ("validFrom", []) | ("validTo", []) => named("CalendarPoint"),
+                    ("validRange", []) => named("CalendarRange"),
+                    ("next" | "prev", [_] | [_, _]) => named("CalendarEntry"),
+                    _ => return Err(format!("invalid {name} arguments")),
+                };
+                match (name.as_str(), rest) {
+                    ("find", [value]) => {
+                        if infer_with(value, Some(&named("String")), env, program, knowledge)?
+                            != named("String")
+                        {
+                            return Err("find requires String name".into());
+                        }
+                    }
+                    ("contains" | "entriesFor" | "next" | "prev", [value, ..]) => point(value)?,
+                    ("overlaps" | "entriesIn", [range]) => {
+                        let ty = infer_with(range, None, env, program, knowledge)?;
+                        if !matches!(ty, Type::Generic(ref kind, ref inner) if kind == "Range" && matches!(inner.as_ref(), Type::Named(point) if matches!(point.as_str(), "Date" | "DateTime")))
+                            && ty != named("CalendarRange")
+                        {
+                            return Err(format!("{name} requires a Date/DateTime range"));
+                        }
+                    }
+                    _ => {}
+                }
+                if let ("next" | "prev", [_, n]) = (name.as_str(), rest)
+                    && infer_with(n, Some(&named("Number")), env, program, knowledge)?
+                        != named("Number")
+                {
+                    return Err(format!("{name} requires numeric n"));
+                }
+                return Ok(result);
+            }
             if range_relation(name) {
                 let [first, second] = args.as_slice() else {
                     return Err(format!("{name} requires two arguments"));
@@ -245,30 +641,158 @@ pub(crate) fn infer_with(
                 }
                 return Ok(named("Bool"));
             }
-            if matches!(name.as_str(), "date" | "time" | "dateTime") {
-                let [Expr::String(value)] = args.as_slice() else {
-                    return Err(format!("{name} requires a string literal"));
-                };
-                let valid = match name.as_str() {
-                    "date" => NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok(),
-                    "time" => {
-                        valid_time_format(value)
-                            && NaiveTime::parse_from_str(value, "%H:%M:%S%.f")
-                                .is_ok_and(|time| time.nanosecond() < 1_000_000_000)
-                    }
-                    _ => DateTime::parse_from_rfc3339(value).is_ok(),
-                };
-                if !valid {
-                    return Err(format!("invalid {name} literal: {value}"));
-                }
-                return Ok(named(match name.as_str() {
+            if name == "dateTime" {
+                return Err("dateTime(...) was renamed to datetime(...)".into());
+            }
+            if matches!(name.as_str(), "date" | "time" | "datetime") {
+                let number = named("Number");
+                let result = named(match name.as_str() {
                     "date" => "Date",
                     "time" => "Time",
                     _ => "DateTime",
-                }));
+                });
+                let actual: Vec<_> = args
+                    .iter()
+                    .map(|arg| infer_with(arg, None, env, program, knowledge))
+                    .collect::<Result<_, _>>()?;
+                let valid = match (name.as_str(), actual.as_slice()) {
+                    ("date" | "time" | "datetime", [ty]) if *ty == named("String") => {
+                        if let [Expr::String(value)] = args.as_slice() {
+                            let valid = match name.as_str() {
+                                "date" => value.parse::<crate::temporal::Date>().is_ok(),
+                                "time" => value.parse::<crate::temporal::Time>().is_ok(),
+                                _ => value.parse::<crate::temporal::DateTime>().is_ok(),
+                            };
+                            if !valid {
+                                return Err(format!("invalid {name} literal: {value}"));
+                            }
+                        }
+                        true
+                    }
+                    ("date" | "time", [ty]) if *ty == named("DateTime") => true,
+                    ("date", [y, m, d]) | ("time", [y, m, d])
+                        if [y, m, d].iter().all(|ty| **ty == number) =>
+                    {
+                        if let [Some(Ok(a)), Some(Ok(b)), Some(Ok(c))] = args
+                            .iter()
+                            .map(constant_number)
+                            .collect::<Vec<_>>()
+                            .as_slice()
+                        {
+                            let valid = if name == "date" {
+                                crate::temporal::date_from_parts(*a, *b, *c).is_ok()
+                            } else {
+                                crate::temporal::time_from_parts(*a, *b, *c, None).is_ok()
+                            };
+                            if !valid {
+                                return Err(format!("invalid {name} components"));
+                            }
+                        }
+                        true
+                    }
+                    ("time", [a, b, c, offset])
+                        if [a, b, c].iter().all(|ty| *ty == &number)
+                            && *offset == named("DTDuration") =>
+                    {
+                        true
+                    }
+                    ("datetime", [day, time])
+                        if *day == named("Date") && *time == named("Time") =>
+                    {
+                        if let [Expr::Call(_, day), Expr::Call(_, time)] = args.as_slice()
+                            && let ([Expr::String(day)], [Expr::String(time)]) =
+                                (day.as_slice(), time.as_slice())
+                        {
+                            let day = day.parse::<crate::temporal::Date>()?;
+                            let time = time.parse::<crate::temporal::Time>()?;
+                            crate::temporal::combine(day, time)?;
+                        }
+                        true
+                    }
+                    _ => false,
+                };
+                if !valid {
+                    return Err(format!("invalid {name} arguments"));
+                }
+                return Ok(result);
+            }
+            if matches!(name.as_str(), "today" | "now") {
+                if !args.is_empty() {
+                    return Err(format!("{name} requires no arguments"));
+                }
+                return Ok(named(if name == "today" { "Date" } else { "DateTime" }));
+            }
+            if matches!(
+                name.as_str(),
+                "withOffset"
+                    | "withTimezone"
+                    | "withoutOffset"
+                    | "withoutTimezone"
+                    | "withoutOffsetOrTimezone"
+            ) {
+                let actual = args
+                    .iter()
+                    .map(|arg| infer_with(arg, None, env, program, knowledge))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return match (name.as_str(), actual.as_slice()) {
+                    ("withOffset", [value, offset])
+                        if matches!(value, Type::Named(ty) if matches!(ty.as_str(), "Time" | "DateTime"))
+                            && *offset == named("DTDuration") =>
+                    {
+                        Ok(value.clone())
+                    }
+                    ("withTimezone", [value, zone])
+                        if *value == named("DateTime") && *zone == named("String") =>
+                    {
+                        Ok(value.clone())
+                    }
+                    ("withoutOffset" | "withoutTimezone" | "withoutOffsetOrTimezone", [value])
+                        if matches!(value, Type::Named(ty) if matches!(ty.as_str(), "Date" | "DateTime")) =>
+                    {
+                        Ok(value.clone())
+                    }
+                    _ => Err(format!("invalid {name} arguments")),
+                };
             }
             let text = named("String");
             let number = named("Number");
+            if matches!(name.as_str(), "dtDuration" | "ymDuration") {
+                let [arg] = args.as_slice() else {
+                    return Err(format!("{name} requires one String argument"));
+                };
+                if infer_with(arg, Some(&text), env, program, knowledge)? != text {
+                    return Err(format!("{name} requires String"));
+                }
+                if let Expr::String(value) = arg {
+                    if name == "dtDuration" {
+                        value.parse::<crate::temporal::DTDuration>()?;
+                    } else {
+                        value.parse::<crate::temporal::YMDuration>()?;
+                    }
+                }
+                return Ok(named(if name == "dtDuration" {
+                    "DTDuration"
+                } else {
+                    "YMDuration"
+                }));
+            }
+            if matches!(name.as_str(), "dtDurationBetween" | "ymDurationBetween") {
+                let [from, to] = args.as_slice() else {
+                    return Err(format!("{name} requires two points"));
+                };
+                let first = infer_with(from, None, env, program, knowledge)?;
+                let second = infer_with(to, Some(&first), env, program, knowledge)?;
+                if first != second
+                    || !matches!(first, Type::Named(ref ty) if matches!(ty.as_str(), "Date" | "DateTime"))
+                {
+                    return Err(format!("{name} requires two Dates or two DateTimes"));
+                }
+                return Ok(named(if name == "dtDurationBetween" {
+                    "DTDuration"
+                } else {
+                    "YMDuration"
+                }));
+            }
             if matches!(
                 name.as_str(),
                 "min" | "max" | "sum" | "mean" | "median" | "product" | "stddev" | "mode"
@@ -312,6 +836,32 @@ pub(crate) fn infer_with(
                     )?;
                 }
                 return Ok(number);
+            }
+            if matches!(name.as_str(), "abs" | "isNegative") && args.len() == 1 {
+                let actual = infer_with(&args[0], None, env, program, knowledge)?;
+                if matches!(actual, Type::Named(ref ty) if matches!(ty.as_str(), "DTDuration" | "YMDuration"))
+                {
+                    return Ok(if name == "abs" { actual } else { named("Bool") });
+                }
+            }
+            if matches!(
+                name.as_str(),
+                "round"
+                    | "roundUp"
+                    | "roundDown"
+                    | "roundHalfUp"
+                    | "roundHalfDown"
+                    | "roundHalfEven"
+            ) && args.len() == 2
+            {
+                let first = infer_with(&args[0], None, env, program, knowledge)?;
+                if matches!(first, Type::Named(ref ty) if matches!(ty.as_str(), "DTDuration" | "YMDuration"))
+                {
+                    if infer_with(&args[1], Some(&first), env, program, knowledge)? != first {
+                        return Err(format!("{name} requires two matching durations"));
+                    }
+                    return Ok(first);
+                }
             }
             if matches!(
                 name.as_str(),
@@ -522,15 +1072,62 @@ pub(crate) fn infer_with(
                 };
             }
             let ty = infer_with(base, None, env, program, knowledge)?;
-            if let Type::Named(name) = ty
-                && let Some(record) = program.records.iter().find(|item| item.name == name)
-            {
-                return record
-                    .fields
-                    .iter()
-                    .find(|(key, _)| key == field)
-                    .map(|(_, value)| value.clone())
-                    .ok_or_else(|| format!("unknown field: {name}.{field}"));
+            if let Type::Named(name) = ty {
+                if matches!(name.as_str(), "Date" | "Time" | "DateTime") {
+                    let calendar = matches!(name.as_str(), "Date" | "DateTime");
+                    let clock = matches!(name.as_str(), "Time" | "DateTime");
+                    let kind = match field.as_str() {
+                        "year" | "month" | "day" | "dayOfYear" | "weekOfYear" | "isoWeekOfYear"
+                        | "quarter"
+                            if calendar =>
+                        {
+                            Some("Number")
+                        }
+                        "hour" | "minute" | "second" if clock => Some("Number"),
+                        "offset" => Some("DTDuration"),
+                        "timezone" | "dayName" | "dayNameShort" | "isoYearWeek" | "monthName"
+                        | "monthNameShort" | "yearQuarter"
+                            if calendar || field == "timezone" =>
+                        {
+                            Some("String")
+                        }
+                        _ => None,
+                    };
+                    if let Some(kind) = kind {
+                        return Ok(named(kind));
+                    }
+                }
+                if matches!(name.as_str(), "DTDuration" | "YMDuration") {
+                    let valid = if name == "DTDuration" {
+                        matches!(
+                            field.as_str(),
+                            "days"
+                                | "hours"
+                                | "minutes"
+                                | "seconds"
+                                | "totalSeconds"
+                                | "totalMinutes"
+                                | "totalHours"
+                                | "totalDays"
+                        )
+                    } else {
+                        matches!(
+                            field.as_str(),
+                            "years" | "months" | "totalMonths" | "totalYears"
+                        )
+                    };
+                    if valid {
+                        return Ok(named("Number"));
+                    }
+                }
+                if let Some(record) = program.records.iter().find(|item| item.name == name) {
+                    return record
+                        .fields
+                        .iter()
+                        .find(|(key, _)| key == field)
+                        .map(|(_, value)| value.clone())
+                        .ok_or_else(|| format!("unknown field: {name}.{field}"));
+                }
             }
             Err(format!("unknown field: {field}"))
         }
@@ -598,7 +1195,17 @@ pub(crate) fn infer_with(
         Binary(left, op, right) => {
             if op == "in" {
                 let lhs = infer_with(left, None, env, program, knowledge)?;
-                let kind = if lhs == named("String") && !matches!(right.as_ref(), Range(..)) {
+                if matches!(lhs, Type::Named(ref name) if matches!(name.as_str(), "Date" | "DateTime"))
+                {
+                    let rhs = infer_with(right, None, env, program, knowledge);
+                    if matches!(rhs, Ok(Type::Named(ref name)) if matches!(name.as_str(), "Calendar" | "CalendarRange" | "CalendarValue"))
+                    {
+                        return Ok(named("Bool"));
+                    }
+                }
+                let kind = if matches!(right.as_ref(), List(..))
+                    || lhs == named("String") && !matches!(right.as_ref(), Range(..))
+                {
                     "List"
                 } else {
                     "Range"
@@ -618,9 +1225,63 @@ pub(crate) fn infer_with(
             } else {
                 infer_with(left, None, env, program, knowledge)?
             };
-            let rhs = infer_with(right, Some(&lhs), env, program, knowledge)?;
+            let duration = |ty: &Type| matches!(ty, Type::Named(name) if matches!(name.as_str(), "DTDuration" | "YMDuration"));
+            let number = named("Number");
+            let rhs = infer_with(
+                right,
+                Some(if duration(&lhs) && matches!(op.as_str(), "*" | "/") {
+                    &number
+                } else {
+                    &lhs
+                }),
+                env,
+                program,
+                knowledge,
+            )?;
+            if duration(&lhs) && rhs == named("Number") && matches!(op.as_str(), "*" | "/") {
+                return Ok(lhs);
+            }
+            if lhs == named("Number") && duration(&rhs) && op == "*" {
+                return Ok(rhs);
+            }
+            if lhs == named("Number")
+                && duration(&rhs)
+                && op == "-"
+                && matches!(left.as_ref(), Expr::Number(value) if value == "0")
+            {
+                return Ok(rhs);
+            }
+            let point = |ty: &Type| matches!(ty, Type::Named(name) if matches!(name.as_str(), "Date" | "Time" | "DateTime"));
+            if point(&lhs) && duration(&rhs) && matches!(op.as_str(), "+" | "-") {
+                if lhs == named("Time") && rhs != named("DTDuration") {
+                    return Err("Time only supports DTDuration".into());
+                }
+                return Ok(lhs);
+            }
             if lhs != rhs {
+                if matches!(op.as_str(), "==" | "!=")
+                    && (matches!((&lhs, &rhs), (Type::Named(value), Type::Named(point)) if matches!(value.as_str(), "CalendarValue" | "CalendarPoint") && matches!(point.as_str(), "Date" | "DateTime"))
+                        || matches!((&rhs, &lhs), (Type::Named(value), Type::Named(point)) if matches!(value.as_str(), "CalendarValue" | "CalendarPoint") && matches!(point.as_str(), "Date" | "DateTime"))
+                        || matches!((&lhs, &rhs), (Type::Named(value), Type::Generic(kind, inner)) if value == "CalendarValue" && kind == "Range" && matches!(inner.as_ref(), Type::Named(point) if matches!(point.as_str(), "Date" | "DateTime")))
+                        || matches!((&rhs, &lhs), (Type::Named(value), Type::Generic(kind, inner)) if value == "CalendarValue" && kind == "Range" && matches!(inner.as_ref(), Type::Named(point) if matches!(point.as_str(), "Date" | "DateTime"))))
+                {
+                    return Ok(named("Bool"));
+                }
                 return Err(format!("{op} requires matching types, got {lhs} and {rhs}"));
+            }
+            if point(&lhs) && op == "-" {
+                return if lhs == named("Time") {
+                    Err("Time point subtraction is not supported".into())
+                } else {
+                    Ok(named("DTDuration"))
+                };
+            }
+            if duration(&lhs) {
+                return match op.as_str() {
+                    "+" | "-" => Ok(lhs),
+                    "==" | "!=" | "<" | "<=" | ">" | ">=" => Ok(named("Bool")),
+                    _ => Err(format!("{op} does not support {lhs}")),
+                };
             }
             if lhs == named("Number") && matches!(op.as_str(), "+" | "-" | "*" | "/" | "**") {
                 if op == "/"
@@ -654,74 +1315,116 @@ pub(crate) fn infer_with(
     }
 }
 
-pub(super) fn valid_time_format(value: &str) -> bool {
-    let b = value.as_bytes();
-    b.len() >= 8
-        && b[2] == b':'
-        && b[5] == b':'
-        && [0, 1, 3, 4, 6, 7].iter().all(|&i| b[i].is_ascii_digit())
-        && (b.len() == 8 || (b.len() > 9 && b[8] == b'.' && b[9..].iter().all(u8::is_ascii_digit)))
-}
-
 pub(crate) fn builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "round"
-            | "roundUp"
-            | "roundDown"
-            | "roundHalfUp"
-            | "roundHalfDown"
-            | "roundHalfEven"
-            | "floor"
-            | "ceiling"
-            | "min"
-            | "max"
-            | "sum"
-            | "mean"
-            | "median"
-            | "product"
-            | "stddev"
-            | "mode"
-            | "number"
-            | "abs"
-            | "modulo"
-            | "sqrt"
-            | "exp"
-            | "ln"
-            | "log"
-            | "clamp"
-            | "odd"
-            | "even"
-            | "isPositive"
-            | "isNegative"
-            | "isZero"
-            | "string"
-            | "stringJoin"
-            | "stringLength"
-            | "substring"
-            | "substringBefore"
-            | "substringAfter"
-            | "upperCase"
-            | "lowerCase"
-            | "trim"
-            | "trimLeading"
-            | "trimTrailing"
-            | "contains"
-            | "startsWith"
-            | "endsWith"
-            | "matches"
-            | "replace"
-            | "split"
-            | "extract"
-            | "isBlank"
-            | "isEmpty"
-            | "indexOf"
-            | "charAt"
-            | "reverse"
-            | "padLeading"
-            | "padTrailing"
-            | "repeat"
-    )
+    name.starts_with("__bl_named_")
+        || matches!(
+            name,
+            "daysBetween"
+                | "monthsBetween"
+                | "yearsBetween"
+                | "financialYear"
+                | "financialYearQuarter"
+                | "isWeekday"
+                | "isWeekend"
+                | "isPublicHoliday"
+                | "isBusinessDay"
+                | "lastDayOfMonth"
+                | "firstDayOfMonth"
+                | "lastDayOfPrevMonth"
+                | "firstDayOfNextMonth"
+                | "firstDayOfWeekInMonth"
+                | "lastDayOfWeekInMonth"
+                | "nthDayOfWeekInMonth"
+                | "nextDayOfWeek"
+                | "prevDayOfWeek"
+                | "nextWeekday"
+                | "prevWeekday"
+                | "nextBusinessDay"
+                | "prevBusinessDay"
+                | "addBusinessDays"
+                | "subtractBusinessDays"
+                | "weekdaysBetween"
+                | "businessDaysBetween"
+                | "calendarDrop"
+                | "calendarKeep"
+                | "calendarMerge"
+                | "pattern"
+                | "count"
+                | "entries"
+                | "names"
+                | "find"
+                | "entriesFor"
+                | "entriesIn"
+                | "validFrom"
+                | "validTo"
+                | "validRange"
+                | "entryValue"
+                | "entryName"
+                | "next"
+                | "prev"
+                | "dtDurationBetween"
+                | "ymDurationBetween"
+                | "withOffset"
+                | "withTimezone"
+                | "withoutOffset"
+                | "withoutTimezone"
+                | "withoutOffsetOrTimezone"
+                | "round"
+                | "roundUp"
+                | "roundDown"
+                | "roundHalfUp"
+                | "roundHalfDown"
+                | "roundHalfEven"
+                | "floor"
+                | "ceiling"
+                | "min"
+                | "max"
+                | "sum"
+                | "mean"
+                | "median"
+                | "product"
+                | "stddev"
+                | "mode"
+                | "number"
+                | "abs"
+                | "modulo"
+                | "sqrt"
+                | "exp"
+                | "ln"
+                | "log"
+                | "clamp"
+                | "odd"
+                | "even"
+                | "isPositive"
+                | "isNegative"
+                | "isZero"
+                | "string"
+                | "stringJoin"
+                | "stringLength"
+                | "substring"
+                | "substringBefore"
+                | "substringAfter"
+                | "upperCase"
+                | "lowerCase"
+                | "trim"
+                | "trimLeading"
+                | "trimTrailing"
+                | "contains"
+                | "startsWith"
+                | "endsWith"
+                | "matches"
+                | "replace"
+                | "split"
+                | "extract"
+                | "isBlank"
+                | "isEmpty"
+                | "indexOf"
+                | "charAt"
+                | "reverse"
+                | "padLeading"
+                | "padTrailing"
+                | "repeat"
+        )
 }
 
 pub(super) fn range_relation(name: &str) -> bool {
