@@ -75,9 +75,9 @@ Use exactly one of these types:
   `CLAUDE.md`, `.cursorrules`, and files included from them.
 - `skill`: Reusable agent workflow definitions, including `SKILL.md` files.
 - `mcp`: MCP server configuration, tool definitions, or external integrations.
-- `dev`: Local development environment scaffolding with no effect on the
-  production build or CI, such as dev containers, `Dockerfile.dev`,
-  `docker-compose.dev.yml`, or a development-only `Makefile`.
+- `dev`: Developer-only tooling and local development scaffolding with no
+  effect on the product or CI, such as Pi extensions, dev containers,
+  `Dockerfile.dev`, `docker-compose.dev.yml`, or a development-only `Makefile`.
 
 Choose the type for the change's primary intent, not merely the kind of file
 edited. Use `feat` for a new user-facing capability and `fix` for corrected
