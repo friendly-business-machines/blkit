@@ -5,12 +5,25 @@ import { inventory, assertNoPendingMerge, validateGroups, stageGroup, skipGroup,
   type Snapshot, type Proposal, type StageReceipt, type PushPlan, type MergeReceipt } from './commit-changes/git.ts';
 import { resolve } from 'node:path';
 import { lstatSync, realpathSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
-type Run = { root: string; snapshot: Snapshot; phase: 'propose' | 'stage' | 'message' | 'decision' | 'commit' | 'repair' | 'push' | 'pushApproved' | 'reconcile' | 'conflicts' | 'mergeReview' | 'mergeDecision';
+type Run = { root: string; session: string; snapshot: Snapshot; phase: 'propose' | 'stage' | 'message' | 'decision' | 'commit' | 'repair' | 'push' | 'pushApproved' | 'reconcile' | 'conflicts' | 'mergeReview' | 'mergeDecision';
   proposal?: Proposal; index: number; receipt?: StageReceipt; message?: string; hashes: string[]; plan?: PushPlan;
   merge?: MergeReceipt; mergeBaseline?: string; conflicts?: string[] };
 const result = (text: string) => ({ content: [{ type: 'text' as const, text }],
   details: { display: text.startsWith('{') ? 'Inventory sent to agent' : text.startsWith('Proposed commit message:') ? text : text.split('\n')[0] } });
+
+function worktreeRoot(session: string, path?: string): string {
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', args, {cwd, encoding:'utf8'}).trim();
+  const base = realpathSync(git(session, 'rev-parse', '--show-toplevel'));
+  const candidate = realpathSync(resolve(session, path || '.'));
+  const root = realpathSync(git(candidate, 'rev-parse', '--show-toplevel'));
+  const common = (cwd: string) => realpathSync(resolve(cwd, git(cwd, 'rev-parse', '--git-common-dir')));
+  const registered = git(base, 'worktree', 'list', '--porcelain').split('\n')
+    .some(line => line.startsWith('worktree ') && realpathSync(line.slice(9)) === root);
+  if (common(base) !== common(root) || !registered) throw new Error('Target must be a registered worktree of the current repository');
+  return root;
+}
 
 function editable(root: string, path: string): boolean {
   try {
@@ -31,26 +44,28 @@ export default function (pi: ExtensionAPI) {
     return { block: true, reason: 'The commit run permits only read, commit_changes and scoped repair edits.' };
   });
   pi.registerCommand('commit-changes', {
-    description: 'Review, commit and optionally push coherent changes',
+    description: 'Review and commit changes in this checkout or a specified worktree path',
     handler: async (_args, ctx) => {
       if (ctx.mode !== 'tui' || !ctx.isIdle() || active) {
         ctx.ui.notify('An interactive idle Pi session with no active commit run is required', 'warning'); return;
       }
-      try { assertNoPendingMerge(ctx.cwd); }
+      let root: string;
+      try { root = worktreeRoot(ctx.cwd, _args.trim()); assertNoPendingMerge(root); }
       catch (error) { ctx.ui.notify(String(error), 'error'); return; }
-      active = { root: ctx.cwd, snapshot: inventory(ctx.cwd), phase: 'propose', index: 0, hashes: [] };
+      active = { root, session: ctx.cwd, snapshot: inventory(root), phase: 'propose', index: 0, hashes: [] };
       if (!active.snapshot.staged && !active.snapshot.workingPaths.length && !active.snapshot.untrackedPaths.length) {
         active = undefined; ctx.ui.notify('Nothing to commit', 'info'); return;
       }
-      pi.sendUserMessage('Read .pi/skills/commit-changes/SKILL.md. Inspect all changes, then call commit_changes with a proposal. Do not run Git mutations or print the staged diff. Call commit_changes with action inventory for read-only Git data.');
+      pi.sendUserMessage(`Commit target: ${root}. Read .pi/skills/commit-changes/SKILL.md. Inspect all changes, then call commit_changes with a proposal. Do not run Git mutations or print the staged diff. Call commit_changes with action inventory for read-only Git data.`);
     },
   });
   pi.registerTool({
     name: 'commit_changes', label: 'Commit changes', executionMode: 'sequential',
-    description: 'For commit-and-push requests, call start to begin an interactive guarded run. Read inventory, propose groups, stage, present exact messages, and request human menus. Never run Git mutations yourself.',
+    description: 'For commit-and-push requests, call start (optionally with worktree path) to begin an interactive guarded run. Read inventory, propose groups, stage, present exact messages, and request human menus. Never run Git mutations yourself.',
     parameters: Type.Object({
       action: Type.Union(['start', 'inventory', 'propose', 'stage', 'present_message', 'decide_message', 'commit', 'repair', 'review_push', 'push', 'fetch_resolve', 'review_merge', 'commit_merge', 'stop'].map(Type.Literal)),
       proposal: Type.Optional(Type.Any()), message: Type.Optional(Type.String()), patch: Type.Optional(Type.String()),
+      worktree: Type.Optional(Type.String({description:'Registered worktree path, for start only; defaults to the current checkout'})),
     }),
     renderResult: response => new Text(response.details?.display ?? 'Commit-changes step', 0, 0),
     async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -58,19 +73,22 @@ export default function (pi: ExtensionAPI) {
       if (action === 'start') {
         if (active) throw new Error('A commit run is already active');
         if (ctx.mode !== 'tui') throw new Error('Commit approval requires an interactive Pi session');
-        assertNoPendingMerge(ctx.cwd);
-        const snapshot = inventory(ctx.cwd);
+        const root = worktreeRoot(ctx.cwd, params.worktree);
+        assertNoPendingMerge(root);
+        const snapshot = inventory(root);
         if (!snapshot.staged && !snapshot.workingPaths.length && !snapshot.untrackedPaths.length)
           return result('Nothing to commit; no push attempted.');
-        active = {root:ctx.cwd, snapshot, phase:'propose', index:0, hashes:[]};
-        return result(JSON.stringify({...snapshot, unstaged:gitDiff(ctx.cwd)}));
+        active = {root, session:ctx.cwd, snapshot, phase:'propose', index:0, hashes:[]};
+        return result(JSON.stringify({root, ...snapshot, unstaged:gitDiff(root)}));
       }
       const run = active;
-      if (!run || ctx.cwd !== run.root || ctx.mode !== 'tui') throw new Error('No current interactive commit run');
+      if (params.worktree !== undefined) throw new Error('worktree may only be specified on start');
+      if (!run || ctx.cwd !== run.session || ctx.mode !== 'tui') throw new Error('No current interactive commit run');
+      if (worktreeRoot(ctx.cwd, run.root) !== run.root) throw new Error('Commit worktree changed; start a new run');
       if (action === 'stop') { active = undefined; return result('Stopped. Git state was not discarded.'); }
       if (action === 'inventory') {
         if (run.phase !== 'propose') throw new Error('Inventory is available during group proposal only');
-        return result(JSON.stringify({ ...run.snapshot, unstaged: gitDiff(run.root) }));
+        return result(JSON.stringify({ root: run.root, ...run.snapshot, unstaged: gitDiff(run.root) }));
       }
       if (action === 'propose') {
         if (run.phase !== 'propose') throw new Error('Group proposal is not expected now');
@@ -78,7 +96,7 @@ export default function (pi: ExtensionAPI) {
         const proposal = params.proposal as Proposal;
         if (proposal.blocked) { active = undefined; return result(`Blocked: ${proposal.blocked}`); }
         const summary = proposal.groups.map((g, i) => `Commit ${i + 1}: ${g.reason}\n${g.changes.map(c => `  ${c.path}${c.hunks ? ` (hunks ${c.hunks.join(', ')})` : ''}`).join('\n')}`).join('\n');
-        const decision = await ctx.ui.select(`Review groups\n${summary}\nExcluded: ${proposal.excluded.join('; ') || 'none'}`,
+        const decision = await ctx.ui.select(`Review groups in ${run.root}\n${summary}\nExcluded: ${proposal.excluded.join('; ') || 'none'}`,
           ['Approve groups', 'Revise groups', 'Stop']);
         if (decision === 'Revise groups') {
           const instructions = (await ctx.ui.input('What should change?'))?.trim();
@@ -166,7 +184,7 @@ export default function (pi: ExtensionAPI) {
       if (action === 'review_push') {
         if (run.phase !== 'push' || !run.hashes.length) throw new Error('No committed groups to push');
         const plan = pushPlan(run.root, run.hashes);
-        const choice = await ctx.ui.select(`Push ${plan.hashes.join(', ')} to ${plan.remote} ${plan.target || '(no upstream)'}?\nRemaining: ${plan.status || 'clean'}`, ['Push', 'Stop']);
+        const choice = await ctx.ui.select(`Push ${plan.hashes.join(', ')} from ${run.root} to ${plan.remote} ${plan.target || '(no upstream)'}?\nRemaining: ${plan.status || 'clean'}`, ['Push', 'Stop']);
         if (choice !== 'Push') { active = undefined; return result(`Stopped without pushing. Commits: ${run.hashes.join(', ')}`); }
         run.plan = plan; run.phase = 'pushApproved';
         return result(`Push approved to ${plan.remote} ${plan.target}. Call commit_changes push.`);
@@ -220,6 +238,5 @@ export default function (pi: ExtensionAPI) {
   });
 }
 
-import { execFileSync } from 'node:child_process';
 const gitDiff = (root: string) => execFileSync('git', ['diff', '--binary'], { cwd: root, encoding: 'utf8', maxBuffer: 8_000_000 });
 const gitIndex = (root: string) => execFileSync('git', ['diff', '--cached', '--binary'], { cwd: root, encoding: 'utf8', maxBuffer: 8_000_000 });

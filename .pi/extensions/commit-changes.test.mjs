@@ -382,6 +382,48 @@ test('stale or premature decisions and session change fail closed', async () => 
   } finally { rmSync(root, {recursive:true,force:true}); }
 });
 
+test('explicit worktree run commits there without touching the session checkout', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'commit-ext-worktrees-'));
+  const main = join(parent, 'main'), linked = join(parent, 'linked');
+  try {
+    mkdirSync(main);
+    git(main, 'init', '-q'); git(main, 'config', 'user.name', 'Tester'); git(main, 'config', 'user.email', 'test@example.org');
+    writeFileSync(join(main, 'file.txt'), 'old\n'); git(main, 'add', 'file.txt'); git(main, 'commit', '-qm', 'init');
+    git(main, 'worktree', 'add', '-qb', 'feature', linked);
+    writeFileSync(join(linked, 'file.txt'), 'new\n');
+    const before = git(main, 'rev-parse', 'HEAD').trim();
+    const kit = setupExtension(main, ['Approve groups', 'Commit', 'Stop']);
+    assert.match(await kit.call('start', {worktree: linked}), /file.txt/);
+    await assert.rejects(kit.call('inventory', {worktree: main}), /worktree.*start/i);
+    assert.match(await kit.call('inventory'), /new/);
+    assert.match(await kit.call('propose', {proposal:{groups:[{source:'working',reason:'Change',changes:[{path:'file.txt'}]}],excluded:[]}}), /approved/i);
+    await kit.call('stage'); await kit.call('present_message', {message:'fix: Update linked file'});
+    await kit.call('decide_message'); await kit.call('commit'); await kit.call('review_push');
+    assert.equal(git(linked, 'log', '-1', '--format=%s').trim(), 'fix: Update linked file');
+    assert.equal(git(main, 'rev-parse', 'HEAD').trim(), before);
+    assert.equal(readFileSync(join(main, 'file.txt'), 'utf8'), 'old\n');
+    writeFileSync(join(linked, 'file.txt'), 'another edit\n');
+    await kit.commands['commit-changes'].handler(linked, kit.ctx);
+    assert.match(await kit.call('inventory'), /another edit/);
+    assert.ok(kit.events.some(e => e[0] === 'prompt' && e[1].includes(linked)));
+  } finally { rmSync(parent, {recursive:true,force:true}); }
+});
+
+test('explicit worktree run rejects a different repository', async () => {
+  const main = mkdtempSync(join(tmpdir(), 'commit-ext-main-'));
+  const other = mkdtempSync(join(tmpdir(), 'commit-ext-other-'));
+  try {
+    for (const root of [main, other]) {
+      git(root, 'init', '-q'); git(root, 'config', 'user.name', 'Tester'); git(root, 'config', 'user.email', 'test@example.org');
+      writeFileSync(join(root, 'file.txt'), 'old\n'); git(root, 'add', 'file.txt'); git(root, 'commit', '-qm', 'init');
+    }
+    writeFileSync(join(other, 'file.txt'), 'new\n');
+    const kit = setupExtension(main);
+    await assert.rejects(kit.call('start', {worktree: other}), /worktree|repository/i);
+    assert.equal(git(other, 'diff', '--cached'), '');
+  } finally { rmSync(main, {recursive:true,force:true}); rmSync(other, {recursive:true,force:true}); }
+});
+
 test('model can start a guarded run from a commit request without a slash command', async () => {
   const root = mkdtempSync(join(tmpdir(), 'commit-ext-start-'));
   try {
