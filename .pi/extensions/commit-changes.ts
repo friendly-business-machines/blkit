@@ -1,15 +1,15 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { Text } from '@earendil-works/pi-tui';
-import { inventory, assertNoPendingMerge, validateGroups, stageGroup, skipGroup, commitGroup, stageRepair, pushPlan, pushApproved, reconcile, prepareMerge, commitMerge,
-  type Snapshot, type Proposal, type StageReceipt, type PushPlan, type MergeReceipt } from './commit-changes/git.ts';
+import { inventory, assertNoPendingMerge, validateGroups, stageGroup, skipGroup, commitGroup, stageRepair, pushPlan, pushApproved, reconcile, prepareMerge, commitMerge, planLocalMerge, performLocalMerge, removeMergedWorktree,
+  type Snapshot, type Proposal, type StageReceipt, type PushPlan, type MergeReceipt, type LocalMergePlan } from './commit-changes/git.ts';
 import { resolve } from 'node:path';
 import { lstatSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
-type Run = { root: string; session: string; snapshot: Snapshot; phase: 'propose' | 'stage' | 'message' | 'decision' | 'commit' | 'repair' | 'push' | 'pushApproved' | 'reconcile' | 'conflicts' | 'mergeReview' | 'mergeDecision';
+type Run = { root: string; session: string; snapshot: Snapshot; phase: 'propose' | 'stage' | 'message' | 'decision' | 'commit' | 'repair' | 'push' | 'pushApproved' | 'reconcile' | 'conflicts' | 'mergeReview' | 'mergeDecision' | 'localApproved' | 'localCleanup';
   proposal?: Proposal; index: number; receipt?: StageReceipt; message?: string; hashes: string[]; plan?: PushPlan;
-  merge?: MergeReceipt; mergeBaseline?: string; conflicts?: string[] };
+  merge?: MergeReceipt; mergeBaseline?: string; conflicts?: string[]; local?: LocalMergePlan; mergedHead?: string };
 const result = (text: string) => ({ content: [{ type: 'text' as const, text }],
   details: { display: text.startsWith('{') ? 'Inventory sent to agent' : text.startsWith('Proposed commit message:') ? text : text.split('\n')[0] } });
 
@@ -61,15 +61,28 @@ export default function (pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: 'commit_changes', label: 'Commit changes', executionMode: 'sequential',
-    description: 'For commit requests, call start with worktree path or proposal: {worktree: path} when the API schema omits worktree. Read inventory, propose groups, stage, present exact messages, and request human menus. Never run Git mutations yourself.',
+    description: 'For commit requests, call start with worktree path or proposal: {worktree: path} when the API schema omits worktree. Use local_merge with proposal: {worktree: path} for a guarded local merge. Never run Git mutations yourself.',
     parameters: Type.Object({
-      action: Type.Union(['start', 'inventory', 'propose', 'stage', 'present_message', 'decide_message', 'commit', 'repair', 'review_push', 'push', 'fetch_resolve', 'review_merge', 'commit_merge', 'stop'].map(Type.Literal)),
+      action: Type.Union(['start', 'inventory', 'propose', 'stage', 'present_message', 'decide_message', 'commit', 'repair', 'review_push', 'push', 'fetch_resolve', 'review_merge', 'commit_merge', 'local_merge', 'perform_local_merge', 'remove_worktree', 'stop'].map(Type.Literal)),
       proposal: Type.Optional(Type.Any()), message: Type.Optional(Type.String()), patch: Type.Optional(Type.String()),
       worktree: Type.Optional(Type.String({description:'Registered worktree path, for start only; defaults to the current checkout'})),
     }),
     renderResult: response => new Text(response.details?.display ?? 'Commit-changes step', 0, 0),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const { action } = params;
+      if (action === 'local_merge') {
+        if (active) throw new Error('A commit run is already active');
+        if (ctx.mode !== 'tui') throw new Error('Merge approval requires an interactive Pi session');
+        if (!params.proposal?.worktree) throw new Error('Specify the registered source worktree in proposal.worktree');
+        const target = worktreeRoot(ctx.cwd);
+        const source = worktreeRoot(ctx.cwd, params.proposal.worktree);
+        const local = planLocalMerge(target, source);
+        const choice = await ctx.ui.select(`Merge ${local.branch} (${local.sourceHead}) into ${target} (${local.head})?\nBoth worktrees are clean. No push or branch deletion.`, ['Merge locally', 'Stop']);
+        if (choice !== 'Merge locally') return result('Stopped; no merge attempted.');
+        if (JSON.stringify(planLocalMerge(target, source)) !== JSON.stringify(local)) throw new Error('Merge plan changed before approval');
+        active = {root:target, session:ctx.cwd, snapshot:inventory(target), phase:'localApproved', index:0, hashes:[], local};
+        return result('Local merge approved. Call commit_changes perform_local_merge.');
+      }
       if (action === 'start') {
         if (active) throw new Error('A commit run is already active');
         if (ctx.mode !== 'tui') throw new Error('Commit approval requires an interactive Pi session');
@@ -82,10 +95,26 @@ export default function (pi: ExtensionAPI) {
         return result(JSON.stringify({root, ...snapshot, unstaged:gitDiff(root)}));
       }
       const run = active;
-      if (params.worktree !== undefined || params.proposal?.worktree !== undefined) throw new Error('worktree may only be specified on start');
+      if (params.worktree !== undefined || params.proposal?.worktree !== undefined) throw new Error('worktree may only be specified on start or local_merge');
       if (!run || ctx.cwd !== run.session || ctx.mode !== 'tui') throw new Error('No current interactive commit run');
       if (worktreeRoot(ctx.cwd, run.root) !== run.root) throw new Error('Commit worktree changed; start a new run');
       if (action === 'stop') { active = undefined; return result('Stopped. Git state was not discarded.'); }
+      if (action === 'perform_local_merge') {
+        if (run.phase !== 'localApproved' || !run.local) throw new Error('No approved local merge');
+        const prepared = performLocalMerge(run.local);
+        run.mergeBaseline = prepared.baseline;
+        run.conflicts = prepared.conflicts;
+        run.phase = prepared.conflicts.length ? 'conflicts' : 'mergeReview';
+        return result(prepared.conflicts.length ? `Resolve only these conflicts with edit: ${prepared.conflicts.join(', ')}; then call review_merge.` : 'Merge prepared; call commit_changes review_merge.');
+      }
+      if (action === 'remove_worktree') {
+        if (run.phase !== 'localCleanup' || !run.local || !run.mergedHead) throw new Error('No completed local merge awaiting cleanup');
+        const choice = await ctx.ui.select(`Remove merged worktree ${run.local.source}? Source branch is retained.`, ['Remove worktree', 'Stop']);
+        if (choice !== 'Remove worktree') { active = undefined; return result('Worktree retained.'); }
+        removeMergedWorktree(run.local, run.mergedHead);
+        active = undefined;
+        return result(`Removed ${run.local.source}; retained branch ${run.local.branch}.`);
+      }
       if (action === 'inventory') {
         if (run.phase !== 'propose') throw new Error('Inventory is available during group proposal only');
         return result(JSON.stringify({ root: run.root, ...run.snapshot, unstaged: gitDiff(run.root) }));
@@ -218,18 +247,23 @@ export default function (pi: ExtensionAPI) {
       if (action === 'review_merge') {
         if (run.phase !== 'mergeReview' && run.phase !== 'conflicts') throw new Error('No pending merge to review');
         run.merge = prepareMerge(run.root, run.mergeBaseline!);
+        if (run.local) run.merge.message = `Merge ${run.local.branch} into ${gitBranch(run.root)}`;
         run.phase = 'mergeDecision';
         const review = `Merge message:\n\n${run.merge.message}\n\nHEAD: ${run.merge.head}\nMerge head: ${run.merge.mergeHead}\n\nStaged merge diff:\n${run.merge.staged}`;
         pi.sendMessage({customType:'commit-message-preview', content:review, display:true}, {triggerTurn:false});
         return result(`${review}\n\nReview the merge, then call commit_changes commit_merge in a separate turn.`);
       }
       if (action === 'commit_merge') {
-        if (run.phase !== 'mergeDecision' || !run.merge || !run.plan) throw new Error('No reviewed merge commit');
-        const choice = await ctx.ui.select('Commit this exact merge and push?', ['Commit merge and push', 'Stop']);
-        if (choice !== 'Commit merge and push') { active = undefined; return result('Stopped before merge commit; merge remains pending.'); }
+        if (run.phase !== 'mergeDecision' || !run.merge || (!run.plan && !run.local)) throw new Error('No reviewed merge commit');
+        const choice = await ctx.ui.select(run.local ? 'Commit this exact local merge?' : 'Commit this exact merge and push?', run.local ? ['Commit merge', 'Stop'] : ['Commit merge and push', 'Stop']);
+        if (choice !== (run.local ? 'Commit merge' : 'Commit merge and push')) { active = undefined; return result('Stopped before merge commit; merge remains pending.'); }
         try {
           const hash = commitMerge(run.root, run.merge);
-          const pushed = pushApproved(run.root, {...run.plan, head:hash});
+          if (run.local) {
+            run.mergedHead = hash; run.phase = 'localCleanup';
+            return result(`Local merge commit ${hash}. Call commit_changes remove_worktree for separate cleanup approval.`);
+          }
+          const pushed = pushApproved(run.root, {...run.plan!, head:hash});
           active = undefined; return result(`Merge commit ${hash}. Push ${pushed.route}: ${pushed.reason ?? 'confirmed'}`);
         } catch (error) { active = undefined; return result(`Merge commit blocked: ${String(error)}`); }
       }
@@ -238,5 +272,6 @@ export default function (pi: ExtensionAPI) {
   });
 }
 
+const gitBranch = (root: string) => execFileSync('git', ['branch', '--show-current'], {cwd:root, encoding:'utf8'}).trim();
 const gitDiff = (root: string) => execFileSync('git', ['diff', '--binary'], { cwd: root, encoding: 'utf8', maxBuffer: 8_000_000 });
 const gitIndex = (root: string) => execFileSync('git', ['diff', '--cached', '--binary'], { cwd: root, encoding: 'utf8', maxBuffer: 8_000_000 });

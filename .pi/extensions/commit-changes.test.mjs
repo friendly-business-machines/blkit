@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, symlinkSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, mkdirSync, symlinkSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -465,6 +465,49 @@ test('explicit worktree run rejects a different repository', async () => {
     await assert.rejects(kit.call('start', {worktree: other}), /worktree|repository/i);
     assert.equal(git(other, 'diff', '--cached'), '');
   } finally { rmSync(main, {recursive:true,force:true}); rmSync(other, {recursive:true,force:true}); }
+});
+
+test('local merge reviews a clean branch and removes only the merged worktree with separate approvals', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'commit-ext-local-'));
+  const main = join(parent, 'main'), linked = join(parent, 'linked');
+  try {
+    mkdirSync(main);
+    git(main, 'init', '-q'); git(main, 'config', 'user.name', 'Tester'); git(main, 'config', 'user.email', 'test@example.org');
+    writeFileSync(join(main, 'base.txt'), 'base\n'); git(main, 'add', 'base.txt'); git(main, 'commit', '-qm', 'init');
+    git(main, 'branch', '-M', 'experiment-01');
+    git(main, 'worktree', 'add', '-qb', 'feature', linked);
+    writeFileSync(join(linked, 'plan.txt'), 'new plan\n'); git(linked, 'add', 'plan.txt'); git(linked, 'commit', '-qm', 'feature');
+    writeFileSync(join(main, 'base.txt'), 'target change\n'); git(main, 'commit', '-qam', 'target');
+    const kit = setupExtension(main, ['Merge locally', 'Commit merge', 'Remove worktree']);
+    await kit.call('local_merge', {proposal:{worktree:linked}});
+    assert.equal(existsSync(join(main, 'plan.txt')), false);
+    assert.match(await kit.call('perform_local_merge'), /review_merge/);
+    assert.equal(readFileSync(join(main, 'plan.txt'), 'utf8'), 'new plan\n');
+    assert.deepEqual(readdirSync(parent).sort(), ['linked', 'main']);
+    const review = await kit.call('review_merge');
+    assert.match(review, /plan.txt/);
+    await kit.call('commit_merge');
+    assert.equal(git(main, 'rev-list', '--parents', '-n', '1', 'HEAD').trim().split(' ').length, 3);
+    assert.ok(existsSync(linked));
+    await kit.call('remove_worktree');
+    assert.equal(existsSync(linked), false);
+    assert.deepEqual(readdirSync(parent), ['main']);
+  } finally { rmSync(parent, {recursive:true, force:true}); }
+});
+
+test('local merge refuses untracked files without moving them', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'commit-ext-local-guard-'));
+  const main = join(parent, 'main'), linked = join(parent, 'linked');
+  try {
+    mkdirSync(main);
+    git(main, 'init', '-q'); git(main, 'config', 'user.name', 'Tester'); git(main, 'config', 'user.email', 'test@example.org');
+    writeFileSync(join(main, 'base.txt'), 'base\n'); git(main, 'add', 'base.txt'); git(main, 'commit', '-qm', 'init');
+    git(main, 'worktree', 'add', '-qb', 'feature', linked);
+    writeFileSync(join(main, 'scratch.txt'), 'untouched\n');
+    const kit = setupExtension(main);
+    await assert.rejects(kit.call('local_merge', {proposal:{worktree:linked}}), /untracked|clean/i);
+    assert.equal(readFileSync(join(main, 'scratch.txt'), 'utf8'), 'untouched\n');
+  } finally { rmSync(parent, {recursive:true, force:true}); }
 });
 
 test('model can start a guarded run from a commit request without a slash command', async () => {

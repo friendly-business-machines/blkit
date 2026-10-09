@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import { lstatSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 export type Change = { path: string; hunks?: string[] };
@@ -165,6 +165,41 @@ export function stageRepair(root: string, receipt: StageReceipt, patch: string):
 export type PushPlan = { head: string; hashes: string[]; branch: string; upstream: string; remote: string;
   target: string; fetchUrl: string; pushUrls: string; status: string };
 export type MergeReceipt = { head: string; mergeHead: string; staged: string; message: string };
+export type LocalMergePlan = { target: string; source: string; branch: string; head: string; sourceHead: string };
+
+export function planLocalMerge(target: string, source: string): LocalMergePlan {
+  if (realpathSync(target) === realpathSync(source)) throw new Error('Cannot merge a branch into its own worktree');
+  assertNoPendingMerge(target);
+  const branch = git(source, 'branch', '--show-current').trim();
+  if (!branch || branch === git(target, 'branch', '--show-current').trim()) throw new Error('Use a different named source branch');
+  if (git(source, 'status', '--porcelain', '-uall') || git(target, 'status', '--porcelain', '-uall'))
+    throw new Error('Source and target worktrees must be clean, including untracked files');
+  return { target, source, branch, head: git(target, 'rev-parse', 'HEAD').trim(),
+    sourceHead: git(source, 'rev-parse', 'HEAD').trim() };
+}
+
+export function performLocalMerge(plan: LocalMergePlan): {baseline: string; conflicts: string[]} {
+  if (JSON.stringify(planLocalMerge(plan.target, plan.source)) !== JSON.stringify(plan))
+    throw new Error('Merge plan changed after approval');
+  try { git(plan.target, 'merge', '--no-ff', '--no-commit', plan.sourceHead); }
+  catch (error) {
+    const conflicts = names(plan.target, ['diff', '--name-only', '--diff-filter=U']);
+    if (!conflicts.length) throw new Error(`Merge did not prepare: ${String(error)}`);
+  }
+  if (git(plan.target, 'rev-parse', 'MERGE_HEAD').trim() !== plan.sourceHead)
+    throw new Error('Merge head changed');
+  return { baseline: git(plan.target, 'diff', '--cached', '--binary'),
+    conflicts: names(plan.target, ['diff', '--name-only', '--diff-filter=U']) };
+}
+
+export function removeMergedWorktree(plan: LocalMergePlan, mergedHead: string): void {
+  if (git(plan.target, 'rev-parse', 'HEAD').trim() !== mergedHead ||
+    git(plan.target, 'branch', '--show-current').trim() === plan.branch ||
+    git(plan.source, 'rev-parse', 'HEAD').trim() !== plan.sourceHead ||
+    git(plan.source, 'status', '--porcelain', '-uall')) throw new Error('Merge or worktree changed; cannot remove it');
+  git(plan.target, 'merge-base', '--is-ancestor', plan.sourceHead, 'HEAD');
+  git(plan.target, 'worktree', 'remove', '--', plan.source);
+}
 
 export function pushPlan(root: string, hashes: string[]): PushPlan {
   const branch = git(root, 'branch', '--show-current').trim();
