@@ -1,4 +1,5 @@
 use blkit::{parse, transpile, validate};
+use blkit_transpiler as blkit;
 
 const HEADER: &str = "namespace orders;\nversion \"1.0\";\n";
 

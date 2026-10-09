@@ -1,5 +1,7 @@
 use crate::{codegen, decision, expr, graph, semantic};
-use std::{collections::BTreeMap, time::Duration};
+use std::collections::BTreeMap;
+
+pub use blkit_core::{DeadlinePolicy, RetryPolicy};
 
 pub fn transpile(source: &str) -> Result<String, String> {
     let program = parse(source)?;
@@ -32,20 +34,6 @@ pub struct Record {
 pub struct Enum {
     pub name: String,
     pub variants: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RetryPolicy {
-    pub max_retries: u32,
-    pub retry_for: Duration,
-    pub retry_delay: Duration,
-    pub backoff: &'static str,
-}
-
-#[derive(Debug)]
-pub struct DeadlinePolicy {
-    pub origin: &'static str,
-    pub duration: Duration,
 }
 
 #[derive(Debug)]

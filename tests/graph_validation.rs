@@ -2,6 +2,7 @@ use blkit::{
     graph::{Peer, PeerKind},
     parse, transpile, validate,
 };
+use blkit_transpiler as blkit;
 
 const SIMPLE: &str = r#"namespace routes;
 version "1";

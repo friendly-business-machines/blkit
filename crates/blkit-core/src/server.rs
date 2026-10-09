@@ -8,10 +8,15 @@ use axum::{
 };
 use serde_json::{Value, json};
 
-use crate::{distributed::DistributedControl, runtime::Engine};
+#[cfg(feature = "remote-persistence")]
+use crate::distributed::DistributedControl;
+#[cfg(all(feature = "worker", feature = "local-persistence"))]
+use crate::runtime::Engine;
 
 enum Backend {
+    #[cfg(all(feature = "worker", feature = "local-persistence"))]
     Local(Arc<Engine>),
+    #[cfg(feature = "remote-persistence")]
     Distributed(Arc<DistributedControl>),
 }
 
@@ -26,10 +31,12 @@ fn internal(operation: &str, instance_id: Option<&str>, _error: String) -> Reply
     self::error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
 }
 
+#[cfg(all(feature = "worker", feature = "local-persistence"))]
 pub fn router(engine: Arc<Engine>) -> Router {
     routes(Backend::Local(engine))
 }
 
+#[cfg(feature = "remote-persistence")]
 pub fn router_distributed(control: Arc<DistributedControl>) -> Router {
     routes(Backend::Distributed(control))
 }
@@ -55,7 +62,9 @@ async fn start(
         Err(error) => return self::error(StatusCode::BAD_REQUEST, &error.to_string()),
     };
     let result = match engine.as_ref() {
+        #[cfg(all(feature = "worker", feature = "local-persistence"))]
         Backend::Local(engine) => engine.start(&namespace, &version, &name, input).await,
+        #[cfg(feature = "remote-persistence")]
         Backend::Distributed(control) => control.start(&namespace, &version, &name, input).await,
     };
     match result {
@@ -69,16 +78,21 @@ async fn start(
         Err(message) if message.starts_with("invalid input:") => {
             self::error(StatusCode::BAD_REQUEST, &message)
         }
+        Err(message) if message == "worker unavailable" => {
+            self::error(StatusCode::SERVICE_UNAVAILABLE, &message)
+        }
         Err(message) => internal("start", None, message),
     }
 }
 
 async fn status(State(engine): State<Arc<Backend>>, Path(id): Path<String>) -> Reply {
     let result = match engine.as_ref() {
+        #[cfg(all(feature = "worker", feature = "local-persistence"))]
         Backend::Local(engine) => engine
             .status(&id)
             .await
             .map(|item| item.map(|i| serde_json::to_value(i).unwrap())),
+        #[cfg(feature = "remote-persistence")]
         Backend::Distributed(control) => control
             .status(&id)
             .await
@@ -93,7 +107,9 @@ async fn status(State(engine): State<Arc<Backend>>, Path(id): Path<String>) -> R
 
 async fn cancel(State(engine): State<Arc<Backend>>, Path(id): Path<String>) -> Reply {
     let result = match engine.as_ref() {
+        #[cfg(all(feature = "worker", feature = "local-persistence"))]
         Backend::Local(engine) => engine.cancel(&id).await,
+        #[cfg(feature = "remote-persistence")]
         Backend::Distributed(control) => control.cancel(&id).await,
     };
     match result {
@@ -109,7 +125,7 @@ async fn cancel(State(engine): State<Arc<Backend>>, Path(id): Path<String>) -> R
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "logging"))]
 mod logging_tests {
     use super::*;
 

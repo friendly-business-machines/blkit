@@ -1,4 +1,4 @@
-use blkit::transpile;
+use blkit_transpiler::transpile;
 use std::{
     fs,
     process::Command,
@@ -22,9 +22,9 @@ fn compile_and_test(source: &str, assertion: &str) {
     ));
     fs::create_dir_all(directory.join("src")).unwrap();
     let name = directory.file_name().unwrap().to_string_lossy();
-    let root = env!("CARGO_MANIFEST_DIR").replace('\\', "\\\\");
-    fs::write(directory.join("Cargo.toml"), format!("[package]\nname = {name:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit = {{ path = {root:?} }}\nrust_decimal = \"1.39\"\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\nserde = \"1\"\nserde_json = \"1\"\n")).unwrap();
-    fs::write(directory.join("src/lib.rs"), format!("{generated}\n#[cfg(test)] mod generated_checks {{ use super::*; #[test] fn behavior() {{ {assertion} }} }}")).unwrap();
+    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/blkit-core");
+    fs::write(directory.join("Cargo.toml"), format!("[package]\nname = {name:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit-core = {{ path = {core:?} }}\nrust_decimal = \"1.39\"\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\nserde = \"1\"\nserde_json = \"1\"\n")).unwrap();
+    fs::write(directory.join("src/lib.rs"), format!("{generated}\n#[cfg(test)] mod generated_checks {{ use blkit_core as blkit; use super::*; #[test] fn behavior() {{ {assertion} }} }}")).unwrap();
     let result = Command::new("cargo")
         .args(["test", "--offline", "--manifest-path"])
         .arg(directory.join("Cargo.toml"))
@@ -36,6 +36,44 @@ fn compile_and_test(source: &str, assertion: &str) {
         "generated crate failed: {}\n{}",
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn direct_source_compiles_with_core_without_transpiler_dependency() {
+    let source = "namespace orders; version \"1\"; start_event start { output value: Number; } end_event done { input result: Number; } process route { flow start -> done; bind start.value -> done.result; }";
+    let generated = transpile(source).unwrap();
+    assert!(
+        generated.contains("blkit_core::compiled_graph"),
+        "{generated}"
+    );
+    let directory = std::env::temp_dir().join(format!(
+        "blkit-direct-core-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(directory.join("src")).unwrap();
+    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/blkit-core");
+    fs::write(
+        directory.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"direct_core_consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit-core = {{ version = \"=0.1.0\", path = {core:?}, default-features = false }}\nrust_decimal = {{ version = \"1.39\", features = [\"serde-str\"] }}\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
+        ),
+    )
+    .unwrap();
+    fs::write(directory.join("src/lib.rs"), generated).unwrap();
+    let output = Command::new("cargo")
+        .args(["check", "--offline", "--manifest-path"])
+        .arg(directory.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", nested_target())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
     fs::remove_dir_all(directory).unwrap();
 }
@@ -814,10 +852,10 @@ fn compile_and_test_graph(source: &str, assertion: &str) {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(directory.join("src")).unwrap();
-    let root = env!("CARGO_MANIFEST_DIR").replace('\\', "\\\\");
+    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/blkit-core");
     let name = directory.file_name().unwrap().to_string_lossy();
-    fs::write(directory.join("Cargo.toml"), format!("[package]\nname = {name:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit = {{ path = {root:?} }}\nrust_decimal = {{ version = \"1.39\", features = [\"serde-str\"] }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"time\"] }}\n")).unwrap();
-    fs::write(directory.join("src/lib.rs"), format!("{generated}\n#[cfg(test)] mod checks {{ use super::*; #[tokio::test] async fn graph() {{ {assertion} }} }}")).unwrap();
+    fs::write(directory.join("Cargo.toml"), format!("[package]\nname = {name:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit-core = {{ path = {core:?}, default-features = false, features = [\"worker\", \"local-persistence\"] }}\nrust_decimal = {{ version = \"1.39\", features = [\"serde-str\"] }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"time\"] }}\n")).unwrap();
+    fs::write(directory.join("src/lib.rs"), format!("{generated}\n#[cfg(test)] mod checks {{ use blkit_core as blkit; use super::*; #[tokio::test] async fn graph() {{ {assertion} }} }}")).unwrap();
     let result = Command::new("cargo")
         .args(["test", "--manifest-path"])
         .arg(directory.join("Cargo.toml"))

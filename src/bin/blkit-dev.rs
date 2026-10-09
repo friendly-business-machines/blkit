@@ -1,6 +1,6 @@
 use std::{env, path::Path, sync::Arc};
 
-use blkit::{
+use blkit_core::{
     runtime::{Engine, LocalStore, Registry},
     server::router,
 };

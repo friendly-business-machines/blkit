@@ -1,25 +1,23 @@
+#[cfg(feature = "worker")]
 use std::{collections::HashMap, sync::Arc, time::Duration};
-
+#[cfg(feature = "worker")]
 use tokio::{sync::Semaphore, task::JoinSet};
 
+use crate::postgres_store::{DistributedInstance, PostgresStore};
+#[cfg(feature = "worker")]
 use crate::{
     compiled_graph::GraphDefinition,
-    postgres_store::{DistributedInstance, PostgresStore},
-    runtime::{Instance, NamedRegistry, Registry, execute_claimed, validate_named_registry},
+    runtime::{NamedRegistry, execute_claimed, validate_named_registry},
 };
 use serde_json::Value;
 
 pub struct DistributedControl {
     store: PostgresStore,
-    registry: Registry,
 }
 
 impl DistributedControl {
-    pub fn new(store: PostgresStore, definitions: Vec<GraphDefinition>) -> Result<Self, String> {
-        Ok(Self {
-            store,
-            registry: Registry::new(definitions)?,
-        })
+    pub fn new(store: PostgresStore) -> Self {
+        Self { store }
     }
 
     pub async fn start(
@@ -29,29 +27,9 @@ impl DistributedControl {
         name: &str,
         input: Value,
     ) -> Result<String, String> {
-        let graph = self
-            .registry
-            .get(namespace, version, name)
-            .ok_or("unknown process")?;
-        let input =
-            (graph.decode_input)(input).map_err(|error| format!("invalid input: {error}"))?;
         let id = uuid::Uuid::new_v4().to_string();
-        let mut instance = Instance::new(&id, namespace, version, name, input);
-        if let Some(policy) = &graph.deadline {
-            instance.with_deadline(policy)?;
-        }
-        let mut checkpoint = graph.checkpoint(&instance.input)?;
-        graph.resume_due(&instance.input, &mut checkpoint, crate::store::now_ms())?;
-        if graph.ready(&checkpoint).is_empty()
-            && !graph.has_pending(&checkpoint)
-            && let Some(wake) = graph.waiting_until(&checkpoint)
-        {
-            instance.status = "waiting".into();
-            instance.wake_at_ms = Some(wake);
-        }
-        instance.checkpoint = Some(checkpoint);
         self.store
-            .create_with_policy(&instance, graph.retry.as_ref())
+            .admit(&id, namespace, version, name, &input)
             .await?;
         Ok(id)
     }
@@ -71,17 +49,9 @@ impl DistributedControl {
         let mut reconciled = self.store.expire_due().await?.len();
         reconciled += self.store.resume_due_waits().await? as usize;
         for expired in self.store.expired_claims().await? {
-            let graph = self.registry.get(
-                &expired.instance.namespace,
-                &expired.instance.version,
-                &expired.instance.process,
-            );
             if self
                 .store
-                .reconcile_expired(
-                    &expired.instance.id,
-                    graph.as_ref().and_then(|graph| graph.retry.as_ref()),
-                )
+                .reconcile_expired(&expired.instance.id, None)
                 .await?
                 .is_some()
             {
@@ -92,6 +62,7 @@ impl DistributedControl {
     }
 }
 
+#[cfg(feature = "worker")]
 pub struct DistributedWorker {
     store: PostgresStore,
     id: String,
@@ -101,6 +72,7 @@ pub struct DistributedWorker {
     lease_ms: i64,
 }
 
+#[cfg(feature = "worker")]
 impl DistributedWorker {
     pub fn new(
         store: PostgresStore,
@@ -135,12 +107,22 @@ impl DistributedWorker {
     }
 
     pub async fn advertise(&self) -> Result<(), String> {
-        let identities: Vec<_> = self
+        let policies: Vec<_> = self
             .definitions
             .values()
-            .map(|graph| (graph.namespace, graph.version, graph.name))
+            .map(|graph| {
+                (
+                    graph.namespace,
+                    graph.version,
+                    graph.name,
+                    graph.retry.as_ref(),
+                    graph.deadline.as_ref(),
+                )
+            })
             .collect();
-        self.store.register_worker(&self.id, &identities).await
+        self.store
+            .register_worker_with_policies(&self.id, &policies)
+            .await
     }
 
     pub async fn drain_if_requested(&self) -> Result<bool, String> {

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 
-use crate::runtime::{Evaluate, Values};
+use crate::evaluation::{AsyncEvaluate, Cancel, Evaluate, Values};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -35,20 +35,20 @@ pub enum GraphNodeKind {
         input: Evaluate,
     },
     Task(Evaluate),
-    AsyncTask(crate::runtime::AsyncEvaluate),
+    AsyncTask(AsyncEvaluate),
     MultiInstance {
         task: Evaluate,
         items: Evaluate,
         parallel: bool,
     },
     AsyncMultiInstance {
-        task: crate::runtime::AsyncEvaluate,
+        task: AsyncEvaluate,
         items: Evaluate,
         parallel: bool,
     },
     TaskLoop(Evaluate, LoopPolicy),
-    AsyncTaskLoop(crate::runtime::AsyncEvaluate, LoopPolicy),
-    TaskWithCancel(Evaluate, crate::runtime::Cancel),
+    AsyncTaskLoop(AsyncEvaluate, LoopPolicy),
+    TaskWithCancel(Evaluate, Cancel),
     PauseFor(Duration),
     PauseUntil(Evaluate),
     Split(&'static str),

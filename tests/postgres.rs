@@ -2,6 +2,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
+extern crate blkit_core as blkit;
 use blkit::{
     RetryPolicy,
     compiled_graph::{GraphCheckpoint, GraphDefinition, GraphLink, GraphNode, GraphNodeKind},
@@ -78,6 +79,265 @@ fn distributed_batch_graph(task: Evaluate) -> GraphDefinition {
 }
 
 #[tokio::test]
+async fn distributed_admission_requires_a_live_exact_capability_and_queues_after_worker_exit() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let graph = || distributed_batch_graph(Arc::new(|value, _| Ok(value.clone())));
+    let control = DistributedControl::new(store.clone());
+    assert!(
+        control
+            .start("test", "1", "batch", json!([1]))
+            .await
+            .unwrap_err()
+            .contains("unavailable")
+    );
+
+    let mut other = graph();
+    other.version = "2";
+    let wrong = DistributedWorker::new(store.clone(), "wrong", vec![other], 1, 1_000).unwrap();
+    wrong.advertise().await.unwrap();
+    assert!(
+        control
+            .start("test", "1", "batch", json!([1]))
+            .await
+            .unwrap_err()
+            .contains("unavailable")
+    );
+
+    let matching =
+        DistributedWorker::new(store.clone(), "matching", vec![graph()], 1, 1_000).unwrap();
+    matching.advertise().await.unwrap();
+    let id = control
+        .start("test", "1", "batch", json!([1]))
+        .await
+        .unwrap();
+    store.drain("matching").await.unwrap();
+    assert!(
+        control
+            .start("test", "1", "batch", json!([2]))
+            .await
+            .unwrap_err()
+            .contains("unavailable")
+    );
+    assert_eq!(
+        store.get(&id).await.unwrap().unwrap().instance.status,
+        "pending"
+    );
+    store.unregister_drained("matching").await.unwrap();
+    assert_eq!(
+        store.get(&id).await.unwrap().unwrap().instance.status,
+        "pending"
+    );
+
+    let fresh = DistributedWorker::new(store.clone(), "fresh", vec![graph()], 1, 1_000).unwrap();
+    fresh.advertise().await.unwrap();
+    let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client
+        .execute("UPDATE workers SET heartbeat_at=0 WHERE id='fresh'", &[])
+        .await
+        .unwrap();
+    assert!(
+        control
+            .start("test", "1", "batch", json!([3]))
+            .await
+            .unwrap_err()
+            .contains("unavailable")
+    );
+}
+
+#[tokio::test]
+async fn worker_registration_rejects_conflicting_policy_and_queue_deadline_survives_exit() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let graph = |ms| {
+        let mut graph = distributed_batch_graph(Arc::new(|value, _| Ok(value.clone())));
+        graph.deadline = Some(blkit::DeadlinePolicy {
+            origin: "queued",
+            duration: Duration::from_millis(ms),
+        });
+        graph
+    };
+    let matching =
+        DistributedWorker::new(store.clone(), "matching", vec![graph(50)], 1, 1_000).unwrap();
+    matching.advertise().await.unwrap();
+    let conflict =
+        DistributedWorker::new(store.clone(), "conflict", vec![graph(500)], 1, 1_000).unwrap();
+    assert!(conflict.advertise().await.is_err());
+    assert!(store.get_worker("conflict").await.unwrap().is_none());
+    let mut huge_graph = graph(i64::MAX as u64);
+    huge_graph.version = "3";
+    let huge = DistributedWorker::new(store.clone(), "huge", vec![huge_graph], 1, 1_000).unwrap();
+    assert!(
+        huge.advertise()
+            .await
+            .unwrap_err()
+            .contains("deadline duration")
+    );
+    assert!(store.get_worker("huge").await.unwrap().is_none());
+    let control = DistributedControl::new(store.clone());
+    let id = control
+        .start("test", "1", "batch", json!([1]))
+        .await
+        .unwrap();
+    store.drain("matching").await.unwrap();
+    store.unregister_drained("matching").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    control.reconcile_once().await.unwrap();
+    let result = store.get(&id).await.unwrap().unwrap().instance;
+    assert_eq!(result.status, "business-error");
+    assert_eq!(result.terminal_name.as_deref(), Some("timeout"));
+}
+
+#[tokio::test]
+async fn concurrent_workers_can_advertise_identical_process_policies() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let first_store = PostgresStore::connect(&url).await.unwrap();
+    let second_store = PostgresStore::connect(&url).await.unwrap();
+    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let guard = client.transaction().await.unwrap();
+    guard
+        .batch_execute("LOCK TABLE process_policies IN SHARE MODE")
+        .await
+        .unwrap();
+    let (observer, observer_connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = observer_connection.await;
+    });
+    let graph = || distributed_batch_graph(Arc::new(|value, _| Ok(value.clone())));
+    let first =
+        DistributedWorker::new(first_store.clone(), "first", vec![graph()], 1, 1_000).unwrap();
+    let second =
+        DistributedWorker::new(second_store.clone(), "second", vec![graph()], 1, 1_000).unwrap();
+    let first = tokio::spawn(async move { first.advertise().await });
+    let second = tokio::spawn(async move { second.advertise().await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let waiting: i64 = observer.query_one("SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'INSERT INTO process_policies%'", &[]).await.unwrap().get(0);
+            if waiting == 2 { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("both registration transactions should reach policy insert");
+    guard.commit().await.unwrap();
+    first.await.unwrap().unwrap();
+    second.await.unwrap().unwrap();
+    assert!(first_store.get_worker("first").await.unwrap().is_some());
+    assert!(second_store.get_worker("second").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn distributed_worker_validates_admitted_input_on_claim() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let mut graph = distributed_batch_graph(Arc::new(|value, _| Ok(value.clone())));
+    graph.decode_input = Box::new(|input| {
+        if input.is_number() {
+            Ok(input)
+        } else {
+            Err("expected number".into())
+        }
+    });
+    let worker = DistributedWorker::new(store.clone(), "typed", vec![graph], 1, 1_000).unwrap();
+    worker.advertise().await.unwrap();
+    let api = router_distributed(Arc::new(DistributedControl::new(store.clone())));
+    let request = |body| {
+        Request::builder()
+            .method("POST")
+            .uri("/processes/test/1/batch/instances")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    assert_eq!(
+        api.clone().oneshot(request("{")).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+    let accepted = api
+        .clone()
+        .oneshot(request(r#"{"invalid":true}"#))
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let response: serde_json::Value =
+        serde_json::from_slice(&to_bytes(accepted.into_body(), 4096).await.unwrap()).unwrap();
+    let id = response["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        store.get(&id).await.unwrap().unwrap().instance.status,
+        "pending"
+    );
+    worker.run_once().await.unwrap();
+    let result = store.get(&id).await.unwrap().unwrap().instance;
+    assert_eq!(result.status, "failed");
+    assert!(result.error.unwrap().contains("expected number"));
+    assert_eq!(
+        worker.run_once().await.unwrap(),
+        0,
+        "typed failures must not retry"
+    );
+    let status = api
+        .oneshot(
+            Request::builder()
+                .uri(format!("/instances/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn distributed_recovery_rejects_old_checkpoints_without_changing_rows() {
     let node = Postgres::default()
         .with_tag("17.6-alpine")
@@ -125,7 +385,7 @@ async fn distributed_recovery_rejects_old_checkpoints_without_changing_rows() {
             .unwrap_err()
             .contains("unsupported checkpoint version")
     );
-    let control = DistributedControl::new(store.clone(), vec![]).unwrap();
+    let control = DistributedControl::new(store.clone());
     assert!(
         control
             .reconcile_once()
@@ -180,9 +440,7 @@ async fn distributed_takeover_resumes_uncommitted_multi_instance_item() {
             Ok(item.clone())
         })
     };
-    let control =
-        DistributedControl::new(store.clone(), vec![distributed_batch_graph(fast.clone())])
-            .unwrap();
+    let control = DistributedControl::new(store.clone());
     let first = DistributedWorker::new(
         store.clone(),
         "batch-first",
@@ -364,9 +622,7 @@ async fn distributed_takeover_keeps_prior_cycle_activation_committed() {
             Ok(json!(number))
         })
     };
-    let control =
-        DistributedControl::new(store.clone(), vec![distributed_cycle_graph(fast.clone())])
-            .unwrap();
+    let control = DistributedControl::new(store.clone());
     let first = DistributedWorker::new(
         store.clone(),
         "cycle-first",
@@ -528,7 +784,10 @@ async fn distributed_pending_branch_is_claimed_despite_parallel_wait() {
             links,
         }
     };
-    let control = DistributedControl::new(store.clone(), vec![graph()]).unwrap();
+    let worker =
+        DistributedWorker::new(store.clone(), "pending-worker", vec![graph()], 2, 5000).unwrap();
+    worker.advertise().await.unwrap();
+    let control = DistributedControl::new(store.clone());
     let id = control
         .start("test", "1", "pending_wait", json!(5))
         .await
@@ -537,9 +796,6 @@ async fn distributed_pending_branch_is_claimed_despite_parallel_wait() {
         control.status(&id).await.unwrap().unwrap().instance.status,
         "pending"
     );
-    let worker =
-        DistributedWorker::new(store.clone(), "pending-worker", vec![graph()], 2, 5000).unwrap();
-    worker.advertise().await.unwrap();
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(2), worker.run_once())
             .await
@@ -635,7 +891,10 @@ async fn distributed_task_free_cycle_starts_before_first_claim_deadline() {
             },
         ],
     };
-    let control = DistributedControl::new(store.clone(), vec![graph()]).unwrap();
+    let worker =
+        DistributedWorker::new(store.clone(), "task-free-worker", vec![graph()], 1, 300).unwrap();
+    worker.advertise().await.unwrap();
+    let control = DistributedControl::new(store.clone());
     let id = control
         .start("test", "1", "task_free", json!(1))
         .await
@@ -650,9 +909,6 @@ async fn distributed_task_free_cycle_starts_before_first_claim_deadline() {
             .deadline_at_ms
             .is_none()
     );
-    let worker =
-        DistributedWorker::new(store.clone(), "task-free-worker", vec![graph()], 1, 300).unwrap();
-    worker.advertise().await.unwrap();
     let running = tokio::spawn(async move { worker.run_once().await });
     tokio::time::timeout(Duration::from_secs(2), async {
         while control
@@ -727,14 +983,7 @@ async fn distributed_deadline_precedes_iteration_bound_and_late_claim_writes() {
         );
         graph
     };
-    let control = DistributedControl::new(
-        store.clone(),
-        vec![
-            graph("short", Duration::from_millis(100)),
-            graph("long", Duration::from_secs(2)),
-        ],
-    )
-    .unwrap();
+    let control = DistributedControl::new(store.clone());
     let worker = Arc::new(
         DistributedWorker::new(
             store.clone(),
@@ -859,9 +1108,16 @@ async fn distributed_queued_and_first_claim_deadlines_expire_without_retrying_la
             })
             .collect(),
     };
-    let control =
-        DistributedControl::new(store.clone(), vec![graph("queued"), graph("first_claimed")])
-            .unwrap();
+    let worker = DistributedWorker::new(
+        store.clone(),
+        "deadline-worker",
+        vec![graph("queued"), graph("first_claimed")],
+        1,
+        5000,
+    )
+    .unwrap();
+    worker.advertise().await.unwrap();
+    let control = DistributedControl::new(store.clone());
     let queued = control
         .start("test", "1", "queued", json!(1))
         .await
@@ -885,15 +1141,6 @@ async fn distributed_queued_and_first_claim_deadlines_expire_without_retrying_la
     let timed_out = control.status(&queued).await.unwrap().unwrap();
     assert_eq!(timed_out.instance.status, "business-error");
     assert_eq!(timed_out.instance.terminal_name.as_deref(), Some("timeout"));
-    let worker = DistributedWorker::new(
-        store.clone(),
-        "deadline-worker",
-        vec![graph("queued"), graph("first_claimed")],
-        1,
-        5000,
-    )
-    .unwrap();
-    worker.advertise().await.unwrap();
     let running = tokio::spawn(async move { worker.run_once().await });
     tokio::time::timeout(Duration::from_secs(3), async {
         while control
@@ -1058,7 +1305,7 @@ async fn distributed_wait_releases_claim_and_resumes_on_another_worker() {
             .collect(),
         }
     };
-    let control = DistributedControl::new(store.clone(), vec![graph()]).unwrap();
+    let control = DistributedControl::new(store.clone());
     let first = DistributedWorker::new(store.clone(), "w1", vec![graph()], 2, 5000).unwrap();
     first.advertise().await.unwrap();
     let id = control.start("test", "1", "pause", json!(9)).await.unwrap();
@@ -2432,7 +2679,6 @@ async fn distributed_rest_starts_reports_and_cancels_inflight_worker_without_lat
             Err("not signalled".into())
         }
     });
-    let graph = versioned_graph("1.0", task.clone(), None);
     let mut worker_graph = versioned_graph("1.0", task, None);
     worker_graph.nodes[1].kind = GraphNodeKind::TaskWithCancel(
         match &worker_graph.nodes[1].kind {
@@ -2448,9 +2694,7 @@ async fn distributed_rest_starts_reports_and_cancels_inflight_worker_without_lat
             }
         }),
     );
-    let api = router_distributed(Arc::new(
-        DistributedControl::new(store.clone(), vec![graph]).unwrap(),
-    ));
+    let api = router_distributed(Arc::new(DistributedControl::new(store.clone())));
     let worker = DistributedWorker::new(store.clone(), "w1", vec![worker_graph], 1, 500).unwrap();
     worker.advertise().await.unwrap();
     let start = api
@@ -2477,6 +2721,17 @@ async fn distributed_rest_starts_reports_and_cancels_inflight_worker_without_lat
     })
     .await
     .unwrap();
+    assert!(
+        store
+            .get(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .instance
+            .checkpoint
+            .is_some(),
+        "worker must persist the initial checkpoint before running tasks"
+    );
     let cancel = api
         .clone()
         .oneshot(
@@ -2590,7 +2845,7 @@ async fn cancellation_racing_checkpoint_or_lease_expiry_never_retries_or_overwri
 }
 
 #[tokio::test]
-async fn distributed_api_binary_serves_compiled_process_control_on_loopback() {
+async fn distributed_api_binary_serves_graph_free_process_control_on_loopback() {
     let node = Postgres::default()
         .with_tag("17.6-alpine")
         .start()
@@ -2602,6 +2857,11 @@ async fn distributed_api_binary_serves_compiled_process_control_on_loopback() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    store
+        .register_worker("test-worker", &[("orders", "1.0", "decide")])
+        .await
+        .unwrap();
     let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = socket.local_addr().unwrap().port();
     drop(socket);
@@ -2967,10 +3227,13 @@ async fn distributed_api_reconciles_expired_claims_without_a_live_worker() {
         .unwrap();
     let mut item = Instance::new("job", "orders", "1.0", "decide", json!(7));
     item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
-    store.create(&item).await.unwrap();
+    store
+        .create_with_policy(&item, graph.retry.as_ref())
+        .await
+        .unwrap();
     store.claim("lost", 1, 40).await.unwrap();
     tokio::time::sleep(Duration::from_millis(70)).await;
-    let api = DistributedControl::new(store.clone(), vec![graph]).unwrap();
+    let api = DistributedControl::new(store.clone());
     assert_eq!(api.reconcile_once().await.unwrap(), 1);
     assert_eq!(api.reconcile_once().await.unwrap(), 0);
     let row = store.get("job").await.unwrap().unwrap();
@@ -2993,7 +3256,14 @@ async fn malformed_claim_does_not_stop_worker_or_abandon_other_instances() {
         node.get_host_port_ipv4(5432).await.unwrap()
     );
     let store = PostgresStore::connect(&url).await.unwrap();
-    let graph = versioned_graph("1.0", Arc::new(|input, _| Ok(input.clone())), None);
+    let mut graph = versioned_graph("1.0", Arc::new(|input, _| Ok(input.clone())), None);
+    graph.decode_input = Box::new(|input| {
+        if input == json!(1) {
+            Err("malformed input".into())
+        } else {
+            Ok(input)
+        }
+    });
     let mut bad = Instance::new("a-bad", "orders", "1.0", "decide", json!(1));
     bad.created_at = 1;
     store.create(&bad).await.unwrap();
@@ -3008,8 +3278,6 @@ async fn malformed_claim_does_not_stop_worker_or_abandon_other_instances() {
         store.get("b-good").await.unwrap().unwrap().instance.result,
         Some(json!(2))
     );
-    tokio::time::sleep(Duration::from_millis(340)).await;
-    worker.run_once().await.unwrap();
     assert_eq!(
         store.get("a-bad").await.unwrap().unwrap().instance.status,
         "failed"
@@ -3144,13 +3412,11 @@ async fn api_reconciles_expired_old_version_after_linked_graph_rolls_forward() {
             backoff: "exponential",
         }),
     );
-    let old_api = DistributedControl::new(store.clone(), vec![old]).unwrap();
+    let old_worker = DistributedWorker::new(store.clone(), "old", vec![old], 1, 40).unwrap();
+    old_worker.advertise().await.unwrap();
+    let old_api = DistributedControl::new(store.clone());
     let id = old_api
         .start("orders", "1.0", "decide", json!(7))
-        .await
-        .unwrap();
-    store
-        .register_worker("old", &[("orders", "1.0", "decide")])
         .await
         .unwrap();
     store.claim("old", 1, 40).await.unwrap();
@@ -3158,15 +3424,7 @@ async fn api_reconciles_expired_old_version_after_linked_graph_rolls_forward() {
     drop(old_api);
     drop(store);
     let store = PostgresStore::connect(&url).await.unwrap();
-    let new_api = DistributedControl::new(
-        store.clone(),
-        vec![versioned_graph(
-            "2.0",
-            Arc::new(|input, _| Ok(input.clone())),
-            None,
-        )],
-    )
-    .unwrap();
+    let new_api = DistributedControl::new(store.clone());
     assert_eq!(new_api.reconcile_once().await.unwrap(), 1);
     let waiting = store.get(&id).await.unwrap().unwrap();
     assert_eq!(waiting.instance.status, "retry-waiting");

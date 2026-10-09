@@ -2,6 +2,7 @@ use blkit::{
     compiled_graph::{GraphDefinition, GraphLink, GraphNode, GraphNodeKind},
     runtime::{Engine, Evaluate, LocalStore, Registry},
 };
+use blkit_core as blkit;
 use serde_json::{Value, json};
 use std::{
     sync::{

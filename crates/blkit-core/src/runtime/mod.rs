@@ -1,54 +1,30 @@
 use std::{
     collections::{HashMap, HashSet},
-    future::Future,
-    pin::Pin,
     sync::Arc,
     time::Duration,
 };
 
 use serde_json::Value;
+#[cfg(feature = "local-persistence")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "local-persistence")]
+use tokio::sync::Notify;
 use tokio::{
     sync::{Mutex, Semaphore},
     task::JoinSet,
 };
 
-use crate::{
-    compiled_graph::{
-        ChildActivation, GraphCheckpoint, GraphDefinition, GraphNodeKind, GraphTerminal,
-    },
-    postgres_store::{ClaimActivity, DistributedInstance, PostgresStore},
+use crate::compiled_graph::{
+    ChildActivation, GraphCheckpoint, GraphDefinition, GraphNodeKind, GraphTerminal,
 };
+#[cfg(feature = "remote-persistence")]
+use crate::postgres_store::{ClaimActivity, DistributedInstance, PostgresStore};
 
 pub use crate::store::Instance;
+#[cfg(feature = "local-persistence")]
 pub use crate::store::Store as LocalStore;
 
-pub type Values = HashMap<String, Value>;
-pub type Evaluate = Arc<dyn Fn(&Value, &Values) -> Result<Value, String> + Send + Sync>;
-pub type AsyncEvaluate = Arc<
-    dyn Fn(Value, Values) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>>
-        + Send
-        + Sync,
->;
-pub type Cancel = Arc<dyn Fn() + Send + Sync>;
-
-pub fn next_retry_at(
-    policy: &crate::RetryPolicy,
-    attempt: u32,
-    first_failure_ms: i64,
-    now_ms: i64,
-) -> Option<i64> {
-    if attempt == 0 || attempt > policy.max_retries {
-        return None;
-    }
-    let window_end =
-        first_failure_ms.checked_add(i64::try_from(policy.retry_for.as_millis()).ok()?)?;
-    let multiplier = 1_i64.checked_shl(attempt - 1)?;
-    let delay = i64::try_from(policy.retry_delay.as_millis())
-        .ok()?
-        .checked_mul(multiplier)?;
-    let eligible = now_ms.checked_add(delay)?;
-    (eligible <= window_end).then_some(eligible)
-}
+pub use crate::evaluation::{AsyncEvaluate, Cancel, Evaluate, Values, next_retry_at};
 
 pub(crate) type NamedRegistry = HashMap<(String, String, String), Arc<GraphDefinition>>;
 
@@ -83,6 +59,7 @@ pub(crate) fn validate_named_registry(entries: &NamedRegistry) -> Result<(), Str
     Ok(())
 }
 
+#[derive(Clone)]
 pub struct Registry {
     named: Arc<NamedRegistry>,
 }
@@ -119,6 +96,7 @@ struct Running {
     in_flight: HashMap<usize, Cancel>,
 }
 
+#[cfg(feature = "remote-persistence")]
 #[derive(Clone)]
 struct Claim {
     store: PostgresStore,
@@ -129,7 +107,9 @@ struct Claim {
 #[derive(Clone)]
 struct Context {
     state: Arc<Mutex<Running>>,
+    #[cfg(feature = "local-persistence")]
     store: Option<LocalStore>,
+    #[cfg(feature = "remote-persistence")]
     claim: Option<Claim>,
     id: String,
 }
@@ -148,6 +128,84 @@ impl Context {
         }
     }
 
+    async fn persist_terminal(
+        &self,
+        status: &str,
+        result: Option<Value>,
+        terminal: Option<&str>,
+    ) -> Result<(), String> {
+        #[cfg(feature = "remote-persistence")]
+        if let Some(claim) = &self.claim {
+            return claim
+                .store
+                .finish_owned(
+                    &self.id,
+                    &claim.worker_id,
+                    claim.generation,
+                    status,
+                    result,
+                    terminal,
+                    None,
+                )
+                .await?
+                .then_some(())
+                .ok_or("lost claim before terminal write".into());
+        }
+        #[cfg(feature = "local-persistence")]
+        if let Some(store) = &self.store {
+            return if let Some(name) = terminal {
+                store
+                    .finish_named(&self.id, status, name, result, None)
+                    .await
+            } else {
+                store.finish(&self.id, status, result, None).await
+            };
+        }
+        Err("missing instance store".into())
+    }
+
+    async fn checkpoint(&self, state: &GraphCheckpoint) -> Result<(), String> {
+        #[cfg(feature = "remote-persistence")]
+        if let Some(claim) = &self.claim {
+            return claim
+                .store
+                .commit_checkpoint(&self.id, &claim.worker_id, claim.generation, state)
+                .await?
+                .then_some(())
+                .ok_or("lost claim before checkpoint".into());
+        }
+        #[cfg(feature = "local-persistence")]
+        if let Some(store) = &self.store {
+            return store.commit_checkpoint(&self.id, state).await;
+        }
+        Err("missing instance store".into())
+    }
+
+    async fn wait_until(&self, state: &GraphCheckpoint, wake: i64) -> Result<(), String> {
+        #[cfg(feature = "remote-persistence")]
+        if let Some(claim) = &self.claim {
+            return claim
+                .store
+                .release_wait_owned(&self.id, &claim.worker_id, claim.generation, state, wake)
+                .await?
+                .then_some(())
+                .ok_or("lost claim before wait checkpoint".into());
+        }
+        #[cfg(feature = "local-persistence")]
+        if let Some(store) = &self.store {
+            return store.set_wait(&self.id, state, wake).await;
+        }
+        Err("missing instance store".into())
+    }
+
+    #[cfg(feature = "local-persistence")]
+    async fn begin_attempt(&self) -> Result<(), String> {
+        if let Some(store) = &self.store {
+            store.begin_attempt(&self.id).await?;
+        }
+        Ok(())
+    }
+
     async fn fail_attempt(
         &self,
         policy: Option<&crate::RetryPolicy>,
@@ -157,33 +215,48 @@ impl Context {
         if !matches!(state.status, "pending" | "running") {
             return Ok(None);
         }
-        let (status, next) = if let Some(claim) = &self.claim {
+        #[cfg(feature = "remote-persistence")]
+        let remote = if let Some(claim) = &self.claim {
             let status = claim
                 .store
                 .fail_owned(&self.id, &claim.worker_id, claim.generation, policy, error)
                 .await?
                 .ok_or("lost claim before recording failure")?;
-            (status, None)
+            Some((status, None))
         } else {
-            let store = self.store.as_ref().ok_or("missing instance store")?;
-            let instance = store.get(&self.id).await?.ok_or("missing instance")?;
-            let first = instance
-                .first_failure_at
-                .unwrap_or_else(crate::store::now_ms);
-            let next = policy.and_then(|policy| {
-                next_retry_at(policy, instance.attempt, first, crate::store::now_ms())
-            });
-            store
-                .record_retry(&self.id, instance.attempt, first, next, error)
-                .await?;
-            (
-                if next.is_some() {
-                    "retry-waiting"
-                } else {
-                    "failed"
-                },
-                next,
-            )
+            None
+        };
+        #[cfg(not(feature = "remote-persistence"))]
+        let remote: Option<(&'static str, Option<i64>)> = None;
+        let (status, next) = if let Some(remote) = remote {
+            remote
+        } else {
+            #[cfg(feature = "local-persistence")]
+            {
+                let store = self.store.as_ref().ok_or("missing instance store")?;
+                let instance = store.get(&self.id).await?.ok_or("missing instance")?;
+                let first = instance
+                    .first_failure_at
+                    .unwrap_or_else(crate::store::now_ms);
+                let next = policy.and_then(|policy| {
+                    next_retry_at(policy, instance.attempt, first, crate::store::now_ms())
+                });
+                store
+                    .record_retry(&self.id, instance.attempt, first, next, error)
+                    .await?;
+                (
+                    if next.is_some() {
+                        "retry-waiting"
+                    } else {
+                        "failed"
+                    },
+                    next,
+                )
+            }
+            #[cfg(not(feature = "local-persistence"))]
+            {
+                return Err("missing instance store".into());
+            }
         };
         state.status = status;
         let hooks: Vec<_> = state.in_flight.drain().map(|(_, hook)| hook).collect();
@@ -204,27 +277,7 @@ impl Context {
         if !matches!(state.status, "pending" | "running") {
             return Ok(());
         }
-        if let Some(claim) = &self.claim {
-            if !claim
-                .store
-                .finish_owned(
-                    &self.id,
-                    &claim.worker_id,
-                    claim.generation,
-                    status,
-                    None,
-                    Some(name),
-                    None,
-                )
-                .await?
-            {
-                return Err("lost claim before terminal write".into());
-            }
-        } else if let Some(store) = &self.store {
-            store
-                .finish_named(&self.id, status, name, None, None)
-                .await?;
-        }
+        self.persist_terminal(status, None, Some(name)).await?;
         state.status = status;
         let hooks: Vec<_> = state.in_flight.values().cloned().collect();
         drop(state);
@@ -239,32 +292,14 @@ impl Context {
         if !matches!(state.status, "pending" | "running") {
             return Ok(());
         }
-        if let Some(claim) = &self.claim {
-            if !claim
-                .store
-                .finish_owned(
-                    &self.id,
-                    &claim.worker_id,
-                    claim.generation,
-                    "completed",
-                    Some(value),
-                    None,
-                    None,
-                )
-                .await?
-            {
-                return Err("lost claim before completion".into());
-            }
-        } else if let Some(store) = &self.store {
-            store
-                .finish(&self.id, "completed", Some(value), None)
-                .await?;
-        }
+        self.persist_terminal("completed", Some(value), None)
+            .await?;
         state.status = "completed";
         Ok(())
     }
 }
 
+#[cfg(feature = "local-persistence")]
 async fn expire_local_deadlines(
     store: &LocalStore,
     active: &Arc<Mutex<HashMap<String, Context>>>,
@@ -284,13 +319,18 @@ async fn expire_local_deadlines(
     Ok(())
 }
 
+#[cfg(feature = "local-persistence")]
 pub struct Engine {
     registry: Registry,
     store: LocalStore,
     permits: Arc<Semaphore>,
     active: Arc<Mutex<HashMap<String, Context>>>,
+    wake: Arc<Notify>,
+    alive: Arc<()>,
+    worker_started: AtomicBool,
 }
 
+#[cfg(feature = "local-persistence")]
 impl Engine {
     pub fn new(registry: Registry, store: LocalStore, limit: usize) -> Result<Self, String> {
         if limit == 0 {
@@ -301,6 +341,9 @@ impl Engine {
             store,
             permits: Arc::new(Semaphore::new(limit)),
             active: Arc::new(Mutex::new(HashMap::new())),
+            wake: Arc::new(Notify::new()),
+            alive: Arc::new(()),
+            worker_started: AtomicBool::new(false),
         })
     }
 
@@ -339,6 +382,7 @@ impl Engine {
                         in_flight: HashMap::new(),
                     })),
                     store: Some(self.store.clone()),
+                    #[cfg(feature = "remote-persistence")]
                     claim: None,
                     id: instance.id.clone(),
                 };
@@ -351,17 +395,80 @@ impl Engine {
                     .await?
                     .ok_or("missing instance")?;
             }
-            if matches!(
-                instance.status.as_str(),
-                "pending" | "retry-waiting" | "waiting"
-            ) {
-                self.spawn_named(graph, instance).await;
-            }
         }
+        self.start_worker();
         Ok(())
     }
 
-    async fn spawn_named(&self, graph: Arc<GraphDefinition>, instance: Instance) {
+    fn start_worker(&self) {
+        if self.worker_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let registry = self.registry.clone();
+        let store = self.store.clone();
+        let permits = self.permits.clone();
+        let active = self.active.clone();
+        let wake = self.wake.clone();
+        let alive = Arc::downgrade(&self.alive);
+        tokio::spawn(async move {
+            while alive.upgrade().is_some() {
+                if let Err(error) = expire_local_deadlines(&store, &active).await {
+                    eprintln!("local worker deadline check failed: {error}");
+                }
+                match store.incomplete().await {
+                    Ok(instances) => {
+                        for instance in instances {
+                            let now = crate::store::now_ms();
+                            let eligible = match instance.status.as_str() {
+                                "pending" => true,
+                                "retry-waiting" => {
+                                    instance.next_eligible_at.is_some_and(|at| at <= now)
+                                }
+                                "waiting" => instance.wake_at_ms.is_some_and(|at| at <= now),
+                                _ => false,
+                            };
+                            if !eligible || active.lock().await.contains_key(&instance.id) {
+                                continue;
+                            }
+                            if let Some(graph) = registry.get(
+                                &instance.namespace,
+                                &instance.version,
+                                &instance.process,
+                            ) {
+                                Self::spawn_named(
+                                    &store, &active, &permits, &registry, graph, instance,
+                                )
+                                .await;
+                            } else {
+                                let _ = store
+                                    .finish(
+                                        &instance.id,
+                                        "failed",
+                                        None,
+                                        Some("compiled process unavailable after restart"),
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
+                    Err(error) => eprintln!("local worker queue poll failed: {error}"),
+                }
+                tokio::select! {
+                    _ = wake.notified() => {},
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {},
+                }
+            }
+        });
+    }
+
+    async fn spawn_named(
+        store: &LocalStore,
+        active: &Arc<Mutex<HashMap<String, Context>>>,
+        permits: &Arc<Semaphore>,
+        registry: &Registry,
+        graph: Arc<GraphDefinition>,
+        instance: Instance,
+    ) {
         let status = match instance.status.as_str() {
             "retry-waiting" => "retry-waiting",
             "waiting" => "waiting",
@@ -373,17 +480,18 @@ impl Engine {
                 next: 0,
                 in_flight: HashMap::new(),
             })),
-            store: Some(self.store.clone()),
+            store: Some(store.clone()),
+            #[cfg(feature = "remote-persistence")]
             claim: None,
             id: instance.id.clone(),
         };
-        self.active
+        active
             .lock()
             .await
             .insert(instance.id.clone(), context.clone());
         if instance.deadline_origin.is_some() {
-            let store = self.store.clone();
-            let active = self.active.clone();
+            let store = store.clone();
+            let active = active.clone();
             let id = instance.id.clone();
             tokio::spawn(async move {
                 loop {
@@ -408,9 +516,9 @@ impl Engine {
                 }
             });
         }
-        let permits = self.permits.clone();
-        let active = self.active.clone();
-        let definitions = self.registry.named.clone();
+        let permits = permits.clone();
+        let active = active.clone();
+        let definitions = registry.named.clone();
         tokio::spawn(async move {
             let id = instance.id.clone();
             run_named(graph, instance, permits, context, definitions).await;
@@ -447,7 +555,8 @@ impl Engine {
         }
         instance.checkpoint = Some(checkpoint);
         self.store.create(&instance).await?;
-        self.spawn_named(graph, instance).await;
+        self.start_worker();
+        self.wake.notify_one();
         Ok(id)
     }
 
@@ -463,6 +572,14 @@ impl Engine {
             return match self.store.get(id).await? {
                 None => Err("unknown instance".into()),
                 Some(item) if item.status == "cancelled" => Ok(()),
+                Some(item)
+                    if matches!(
+                        item.status.as_str(),
+                        "pending" | "retry-waiting" | "waiting"
+                    ) =>
+                {
+                    self.store.finish(id, "cancelled", None, None).await
+                }
                 Some(_) => Err("instance already terminal".into()),
             };
         };
@@ -490,12 +607,16 @@ impl Engine {
     }
 }
 
+#[cfg(feature = "remote-persistence")]
 mod claimed;
 mod scheduler;
 mod subprocess;
 
+#[cfg(feature = "remote-persistence")]
 pub(crate) use claimed::execute_claimed;
-use scheduler::{execute_named, run_named};
+use scheduler::execute_named;
+#[cfg(feature = "local-persistence")]
+use scheduler::run_named;
 use subprocess::*;
 
 enum NamedOutcome {
@@ -508,6 +629,7 @@ enum NamedOutcome {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "local-persistence")]
     #[tokio::test]
     async fn terminal_named_instance_rejects_late_cancellation() {
         let path =
@@ -533,6 +655,7 @@ mod tests {
                         in_flight: HashMap::new(),
                     })),
                     store: Some(store.clone()),
+                    #[cfg(feature = "remote-persistence")]
                     claim: None,
                     id: status.into(),
                 },
@@ -553,6 +676,7 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    #[cfg(feature = "remote-persistence")]
     #[tokio::test]
     async fn cancelled_claim_fetched_after_assignment_is_harmless() {
         use crate::compiled_graph::{GraphLink, GraphNode};

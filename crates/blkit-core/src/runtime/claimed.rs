@@ -20,6 +20,7 @@ pub(crate) async fn execute_claimed(
             next: 0,
             in_flight: HashMap::new(),
         })),
+        #[cfg(feature = "local-persistence")]
         store: None,
         claim: Some(Claim {
             store: store.clone(),
@@ -28,11 +29,48 @@ pub(crate) async fn execute_claimed(
         }),
         id: claimed.instance.id.clone(),
     };
-    let checkpoint = claimed
-        .instance
-        .checkpoint
-        .ok_or("claimed instance has no checkpoint")?;
-    checkpoint.ensure_supported()?;
+    let (input, checkpoint) = if let Some(checkpoint) = claimed.instance.checkpoint {
+        checkpoint.ensure_supported()?;
+        (claimed.instance.input.clone(), checkpoint)
+    } else {
+        let prepared = (|| {
+            let input = (graph.decode_input)(claimed.instance.input.clone())
+                .map_err(|error| format!("invalid input: {error}"))?;
+            let mut checkpoint = graph.checkpoint(&input)?;
+            graph.resume_due(&input, &mut checkpoint, crate::store::now_ms())?;
+            Ok::<_, String>((input, checkpoint))
+        })();
+        let (input, checkpoint) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                store
+                    .finish_owned(
+                        &context.id,
+                        &worker_id,
+                        claimed.generation,
+                        "failed",
+                        None,
+                        None,
+                        Some(&error),
+                    )
+                    .await?;
+                return Ok(());
+            }
+        };
+        if !store
+            .commit_initial_checkpoint(
+                &context.id,
+                &worker_id,
+                claimed.generation,
+                &input,
+                &checkpoint,
+            )
+            .await?
+        {
+            return Err("lost claim before initializing checkpoint".into());
+        }
+        (input, checkpoint)
+    };
     let watch = async {
         loop {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -53,7 +91,7 @@ pub(crate) async fn execute_claimed(
         }
     };
     let outcome = tokio::select! {
-        result = execute_named(&graph, &claimed.instance.input, checkpoint, &permits, &context, &definitions) => result,
+        result = execute_named(&graph, &input, checkpoint, &permits, &context, &definitions) => result,
         cancelled = watch => {
             return if cancelled? { Ok(()) } else { Err("lost claim during execution".into()) };
         }
