@@ -5,7 +5,7 @@ description: Use when asked to organize Git working-tree changes into reviewable
 
 # Commit changes — Git guidance
 
-For commit-and-push requests, call `commit_changes` with `action: "start"` (or continue after the user runs `/commit-changes`). The Pi extension owns Git effects and human menus; this skill supplies Git judgment, not a route around its gates. Do not run Git mutations yourself. In an active run, use `commit_changes` for read-only inventory and all decisions/effects; `read` is available for inspecting individual files.
+For commit requests, call `commit_changes` with `action: "start"` (or continue after the user runs `/commit-changes`). To target a registered worktree, pass `worktree: "path"`; if the exposed API schema omits that field, pass `proposal: {"worktree": "path"}` **on start only**. Verify the returned inventory names the intended checkout before proposing a group; stop immediately if it does not. The Pi extension owns Git effects and human menus; this skill supplies Git judgment, not a route around its gates. Do not run Git mutations yourself. In an active run, use `commit_changes` for read-only inventory and all decisions/effects; `read` is available for inspecting individual files.
 
 ## Commit judgment
 

@@ -61,7 +61,7 @@ export default function (pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: 'commit_changes', label: 'Commit changes', executionMode: 'sequential',
-    description: 'For commit-and-push requests, call start (optionally with worktree path) to begin an interactive guarded run. Read inventory, propose groups, stage, present exact messages, and request human menus. Never run Git mutations yourself.',
+    description: 'For commit requests, call start with worktree path or proposal: {worktree: path} when the API schema omits worktree. Read inventory, propose groups, stage, present exact messages, and request human menus. Never run Git mutations yourself.',
     parameters: Type.Object({
       action: Type.Union(['start', 'inventory', 'propose', 'stage', 'present_message', 'decide_message', 'commit', 'repair', 'review_push', 'push', 'fetch_resolve', 'review_merge', 'commit_merge', 'stop'].map(Type.Literal)),
       proposal: Type.Optional(Type.Any()), message: Type.Optional(Type.String()), patch: Type.Optional(Type.String()),
@@ -73,7 +73,7 @@ export default function (pi: ExtensionAPI) {
       if (action === 'start') {
         if (active) throw new Error('A commit run is already active');
         if (ctx.mode !== 'tui') throw new Error('Commit approval requires an interactive Pi session');
-        const root = worktreeRoot(ctx.cwd, params.worktree);
+        const root = worktreeRoot(ctx.cwd, params.worktree ?? params.proposal?.worktree);
         assertNoPendingMerge(root);
         const snapshot = inventory(root);
         if (!snapshot.staged && !snapshot.workingPaths.length && !snapshot.untrackedPaths.length)
@@ -82,7 +82,7 @@ export default function (pi: ExtensionAPI) {
         return result(JSON.stringify({root, ...snapshot, unstaged:gitDiff(root)}));
       }
       const run = active;
-      if (params.worktree !== undefined) throw new Error('worktree may only be specified on start');
+      if (params.worktree !== undefined || params.proposal?.worktree !== undefined) throw new Error('worktree may only be specified on start');
       if (!run || ctx.cwd !== run.session || ctx.mode !== 'tui') throw new Error('No current interactive commit run');
       if (worktreeRoot(ctx.cwd, run.root) !== run.root) throw new Error('Commit worktree changed; start a new run');
       if (action === 'stop') { active = undefined; return result('Stopped. Git state was not discarded.'); }

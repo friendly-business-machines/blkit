@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, symlinkSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, symlinkSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createJiti } from '../npm/node_modules/jiti/lib/jiti.cjs';
-import { discoverAndLoadExtensions } from '../npm/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js';
+const localPi = fileURLToPath(new URL('../npm/node_modules/@earendil-works/pi-coding-agent/', import.meta.url));
+const piRoot = existsSync(join(localPi, 'dist/core/extensions/loader.js'))
+  ? localPi : join(execFileSync('npm', ['root', '-g'], {encoding:'utf8'}).trim(), '@earendil-works/pi-coding-agent');
+const { discoverAndLoadExtensions } = await import(pathToFileURL(join(piRoot, 'dist/core/extensions/loader.js')).href);
 
 // Pi should discover the extension entry point, not its supporting Git module.
 test('project extension discovery loads only the commit-changes factory', async () => {
@@ -247,7 +250,8 @@ test('changed worktree, changed index, invalid hunk and symlink identity fail cl
 
 const extensionPath = fileURLToPath(new URL('./commit-changes.ts', import.meta.url));
 const typeboxPath = fileURLToPath(new URL('../npm/node_modules/typebox/build/index.mjs', import.meta.url));
-const tuiPath = fileURLToPath(new URL('../npm/node_modules/@earendil-works/pi-tui/dist/index.js', import.meta.url));
+const localTui = fileURLToPath(new URL('../npm/node_modules/@earendil-works/pi-tui/dist/index.js', import.meta.url));
+const tuiPath = existsSync(localTui) ? localTui : join(piRoot, 'node_modules/@earendil-works/pi-tui/dist/index.js');
 const setupExtension = (root, decisions = [], replies = []) => {
   const factory = createJiti(import.meta.url, { alias: { typebox: typeboxPath, '@earendil-works/pi-tui': tuiPath } })(extensionPath).default;
   const commands = {}, events = [], handlers = {};
@@ -407,6 +411,45 @@ test('explicit worktree run commits there without touching the session checkout'
     assert.match(await kit.call('inventory'), /another edit/);
     assert.ok(kit.events.some(e => e[0] === 'prompt' && e[1].includes(linked)));
   } finally { rmSync(parent, {recursive:true,force:true}); }
+});
+
+test('API-exposed proposal.worktree starts and commits in the linked worktree', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'commit-ext-api-target-'));
+  const main = join(parent, 'main'), linked = join(parent, 'linked');
+  try {
+    mkdirSync(main);
+    git(main, 'init', '-q'); git(main, 'config', 'user.name', 'Tester'); git(main, 'config', 'user.email', 'test@example.org');
+    writeFileSync(join(main, 'file.txt'), 'old\n'); git(main, 'add', 'file.txt'); git(main, 'commit', '-qm', 'init');
+    git(main, 'worktree', 'add', '-qb', 'feature', linked);
+    writeFileSync(join(main, 'root-only.txt'), 'keep me\n');
+    writeFileSync(join(linked, 'file.txt'), 'new\n');
+    const head = git(main, 'rev-parse', 'HEAD').trim();
+    const kit = setupExtension(main, ['Approve groups', 'Commit']);
+    const started = JSON.parse(await kit.call('start', {proposal:{worktree: linked}}));
+    assert.equal(started.root, linked);
+    await kit.call('propose', {proposal:{groups:[{source:'working', reason:'Fix linked file', changes:[{path:'file.txt'}]}], excluded:[]}});
+    await kit.call('stage');
+    await kit.call('present_message', {message:'fix: Update linked file\n\nKeep changes in the selected worktree.'});
+    await kit.call('decide_message'); await kit.call('commit'); await kit.call('stop');
+    assert.equal(git(linked, 'log', '-1', '--format=%s').trim(), 'fix: Update linked file');
+    assert.equal(git(main, 'rev-parse', 'HEAD').trim(), head);
+    assert.equal(readFileSync(join(main, 'file.txt'), 'utf8'), 'old\n');
+  } finally { rmSync(parent, {recursive:true, force:true}); }
+});
+
+test('API-exposed proposal.worktree still rejects a different repository', async () => {
+  const main = mkdtempSync(join(tmpdir(), 'commit-ext-api-main-'));
+  const other = mkdtempSync(join(tmpdir(), 'commit-ext-api-other-'));
+  try {
+    for (const root of [main, other]) {
+      git(root, 'init', '-q'); git(root, 'config', 'user.name', 'Tester'); git(root, 'config', 'user.email', 'test@example.org');
+      writeFileSync(join(root, 'file.txt'), 'old\n'); git(root, 'add', 'file.txt'); git(root, 'commit', '-qm', 'init');
+    }
+    writeFileSync(join(other, 'file.txt'), 'new\n');
+    const kit = setupExtension(main);
+    await assert.rejects(kit.call('start', {proposal:{worktree: other}}), /worktree|repository/i);
+    assert.equal(git(other, 'diff', '--cached'), '');
+  } finally { rmSync(main, {recursive:true, force:true}); rmSync(other, {recursive:true, force:true}); }
 });
 
 test('explicit worktree run rejects a different repository', async () => {
