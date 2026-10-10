@@ -28,7 +28,7 @@ pub(super) fn record_cycle(
     false
 }
 
-pub(super) fn check_name(name: &str) -> Result<(), String> {
+pub(crate) fn check_name(name: &str) -> Result<(), String> {
     if matches!(
         name,
         "_" | "as"
@@ -182,6 +182,238 @@ pub(crate) fn infer_with(
             .cloned()
             .ok_or_else(|| format!("unknown name: {name}")),
         Call(name, args) => {
+            if name == "__bl_dictionary" {
+                let schema = expected.and_then(|ty| match ty {
+                    Type::Named(name) => program.records.iter().find(|record| &record.name == name),
+                    _ => None,
+                });
+                if let Some(schema) = schema
+                    && schema.fields.len() != args.len() / 2
+                {
+                    return Err(format!("dictionary {} requires all fields", schema.name));
+                }
+                let element_type = match expected {
+                    Some(Type::Generic(kind, inner)) if kind == "Dictionary" => {
+                        Some(inner.as_ref())
+                    }
+                    _ => None,
+                };
+                let mut scope = env.clone();
+                let mut homogeneous = None;
+                for entry in args.chunks_exact(2) {
+                    let Expr::String(key) = &entry[0] else {
+                        return Err("invalid dictionary key".into());
+                    };
+                    let field_type = schema.and_then(|schema| {
+                        schema
+                            .fields
+                            .iter()
+                            .find(|(field, _)| field == key)
+                            .map(|(_, ty)| ty)
+                    });
+                    if schema.is_some() && field_type.is_none() {
+                        return Err(format!("unknown dictionary field: {key}"));
+                    }
+                    let ty = infer_with(
+                        &entry[1],
+                        field_type.or(element_type),
+                        &scope,
+                        program,
+                        knowledge,
+                    )?;
+                    if field_type
+                        .or(element_type)
+                        .is_some_and(|wanted| wanted != &ty)
+                    {
+                        return Err(format!(
+                            "dictionary field {key} has incompatible type: {ty}"
+                        ));
+                    }
+                    if homogeneous.as_ref().is_some_and(|previous| previous != &ty) {
+                        homogeneous = Some(named("Value"));
+                    } else if homogeneous.is_none() {
+                        homogeneous = Some(ty.clone());
+                    }
+                    if crate::compiler::identifier(key) {
+                        scope.insert(key.clone(), ty);
+                    }
+                }
+                return Ok(if let Some(ty) = expected {
+                    if schema.is_some() || element_type.is_some() {
+                        ty.clone()
+                    } else {
+                        Type::Named("Dictionary".into())
+                    }
+                } else if let Some(ty) = homogeneous {
+                    if ty == named("Value") {
+                        named("Dictionary")
+                    } else {
+                        Type::Generic("Dictionary".into(), Box::new(ty))
+                    }
+                } else {
+                    named("Dictionary")
+                });
+            }
+            if matches!(name.as_str(), "dictionaryPut" | "dictionaryRemove") {
+                let Some(source) = args.first() else {
+                    return Err(format!("{name} needs a dictionary"));
+                };
+                let ty = infer_with(source, None, env, program, knowledge)?;
+                if !matches!(ty, Type::Generic(ref kind, _) if kind == "Dictionary")
+                    && !matches!(ty, Type::Named(ref kind) if kind == "Dictionary" || program.records.iter().any(|record| &record.name == kind))
+                {
+                    return Err(format!("{name} needs a dictionary"));
+                }
+                if args.len() != if name == "dictionaryPut" { 3 } else { 2 } {
+                    return Err(format!("invalid {name} arguments"));
+                }
+                let list = Type::Generic("List".into(), Box::new(named("String")));
+                let key = infer_with(
+                    &args[1],
+                    if matches!(&args[1], Expr::List(items) if items.is_empty()) {
+                        Some(&list)
+                    } else {
+                        None
+                    },
+                    env,
+                    program,
+                    knowledge,
+                )?;
+                if key != named("String") && !(name == "dictionaryPut" && key == list) {
+                    return Err(format!("invalid {name} arguments"));
+                }
+                if name == "dictionaryPut" {
+                    infer_with(&args[2], None, env, program, knowledge)?;
+                }
+                return Ok(named("Dictionary"));
+            }
+            if name == "dictionaryMerge" {
+                if args.len() != 1 {
+                    return Err("dictionaryMerge requires a list".into());
+                }
+                let ty = infer_with(
+                    &args[0],
+                    Some(&Type::Generic("List".into(), Box::new(named("Dictionary")))),
+                    env,
+                    program,
+                    knowledge,
+                )?;
+                let Type::Generic(kind, element) = ty else {
+                    return Err("dictionaryMerge requires a list of dictionaries".into());
+                };
+                if kind != "List"
+                    || !matches!(*element,
+                    Type::Named(ref kind) if kind == "Dictionary" || program.records.iter().any(|record| &record.name == kind))
+                        && !matches!(*element, Type::Generic(ref kind, _) if kind == "Dictionary")
+                {
+                    return Err("dictionaryMerge requires a list of dictionaries".into());
+                }
+                return Ok(named("Dictionary"));
+            }
+            if matches!(name.as_str(), "keys" | "values" | "getEntries" | "size" | "isEmpty" | "has" | "getValue")
+                && args.first().is_some_and(|first| matches!(infer_with(first, None, env, program, knowledge),
+                    Ok(Type::Generic(ref kind, _)) if kind == "Dictionary")
+                    || matches!(infer_with(first, None, env, program, knowledge),
+                        Ok(Type::Named(ref kind)) if matches!(kind.as_str(), "Dictionary" | "Value") || program.records.iter().any(|record| &record.name == kind)))
+            {
+                let dictionary_type = infer_with(&args[0], None, env, program, knowledge)?;
+                let mut inner = match &dictionary_type {
+                    Type::Generic(_, inner) => inner.as_ref().clone(),
+                    Type::Named(shape) if name == "getValue" && args.len() == 2 => {
+                        let key = match &args[1] { Expr::String(key) => Some(key), Expr::List(items) => items.first().and_then(|item| if let Expr::String(key) = item { Some(key) } else { None }), _ => None };
+                        program.records.iter().find(|record| &record.name == shape)
+                            .and_then(|record| record.fields.iter().find(|(field, _)| Some(field) == key))
+                            .map(|(_, ty)| ty.clone()).unwrap_or_else(|| named("Value"))
+                    }
+                    _ => named("Value"),
+                };
+                let text = named("String");
+                let valid = match name.as_str() {
+                    "has" => args.len() == 2 && infer_with(&args[1], Some(&text), env, program, knowledge)? == text,
+                    "getValue" => args.len() == 2 && {
+                        let key = if matches!(&args[1], Expr::List(items) if items.is_empty()) {
+                            infer_with(&args[1], Some(&Type::Generic("List".into(), Box::new(text.clone()))), env, program, knowledge)?
+                        } else { infer_with(&args[1], None, env, program, knowledge)? };
+                        key == text || key == Type::Generic("List".into(), Box::new(text.clone()))
+                    },
+                    _ => args.len() == 1,
+                };
+                if !valid { return Err(format!("invalid {name} dictionary arguments")); }
+                if name == "getValue" {
+                    let path: Vec<_> = match &args[1] {
+                        Expr::String(key) => vec![key.as_str()],
+                        Expr::List(items) => items.iter().filter_map(|item| if let Expr::String(key) = item { Some(key.as_str()) } else { None }).collect(),
+                        _ => Vec::new(),
+                    };
+                    if let Expr::Call(kind, _) = &args[0] && kind == "__bl_dictionary" && !path.is_empty() {
+                        let mut value = &args[0];
+                        for key in path {
+                            if let Expr::Call(kind, entries) = value && kind == "__bl_dictionary"
+                                && let Some(entry) = entries.chunks_exact(2).find(|entry| matches!(&entry[0], Expr::String(name) if name == key)) {
+                                value = &entry[1];
+                                continue;
+                            }
+                            value = &args[0];
+                            break;
+                        }
+                        if value != &args[0] && let Ok(ty) = infer_with(value, None, env, program, knowledge) {
+                            return Ok(ty);
+                        }
+                    }
+                }
+                if name == "getValue" && let Expr::List(path) = &args[1] {
+                    for _ in 1..path.len() {
+                        inner = if let Type::Generic(kind, value) = inner {
+                            if kind == "Dictionary" { *value } else { named("Value") }
+                        } else { named("Value") };
+                    }
+                }
+                if name == "getValue" && inner == named("Value") && let Some(target) = expected {
+                    inner = target.clone();
+                }
+                return Ok(match name.as_str() {
+                    "keys" => Type::Generic("List".into(), Box::new(text)),
+                    "values" => Type::Generic("List".into(), Box::new(inner)),
+                    "getEntries" => Type::Generic("List".into(), Box::new(Type::Generic("DictionaryEntry".into(), Box::new(inner)))),
+                    "size" => named("Number"),
+                    "has" | "isEmpty" => named("Bool"),
+                    _ => inner,
+                });
+            }
+            if name == "__bl_index" {
+                let [base, key] = args.as_slice() else {
+                    return Err("dictionary index requires key".into());
+                };
+                if infer_with(key, Some(&named("String")), env, program, knowledge)?
+                    != named("String")
+                {
+                    return Err("dictionary key requires String".into());
+                }
+                let base_type = infer_with(base, None, env, program, knowledge)?;
+                return match base_type {
+                    Type::Generic(kind, ty) if kind == "Dictionary" => Ok(*ty),
+                    Type::Named(name) if matches!(name.as_str(), "Dictionary" | "Value") => {
+                        Ok(expected.cloned().unwrap_or_else(|| named("Value")))
+                    }
+                    Type::Named(name) => {
+                        let record = program
+                            .records
+                            .iter()
+                            .find(|record| record.name == name)
+                            .ok_or("dictionary index requires a dictionary")?;
+                        let Expr::String(key) = key else {
+                            return Ok(named("Value"));
+                        };
+                        record
+                            .fields
+                            .iter()
+                            .find(|(field, _)| field == key)
+                            .map(|(_, ty)| ty.clone())
+                            .ok_or_else(|| format!("unknown dictionary field: {key}"))
+                    }
+                    _ => Err("dictionary index requires a dictionary".into()),
+                };
+            }
             if let Some(definition) = knowledge.iter().find(|item| item.name == *name) {
                 if args.len() != definition.params.len() {
                     return Err(format!("knowledge argument count for {name}"));
@@ -1062,6 +1294,24 @@ pub(crate) fn infer_with(
             Ok(output)
         }
         Field(base, field) => {
+            if let Call(name, entries) = base.as_ref()
+                && name == "__bl_dictionary"
+            {
+                infer_with(base, None, env, program, knowledge)?;
+                let mut local = env.clone();
+                for entry in entries.chunks_exact(2) {
+                    let String(key) = &entry[0] else {
+                        unreachable!()
+                    };
+                    let ty = infer_with(&entry[1], None, &local, program, knowledge)?;
+                    if key == field {
+                        return Ok(ty);
+                    }
+                    if crate::compiler::identifier(key) {
+                        local.insert(key.clone(), ty);
+                    }
+                }
+            }
             if let Name(name) = base.as_ref()
                 && let Some(item) = program.enums.iter().find(|item| item.name == *name)
             {
@@ -1072,7 +1322,22 @@ pub(crate) fn infer_with(
                 };
             }
             let ty = infer_with(base, None, env, program, knowledge)?;
+            if let Type::Generic(kind, inner) = &ty {
+                if kind == "Dictionary" {
+                    return Ok(inner.as_ref().clone());
+                }
+                if kind == "DictionaryEntry" {
+                    return match field.as_str() {
+                        "key" => Ok(named("String")),
+                        "value" => Ok(inner.as_ref().clone()),
+                        _ => Err(format!("unknown dictionary entry field: {field}")),
+                    };
+                }
+            }
             if let Type::Named(name) = ty {
+                if matches!(name.as_str(), "Dictionary" | "Value") {
+                    return Ok(expected.cloned().unwrap_or_else(|| named("Value")));
+                }
                 if matches!(name.as_str(), "Date" | "Time" | "DateTime") {
                     let calendar = matches!(name.as_str(), "Date" | "DateTime");
                     let clock = matches!(name.as_str(), "Time" | "DateTime");
@@ -1160,6 +1425,52 @@ pub(crate) fn infer_with(
             }
             Ok(Type::Generic("Range".into(), Box::new(ty)))
         }
+        Iteration {
+            every,
+            binding,
+            source,
+            body,
+        } => {
+            check_name(binding)?;
+            let empty_source = Type::Generic("List".into(), Box::new(named("Value")));
+            let context = if matches!(source.as_ref(), Expr::List(elements) if elements.is_empty())
+            {
+                Some(&empty_source)
+            } else {
+                None
+            };
+            let Type::Generic(kind, element) =
+                infer_with(source, context, env, program, knowledge)?
+            else {
+                return Err("iteration source must be List".into());
+            };
+            if kind != "List" {
+                return Err("iteration source must be List".into());
+            }
+            let mut local = env.clone();
+            local.insert(binding.clone(), *element);
+            let boolean = named("Bool");
+            let result_type = if *every {
+                Some(&boolean)
+            } else if let Some(Type::Generic(kind, inner)) = expected {
+                if kind == "List" {
+                    Some(inner.as_ref())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let result = infer_with(body, result_type, &local, program, knowledge)?;
+            if *every {
+                if result != named("Bool") {
+                    return Err("every predicate must be Bool".into());
+                }
+                Ok(named("Bool"))
+            } else {
+                Ok(Type::Generic("List".into(), Box::new(result)))
+            }
+        }
         List(elements) => {
             let element_type = if let Some(Type::Generic(name, inner)) = expected {
                 if name == "List" {
@@ -1179,7 +1490,11 @@ pub(crate) fn infer_with(
                 .ok_or("cannot infer empty list type")?;
             for element in elements {
                 let actual = infer_with(element, Some(&element_type), env, program, knowledge)?;
-                if actual != element_type {
+                if actual != element_type
+                    && !(element_type == named("Dictionary")
+                        && (matches!(actual, Type::Generic(ref kind, _) if kind == "Dictionary")
+                            || matches!(actual, Type::Named(ref kind) if program.records.iter().any(|record| &record.name == kind))))
+                {
                     return Err(format!("List<{element_type}> element has type {actual}"));
                 }
             }
@@ -1217,7 +1532,7 @@ pub(crate) fn infer_with(
                 }
                 return Ok(named("Bool"));
             }
-            let lhs = if matches!(left.as_ref(), Range(None, None, _, _))
+            let mut lhs = if matches!(left.as_ref(), Range(None, None, _, _))
                 || matches!(left.as_ref(), List(elements) if elements.is_empty())
             {
                 let other = infer_with(right, None, env, program, knowledge)?;
@@ -1225,6 +1540,12 @@ pub(crate) fn infer_with(
             } else {
                 infer_with(left, None, env, program, knowledge)?
             };
+            if lhs == named("Value") {
+                let other = infer_with(right, None, env, program, knowledge)?;
+                if other != named("Value") {
+                    lhs = infer_with(left, Some(&other), env, program, knowledge)?;
+                }
+            }
             let duration = |ty: &Type| matches!(ty, Type::Named(name) if matches!(name.as_str(), "DTDuration" | "YMDuration"));
             let number = named("Number");
             let rhs = infer_with(
@@ -1317,6 +1638,20 @@ pub(crate) fn infer_with(
 
 pub(crate) fn builtin(name: &str) -> bool {
     name.starts_with("__bl_named_")
+        || matches!(
+            name,
+            "__bl_dictionary"
+                | "__bl_index"
+                | "keys"
+                | "values"
+                | "getEntries"
+                | "size"
+                | "has"
+                | "getValue"
+                | "dictionaryPut"
+                | "dictionaryMerge"
+                | "dictionaryRemove"
+        )
         || matches!(
             name,
             "daysBetween"
@@ -1482,7 +1817,11 @@ pub(super) fn reversed_constants(a: &Expr, b: &Expr, ty: &Type) -> bool {
 pub(super) fn resolve(ty: &Type, names: &HashSet<&str>) -> Result<(), String> {
     match ty {
         Type::Named(name) if names.contains(name.as_str()) && name != "List" => Ok(()),
-        Type::Generic(name, inner) if name == "List" => resolve(inner, names),
+        Type::Generic(name, inner)
+            if matches!(name.as_str(), "List" | "Dictionary" | "DictionaryEntry") =>
+        {
+            resolve(inner, names)
+        }
         Type::Named(name) => Err(format!("unknown type: {name}")),
         Type::Generic(_, _) => Err(format!("unsupported type: {ty}")),
     }

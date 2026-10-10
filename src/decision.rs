@@ -49,30 +49,10 @@ pub struct DecisionTable {
 }
 
 fn expressions(text: &str) -> Result<Vec<Expr>, String> {
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let mut depth = 0_i32;
-    let mut quoted = false;
-    for (i, ch) in text.char_indices() {
-        match ch {
-            '"' => quoted = !quoted,
-            '[' | '(' if !quoted => depth += 1,
-            ']' | ')' if !quoted => depth -= 1,
-            ',' if !quoted && depth == 0 => {
-                parts.push(expr::expression(text[start..i].trim())?);
-                start = i + 1;
-            }
-            _ => {}
-        }
-        if depth < 0 {
-            return Err("invalid table expression".into());
-        }
-    }
-    if quoted || depth != 0 {
-        return Err("invalid table expression".into());
-    }
-    parts.push(expr::expression(text[start..].trim())?);
-    Ok(parts)
+    crate::compiler::split_top_level(text, ',')?
+        .into_iter()
+        .map(|part| expr::expression(part.trim()))
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -141,10 +121,40 @@ fn infer_dependencies(
             infer_dependencies(left, target, nodes, links)?;
             infer_dependencies(right, target, nodes, links)?;
         }
+        Expr::Call(name, args) if name == "__bl_dictionary" => {
+            let mut scoped = Vec::new();
+            for entry in args.chunks_exact_mut(2) {
+                let available: Vec<_> = nodes
+                    .iter()
+                    .filter(|(name, _)| !scoped.contains(name))
+                    .cloned()
+                    .collect();
+                infer_dependencies(&mut entry[1], target, &available, links)?;
+                if let Expr::String(key) = &entry[0]
+                    && identifier(key)
+                {
+                    scoped.push(key.clone());
+                }
+            }
+        }
         Expr::Call(_, args) | Expr::List(args) => {
             for arg in args {
                 infer_dependencies(arg, target, nodes, links)?;
             }
+        }
+        Expr::Iteration {
+            binding,
+            source,
+            body,
+            ..
+        } => {
+            infer_dependencies(source, target, nodes, links)?;
+            let scoped: Vec<_> = nodes
+                .iter()
+                .filter(|(name, _)| name != binding)
+                .cloned()
+                .collect();
+            infer_dependencies(body, target, &scoped, links)?;
         }
         Expr::Range(start, end, _, _) => {
             if let Some(start) = start {
@@ -325,6 +335,10 @@ fn expr_calls<'a>(expr: &'a Expr, found: &mut Vec<&'a str>) {
                 expr_calls(arg, found);
             }
         }
+        Expr::Iteration { source, body, .. } => {
+            expr_calls(source, found);
+            expr_calls(body, found);
+        }
         Expr::Range(lower, upper, _, _) => {
             for bound in lower.iter().chain(upper.iter()) {
                 expr_calls(bound, found);
@@ -370,6 +384,17 @@ fn expr_names<'a>(expr: &'a Expr, found: &mut Vec<&'a str>) {
             for arg in args {
                 expr_names(arg, found);
             }
+        }
+        Expr::Iteration {
+            binding,
+            source,
+            body,
+            ..
+        } => {
+            expr_names(source, found);
+            let mut local = Vec::new();
+            expr_names(body, &mut local);
+            found.extend(local.into_iter().filter(|name| *name != binding));
         }
         Expr::Range(lower, upper, _, _) => {
             for bound in lower.iter().chain(upper.iter()) {

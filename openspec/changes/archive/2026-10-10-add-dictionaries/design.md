@@ -1,0 +1,35 @@
+# Design
+
+## Context
+
+See `proposal.md` and the `business-language` delta. Today `src/compiler.rs::source_items` splits declaration braces before expressions reach `src/expr.rs`; record types are parsed from `type Name:` plus indented fields, and the expression parser only handles lists, ranges, calls, and dot fields. `src/semantic/types.rs` enforces typed `List<T>` and declared record fields, and `src/codegen/` emits Rust types and executable expressions for decisions, graph conditions, and tasks. Runtime ports cross a JSON boundary. Existing `isEmpty` overloads and `sum(List<Number>)` cannot regress.
+
+## Goals / Non-Goals
+
+**Goals:** Cover every expression in `dictionaries-changes.md`, including numeric aggregation and list iteration over dictionary query results; replace separate record declarations with `Name = {field: Type, ...};` named dictionaries, retaining fixed-shape validation and JSON object compatibility after migration.
+
+**Non-Goals:** A general nullable/`Any` type, mutation of input dictionaries, implicit numeric arithmetic on unknown dynamic `Value`s, arbitrary comparison ordering of dictionaries, and general list filtering beyond the two requested iteration forms.
+
+## Decisions
+
+1. **One dictionary model with named shapes.** `Order = {total: Number, blocked: Bool};` replaces `type Order:`; `Order` is a named fixed-shape dictionary, with required keys and statically typed access at ports and expressions. `Dictionary<T>` represents homogeneous arbitrary-key dictionaries such as `Dictionary<Number>` for `sum(values(scores))`; bare `Dictionary` uses heterogeneous `Value` entries. `DictionaryEntry<T>` exposes `key` and `value` (`T = Value` for mixed keys). All forms support the same dictionary lookup/inspection operations; key-changing transformations return an ad hoc dictionary rather than falsely preserving a named shape. Contextual typing checks literals against `Order` and gives `{}`/`[]` their expected types. Unknown `Value` contents do not implicitly become `Number` or `Bool`: use typed dictionaries or named shapes for operations needing a known type. Known literal keys, paths, and earlier same-literal key bindings retain their concrete type locally so `getValue({foo: 123}, "foo")`, `{a: 2, b: a * 2}`, and `{a: {b: 3}}.a.b` are valid. Alternative: keep old records beside new dictionaries; rejected as two competing object models with diverging operations.
+
+2. **Parse declarations and literal braces by context.** Recognize top-level `Name = {field: Type, ...};` as a named type declaration; reject `type Name:` explicitly, but keep enum syntax. Teach `source_items` to retain balanced dictionary literal braces inside expression statements (including nested literals/quoted keys) instead of splitting them into block declarations. `=` remains invalid as expression equality. Add dictionary literals, bracket key access, `every`, and `for` to the expression AST and parser; bracket postfix access must not consume prefix list/range syntax. Give iteration variables lexical scope and evaluate literal entries left to right. Alternative: introduce a second `dictionary Order { ... }` syntax; rejected in favor of the requested assignment-style declaration.
+
+3. **Centralize dictionary operations in the core runtime.** Use a deterministic string-key map and shared lookup/update/merge helpers rather than emitting distinct bespoke traversal code at each expression site. Keep stored values immutable from the caller's perspective (clone/construct updated dictionaries), make nested access and updates report missing/intermediate-type errors through the existing fallible-expression path, and sort queries by Unicode code-point key order. Implement shallow merge with later inputs winning; a missing direct key on remove is a no-op. Alternative: scatter `serde_json::Value` access through generated Rust; rejected because type safety, numeric precision, and missing-key diagnostics would diverge across functions.
+
+4. **Explicit JSON boundary.** Named dictionaries retain the existing closed-shape record JSON representation (`Order` still requires all declared keys, rejects extra keys, and uses decimal strings for typed `Number`). `Dictionary<T>` deserializes values using the same typed representation. Bare `Dictionary` accepts native JSON numbers as decimal `Number`, quoted strings as `String`, booleans as `Bool`, arrays as lists, and objects as nested dictionaries; do not round numbers via binary floats. Dynamic temporal strings remain strings until explicitly constructed as typed temporal values. Return data preserves the chosen value kinds. Alternative: automatically guess dates and numeric strings in heterogeneous inputs; rejected as ambiguous and breaking for ordinary text.
+
+5. **Type and fallibility propagate through all expression consumers.** Replace record-specific type generation/validation with named dictionary shape handling, including multi-column decision-table results and AND-join outputs; preserve their existing typed JSON contracts. Extend type inference, reference/dependency walking, constant validation, fallibility analysis, and Rust emission for new AST variants; support use in knowledge, contexts, decision tables, task outputs, graph conditions, and process expressions where existing expressions work. Reuse existing `sum` and `isEmpty` dispatch with a dictionary overload. `every` short-circuits, `for` preserves iteration order; runtime failures in evaluated bodies propagate. Alternative: a separate interpreter for dictionary expressions; rejected as an unnecessary second execution model.
+
+## Risks / Trade-offs
+
+- [Brace lexing misclassifies declarations] → Test nested dictionary literals inside decision nodes alongside empty peer blocks and existing statement delimiters.
+- [Heterogeneous `Value` erodes static guarantees] → Preserve `Dictionary<T>` and reject implicit arithmetic on `Value`; test typed-port failures and runtime invalid paths.
+- [Decimal precision is lost at JSON boundaries] → Round-trip representative high-precision and nested decimal values without floating-point intermediate conversion.
+- [Named-shape key access or overloaded `isEmpty` becomes ambiguous] → Resolve known named fields statically; add targeted regression tests for String, Calendar, and existing field syntax.
+- [Large generated expression trees or nested values increase allocation] → Start with immutable map cloning for updates; optimize only if measured.
+
+## Migration Plan
+
+This is a breaking source migration: convert every `type Name:\n  field: Type;` to `Name = {field: Type, ...};` in examples, fixtures, tests, and user projects; leave `enum Name:` declarations intact. Named dictionary JSON objects retain the old typed payload shape, so persisted graph data remains structurally compatible for otherwise unchanged source versions; compiled sources must be rebuilt together with the pinned `blkit-core` version. Document both named/typed and heterogeneous dictionary JSON rules. Roll back compiler/runtime together and retain versioned compiled workers for instances started under earlier source definitions.

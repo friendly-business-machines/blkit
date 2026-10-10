@@ -667,10 +667,7 @@ fn generated_temporal_values_roundtrip_and_order() {
     compile_and_test(
         r#"namespace timing;
 version "1";
-type Clock:
-  day: Date;
-  time: Time;
-  instant: DateTime;
+Clock = {day: Date, time: Time, instant: DateTime};
 decision_task later {
   input value: Clock;
   output result: Bool = checked;
@@ -691,9 +688,7 @@ fn generated_ranges_obey_boundaries_and_dynamic_empty_semantics() {
     compile_and_test(
         r#"namespace ranges;
 version "1";
-type Bounds:
-  low: Number;
-  high: Number;
+Bounds = {low: Number, high: Number};
 decision_task inclusive { input value: Number; output result: Bool = check; literal_expression check { output result: Bool; expression value in [1..5]; } }
 decision_task exclusive { input value: Number; output result: Bool = check; literal_expression check { output result: Bool; expression value in (1..5); } }
 decision_task upper_open { input value: Number; output result: Bool = check; literal_expression check { output result: Bool; expression value in [1..null); } }
@@ -731,13 +726,275 @@ decision_task intervals { input value: Number; output result: Bool = check; lite
 }
 
 #[test]
+fn table_outputs_accept_dictionary_literals_with_commas() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task table_value { input flag: Bool; output result: Dictionary<Number> = table; decision_table table { output result: Dictionary<Number>; policy FIRST; input value: Bool = flag; output item: Dictionary<Number>; rule value == true -> {a: 1, b: 2}; default {a: 0, b: 0}; } }"#,
+        r#"assert_eq!(table_value(true).unwrap()["b"], Number::from(2));"#,
+    );
+}
+
+#[test]
+fn nested_named_dictionary_literals_are_emitted_in_typed_contexts() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+Order = {total: Number, blocked: Bool};
+decision_task many { input amount: Number; output result: List<Order> = value; literal_expression value { output result: List<Order>; expression [{total: amount, blocked: false}]; } }
+decision_task calculated { input amount: Number; output result: Order = value; knowledge make { input n: Number; output result: Order; expression {total: n, blocked: false}; } literal_expression value { output result: Order; expression make(amount); } }"#,
+        r#"assert_eq!(many(Number::from(2)).unwrap()[0].total, Number::from(2)); assert_eq!(calculated(Number::from(3)).unwrap().total, Number::from(3));"#,
+    );
+}
+
+#[test]
+fn dynamic_ports_reject_json_null_values() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task echo { input payload: Dictionary; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression payload; } }
+decision_task raw { input payload: Value; output result: Value = value; literal_expression value { output result: Value; expression payload; } }"#,
+        r#"let bad = serde_json::from_value(serde_json::json!({"nested":[1,null]})).unwrap(); assert!(echo(bad).is_err()); assert!(raw(serde_json::Value::Null).is_err()); let good = serde_json::from_value(serde_json::json!({"nested":[1,2]})).unwrap(); assert!(echo(good).is_ok());"#,
+    );
+}
+
+#[test]
+fn generated_dictionary_bindings_cannot_shadow_source_keys() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task collision { input input: Number; output result: Dictionary<Number> = value; literal_expression value { output result: Dictionary<Number>; expression {"my key": 1, __bl_literal_0: 2}; } }"#,
+        r#"let result = collision(Number::ZERO).unwrap(); assert_eq!(result["my key"], Number::ONE); assert_eq!(result["__bl_literal_0"], Number::from(2));"#,
+    );
+}
+
+#[test]
+fn named_dictionary_fields_cannot_collide_after_lowering() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+Order = {"my key": Number, __bl_field_0: Bool};
+decision_task projection { input order: Order; output result: Number = value; literal_expression value { output result: Number; expression order["my key"]; } }"#,
+        r#"let order: Order = serde_json::from_value(serde_json::json!({"my key":"3","__bl_field_0":false})).unwrap(); assert_eq!(projection(order).unwrap(), Number::from(3));"#,
+    );
+}
+
+#[test]
+fn typed_nested_collections_keep_numeric_json_at_dynamic_boundary() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task wrap { input scores: Dictionary<Dictionary<Number>>; input amounts: List<Number>; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression {scores: scores, amounts: amounts, label: "ok"}; } }"#,
+        r#"let scores: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Number>> = [("alice".into(), [("sum".into(), Number::from(3))].into())].into(); assert_eq!(serde_json::to_value(wrap(scores, vec![Number::ONE, Number::from(2)]).unwrap()).unwrap(), serde_json::json!({"scores":{"alice":{"sum":3}},"amounts":[1,2],"label":"ok"}));"#,
+    );
+}
+
+#[test]
+fn dependent_dynamic_dictionary_numbers_remain_numbers() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task dependent { input input: Number; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression {count: 2, increased: count + 1, done: true}; } }"#,
+        r#"assert_eq!(serde_json::to_value(dependent(Number::ZERO).unwrap()).unwrap(), serde_json::json!({"count":2,"increased":3,"done":true}));"#,
+    );
+}
+
+#[test]
+fn nested_numbers_keep_json_kind_in_dynamic_dictionary() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task mixed { input input: Number; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression {label: "x", child: {amount: 3}, amounts: [1, 2]}; } }"#,
+        r#"assert_eq!(serde_json::to_value(mixed(Number::ZERO).unwrap()).unwrap(), serde_json::json!({"label":"x","child":{"amount":3},"amounts":[1,2]}));"#,
+    );
+}
+
+#[test]
+fn variable_dictionary_paths_are_typed_from_the_port() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task pick { input source: Dictionary<Number>; input path: List<String>; output result: Number = value; literal_expression value { output result: Number; expression getValue(source, path); } }
+decision_task replace { input source: Dictionary; input path: List<String>; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression dictionaryPut(source, path, 2); } }"#,
+        r#"let source: std::collections::BTreeMap<String, Number> = [("a".into(), Number::ONE)].into(); assert_eq!(pick(source, vec!["a".into()]).unwrap(), Number::ONE); let dynamic: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_value(serde_json::json!({"a":{"b":1}})).unwrap(); assert_eq!(replace(dynamic, vec!["a".into(), "b".into()]).unwrap()["a"]["b"], serde_json::json!(2));"#,
+    );
+}
+
+#[test]
+fn documented_dictionary_literal_examples_run() {
+    compile_and_test(
+        r#"namespace examples; version "1";
+decision_task empty { input input: Number; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression {}; } }
+decision_task special { input input: Number; output result: Dictionary<Number> = value; literal_expression value { output result: Dictionary<Number>; expression {"my key": 1}; } }
+decision_task nested { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression {a: {b: 3}}.a.b; } }
+decision_task fetched { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression getValue({foo: 123}, "foo"); } }
+decision_task entries { input input: Number; output result: List<DictionaryEntry<Number>> = value; literal_expression value { output result: List<DictionaryEntry<Number>>; expression getEntries({foo: 123}); } }
+decision_task updated { input input: Number; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression dictionaryPut({x: 1, y: {z: 0}}, ["y", "z"], 2); } }
+decision_task merged { input input: Number; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression dictionaryMerge([{x: 1}, {y: 2}]); } }
+decision_task removed { input input: Number; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression dictionaryRemove({a: 1, b: 2}, "a"); } }"#,
+        r#"assert!(empty(Number::ZERO).unwrap().is_empty()); assert_eq!(special(Number::ZERO).unwrap()["my key"], Number::ONE); assert_eq!(nested(Number::ZERO).unwrap(), Number::from(3)); assert_eq!(fetched(Number::ZERO).unwrap(), Number::from(123)); let items = entries(Number::ZERO).unwrap(); assert_eq!(items[0].key, "foo"); assert_eq!(items[0].value, Number::from(123)); assert_eq!(updated(Number::ZERO).unwrap()["y"]["z"], serde_json::json!(2)); assert_eq!(merged(Number::ZERO).unwrap()["y"], serde_json::json!(2)); let result = removed(Number::ZERO).unwrap(); assert!(!result.contains_key("a")); assert_eq!(result["b"], serde_json::json!(2));"#,
+    );
+}
+
+#[test]
+fn dynamic_values_require_runtime_checks_for_typed_outputs() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task amount { input payload: Dictionary; output result: Number = value; literal_expression value { output result: Number; expression payload.amount; } }
+decision_task increment { input payload: Dictionary; output result: Number = value; literal_expression value { output result: Number; expression payload.amount + 1; } }"#,
+        r#"let valid: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_value(serde_json::json!({"amount":12.5})).unwrap(); assert_eq!(amount(valid.clone()).unwrap(), Number::from_str_exact("12.5").unwrap()); assert_eq!(increment(valid).unwrap(), Number::from_str_exact("13.5").unwrap()); let wrong = serde_json::from_value(serde_json::json!({"amount":"twelve"})).unwrap(); assert!(amount(wrong).is_err());"#,
+    );
+}
+
+#[test]
+fn iteration_body_errors_propagate_and_shadow_outer_names() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task parse_all { input texts: List<String>; output result: List<Number> = value; literal_expression value { output result: List<Number>; expression for texts in texts return number(texts); } }
+decision_task check_all { input scores: Dictionary<Number>; output result: Bool = value; literal_expression value { output result: Bool; expression every scores in values(scores) satisfies scores >= 0; } }"#,
+        r#"assert_eq!(parse_all(vec!["12".into(), "3".into()]).unwrap(), vec![Number::from(12), Number::from(3)]); assert!(parse_all(vec!["12".into(), "bad".into()]).is_err()); assert!(check_all([("a".into(), Number::from(1))].into()).unwrap());"#,
+    );
+}
+
+#[test]
+fn dictionary_empty_size_and_presence_overloads_work() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task empty { input input: Dictionary; output result: Bool = value; literal_expression value { output result: Bool; expression isEmpty(input); } }
+decision_task count { input input: Dictionary; output result: Number = value; literal_expression value { output result: Number; expression size(input); } }
+decision_task present { input input: Dictionary; output result: Bool = value; literal_expression value { output result: Bool; expression has(input, "a"); } }"#,
+        r#"let blank = Default::default(); assert!(empty(blank).unwrap()); let values: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_value(serde_json::json!({"a":1,"b":false})).unwrap(); assert_eq!(count(values.clone()).unwrap(), Number::from(2)); assert!(present(values.clone()).unwrap()); assert!(!empty(values).unwrap());"#,
+    );
+}
+
+#[test]
+fn nested_dynamic_dictionary_fields_fail_when_not_objects() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task nested { input payload: Dictionary; output result: Value = value; literal_expression value { output result: Value; expression payload.address.postcode; } }"#,
+        r#"let good = serde_json::from_value(serde_json::json!({"address":{"postcode":"SW1"}})).unwrap(); assert_eq!(nested(good).unwrap(), serde_json::json!("SW1")); let bad = serde_json::from_value(serde_json::json!({"address":12})).unwrap(); assert!(nested(bad).is_err());"#,
+    );
+}
+
+#[test]
+fn named_dictionary_supports_runtime_bracket_keys() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+Applicant = {"my key": Number, name: String};
+decision_task lookup { input applicant: Applicant; input key: String; output result: Value = value; literal_expression value { output result: Value; expression applicant[key]; } }"#,
+        r#"let applicant: Applicant = serde_json::from_value(serde_json::json!({"my key":"12","name":"Ada"})).unwrap(); assert_eq!(lookup(applicant.clone(), "my key".into()).unwrap(), serde_json::json!(12)); assert_eq!(lookup(applicant.clone(), "name".into()).unwrap(), serde_json::json!("Ada")); assert!(lookup(applicant, "missing".into()).is_err());"#,
+    );
+}
+
+#[test]
+fn dynamic_dictionary_json_retains_numeric_precision_and_nested_values() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task echo { input payload: Dictionary; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression payload; } }"#,
+        r#"let number: serde_json::Value = serde_json::from_str("123.4567890123456789012345678").unwrap(); let payload = serde_json::json!({"number":number,"nested":{"names":["A","B"]}}); let dictionary = serde_json::from_value(payload.clone()).unwrap(); let result = echo(dictionary).unwrap(); assert_eq!(serde_json::to_value(result).unwrap(), payload);"#,
+    );
+}
+
+#[test]
+fn dictionary_literals_evaluate_in_order_and_compare_structurally() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task computed { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression {a: 2, b: a * 2}.b; } }
+decision_task equality { input input: Number; output result: Bool = value; literal_expression value { output result: Bool; expression {a: 1, b: 2} == {b: 2, a: 1}; } }"#,
+        r#"assert_eq!(computed(Number::ZERO).unwrap(), Number::from(4)); assert!(equality(Number::ZERO).unwrap());"#,
+    );
+}
+
+#[test]
+fn empty_for_iteration_uses_contextual_result_type() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task empty { input input: Number; output result: List<Number> = value; literal_expression value { output result: List<Number>; expression for v in [] return 1; } }"#,
+        r#"assert_eq!(empty(Number::ZERO).unwrap(), Vec::<Number>::new());"#,
+    );
+}
+
+#[test]
+fn dictionary_entry_iteration_is_sorted_and_scoped() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task passes { input scores: Dictionary<Number>; output result: Bool = value; literal_expression value { output result: Bool; expression every v in values(scores) satisfies v >= 50; } }
+decision_task flags { input scores: Dictionary<Number>; output result: List<Bool> = value; literal_expression value { output result: List<Bool>; expression for e in getEntries(scores) return e.value > 80; } }"#,
+        r#"let scores: std::collections::BTreeMap<String, Number> = [("bob".into(), Number::from(75)), ("alice".into(), Number::from(90))].into(); assert!(passes(scores.clone()).unwrap()); assert_eq!(flags(scores).unwrap(), vec![true,false]); assert!(passes(Default::default()).unwrap()); assert!(flags(Default::default()).unwrap().is_empty());"#,
+    );
+}
+
+#[test]
+fn dictionary_transformations_preserve_inputs_and_validate_paths() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+Order = {total: Number, blocked: Bool};
+decision_task put { input source: Dictionary<Number>; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression dictionaryPut(source, "y", 2); } }
+decision_task nested { input source: Dictionary; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression dictionaryPut(source, ["y", "z"], 2); } }
+decision_task merge { input source: Dictionary; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression dictionaryMerge([source, {y: 2}]); } }
+decision_task remove { input source: Dictionary; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression dictionaryRemove(source, "x"); } }
+decision_task extend { input source: Order; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression dictionaryPut(source, "note", "ok"); } }
+decision_task empty_path { input source: Dictionary; output result: Value = value; literal_expression value { output result: Value; expression getValue(source, []); } }"#,
+        r#"let before = [("x".into(), Number::from(1))].into(); let result = put(before).unwrap(); assert_eq!(result.get("x").unwrap(), &serde_json::json!(1)); assert_eq!(result.get("y").unwrap(), &serde_json::json!(2)); let source: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_value(serde_json::json!({"y":{"z":0},"x":1})).unwrap(); let changed = nested(source.clone()).unwrap(); assert_eq!(changed["y"]["z"], serde_json::json!(2)); assert_eq!(source["y"]["z"], serde_json::json!(0)); let merged = merge(source.clone()).unwrap(); assert_eq!(merged["y"], serde_json::json!(2)); let removed = remove(source).unwrap(); assert!(!removed.contains_key("x")); assert!(nested(serde_json::from_value(serde_json::json!({"y":1})).unwrap()).is_err()); let order = Order { total: Number::from(3), blocked: false }; let after = extend(order.clone()).unwrap(); assert_eq!(after["total"], serde_json::json!(3)); assert_eq!(after["note"], serde_json::json!("ok")); assert_eq!(order.total, Number::from(3)); let input = serde_json::from_value(serde_json::json!({"x":1})).unwrap(); assert!(empty_path(input).is_err());"#,
+    );
+}
+
+#[test]
+fn dictionary_values_entries_and_named_lookup_work() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+Order = {total: Number, blocked: Bool};
+decision_task totals { input scores: Dictionary<Number>; output result: Number = value; literal_expression value { output result: Number; expression sum(values(scores)); } }
+decision_task entries { input scores: Dictionary<Number>; output result: List<DictionaryEntry<Number>> = value; literal_expression value { output result: List<DictionaryEntry<Number>>; expression getEntries(scores); } }
+decision_task selected { input order: Order; output result: Number = value; literal_expression value { output result: Number; expression getValue(order, "total"); } }
+decision_task contained { input order: Order; output result: Bool = value; literal_expression value { output result: Bool; expression has(order, "blocked"); } }
+decision_task named_values { input order: Order; output result: List<Value> = value; literal_expression value { output result: List<Value>; expression values(order); } }
+decision_task dynamic_lookup { input order: Order; input key: String; output result: Value = value; literal_expression value { output result: Value; expression getValue(order, key); } }
+decision_task path_lookup { input order: Order; input path: List<String>; output result: Value = value; literal_expression value { output result: Value; expression getValue(order, path); } }"#,
+        r#"let scores: std::collections::BTreeMap<String, Number> = [("bob".into(), Number::from(75)), ("alice".into(), Number::from(90))].into(); assert_eq!(totals(scores.clone()).unwrap(), Number::from(165)); let result = entries(scores).unwrap(); assert_eq!(result[0].key, "alice"); assert_eq!(result[0].value, Number::from(90)); let order = Order { total: Number::from(3), blocked: false }; assert_eq!(selected(order.clone()).unwrap(), Number::from(3)); assert!(contained(order.clone()).unwrap()); assert_eq!(named_values(order.clone()).unwrap(), vec![serde_json::json!(false), serde_json::json!(3)]); assert_eq!(dynamic_lookup(order.clone(), "total".into()).unwrap(), serde_json::json!(3)); assert_eq!(path_lookup(order, vec!["total".into()]).unwrap(), serde_json::json!(3));"#,
+    );
+}
+
+#[test]
+fn dictionary_queries_sort_keys_and_report_missing_paths() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task sorted { input input: Number; output result: List<String> = value; literal_expression value { output result: List<String>; expression keys({b: 2, a: 1}); } }
+decision_task picked { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression getValue({x: 1, y: {z: 0}}, ["y", "z"]); } }
+decision_task absent { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression getValue({a: 1}, "missing"); } }"#,
+        r#"assert_eq!(sorted(Number::ZERO).unwrap(), vec!["a", "b"]); assert_eq!(picked(Number::ZERO).unwrap(), Number::ZERO); assert!(absent(Number::ZERO).is_err());"#,
+    );
+}
+
+#[test]
+fn named_dictionary_quoted_keys_roundtrip_and_access() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+Applicant = {"my key": Number};
+decision_task selected { input applicant: Applicant; output result: Number = value; literal_expression value { output result: Number; expression applicant["my key"]; } }"#,
+        r#"let person: Applicant = serde_json::from_value(serde_json::json!({"my key":"12"})).unwrap(); assert_eq!(selected(person).unwrap(), Number::from(12));"#,
+    );
+}
+
+#[test]
+fn literal_dictionaries_support_mixed_decimal_and_named_output() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+Order = {total: Number, blocked: Bool};
+decision_task named { input input: Number; output result: Order = value; literal_expression value { output result: Order; expression {total: input, blocked: false}; } }
+decision_task mixed { input input: Number; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression {total: input, name: "Ada"}; } }"#,
+        r#"let order = named(Number::from(2)).unwrap(); assert_eq!(serde_json::to_value(order).unwrap(), serde_json::json!({"total":"2","blocked":false})); let dictionary = mixed(Number::from_str_exact("123.4567890123456789012345678").unwrap()).unwrap(); assert_eq!(dictionary.get("total").unwrap().to_string(), "123.4567890123456789012345678"); assert_eq!(dictionary.get("name").unwrap(), "Ada");"#,
+    );
+}
+
+#[test]
+fn dictionary_ports_preserve_decimal_values_and_named_shapes() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+Order = {total: Number, blocked: Bool};
+decision_task amount { input order: Order; output result: Number = value; literal_expression value { output result: Number; expression order.total; } }
+decision_task scores { input input: Dictionary<Number>; output result: Number = value; literal_expression value { output result: Number; expression input.alice; } }"#,
+        r#"let order: Order = serde_json::from_value(serde_json::json!({"total":"123.456","blocked":false})).unwrap(); assert_eq!(amount(order).unwrap().to_string(), "123.456"); assert!(serde_json::from_value::<Order>(serde_json::json!({"total":"123.456","blocked":false,"extra":true})).is_err()); let points = serde_json::from_value(serde_json::json!({"alice":"90.01"})).unwrap(); assert_eq!(scores(points).unwrap().to_string(), "90.01");"#,
+    );
+}
+
+#[test]
 fn generated_records_enums_and_decimal_literals_compile() {
     compile_and_test(
         r#"namespace orders;
 version "1.0";
-type Order:
-  total: Number;
-  tags: List<String>;
+Order = {total: Number, tags: List<String>};
 enum Decision:
   approved;
   review;
@@ -821,9 +1078,7 @@ fn generated_decision_task_branches_with_typed_list_input() {
     compile_and_test(
         r#"namespace orders;
 version "1.0";
-type Order:
-  total: Number;
-  amounts: List<Number>;
+Order = {total: Number, amounts: List<Number>};
 enum Decision:
   approved;
   review;
@@ -1033,9 +1288,7 @@ decision_task first {
 fn braced_tables_validate_typed_multicolumn_results_and_unary_tests() {
     let source = r#"namespace policies;
 version "1";
-type Quote:
-  price: Number;
-  tier: String;
+Quote = {price: Number, tier: String};
 decision_task quotes {
   input amount: Number;
   output result: List<Quote> = table.result;
@@ -1210,9 +1463,7 @@ process route {
 fn braced_and_or_routes_join_activated_branches_in_order() {
     let source = r#"namespace routes;
 version "1";
-type Pair:
-  left: Number;
-  right: Number;
+Pair = {left: Number, right: Number};
 start_event start { output amount: Number; }
 end_event pair_done { input result: Pair; }
 end_event list_done { input result: List<Number>; }

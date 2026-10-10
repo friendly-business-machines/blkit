@@ -92,6 +92,29 @@ fn numeric_project_builds_checked_arithmetic() {
 }
 
 #[test]
+fn named_dictionary_resolves_across_project_files() {
+    let root = project(
+        MANIFEST,
+        &[
+            (
+                "a.bl",
+                "namespace orders; version \"1\"; start_event start { output input: Order; }",
+            ),
+            (
+                "z.bl",
+                "namespace orders; version \"1\"; Order = {total: Number};",
+            ),
+        ],
+    );
+    let groups = blkit::project::Project::load(&root)
+        .unwrap()
+        .programs()
+        .unwrap();
+    assert_eq!(groups[0].records[0].name, "Order");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn braced_project_merges_forward_peer_declarations_without_cargo() {
     let route = "namespace orders;\nversion \"1\";\nprocess route { flow start -> decide; flow decide -> done; bind start.amount -> decide.amount; bind decide.result -> done.result; }\n";
     let peers = "namespace orders;\nversion \"1\";\nstart_event start { output amount: Number; }\nend_event done { input result: Number; }\ndecision_task decide { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression amount; } }\n";
@@ -655,7 +678,7 @@ fn project_requires_one_valid_target_and_matching_toolchain() {
 
 #[test]
 fn project_resolves_cross_file_types_and_decision_tasks_in_any_file_order() {
-    let source = "namespace orders; version \"1\"; type Order:\n  value: Number;\nstart_event start { output input: Order; } end_event done { input result: Order; } end_event checked_done { input result: Bool; } decision_task echo { input input: Order; output result: Order = value; literal_expression value { output result: Order; expression input; } } decision_task flag { input input: Order; output result: Bool = value; literal_expression value { output result: Bool; expression true; } }";
+    let source = "namespace orders; version \"1\"; Order = {value: Number};\nstart_event start { output input: Order; } end_event done { input result: Order; } end_event checked_done { input result: Bool; } decision_task echo { input input: Order; output result: Order = value; literal_expression value { output result: Order; expression input; } } decision_task flag { input input: Order; output result: Bool = value; literal_expression value { output result: Bool; expression true; } }";
     let processes = "namespace orders; version \"1\"; process route { flow start -> echo; flow echo -> done; bind start.input -> echo.input; bind echo.result -> done.result; } process checked { flow start -> flag; flow flag -> checked_done; bind start.input -> flag.input; bind flag.result -> checked_done.result; }";
     let root = project(
         MANIFEST,
@@ -746,11 +769,11 @@ fn project_rejects_duplicates_with_both_paths_and_keeps_versions_isolated() {
         &[
             (
                 "one.bl",
-                "namespace orders; version \"1\"; type Shared:\n  value: Number;\n",
+                "namespace orders; version \"1\"; Shared = {value: Number};\n",
             ),
             (
                 "two.bl",
-                "namespace orders; version \"1\"; type Shared:\n  value: Bool;\n",
+                "namespace orders; version \"1\"; Shared = {value: Bool};\n",
             ),
         ],
     );
@@ -769,7 +792,7 @@ fn project_rejects_duplicates_with_both_paths_and_keeps_versions_isolated() {
         &[
             (
                 "one.bl",
-                "namespace orders; version \"1\"; type Shared:\n  value: Number;\n",
+                "namespace orders; version \"1\"; Shared = {value: Number};\n",
             ),
             (
                 "two.bl",
@@ -792,7 +815,7 @@ fn project_rejects_duplicates_with_both_paths_and_keeps_versions_isolated() {
 #[test]
 fn project_builds_a_reusable_library_from_multiple_scopes_and_cross_file_tasks() {
     let process = "namespace orders; version \"1\"; process route { flow start -> echo; flow echo -> done; bind start.input -> echo.input; bind echo.result -> done.result; }";
-    let definitions = "namespace orders; version \"1\"; type Order:\n  value: Number;\nstart_event start { output input: Order; } end_event done { input result: Order; } decision_task echo { input input: Order; output result: Order = value; literal_expression value { output result: Order; expression input; } }";
+    let definitions = "namespace orders; version \"1\"; Order = {value: Number};\nstart_event start { output input: Order; } end_event done { input result: Order; } decision_task echo { input input: Order; output result: Order = value; literal_expression value { output result: Order; expression input; } }";
     let other = "namespace orders; version \"2\"; start_event start { output input: Number; } end_event done { input result: Number; } process other { flow start -> done; bind start.input -> done.result; }";
     let root = project(
         MANIFEST,

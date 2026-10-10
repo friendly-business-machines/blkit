@@ -9,7 +9,13 @@ fn table_item(
     env: &HashMap<String, Type>,
 ) -> String {
     if table.outputs.len() == 1 {
-        emit_typed_expr(&values[0], program, knowledge, env)
+        emit_typed_expr(
+            &values[0],
+            program,
+            knowledge,
+            env,
+            Some(&table.outputs[0].1),
+        )
     } else {
         let Type::Named(name) = (if matches!(result, Type::Generic(_, _)) {
             match result {
@@ -27,9 +33,9 @@ fn table_item(
                 .outputs
                 .iter()
                 .zip(values)
-                .map(|((field, _), expr)| format!(
+                .map(|((field, ty), expr)| format!(
                     "{field}: {}",
-                    emit_typed_expr(expr, program, knowledge, env)
+                    emit_typed_expr(expr, program, knowledge, env, Some(ty))
                 ))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -50,7 +56,7 @@ fn emit_table(
         code.push_str(&format!(
             "let {name}: {} = {};\n",
             rust_type(ty),
-            emit_typed_expr(expression, program, knowledge, &env)
+            emit_typed_expr(expression, program, knowledge, &env, Some(ty))
         ));
         env.insert(name.clone(), ty.clone());
     }
@@ -75,7 +81,13 @@ fn emit_table(
     for (condition, values) in &table.rules {
         code.push_str(&format!(
             "if {} {{ __bl_matches.push({}); }}\n",
-            emit_typed_expr(condition, program, knowledge, &env),
+            emit_typed_expr(
+                condition,
+                program,
+                knowledge,
+                &env,
+                Some(&Type::Named("Bool".into()))
+            ),
             if table.aggregation.as_deref() == Some("COUNT") {
                 "()".into()
             } else {
@@ -144,7 +156,15 @@ fn emit_table(
             let absent = table
                 .default
                 .as_ref()
-                .map(|values| emit_typed_expr(&values[0], program, knowledge, &env))
+                .map(|values| {
+                    emit_typed_expr(
+                        &values[0],
+                        program,
+                        knowledge,
+                        &env,
+                        Some(&Type::Named("Number".into())),
+                    )
+                })
                 .unwrap_or_else(|| "Number::ZERO".into());
             format!(
                 "if __bl_matches.is_empty() {{ Ok({absent}) }} else {{ Ok(Number::from(__bl_matches.len() as u64)) }}"
@@ -190,6 +210,13 @@ pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut 
         model.name
     ));
     let body_start = out.len();
+    for (name, ty) in &model.inputs {
+        if matches!(ty, Type::Named(kind) if kind == "Value" || kind == "Dictionary" || program.records.iter().any(|record| record.name == *kind))
+            || matches!(ty, Type::Generic(kind, _) if kind == "List" || kind == "Dictionary")
+        {
+            out.push_str(&format!("blkit_core::dictionary::reject_null(&{name})?;\n"));
+        }
+    }
     let mut env: HashMap<String, Type> = model.inputs.iter().cloned().collect();
     env.extend(
         model
@@ -197,17 +224,7 @@ pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut 
             .iter()
             .map(|node| (node.name.clone(), node.output.clone())),
     );
-    let knowledge: Vec<_> = model
-        .knowledge
-        .iter()
-        .map(|item| {
-            let mut typed = item.clone();
-            let mut local_env = env.clone();
-            local_env.extend(item.params.iter().cloned());
-            typed.body = specialize_expr(&item.body, program, &model.knowledge, &local_env);
-            typed
-        })
-        .collect();
+    let knowledge = model.knowledge.clone();
     for item in &knowledge {
         if item.braced {
             continue;
@@ -227,7 +244,13 @@ pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut 
                 rust_type(&item.output)
             },
             if fallible { "Ok(" } else { "" },
-            emit_expr_with(&item.body, program, &knowledge),
+            emit_typed_expr(
+                &item.body,
+                program,
+                &knowledge,
+                &item.params.iter().cloned().collect(),
+                Some(&item.output)
+            ),
             if fallible { ")" } else { "" }
         ));
     }
@@ -243,7 +266,9 @@ pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut 
                 continue;
             }
             let value = match &node.kind {
-                DecisionKind::Literal(expr) => emit_typed_expr(expr, program, &knowledge, &env),
+                DecisionKind::Literal(expr) => {
+                    emit_typed_expr(expr, program, &knowledge, &env, Some(&node.output))
+                }
                 DecisionKind::Context { entries, result } => {
                     let mut local_env = env.clone();
                     let mut declarations = Vec::new();
@@ -251,14 +276,20 @@ pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut 
                         declarations.push(format!(
                             "let {name}: {} = {};",
                             rust_type(ty),
-                            emit_typed_expr(expr, program, &knowledge, &local_env)
+                            emit_typed_expr(expr, program, &knowledge, &local_env, Some(ty))
                         ));
                         local_env.insert(name.clone(), ty.clone());
                     }
                     format!(
                         "{{ {} {} }}",
                         declarations.join(" "),
-                        emit_typed_expr(result, program, &knowledge, &local_env)
+                        emit_typed_expr(
+                            result,
+                            program,
+                            &knowledge,
+                            &local_env,
+                            Some(&node.output)
+                        )
                     )
                 }
                 DecisionKind::Table(table) => format!(

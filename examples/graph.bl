@@ -1,9 +1,7 @@
 namespace orders;
 version "1.0";
 
-type Pair:
-  left: Number;
-  right: Number;
+Pair = {left: Number, right: Number};
 
 enum Decision:
   approved;

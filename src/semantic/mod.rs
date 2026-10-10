@@ -18,7 +18,7 @@ mod types;
 use decision::check_decision;
 pub(crate) use graph::named_scopes;
 use graph::{check_named_graph, check_source_graph};
-use types::*;
+pub(crate) use types::*;
 pub(crate) use types::{builtin, infer_with};
 
 pub fn validate(program: &Program) -> Result<(), String> {
@@ -34,6 +34,9 @@ pub fn validate(program: &Program) -> Result<(), String> {
         "Calendar",
         "CalendarEntry",
         "List",
+        "Dictionary",
+        "DictionaryEntry",
+        "Value",
     ]
     .into_iter()
     .collect();
@@ -68,7 +71,9 @@ pub fn validate(program: &Program) -> Result<(), String> {
     for record in &program.records {
         let mut fields = HashSet::new();
         for (name, ty) in &record.fields {
-            check_name(name)?;
+            if crate::compiler::identifier(name) {
+                check_name(name)?;
+            }
             if !fields.insert(name) {
                 return Err(format!("duplicate field: {name}"));
             }

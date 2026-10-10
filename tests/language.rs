@@ -4,15 +4,53 @@ use blkit_transpiler as blkit;
 const HEADER: &str = "namespace orders;\nversion \"1.0\";\n";
 
 #[test]
+fn named_dictionary_declarations_replace_colon_records() {
+    let source = format!(
+        "{HEADER}Order = {{total: Number, blocked: Bool, tags: List<String>, \"my key\": String}};\nenum Status:\n  ready;\nstart_event start {{ output input: Order; }}"
+    );
+    let program = parse(&source).unwrap();
+    assert_eq!(program.records[0].name, "Order");
+    assert_eq!(program.records[0].fields[3].0, "my key");
+    assert_eq!(program.records[0].fields[2].1.to_string(), "List<String>");
+    assert_eq!(program.enums[0].variants, ["ready"]);
+    validate(&program).unwrap();
+    let old = format!("{HEADER}type Order:\n  total: Number;");
+    assert!(parse(&old).unwrap_err().contains("Order ="));
+    assert!(parse(&source.replace("};", "}")).is_err());
+}
+
+#[test]
+fn dictionary_literals_parse_inside_braced_decisions() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input input: Number; output result: Bool = value; literal_expression value {{ output result: Bool; expression {{a: 2, b: a * 2}}.b == 4 and {{\"my key\": 1}}[\"my key\"] == 1; }} }}"
+    );
+    let program = parse(&source).unwrap();
+    assert_eq!(program.decisions.len(), 1);
+    for expr in [
+        "{}",
+        "{a: {b: 3}}.a.b",
+        "input[\"my key\"]",
+        "[1, 2]",
+        "[1..2]",
+    ] {
+        blkit::expr::expression(expr).unwrap();
+    }
+    for expr in ["{a: 1, a: 2}", "{a: 1", "{a 1}"] {
+        assert!(blkit::expr::expression(expr).is_err(), "accepted {expr}");
+    }
+}
+
+#[test]
 fn headers_and_domain_members_require_semicolons_outside_quotes() {
-    let source = "namespace demo; version \"1;0\";\ntype Order:\n  amount: Number;\nenum Status:\n  ready;\n";
+    let source =
+        "namespace demo; version \"1;0\";\nOrder = {amount: Number};\nenum Status:\n  ready;\n";
     let program = parse(source).unwrap();
     assert_eq!(program.version, "1;0");
     assert_eq!(program.records[0].fields.len(), 1);
     assert_eq!(program.enums[0].variants, ["ready"]);
     for broken in [
         source.replace("namespace demo;", "namespace demo"),
-        source.replace("amount: Number;", "amount: Number"),
+        source.replace("Order = {amount: Number};", "Order = {amount: Number}"),
         source.replace("  ready;", "  ready"),
     ] {
         assert!(parse(&broken).is_err(), "accepted: {broken}");
@@ -113,9 +151,7 @@ fn decision_expression(input_type: &str, output_type: &str, expression: &str) ->
 #[test]
 fn declarations_and_typed_process_parse() {
     let source = format!(
-        "{HEADER}type Order:
-  total: Number;
-  tags: List<String>;
+        "{HEADER}Order = {{total: Number, tags: List<String>}};
 enum Decision:
   approved;
   review;
@@ -207,9 +243,7 @@ fn knowledge_calls_are_scoped_to_their_decision_model() {
 #[test]
 fn decision_tables_parse_expressions_multiple_outputs_and_defaults() {
     let source = format!(
-        "{HEADER}type Quote:
-  price: Number;
-  tier: String;
+        "{HEADER}Quote = {{price: Number, tier: String}};
 decision_task quote {{ input amount: Number; output result: Quote = table; decision_table table {{ output result: Quote; policy PRIORITY; input value: Number = amount; output price: Number; output tier: String; priority 5, \"express\"; priority 2, \"regular\"; rule value > 100 -> 5, \"express\"; rule value <= 100 -> 2, \"regular\"; default 0, \"none\"; }} }}"
     );
     let program = parse(&source).unwrap();
@@ -274,9 +308,7 @@ process later {
 #[test]
 fn datetime_comparisons_and_wait_expressions_are_typed() {
     let source = format!(
-        "{HEADER}type Window:
-  opens: DateTime;
-  closes: DateTime;
+        "{HEADER}Window = {{opens: DateTime, closes: DateTime}};
 start_event start {{ output window: Window; output closes: DateTime; }} pause_for delay {{ duration \"10m\"; }} pause_until until {{ input at: DateTime; }} end_event done {{ input result: Bool; }} decision_task early {{ input input: Window; output result: Bool = value; literal_expression value {{ output result: Bool; expression input.opens < input.closes; }} }} process later {{ flow start -> early; flow early -> delay; flow delay -> until; flow until -> done; bind start.window -> early.input; bind start.closes -> until.at; bind early.result -> done.result; }}"
     );
     transpile(&source).unwrap();
@@ -399,10 +431,7 @@ fn temporal_literals_accept_the_same_formats_as_typed_json() {
 #[test]
 fn temporal_types_and_literal_constructors_validate() {
     let source = format!(
-        "{HEADER}type Clock:
-  day: Date;
-  time: Time;
-  instant: DateTime;
+        "{HEADER}Clock = {{day: Date, time: Time, instant: DateTime}};
 decision_task check {{ input input: Clock; output result: Bool = value; literal_expression value {{ output result: Bool; expression input.day < date(\"2026-10-02\") and input.time <= time(\"09:30:00.250\") and input.instant == datetime(\"2026-10-02T09:30:00+02:00\"); }} }}"
     );
     transpile(&source).unwrap();
@@ -565,10 +594,7 @@ fn legacy_process_signature_is_rejected() {
 #[test]
 fn decision_boolean_expression_replaces_legacy_task_branches() {
     // Generic if/return bodies are unsupported; express the predicate in a decision node.
-    let source = format!("{HEADER}type Order:
-  total: Number;
-  blocked: Bool;
-  tags: List<String>;
+    let source = format!("{HEADER}Order = {{total: Number, blocked: Bool, tags: List<String>}};
 enum Decision:
   approved;
   review;
@@ -596,8 +622,7 @@ fn malformed_expression_is_rejected() {
 #[test]
 fn known_declarations_resolve_and_duplicates_fail() {
     let source = format!(
-        "{HEADER}type Order:
-  total: Number;
+        "{HEADER}Order = {{total: Number}};
 enum Decision:
   approved;
 {}",
@@ -608,8 +633,7 @@ enum Decision:
     validate(&parse(&source).unwrap()).unwrap();
     let duplicate = source.replace(
         "enum Decision:",
-        "type Order:
-  total: Number;
+        "Order = {total: Number};
 enum Decision:",
     );
     assert!(
@@ -623,8 +647,7 @@ enum Decision:",
 fn unknown_and_deferred_types_are_rejected() {
     for ty in ["Mystery", "Table<Number>"] {
         let source = format!(
-            "{HEADER}type Order:
-  total: {ty};
+            "{HEADER}Order = {{total: {ty}}};
 {}",
             decision_expression("Order", "Order", "input")
                 .strip_prefix(HEADER)
@@ -635,10 +658,73 @@ fn unknown_and_deferred_types_are_rejected() {
 }
 
 #[test]
+fn named_schema_keys_preserve_commas_and_colons_inside_quotes() {
+    let source = r#"namespace orders; version "1";
+Order = {"last, first": String, "a:b": Number};
+decision_task read { input order: Order; output result: Number = value; literal_expression value { output result: Number; expression order["a:b"]; } }"#;
+    blkit::transpile(source).unwrap();
+}
+
+#[test]
+fn earlier_dictionary_key_does_not_create_a_decision_dependency() {
+    let source = r#"namespace orders; version "1";
+decision_task calc { input input: Number; output result: Number = a; literal_expression a { output result: Number; expression {a: 2, b: a * 2}.b; } }"#;
+    blkit::transpile(source).unwrap();
+}
+
+#[test]
+fn merge_rejects_a_known_non_dictionary_list_variable() {
+    let source = decision_expression("List<Number>", "Dictionary", "dictionaryMerge(input)");
+    assert!(blkit::transpile(&source).is_err());
+}
+
+#[test]
+fn list_iterations_require_lists_and_scoped_predicates() {
+    for expression in [
+        "every v in 1 satisfies true",
+        "every v in [1] satisfies v",
+        "for v in 1 return v",
+    ] {
+        let source = format!(
+            "namespace demo; version \"1\"; decision_task test {{ input input: Number; output result: Bool = value; literal_expression value {{ output result: Bool; expression {expression}; }} }}"
+        );
+        assert!(blkit::transpile(&source).is_err(), "{expression}");
+    }
+    let source = r#"namespace demo; version "1"; decision_task test { input scores: Dictionary<Number>; output result: Bool = value; literal_expression value { output result: Bool; expression every scores in values(scores) satisfies scores >= 0; } }"#;
+    blkit::transpile(source).unwrap();
+}
+
+#[test]
+fn dictionaries_are_typed_and_malformed_values_are_rejected() {
+    for (input, output, expr) in [
+        ("Number", "Dictionary<Number>", "{alice: 90, bob: 75}"),
+        ("Number", "Dictionary", "{name: \"Alice\", age: 30}"),
+        ("Dictionary<Number>", "Number", "input.alice"),
+        ("Number", "Number", "{foo: 123}.foo"),
+        ("Dictionary", "Dictionary", "input"),
+        ("Value", "Value", "input"),
+        ("DictionaryEntry<Number>", "Number", "input.value"),
+    ] {
+        let source = decision_expression(input, output, expr);
+        validate(&parse(&source).unwrap()).unwrap_or_else(|error| panic!("{expr}: {error}"));
+    }
+    for expr in ["{alice: true}", "{alice: 1, alice: 2}"] {
+        let source = decision_expression("Number", "Dictionary<Number>", expr);
+        assert!(parse(&source).and_then(|p| validate(&p)).is_err(), "{expr}");
+    }
+    let source = format!(
+        "{HEADER}Order = {{total: Number, blocked: Bool}};decision_task check {{ input input: Order; output result: Number = value; literal_expression value {{ output result: Number; expression input.total; }} }}"
+    );
+    validate(&parse(&source).unwrap()).unwrap();
+    let invalid_merge = decision_expression("Number", "Dictionary", "dictionaryMerge([1])");
+    assert!(blkit::transpile(&invalid_merge).is_err());
+    let unknown = source.replace("input.total", "input.unknown");
+    assert!(validate(&parse(&unknown).unwrap()).is_err());
+}
+
+#[test]
 fn expression_types_and_list_elements_are_checked() {
-    let source = format!("{HEADER}type Order:
-  total: Number;
-  blocked: Bool;
+    let source = format!("{HEADER}Order = {{total: Number, blocked: Bool}};
 enum Decision:
   approved;
   review;
@@ -658,24 +744,21 @@ fn generated_rust_names_are_checked() {
         decision_expression("Number", "Number", "input")
             .replace("decision_task check", "decision_task match"),
         format!(
-            "{HEADER}type Vec:
-  value: Number;
+            "{HEADER}Vec = {{value: Number}};
 {}",
             decision_expression("Vec", "Vec", "input")
                 .strip_prefix(HEADER)
                 .unwrap()
         ),
         format!(
-            "{HEADER}type NAMESPACE:
-  value: Number;
+            "{HEADER}NAMESPACE = {{value: Number}};
 {}",
             decision_expression("NAMESPACE", "NAMESPACE", "input")
                 .strip_prefix(HEADER)
                 .unwrap()
         ),
         format!(
-            "{HEADER}type Order:
-  match: Number;
+            "{HEADER}Order = {{match: Number}};
 {}",
             decision_expression("Order", "Order", "input")
                 .strip_prefix(HEADER)
@@ -710,8 +793,7 @@ fn empty_list_equality_does_not_depend_on_operand_order() {
 #[test]
 fn by_value_record_cycles_fail_but_list_recursion_is_allowed() {
     let direct = format!(
-        "{HEADER}type Node:
-  next: Node;
+        "{HEADER}Node = {{next: Node}};
 {}",
         decision_expression("Node", "Node", "input")
             .strip_prefix(HEADER)
@@ -723,10 +805,8 @@ fn by_value_record_cycles_fail_but_list_recursion_is_allowed() {
             .contains("recursive")
     );
     let indirect = format!(
-        "{HEADER}type A:
-  b: B;
-type B:
-  a: A;
+        "{HEADER}A = {{b: B}};
+B = {{a: A}};
 {}",
         decision_expression("A", "A", "input")
             .strip_prefix(HEADER)
@@ -757,8 +837,7 @@ fn decision_expression_requires_a_result() {
 #[test]
 fn field_variant_and_result_errors_are_reported() {
     let base = format!(
-        "{HEADER}type Order:
-  total: Number;
+        "{HEADER}Order = {{total: Number}};
 enum Decision:
   approved;
 {}",

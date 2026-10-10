@@ -96,6 +96,10 @@ pub(super) fn check_decision(
                     calls(item, found);
                 }
             }
+            Expr::Iteration { source, body, .. } => {
+                calls(source, found);
+                calls(body, found);
+            }
             Expr::Range(lower, upper, _, _) => {
                 for bound in lower.iter().chain(upper.iter()) {
                     calls(bound, found);

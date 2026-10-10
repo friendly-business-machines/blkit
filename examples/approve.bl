@@ -1,9 +1,7 @@
 namespace orders;
 version "1.0";
 
-type Order:
-  total: Number;
-  blocked: Bool;
+Order = {total: Number, blocked: Bool};
 
 enum Decision:
   approved;

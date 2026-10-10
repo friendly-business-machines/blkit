@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 pub mod compiled_graph;
+pub mod dictionary;
 #[cfg(feature = "remote-persistence")]
 pub mod distributed;
 pub mod evaluation;

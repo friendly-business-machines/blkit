@@ -230,8 +230,11 @@ fn gateway_splits_and_joins_validate_branch_shape() {
         "branch",
     );
     reject(
-        &source.replace("right: Number;", "right: Bool;"),
-        "type mismatch",
+        &source.replace(
+            "Pair = {left: Number, right: Number};",
+            "Pair = {left: Number, right: Bool};",
+        ),
+        "shape mismatch",
     );
     reject(
         &source.replace(

@@ -92,7 +92,7 @@ fn route_closure(expression: &Expr, program: &Program) -> Result<String, String>
         .collect();
     Ok(format!(
         "std::sync::Arc::new(|source, values| {{ {vars} serde_json::to_value({}).map_err(|e| e.to_string()) }})",
-        emit_typed_expr(&expression, program, &[], &env)
+        emit_typed_expr(&expression, program, &[], &env, None)
     ))
 }
 
@@ -293,8 +293,9 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
     {
         let graph = process.named_graph.as_ref().unwrap();
         let scopes = semantic::named_scopes(graph, process, program)?;
-        let emit =
-            |expr: &Expr, env: &HashMap<String, Type>| emit_typed_expr(expr, program, &[], env);
+        let emit = |expr: &Expr, env: &HashMap<String, Type>| {
+            emit_typed_expr(expr, program, &[], env, None)
+        };
         let retry = process.retry.as_ref().map_or("None".into(), |policy| format!("Some(blkit_core::RetryPolicy {{ max_retries: {}, retry_for: std::time::Duration::from_millis({}), retry_delay: std::time::Duration::from_millis({}), backoff: {:?} }})", policy.max_retries, policy.retry_for.as_millis(), policy.retry_delay.as_millis(), policy.backoff));
         let deadline = process.deadline.as_ref().map_or("None".into(), |policy| format!("Some(blkit_core::DeadlinePolicy {{ origin: {:?}, duration: std::time::Duration::from_millis({}) }})", policy.origin, policy.duration.as_millis()));
         out.push_str(&format!("blkit_core::compiled_graph::GraphDefinition {{ namespace: NAMESPACE, version: VERSION, name: {:?}, retry: {retry}, deadline: {deadline}, decode_input: Box::new(|value| {{ let typed: {} = serde_json::from_value(value).map_err(|e| e.to_string())?; serde_json::to_value(typed).map_err(|e| e.to_string()) }}), nodes: vec![\n", process.name, rust_type(&process.input_type)));

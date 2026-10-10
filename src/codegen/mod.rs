@@ -12,7 +12,21 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
     match expr {
         Expr::Call(name, args) => {
             let shadowed = knowledge.iter().find(|item| item.name == *name);
-            (name.starts_with("__bl_calendar_")
+            (matches!(
+                name.as_str(),
+                "__bl_index"
+                    | "__bl_dictionary_field"
+                    | "keys"
+                    | "values"
+                    | "getEntries"
+                    | "size"
+                    | "has"
+                    | "getValue"
+                    | "__bl_dict_isEmpty"
+                    | "dictionaryPut"
+                    | "dictionaryMerge"
+                    | "dictionaryRemove"
+            ) || name.starts_with("__bl_calendar_")
                 || matches!(
                     name.as_str(),
                     "calendarDrop"
@@ -107,7 +121,8 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
                 || shadowed.is_some_and(|item| expr_fallible(&item.body, knowledge))
                 || args.iter().any(|arg| expr_fallible(arg, knowledge))
         }
-        Expr::Field(value, _) | Expr::Not(value) => expr_fallible(value, knowledge),
+        Expr::Field(_, _) => true,
+        Expr::Not(value) => expr_fallible(value, knowledge),
         Expr::Binary(left, op, right) => {
             (matches!(op.as_str(), "num+" | "-" | "*" | "/" | "%" | "**")
                 || op.starts_with("duration")
@@ -117,6 +132,9 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
                 || expr_fallible(right, knowledge)
         }
         Expr::List(items) => items.iter().any(|item| expr_fallible(item, knowledge)),
+        Expr::Iteration { source, body, .. } => {
+            expr_fallible(source, knowledge) || expr_fallible(body, knowledge)
+        }
         Expr::Range(lower, upper, _, _) => lower
             .iter()
             .chain(upper)
@@ -147,10 +165,37 @@ fn specialize_expr(
         knowledge: &[Knowledge],
         env: &HashMap<String, Type>,
     ) {
+        let mixed_dictionary = matches!(semantic::infer_with(expr, None, env, program, knowledge),
+            Ok(Type::Named(name)) if name == "Dictionary");
         match expr {
             Expr::Binary(left, op, right) => {
                 let lhs = semantic::infer_with(left, None, env, program, knowledge).ok();
                 let rhs = semantic::infer_with(right, None, env, program, knowledge).ok();
+                if lhs == Some(Type::Named("Value".into()))
+                    && let Some(target) = &rhs
+                    && *target != Type::Named("Value".into())
+                {
+                    **left = Expr::Call(
+                        format!("__bl_cast_to_{}", rust_type(target)),
+                        vec![*left.clone()],
+                    );
+                } else if rhs == Some(Type::Named("Value".into()))
+                    && let Some(target) = &lhs
+                    && *target != Type::Named("Value".into())
+                {
+                    **right = Expr::Call(
+                        format!("__bl_cast_to_{}", rust_type(target)),
+                        vec![*right.clone()],
+                    );
+                }
+                if op == "+"
+                    && (lhs == Some(Type::Named("Number".into()))
+                        && rhs == Some(Type::Named("Value".into()))
+                        || rhs == Some(Type::Named("Number".into()))
+                            && lhs == Some(Type::Named("Value".into())))
+                {
+                    *op = "num+".into();
+                }
                 if op == "in"
                     && matches!(lhs, Some(Type::Named(ref name)) if matches!(name.as_str(), "Date" | "DateTime"))
                 {
@@ -218,6 +263,85 @@ fn specialize_expr(
                 visit(right, program, knowledge, env);
             }
             Expr::Call(name, args) => {
+                if name.starts_with("__bl_dictionary") {
+                    let mixed = name == "__bl_dictionary" && mixed_dictionary;
+                    if mixed {
+                        *name = "__bl_dictionary_mixed".into();
+                    }
+                    let mut scope = env.clone();
+                    for entry in args.chunks_exact_mut(2) {
+                        let source = match &entry[1] {
+                            Expr::Call(wrapper, args)
+                                if wrapper.ends_with("_as_value")
+                                    && (args.len() == 1
+                                        || wrapper == "__bl_collection_as_value"
+                                            && args.len() == 2) =>
+                            {
+                                &args[0]
+                            }
+                            other => other,
+                        };
+                        let ty =
+                            semantic::infer_with(source, None, &scope, program, knowledge).ok();
+                        if mixed {
+                            entry[1] =
+                                dynamic_wrapper(entry[1].clone(), program, knowledge, &scope);
+                        }
+                        visit(&mut entry[1], program, knowledge, &scope);
+                        if let (Expr::String(key), Some(ty)) = (&entry[0], ty)
+                            && crate::compiler::identifier(key)
+                        {
+                            scope.insert(key.clone(), ty);
+                        }
+                    }
+                    return;
+                }
+                if name == "getValue" && args.first().is_some_and(|source| matches!(semantic::infer_with(source, None, env, program, knowledge), Ok(Type::Named(ref ty)) if ty == "Dictionary"))
+                    && matches!(semantic::infer_with(&Expr::Call(name.clone(), args.clone()), None, env, program, knowledge), Ok(Type::Named(ref ty)) if ty == "Number")
+                { *name = "__bl_get_dynamic_number".into(); }
+                if name == "isEmpty" && args.first().is_some_and(|first| matches!(semantic::infer_with(first, None, env, program, knowledge),
+                    Ok(Type::Generic(ref kind, _)) if kind == "Dictionary")
+                    || matches!(semantic::infer_with(first, None, env, program, knowledge),
+                        Ok(Type::Named(ref kind)) if kind == "Dictionary" || program.records.iter().any(|record| &record.name == kind)))
+                { *name = "__bl_dict_isEmpty".into(); }
+                if name == "__bl_index"
+                    && args.len() == 2
+                    && let Ok(Type::Named(shape)) =
+                        semantic::infer_with(&args[0], None, env, program, knowledge)
+                    && let Expr::String(key) = &args[1]
+                    && program.records.iter().any(|record| record.name == shape)
+                {
+                    *expr = Expr::Field(
+                        Box::new(args[0].clone()),
+                        rust_record_field(program, &shape, key),
+                    );
+                    if let Expr::Field(base, _) = expr {
+                        visit(base, program, knowledge, env);
+                    }
+                    return;
+                }
+                if name == "__bl_index"
+                    && args.len() == 2
+                    && matches!(semantic::infer_with(&args[0], None, env, program, knowledge), Ok(Type::Named(ref shape)) if program.records.iter().any(|record| &record.name == shape))
+                {
+                    args[0] = dynamic_wrapper(args[0].clone(), program, knowledge, env);
+                    *name = "__bl_index_named".into();
+                }
+                if (matches!(name.as_str(), "values" | "getEntries")
+                    || name == "getValue"
+                        && matches!(semantic::infer_with(&Expr::Call(name.clone(), args.clone()), None, env, program, knowledge), Ok(Type::Named(ref ty)) if ty == "Value"))
+                    && !args.is_empty()
+                    && matches!(semantic::infer_with(&args[0], None, env, program, knowledge), Ok(Type::Named(ref shape)) if program.records.iter().any(|record| &record.name == shape))
+                {
+                    args[0] = dynamic_wrapper(args[0].clone(), program, knowledge, env);
+                }
+                if matches!(name.as_str(), "getValue" | "dictionaryPut")
+                    && args.len() >= 2
+                    && !matches!(&args[1], Expr::List(_))
+                    && matches!(semantic::infer_with(&args[1], None, env, program, knowledge), Ok(Type::Generic(ref kind, ref inner)) if kind == "List" && **inner == Type::Named("String".into()))
+                {
+                    args[1] = Expr::Call("__bl_path_list".into(), vec![args[1].clone()]);
+                }
                 if !knowledge.iter().any(|item| item.name == *name) {
                     let kind = args.first().and_then(|arg| {
                         semantic::infer_with(arg, None, env, program, knowledge).ok()
@@ -324,7 +448,46 @@ fn specialize_expr(
                     visit(arg, program, knowledge, env);
                 }
             }
+            Expr::Iteration {
+                binding,
+                source,
+                body,
+                ..
+            } => {
+                let element = if matches!(source.as_ref(), Expr::List(items) if items.is_empty()) {
+                    Some(Type::Generic(
+                        "List".into(),
+                        Box::new(Type::Named("Value".into())),
+                    ))
+                } else {
+                    semantic::infer_with(source, None, env, program, knowledge).ok()
+                };
+                visit(source, program, knowledge, env);
+                let mut local = env.clone();
+                if let Some(Type::Generic(_, inner)) = element {
+                    **source = Expr::Call(
+                        format!("__bl_list_type_{}", rust_type(&inner)),
+                        vec![*source.clone()],
+                    );
+                    local.insert(binding.clone(), *inner);
+                }
+                visit(body, program, knowledge, &local);
+            }
             Expr::Field(base, field) => {
+                if matches!(semantic::infer_with(base, None, env, program, knowledge),
+                    Ok(Type::Named(name)) if matches!(name.as_str(), "Dictionary" | "Value"))
+                    || matches!(semantic::infer_with(base, None, env, program, knowledge),
+                        Ok(Type::Generic(kind, _)) if kind == "Dictionary")
+                {
+                    *expr = Expr::Call(
+                        "__bl_dictionary_field".into(),
+                        vec![*base.clone(), Expr::String(field.clone())],
+                    );
+                    if let Expr::Call(_, args) = expr {
+                        visit(&mut args[0], program, knowledge, env);
+                    }
+                    return;
+                }
                 if let Ok(Type::Named(name)) =
                     semantic::infer_with(base, None, env, program, knowledge)
                 {
@@ -372,17 +535,132 @@ fn specialize_expr(
     result
 }
 
+fn dynamic_wrapper(
+    expr: Expr,
+    program: &Program,
+    knowledge: &[Knowledge],
+    env: &HashMap<String, Type>,
+) -> Expr {
+    if let Expr::Call(name, args) = &expr
+        && name == "__bl_dictionary"
+    {
+        let mut fields = args.clone();
+        let mut scope = env.clone();
+        for entry in fields.chunks_exact_mut(2) {
+            let value = entry[1].clone();
+            let ty = semantic::infer_with(&value, None, &scope, program, knowledge).ok();
+            entry[1] = dynamic_wrapper(value, program, knowledge, &scope);
+            if let (Expr::String(key), Some(ty)) = (&entry[0], ty)
+                && crate::compiler::identifier(key)
+            {
+                scope.insert(key.clone(), ty);
+            }
+        }
+        return Expr::Call(
+            "__bl_as_value".into(),
+            vec![Expr::Call("__bl_dictionary_mixed".into(), fields)],
+        );
+    }
+    if let Expr::List(items) = &expr {
+        return Expr::Call(
+            "__bl_as_value".into(),
+            vec![Expr::List(
+                items
+                    .iter()
+                    .cloned()
+                    .map(|item| dynamic_wrapper(item, program, knowledge, env))
+                    .collect(),
+            )],
+        );
+    }
+    let method = match semantic::infer_with(&expr, None, env, program, knowledge) {
+        Ok(Type::Named(name)) if name == "Number" => "__bl_number_as_value".to_owned(),
+        Ok(Type::Generic(kind, inner)) if kind == "Dictionary" || kind == "List" => {
+            let ty = Type::Generic(kind, inner);
+            return Expr::Call(
+                "__bl_collection_as_value".into(),
+                vec![expr, Expr::String(type_label(&ty))],
+            );
+        }
+        Ok(Type::Named(name)) if program.records.iter().any(|record| record.name == name) => {
+            format!("__bl_named_as_value_{name}")
+        }
+        _ => "__bl_as_value".to_owned(),
+    };
+    Expr::Call(method, vec![expr])
+}
+
 fn emit_typed_expr(
     expr: &Expr,
     program: &Program,
     knowledge: &[Knowledge],
     env: &HashMap<String, Type>,
+    expected: Option<&Type>,
 ) -> String {
-    emit_expr_with(
-        &specialize_expr(expr, program, knowledge, env),
-        program,
-        knowledge,
-    )
+    if let (Expr::List(items), Some(Type::Generic(kind, inner))) = (expr, expected)
+        && kind == "List"
+    {
+        return format!(
+            "vec![{}]",
+            items
+                .iter()
+                .map(|item| emit_typed_expr(item, program, knowledge, env, Some(inner)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    let cast = expected.filter(|target| **target != Type::Named("Value".into())
+        && matches!(semantic::infer_with(expr, None, env, program, knowledge), Ok(Type::Named(ref ty)) if ty == "Value"))
+        .map(rust_type);
+    let mut expr = expr.clone();
+    if let Expr::Call(name, args) = &mut expr {
+        match name.as_str() {
+            "dictionaryPut" if args.len() == 3 => {
+                args[0] = dynamic_wrapper(args[0].clone(), program, knowledge, env);
+                args[2] = dynamic_wrapper(args[2].clone(), program, knowledge, env);
+            }
+            "dictionaryRemove" if args.len() == 2 => {
+                args[0] = dynamic_wrapper(args[0].clone(), program, knowledge, env);
+            }
+            "dictionaryMerge" if args.len() == 1 => {
+                if let Expr::List(items) = &mut args[0] {
+                    for item in items {
+                        *item = dynamic_wrapper(item.clone(), program, knowledge, env);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Expr::Call(name, args) = &mut expr
+        && name == "__bl_dictionary"
+    {
+        if let Some(Type::Named(shape)) = expected
+            && program.records.iter().any(|record| record.name == *shape)
+        {
+            *name = format!("__bl_dictionary_named_{shape}");
+        } else if matches!(expected, Some(Type::Named(shape)) if shape == "Dictionary")
+            || matches!(semantic::infer_with(&Expr::Call(name.clone(), args.clone()), None, env, program, knowledge), Ok(Type::Named(shape)) if shape == "Dictionary")
+        {
+            *name = "__bl_dictionary_mixed".into();
+            let mut scope = env.clone();
+            for entry in args.chunks_exact_mut(2) {
+                let value = entry[1].clone();
+                let ty = semantic::infer_with(&value, None, &scope, program, knowledge).ok();
+                entry[1] = dynamic_wrapper(value, program, knowledge, &scope);
+                if let (Expr::String(key), Some(ty)) = (&entry[0], ty)
+                    && crate::compiler::identifier(key)
+                {
+                    scope.insert(key.clone(), ty);
+                }
+            }
+        }
+    }
+    let mut expr = specialize_expr(&expr, program, knowledge, env);
+    if let Some(target) = cast {
+        expr = Expr::Call(format!("__bl_cast_to_{target}"), vec![expr]);
+    }
+    emit_expr_with(&expr, program, knowledge)
 }
 
 fn emit_calendar_target(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> String {
@@ -412,6 +690,128 @@ fn emit_calendar_target(expr: &Expr, program: &Program, knowledge: &[Knowledge])
     }
 }
 
+fn type_label(ty: &Type) -> String {
+    match ty {
+        Type::Named(name) => name.clone(),
+        Type::Generic(kind, inner) => format!("{kind}<{}>", type_label(inner)),
+    }
+}
+
+fn emit_dynamic_value(source: &str, ty: &Type, program: &Program) -> String {
+    match ty {
+        Type::Named(name) if name == "Number" => {
+            format!("serde_json::from_str::<serde_json::Value>(&({source}).to_string()).unwrap()")
+        }
+        Type::Generic(kind, inner) if kind == "Dictionary" => {
+            let converted = emit_dynamic_value("value", inner, program);
+            format!(
+                "serde_json::Value::Object(({source}).into_iter().map(|(key, value)| (key, {converted})).collect())"
+            )
+        }
+        Type::Generic(kind, inner) if kind == "List" => {
+            let converted = emit_dynamic_value("value", inner, program);
+            format!(
+                "serde_json::Value::Array(({source}).into_iter().map(|value| {converted}).collect())"
+            )
+        }
+        Type::Named(name)
+            if let Some(record) = program.records.iter().find(|record| record.name == *name) =>
+        {
+            let mut converted = format!(
+                "{{ let object = {source}; let mut value = serde_json::to_value(&object).unwrap(); "
+            );
+            for (field, ty) in &record.fields {
+                let member = format!("object.{}.clone()", rust_record_field(program, name, field));
+                converted.push_str(&format!(
+                    "value[{field:?}] = {}; ",
+                    emit_dynamic_value(&member, ty, program)
+                ));
+            }
+            converted.push_str("value }");
+            converted
+        }
+        _ => format!("serde_json::to_value({source}).unwrap()"),
+    }
+}
+
+fn uses_name(expr: &Expr, name: &str) -> bool {
+    match expr {
+        Expr::Name(value) => value == name,
+        Expr::Field(base, _) | Expr::Not(base) => uses_name(base, name),
+        Expr::Call(_, args) | Expr::List(args) => args.iter().any(|arg| uses_name(arg, name)),
+        Expr::Iteration {
+            binding,
+            source,
+            body,
+            ..
+        } => binding == name || uses_name(source, name) || uses_name(body, name),
+        Expr::Binary(left, _, right) => uses_name(left, name) || uses_name(right, name),
+        Expr::Range(left, right, _, _) => left
+            .iter()
+            .chain(right.iter())
+            .any(|bound| uses_name(bound, name)),
+        _ => false,
+    }
+}
+
+fn emit_dictionary_entries(
+    args: &[Expr],
+    program: &Program,
+    knowledge: &[Knowledge],
+) -> (String, Vec<(String, String)>) {
+    let mut statements = String::new();
+    let mut fields = Vec::new();
+    let mut used = std::collections::HashSet::new();
+    for (index, entry) in args.chunks_exact(2).enumerate() {
+        let Expr::String(key) = &entry[0] else {
+            unreachable!()
+        };
+        let binding = if crate::compiler::identifier(key) && semantic::check_name(key).is_ok() {
+            key.clone()
+        } else {
+            let mut candidate = format!("__bl_literal_{index}");
+            let mut suffix = 0;
+            while used.contains(&candidate)
+                || args.iter().any(|arg| {
+                    uses_name(arg, &candidate)
+                        || matches!(arg, Expr::String(value) if value == &candidate)
+                })
+            {
+                suffix += 1;
+                candidate = format!("__bl_literal_{index}_{suffix}");
+            }
+            candidate
+        };
+        used.insert(binding.clone());
+        let value = &entry[1];
+        let (initial, mapped) = if let Expr::Call(wrapper, args) = value
+            && (args.len() == 1
+                && (matches!(wrapper.as_str(), "__bl_number_as_value" | "__bl_as_value")
+                    || wrapper.starts_with("__bl_named_as_value_"))
+                || wrapper == "__bl_collection_as_value" && args.len() == 2)
+        {
+            let mut mapped_args = vec![Expr::Name(binding.clone())];
+            mapped_args.extend(args.iter().skip(1).cloned());
+            (
+                emit_expr_with(&args[0], program, knowledge),
+                emit_expr_with(
+                    &Expr::Call(wrapper.clone(), mapped_args),
+                    program,
+                    knowledge,
+                ),
+            )
+        } else {
+            (
+                emit_expr_with(value, program, knowledge),
+                format!("({binding}).clone()"),
+            )
+        };
+        statements.push_str(&format!("let {binding} = {initial}; "));
+        fields.push((key.clone(), mapped));
+    }
+    (statements, fields)
+}
+
 fn emit_expr(expr: &Expr, program: &Program) -> String {
     emit_expr_with(expr, program, &[])
 }
@@ -429,6 +829,183 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
         Expr::String(value) => format!("String::from({value:?})"),
         Expr::Bool(value) => value.to_string(),
         Expr::Name(name) => format!("({name}).clone()"),
+        Expr::Call(name, args) if name == "__bl_path_list" => {
+            emit_expr_with(&args[0], program, knowledge)
+        }
+        Expr::Call(name, args) if name.starts_with("__bl_cast_to_") => {
+            let target = name.strip_prefix("__bl_cast_to_").unwrap();
+            let source = emit_expr_with(&args[0], program, knowledge);
+            if target == "Number" {
+                format!("blkit_core::dictionary::cast_number({source})?")
+            } else {
+                format!("blkit_core::dictionary::cast::<{target}>({source})?")
+            }
+        }
+        Expr::Iteration {
+            every,
+            binding,
+            source,
+            body,
+        } => {
+            let source = emit_expr_with(source, program, knowledge);
+            let body = emit_expr_with(body, program, knowledge);
+            if *every {
+                format!(
+                    "{{ let mut __bl_every = true; for {binding} in {source} {{ if !({body}) {{ __bl_every = false; break; }} }} __bl_every }}"
+                )
+            } else {
+                format!(
+                    "{{ let mut __bl_iteration = Vec::new(); for {binding} in {source} {{ __bl_iteration.push({body}); }} __bl_iteration }}"
+                )
+            }
+        }
+        Expr::Call(name, args) if let Some(element) = name.strip_prefix("__bl_list_type_") => {
+            format!(
+                "{{ let items: Vec<{element}> = {}; items }}",
+                emit_expr_with(&args[0], program, knowledge)
+            )
+        }
+        Expr::Call(name, args)
+            if matches!(
+                name.as_str(),
+                "dictionaryPut" | "dictionaryMerge" | "dictionaryRemove"
+            ) =>
+        {
+            let source = emit_expr_with(&args[0], program, knowledge);
+            match name.as_str() {
+                "dictionaryMerge" => format!("blkit_core::dictionary::merge({source})?"),
+                "dictionaryRemove" => format!(
+                    "blkit_core::dictionary::remove({source}, &{})?",
+                    emit_expr_with(&args[1], program, knowledge)
+                ),
+                _ => {
+                    let path = emit_expr_with(&args[1], program, knowledge);
+                    let path = if matches!(&args[1], Expr::List(_))
+                        || matches!(&args[1], Expr::Call(name, _) if name == "__bl_path_list")
+                    {
+                        path
+                    } else {
+                        format!("vec![{path}]")
+                    };
+                    let value = emit_expr_with(&args[2], program, knowledge);
+                    format!("blkit_core::dictionary::put({source}, &{path}, {value})?")
+                }
+            }
+        }
+        Expr::Call(name, args)
+            if matches!(
+                name.as_str(),
+                "keys" | "values" | "getEntries" | "size" | "__bl_dict_isEmpty"
+            ) =>
+        {
+            let base = emit_expr_with(&args[0], program, knowledge);
+            let method = if name == "__bl_dict_isEmpty" {
+                "size"
+            } else if name == "getEntries" {
+                "entries"
+            } else {
+                name
+            };
+            let result = format!("blkit_core::dictionary::{method}({base})?");
+            match name.as_str() {
+                "size" => format!("Number::from({result})"),
+                "__bl_dict_isEmpty" => format!("({result} == 0)"),
+                "getEntries" => format!(
+                    "{result}.into_iter().map(|(key, value)| DictionaryEntry {{ key, value }}).collect::<Vec<_>>()"
+                ),
+                _ => result,
+            }
+        }
+        Expr::Call(name, args)
+            if matches!(
+                name.as_str(),
+                "has" | "getValue" | "__bl_get_dynamic_number"
+            ) =>
+        {
+            let base = emit_expr_with(&args[0], program, knowledge);
+            let key = emit_expr_with(&args[1], program, knowledge);
+            if name == "has" {
+                format!("blkit_core::dictionary::has({base}, &{key})?")
+            } else {
+                let method = if name == "__bl_get_dynamic_number" {
+                    "get_number"
+                } else {
+                    "get"
+                };
+                let path = if matches!(&args[1], Expr::List(_))
+                    || matches!(&args[1], Expr::Call(name, _) if name == "__bl_path_list")
+                {
+                    key
+                } else {
+                    format!("vec![{key}]")
+                };
+                format!("blkit_core::dictionary::{method}({base}, &{path})?")
+            }
+        }
+        Expr::Call(name, args) if name.starts_with("__bl_dictionary_named_") => {
+            let shape = name.strip_prefix("__bl_dictionary_named_").unwrap();
+            let (statements, fields) = emit_dictionary_entries(args, program, knowledge);
+            let members = fields
+                .into_iter()
+                .map(|(key, value)| format!("{}: {value}", rust_record_field(program, shape, &key)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{ {statements} {shape} {{ {members} }} }}")
+        }
+        Expr::Call(name, args) if name == "__bl_collection_as_value" => {
+            let Expr::String(label) = &args[1] else {
+                unreachable!()
+            };
+            let ty = crate::compiler::type_ref(label).expect("validated collection type");
+            emit_dynamic_value(&emit_expr_with(&args[0], program, knowledge), &ty, program)
+        }
+        Expr::Call(name, args) if name.starts_with("__bl_named_as_value_") => {
+            let shape = name.strip_prefix("__bl_named_as_value_").unwrap();
+            emit_dynamic_value(
+                &emit_expr_with(&args[0], program, knowledge),
+                &Type::Named(shape.into()),
+                program,
+            )
+        }
+        Expr::Call(name, args)
+            if matches!(name.as_str(), "__bl_number_as_value" | "__bl_as_value") =>
+        {
+            let value = emit_expr_with(&args[0], program, knowledge);
+            if name == "__bl_number_as_value" {
+                format!(
+                    "serde_json::from_str::<serde_json::Value>(&({value}).to_string()).unwrap()"
+                )
+            } else {
+                format!("serde_json::to_value({value}).unwrap()")
+            }
+        }
+        Expr::Call(name, args)
+            if matches!(name.as_str(), "__bl_dictionary" | "__bl_dictionary_mixed") =>
+        {
+            let (statements, fields) = emit_dictionary_entries(args, program, knowledge);
+            let pairs = fields
+                .into_iter()
+                .map(|(key, value)| format!("({key:?}.to_owned(), {value})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{ {statements} std::collections::BTreeMap::from([{pairs}]) }}")
+        }
+        Expr::Call(name, args) if name == "__bl_index_named" => {
+            format!(
+                "blkit_core::dictionary::get({}, &[{}])?",
+                emit_expr_with(&args[0], program, knowledge),
+                emit_expr_with(&args[1], program, knowledge)
+            )
+        }
+        Expr::Call(name, args)
+            if matches!(name.as_str(), "__bl_index" | "__bl_dictionary_field") =>
+        {
+            let base = emit_expr_with(&args[0], program, knowledge);
+            let key = emit_expr_with(&args[1], program, knowledge);
+            format!(
+                "({base}).get(&({key})).cloned().ok_or_else(|| format!(\"missing dictionary key: {{}}\", {key}))?"
+            )
+        }
         Expr::Call(name, args)
             if matches!(
                 name.as_str(),
@@ -735,9 +1312,10 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 .map(|(index, (param, _))| format!("let {param} = __bl_knowledge_arg_{index};"))
                 .collect::<Vec<_>>()
                 .join(" ");
+            let env = model.params.iter().cloned().collect();
             format!(
                 "{{ {arguments} {params} {} }}",
-                emit_expr_with(&model.body, program, knowledge)
+                emit_typed_expr(&model.body, program, knowledge, &env, Some(&model.output))
             )
         }
         Expr::Call(name, args)
@@ -1307,14 +1885,43 @@ fn emit_stmt(stmt: &Stmt, program: &Program, out: &mut String, fallible: bool) {
     }
 }
 
+fn rust_record_field(program: &Program, shape: &str, field: &str) -> String {
+    if crate::compiler::identifier(field) && semantic::check_name(field).is_ok() {
+        return field.into();
+    }
+    let record = program
+        .records
+        .iter()
+        .find(|record| record.name == shape)
+        .expect("validated dictionary shape");
+    let index = record
+        .fields
+        .iter()
+        .position(|(name, _)| name == field)
+        .expect("validated dictionary field");
+    let mut candidate = format!("__bl_field_{index}");
+    let mut suffix = 0;
+    while record.fields.iter().any(|(name, _)| name == &candidate) {
+        suffix += 1;
+        candidate = format!("__bl_field_{index}_{suffix}");
+    }
+    candidate
+}
+
 fn rust_type(ty: &Type) -> String {
     match ty {
         Type::Named(name) => match name.as_str() {
             "Bool" => "bool".into(),
             "String" => "String".into(),
+            "Dictionary" => "std::collections::BTreeMap<String, serde_json::Value>".into(),
+            "Value" => "serde_json::Value".into(),
             _ => name.clone(),
         },
-        Type::Generic(_, inner) => format!("Vec<{}>", rust_type(inner)),
+        Type::Generic(kind, inner) => match kind.as_str() {
+            "Dictionary" => format!("std::collections::BTreeMap<String, {}>", rust_type(inner)),
+            "DictionaryEntry" => format!("DictionaryEntry<{}>", rust_type(inner)),
+            _ => format!("Vec<{}>", rust_type(inner)),
+        },
     }
 }
 
@@ -1386,18 +1993,19 @@ pub fn generate(program: &Program) -> Result<String, String> {
         .processes
         .iter()
         .any(|item| item.named_graph.is_some() || item.source_graph.is_some());
-    let serde = if has_named {
-        ", serde::Serialize, serde::Deserialize"
-    } else {
-        ""
-    };
+    let serde = ", serde::Serialize, serde::Deserialize";
+    out.push_str("#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]\npub struct DictionaryEntry<T> { pub key: String, pub value: T }\n");
     for record in &program.records {
         out.push_str(&format!(
-            "#[derive(Debug, Clone, PartialEq{serde})]\npub struct {} {{\n",
+            "#[derive(Debug, Clone, PartialEq{serde})]\n#[serde(deny_unknown_fields)]\npub struct {} {{\n",
             record.name
         ));
         for (field, ty) in &record.fields {
-            out.push_str(&format!("  pub {field}: {},\n", rust_type(ty)));
+            let rust_field = rust_record_field(program, &record.name, field);
+            out.push_str(&format!(
+                "  #[serde(rename = {field:?})] pub {rust_field}: {},\n",
+                rust_type(ty)
+            ));
         }
         out.push_str("}\n");
     }

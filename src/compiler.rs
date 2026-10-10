@@ -83,6 +83,37 @@ pub(crate) fn type_ref(text: &str) -> Result<Type, String> {
     }
 }
 
+pub(crate) fn split_top_level(text: &str, separator: char) -> Result<Vec<&str>, String> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut depth = 0_i32;
+    let mut quoted = false;
+    for (index, ch) in text.char_indices() {
+        if ch == '"' {
+            quoted = !quoted;
+        }
+        if !quoted {
+            match ch {
+                '{' | '[' | '(' => depth += 1,
+                '}' | ']' | ')' => depth -= 1,
+                _ => {}
+            }
+            if depth < 0 {
+                return Err("unbalanced dictionary expression".into());
+            }
+            if ch == separator && depth == 0 {
+                parts.push(&text[start..index]);
+                start = index + ch.len_utf8();
+            }
+        }
+    }
+    if quoted || depth != 0 {
+        return Err("unbalanced dictionary expression".into());
+    }
+    parts.push(&text[start..]);
+    Ok(parts)
+}
+
 pub(crate) fn identifier(name: &str) -> bool {
     let mut chars = name.chars();
     chars
@@ -96,6 +127,7 @@ fn source_items(source: &str) -> Result<Vec<String>, String> {
     let mut pending = String::new();
     let mut quoted = false;
     let mut depth = 0usize;
+    let mut literal_depth = 0usize;
     for line in source
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
@@ -119,13 +151,43 @@ fn source_items(source: &str) -> Result<Vec<String>, String> {
                     pending.clear();
                 }
                 '{' if !quoted => {
-                    if pending.trim().is_empty() {
-                        return Err("missing declaration before '{'".into());
+                    let first = pending.split_whitespace().next().unwrap_or("");
+                    let declaration = matches!(
+                        first,
+                        "start_event"
+                            | "end_event"
+                            | "decision_task"
+                            | "process"
+                            | "xor_split"
+                            | "xor_join"
+                            | "and_split"
+                            | "and_join"
+                            | "or_split"
+                            | "or_join"
+                            | "error_event"
+                            | "cancel_event"
+                            | "terminate_event"
+                            | "pause_for"
+                            | "pause_until"
+                            | "subprocess"
+                            | "literal_expression"
+                            | "decision_table"
+                            | "context"
+                            | "knowledge"
+                    );
+                    if literal_depth > 0 || !declaration {
+                        pending.push(ch);
+                        literal_depth += 1;
+                    } else {
+                        items.push(pending.trim().to_owned());
+                        items.push("{".into());
+                        pending.clear();
+                        depth += 1;
                     }
-                    items.push(pending.trim().to_owned());
-                    items.push("{".into());
-                    pending.clear();
-                    depth += 1;
+                }
+                '}' if !quoted && literal_depth > 0 => {
+                    pending.push(ch);
+                    literal_depth -= 1;
                 }
                 '}' if !quoted => {
                     if !pending.trim().is_empty() || depth == 0 {
@@ -150,7 +212,7 @@ fn source_items(source: &str) -> Result<Vec<String>, String> {
     if !pending.trim().is_empty() {
         return Err("missing semicolon".into());
     }
-    if depth != 0 {
+    if depth != 0 || literal_depth != 0 {
         return Err("unclosed brace".into());
     }
     Ok(items)
@@ -210,6 +272,54 @@ pub fn parse(source: &str) -> Result<Program, String> {
     let mut i = 2;
     while i < lines.len() {
         let header = lines[i].as_str();
+        if let Some((name, value)) = header.split_once(" = ")
+            && identifier(name)
+            && let Some(fields) = value
+                .trim()
+                .strip_prefix('{')
+                .and_then(|v| v.strip_suffix('}'))
+        {
+            let mut record = Record {
+                name: name.into(),
+                fields: Vec::new(),
+            };
+            for member in split_top_level(fields, ',')?
+                .into_iter()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                let parts = split_top_level(member, ':')?;
+                let [key, ty] = parts.as_slice() else {
+                    return Err("invalid dictionary field".into());
+                };
+                let raw_key = key.trim();
+                let quoted =
+                    raw_key.starts_with('"') && raw_key.ends_with('"') && raw_key.len() >= 2;
+                let key = if quoted {
+                    &raw_key[1..raw_key.len() - 1]
+                } else {
+                    raw_key
+                };
+                if !identifier(key) && !quoted {
+                    return Err(format!("invalid dictionary field: {member}"));
+                }
+                if record.fields.iter().any(|(field, _)| field == key) {
+                    return Err(format!("duplicate dictionary field: {key}"));
+                }
+                record.fields.push((key.into(), type_ref(ty.trim())?));
+            }
+            program.records.push(record);
+            i += 1;
+            continue;
+        }
+        if let Some(name) = header
+            .strip_prefix("type ")
+            .and_then(|value| value.strip_suffix(':'))
+        {
+            return Err(format!(
+                "type {name}: is unsupported; use {name} = {{field: Type, ...}};"
+            ));
+        }
         let (kind, name) = header
             .split_once(' ')
             .ok_or_else(|| format!("invalid declaration: {header}"))?;
@@ -272,10 +382,6 @@ pub fn parse(source: &str) -> Result<Program, String> {
             .filter(|name| identifier(name))
             .ok_or_else(|| format!("invalid declaration: {header}"))?;
         match kind {
-            "type" => program.records.push(Record {
-                name: name.into(),
-                fields: Vec::new(),
-            }),
             "enum" => program.enums.push(Enum {
                 name: name.into(),
                 variants: Vec::new(),
@@ -295,20 +401,6 @@ pub fn parse(source: &str) -> Result<Program, String> {
                 return Err(format!("expected indentation: {line}"));
             }
             match kind {
-                "type" => {
-                    let (field, ty) = line[2..]
-                        .split_once(": ")
-                        .ok_or_else(|| format!("invalid field: {line}"))?;
-                    if !identifier(field) {
-                        return Err(format!("invalid field: {line}"));
-                    }
-                    program
-                        .records
-                        .last_mut()
-                        .unwrap()
-                        .fields
-                        .push((field.into(), type_ref(ty)?));
-                }
                 "enum" => {
                     let variant = &line[2..];
                     if !identifier(variant) {

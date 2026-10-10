@@ -7,6 +7,12 @@ pub enum Expr {
     Field(Box<Expr>, String),
     Call(String, Vec<Expr>),
     List(Vec<Expr>),
+    Iteration {
+        every: bool,
+        binding: String,
+        source: Box<Expr>,
+        body: Box<Expr>,
+    },
     Range(Option<Box<Expr>>, Option<Box<Expr>>, bool, bool),
     Not(Box<Expr>),
     Binary(Box<Expr>, String, Box<Expr>),
@@ -123,7 +129,7 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
             || (ch == '*' && chars.peek() == Some(&'*'))
         {
             token.push(chars.next().unwrap());
-        } else if !".[](),<>+-*/=".contains(ch) {
+        } else if !".[]{}:,()<>+-*/=".contains(ch) {
             return Err(format!("invalid character in expression: {ch}"));
         }
         result.push(token);
@@ -162,6 +168,28 @@ impl Parser {
         let mut left = match first.as_str() {
             "true" => Expr::Bool(true),
             "false" => Expr::Bool(false),
+            "every" | "for" => {
+                let binding = self.take().ok_or("missing iteration variable")?;
+                if !super::identifier(&binding)
+                    || matches!(binding.as_str(), "in" | "return" | "satisfies")
+                {
+                    return Err("invalid iteration variable".into());
+                }
+                self.expect("in")?;
+                let source = self.parse(0)?;
+                self.expect(if first == "every" {
+                    "satisfies"
+                } else {
+                    "return"
+                })?;
+                let body = self.parse(0)?;
+                Expr::Iteration {
+                    every: first == "every",
+                    binding,
+                    source: Box::new(source),
+                    body: Box::new(body),
+                }
+            }
             "not" => Expr::Not(Box::new(self.parse(4)?)),
             "-" => Expr::Binary(
                 Box::new(Expr::Number("0".into())),
@@ -169,6 +197,34 @@ impl Parser {
                 Box::new(self.parse(6)?),
             ),
             "+" => self.parse(6)?,
+            "{" => {
+                let mut entries = Vec::new();
+                while self.peek() != Some("}") {
+                    let key = self.take().ok_or("missing dictionary closing brace")?;
+                    let key = if key.starts_with('"') && key.ends_with('"') {
+                        key[1..key.len() - 1].to_owned()
+                    } else if super::identifier(&key) {
+                        key
+                    } else {
+                        return Err("invalid dictionary key".into());
+                    };
+                    if entries
+                        .iter()
+                        .any(|entry: &Expr| matches!(entry, Expr::String(value) if value == &key))
+                    {
+                        return Err(format!("duplicate dictionary key: {key}"));
+                    }
+                    self.expect(":")?;
+                    entries.push(Expr::String(key));
+                    entries.push(self.parse(0)?);
+                    if self.peek() != Some(",") {
+                        break;
+                    }
+                    self.take();
+                }
+                self.expect("}")?;
+                Expr::Call("__bl_dictionary".into(), entries)
+            }
             "(" | "[" => {
                 let lower = if self.peek() == Some("null") {
                     self.take();
@@ -282,6 +338,13 @@ impl Parser {
                     return Err("expected field in expression".into());
                 }
                 left = Expr::Field(Box::new(left), field);
+                continue;
+            }
+            if self.peek() == Some("[") {
+                self.take();
+                let key = self.parse(0)?;
+                self.expect("]")?;
+                left = Expr::Call("__bl_index".into(), vec![left, key]);
                 continue;
             }
             let priority = match self.peek() {
