@@ -1,4 +1,5 @@
 use blkit::temporal::Calendar;
+use blkit_core as blkit;
 use serde_json::{Value, json};
 
 #[test]

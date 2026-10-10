@@ -1,8 +1,17 @@
+[workspace]
+members = [".", "crates/blkit-core"]
+resolver = "2"
+default-members = ["."]
+
 [package]
-name = "blkit"
+name = "blkit-transpiler"
 default-run = "blkit"
 version = "0.1.0"
 edition = "2024"
+
+[[bin]]
+name = "blkit"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -30,6 +39,7 @@ opentelemetry-otlp = { version = "0.33", default-features = false, features = ["
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["logs"] }
 opentelemetry-appender-tracing = "0.33"
 chrono-tz = "0.10"
+blkit-core = { version = "0.1.0", path = "crates/blkit-core", features = ["api-server", "worker", "local-persistence", "remote-persistence", "logging"] }
 
 [build-dependencies]
 rust_decimal = { version = "1.39", features = ["maths"] }
@@ -37,6 +47,7 @@ chrono = "0.4"
 regex = "1"
 chrono-tz = "0.10"
 serde = { version = "1", features = ["derive"] }
+blkit-core = { version = "0.1.0", path = "crates/blkit-core" }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

@@ -1,4 +1,5 @@
 use blkit::temporal::{Date, DateTime, Time};
+use blkit_core as blkit;
 
 #[test]
 fn temporal_values_round_trip_with_distinct_zone_kinds() {

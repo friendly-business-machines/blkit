@@ -71,7 +71,7 @@ pub fn init(service_name: &str) -> Result<Logging, String> {
     let provider = if otlp {
         let endpoint = env::var("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
             .map_err(|_| "otlp output requires OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")?;
-        let uri: axum::http::Uri = endpoint
+        let uri: http::Uri = endpoint
             .parse()
             .map_err(|_| "invalid OTEL_EXPORTER_OTLP_LOGS_ENDPOINT URL")?;
         if !matches!(uri.scheme_str(), Some("http" | "https"))

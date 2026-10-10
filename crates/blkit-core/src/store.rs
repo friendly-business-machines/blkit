@@ -1,8 +1,6 @@
-use std::{
-    path::Path,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(feature = "local-persistence")]
+use std::{path::Path, sync::Arc};
 
 use serde_json::Value;
 
@@ -91,9 +89,11 @@ impl Instance {
     }
 }
 
+#[cfg(feature = "local-persistence")]
 #[derive(Clone)]
 pub struct Store(Arc<turso::Database>);
 
+#[cfg(feature = "local-persistence")]
 impl Store {
     pub async fn open(path: &Path) -> Result<Self, String> {
         let db = turso::Builder::new_local(path.to_str().ok_or("invalid database path")?)

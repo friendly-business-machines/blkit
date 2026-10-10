@@ -4,9 +4,8 @@ use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls};
 
 use crate::{
-    RetryPolicy,
-    compiled_graph::GraphCheckpoint,
-    runtime::{Instance, next_retry_at},
+    DeadlinePolicy, RetryPolicy, compiled_graph::GraphCheckpoint, evaluation::next_retry_at,
+    store::Instance,
 };
 
 #[derive(Clone)]
@@ -91,6 +90,11 @@ impl PostgresStore {
                 worker_id TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
                 namespace TEXT NOT NULL, version TEXT NOT NULL, process TEXT NOT NULL,
                 PRIMARY KEY (worker_id, namespace, version, process)
+            );
+            CREATE TABLE IF NOT EXISTS process_policies (
+                namespace TEXT NOT NULL, version TEXT NOT NULL, process TEXT NOT NULL,
+                retry_policy TEXT, deadline_origin TEXT, deadline_duration_ms BIGINT,
+                PRIMARY KEY (namespace, version, process)
             );",
         ).await.map_err(|e| e.to_string())?;
         Ok(Self(Arc::new(Mutex::new(client))))
@@ -141,6 +145,35 @@ impl PostgresStore {
               &instance.deadline_origin, &instance.deadline_duration_ms, &instance.deadline_at_ms]
         ).await.map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    pub async fn admit(
+        &self,
+        id: &str,
+        namespace: &str,
+        version: &str,
+        process: &str,
+        input: &serde_json::Value,
+    ) -> Result<(), String> {
+        let json = input.to_string();
+        let inserted = self.0.lock().await.query_opt(
+            "WITH stamp AS (SELECT (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AS now_ms)
+             INSERT INTO instances (id, namespace, version, process, input, status, created_at, updated_at, retry_policy,
+                                    queued_at_ms, deadline_origin, deadline_duration_ms, deadline_at_ms)
+             SELECT $1, p.namespace, p.version, p.process, $5, 'pending', stamp.now_ms/1000, stamp.now_ms/1000,
+                    p.retry_policy, stamp.now_ms, p.deadline_origin, p.deadline_duration_ms,
+                    CASE WHEN p.deadline_origin='queued' THEN stamp.now_ms+p.deadline_duration_ms END
+             FROM process_policies p CROSS JOIN stamp
+             WHERE p.namespace=$2 AND p.version=$3 AND p.process=$4
+               AND EXISTS (
+                   SELECT 1 FROM worker_capabilities c JOIN workers w ON w.id=c.worker_id
+                   WHERE c.namespace=p.namespace AND c.version=p.version AND c.process=p.process
+                     AND NOT w.draining AND w.heartbeat_at >= stamp.now_ms - 30000
+               )
+             RETURNING id",
+            &[&id, &namespace, &version, &process, &json],
+        ).await.map_err(|e| e.to_string())?;
+        inserted.map(|_| ()).ok_or("worker unavailable".into())
     }
 
     pub async fn release_wait_owned(
@@ -312,6 +345,25 @@ impl PostgresStore {
              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running'
                 AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
             &[&id, &worker_id, &generation, &lease_ms]
+        ).await.map_err(|e| e.to_string())?;
+        Ok(changed == 1)
+    }
+
+    pub async fn commit_initial_checkpoint(
+        &self,
+        id: &str,
+        worker_id: &str,
+        generation: i64,
+        input: &serde_json::Value,
+        checkpoint: &GraphCheckpoint,
+    ) -> Result<bool, String> {
+        let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
+        let changed = self.0.lock().await.execute(
+            "UPDATE instances SET input=$4, checkpoint=$5, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+             WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running' AND checkpoint IS NULL
+               AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT
+               AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
+            &[&id, &worker_id, &generation, &input.to_string(), &value]
         ).await.map_err(|e| e.to_string())?;
         Ok(changed == 1)
     }
@@ -570,14 +622,76 @@ impl PostgresStore {
         id: &str,
         identities: &[(&str, &str, &str)],
     ) -> Result<(), String> {
+        let policies: Vec<_> = identities
+            .iter()
+            .map(|&(n, v, p)| (n, v, p, None, None))
+            .collect();
+        self.register_worker_with_policies(id, &policies).await
+    }
+
+    pub(crate) async fn register_worker_with_policies(
+        &self,
+        id: &str,
+        policies: &[(
+            &str,
+            &str,
+            &str,
+            Option<&RetryPolicy>,
+            Option<&DeadlinePolicy>,
+        )],
+    ) -> Result<(), String> {
         let mut client = self.0.lock().await;
         let tx = client.transaction().await.map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO workers (id, heartbeat_at) VALUES ($1, (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)", &[&id])
             .await.map_err(|e| e.to_string())?;
-        for (namespace, version, process) in identities {
+        for &(namespace, version, process, retry, deadline) in policies {
+            let retry_policy = retry
+                .map(|policy| -> Result<String, String> {
+                    let stored = StoredRetryPolicy {
+                        max_retries: policy.max_retries,
+                        retry_for_ms: u64::try_from(policy.retry_for.as_millis())
+                            .map_err(|e| e.to_string())?,
+                        retry_delay_ms: u64::try_from(policy.retry_delay.as_millis())
+                            .map_err(|e| e.to_string())?,
+                    };
+                    serde_json::to_string(&stored).map_err(|e| e.to_string())
+                })
+                .transpose()?;
+            let origin = deadline.map(|policy| policy.origin);
+            let duration = deadline
+                .map(|policy| i64::try_from(policy.duration.as_millis()).map_err(|e| e.to_string()))
+                .transpose()?;
+            if duration.is_some_and(|ms| ms > i64::MAX / 2) {
+                return Err("deadline duration exceeds representable range".into());
+            }
+            tx.execute(
+                "INSERT INTO process_policies VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",
+                &[
+                    &namespace,
+                    &version,
+                    &process,
+                    &retry_policy,
+                    &origin,
+                    &duration,
+                ],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let row = tx.query_one(
+                "SELECT retry_policy, deadline_origin, deadline_duration_ms FROM process_policies WHERE namespace=$1 AND version=$2 AND process=$3 FOR UPDATE",
+                &[&namespace, &version, &process],
+            ).await.map_err(|e| e.to_string())?;
+            if row.get::<_, Option<String>>(0) != retry_policy
+                || row.get::<_, Option<String>>(1).as_deref() != origin
+                || row.get::<_, Option<i64>>(2) != duration
+            {
+                return Err(format!(
+                    "conflicting policy for {namespace}/{version}/{process}"
+                ));
+            }
             tx.execute(
                 "INSERT INTO worker_capabilities VALUES ($1,$2,$3,$4)",
-                &[&id, namespace, version, process],
+                &[&id, &namespace, &version, &process],
             )
             .await
             .map_err(|e| e.to_string())?;

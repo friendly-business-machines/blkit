@@ -2,6 +2,7 @@ use blkit::{
     compiled_graph::GraphCheckpoint,
     runtime::{Engine, Instance, LocalStore, Registry},
 };
+use blkit_core as blkit;
 use serde_json::json;
 
 #[tokio::test]

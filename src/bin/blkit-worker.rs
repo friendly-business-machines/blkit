@@ -1,6 +1,6 @@
 use std::{env, time::Duration};
 
-use blkit::{distributed::DistributedWorker, postgres_store::PostgresStore};
+use blkit_core::{distributed::DistributedWorker, postgres_store::PostgresStore};
 
 // Generated Rust is checked by compilation and integration tests, not style lints.
 #[allow(clippy::all)]

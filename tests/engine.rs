@@ -5,6 +5,7 @@ use blkit::{
     RetryPolicy,
     runtime::{Engine, Evaluate, Instance, LocalStore, Registry, next_retry_at},
 };
+use blkit_core as blkit;
 use serde_json::{Value, json};
 use std::{
     sync::{
@@ -1602,6 +1603,55 @@ fn wait_graph() -> GraphDefinition {
             },
         ],
     }
+}
+
+#[tokio::test]
+async fn local_worker_claims_durable_work_not_started_by_an_http_request() {
+    let path = std::env::temp_dir().join(format!("blkit-queued-pending-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let graph = wait_graph();
+    let mut instance = Instance::new("queued", "test", "1", "wait", json!(17));
+    instance.checkpoint = Some(graph.checkpoint(&instance.input).unwrap());
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    engine.recover().await.unwrap();
+    store.create(&instance).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while engine.status("queued").await.unwrap().unwrap().status != "completed" {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        engine.status("queued").await.unwrap().unwrap().result,
+        Some(json!(17))
+    );
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn local_queued_work_can_be_cancelled_before_a_worker_claims_it() {
+    let path = std::env::temp_dir().join(format!("blkit-queued-cancel-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let graph = wait_graph();
+    let mut instance = Instance::new("queued-cancel", "test", "1", "wait", json!(18));
+    instance.checkpoint = Some(graph.checkpoint(&instance.input).unwrap());
+    store.create(&instance).await.unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    engine.cancel(&instance.id).await.unwrap();
+    engine.recover().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        engine.status(&instance.id).await.unwrap().unwrap().status,
+        "cancelled"
+    );
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[tokio::test]

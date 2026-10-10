@@ -14,6 +14,7 @@ pub struct Project {
     pub root: PathBuf,
     pub name: String,
     pub build_target: String,
+    pub persistence: Option<String>,
     pub sources: Vec<PathBuf>,
     pub dependencies: BTreeMap<String, Dependency>,
 }
@@ -44,7 +45,7 @@ impl Project {
             .and_then(Item::as_table)
             .ok_or("missing [project] section")?;
         for (key, _) in project.iter() {
-            if !matches!(key, "name" | "blkit" | "build_target") {
+            if !matches!(key, "name" | "blkit" | "build_target" | "persistence") {
                 return Err(format!("unexpected project field: {key}"));
             }
         }
@@ -69,8 +70,28 @@ impl Project {
             ));
         }
         let build_target = field("build_target")?;
-        if !matches!(build_target, "crate" | "worker" | "server") {
+        if !matches!(
+            build_target,
+            "crate"
+                | "worker"
+                | "server"
+                | "api-only"
+                | "api-worker"
+                | "api-worker-split"
+                | "worker-only"
+        ) {
             return Err(format!("invalid build_target: {build_target}"));
+        }
+        let persistence = project
+            .get("persistence")
+            .map(|item| item.as_str().ok_or("invalid persistence"))
+            .transpose()?;
+        if build_target == "api-worker" {
+            if !matches!(persistence, Some("local" | "remote")) {
+                return Err("api-worker requires persistence = \"local\" or \"remote\"".into());
+            }
+        } else if persistence.is_some() {
+            return Err(format!("persistence is not supported by {build_target}"));
         }
         let mut dependencies = BTreeMap::new();
         if let Some(deps) = manifest.get("dependencies") {
@@ -120,13 +141,14 @@ impl Project {
         let mut sources = Vec::new();
         discover(&root, &mut sources).map_err(|e| e.to_string())?;
         sources.sort();
-        if sources.is_empty() {
+        if sources.is_empty() && build_target != "api-only" {
             return Err("no .bl files found in project".into());
         }
         Ok(Self {
             root,
             name,
             build_target: build_target.into(),
+            persistence: persistence.map(str::to_owned),
             sources,
             dependencies,
         })
@@ -369,6 +391,33 @@ impl Project {
     }
 
     fn generate(&self) -> Result<PathBuf, String> {
+        if self.build_target == "api-only" {
+            self.programs()?;
+            let package = self.prepare_manifest()?;
+            let source = package.join("src");
+            let bin = source.join("bin");
+            fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
+            for entry in fs::read_dir(&source).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name == "lib.rs" || (name.starts_with("scope_") && name.ends_with(".rs")) {
+                    fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
+                }
+            }
+            for entry in fs::read_dir(&bin).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.ends_with("-worker.rs")
+                    || name.ends_with("-server.rs")
+                    || name.ends_with("-api.rs")
+                {
+                    fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
+                }
+            }
+            fs::write(bin.join(format!("{}-api.rs", self.name)), API_SOURCE)
+                .map_err(|e| e.to_string())?;
+            return Ok(package);
+        }
         let programs = self.programs()?;
         let generated: Vec<_> = programs
             .iter()
@@ -382,7 +431,7 @@ impl Project {
                 .map_err(|e| e.to_string())?;
             lib.push_str(&format!("pub mod scope_{index};\n"));
         }
-        lib.push_str("pub fn named_graph_definitions() -> Vec<blkit::compiled_graph::GraphDefinition> {\n    let mut definitions = Vec::new();\n");
+        lib.push_str("pub fn named_graph_definitions() -> Vec<blkit_core::compiled_graph::GraphDefinition> {\n    let mut definitions = Vec::new();\n");
         for (index, program) in programs.iter().enumerate() {
             if program
                 .processes
@@ -403,19 +452,30 @@ impl Project {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if entry.file_type().map_err(|e| e.to_string())?.is_file()
-                && (name.ends_with("-worker.rs") || name.ends_with("-server.rs"))
+                && (name.ends_with("-worker.rs")
+                    || name.ends_with("-server.rs")
+                    || name.ends_with("-api.rs")
+                    || name.ends_with("-api-worker.rs"))
             {
                 fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
             }
         }
-        let source = match self.build_target.as_str() {
-            "worker" => Some(WORKER_SOURCE),
-            "server" => Some(SERVER_SOURCE),
-            _ => None,
+        let (source, name) = match (self.build_target.as_str(), self.persistence.as_deref()) {
+            ("worker" | "worker-only" | "api-worker-split", _) => (Some(WORKER_SOURCE), "worker"),
+            ("server", _) | ("api-worker", Some("local")) => (
+                Some(SERVER_SOURCE),
+                if self.build_target == "server" {
+                    "server"
+                } else {
+                    "api-worker"
+                },
+            ),
+            ("api-worker", Some("remote")) => (Some(API_WORKER_SOURCE), "api-worker"),
+            _ => (None, ""),
         };
         if let Some(source) = source {
             fs::write(
-                bin_dir.join(format!("{}-{}.rs", self.name, self.build_target)),
+                bin_dir.join(format!("{}-{}.rs", self.name, name)),
                 source.replace("PROJECT_CRATE", &self.name.replace('-', "_")),
             )
             .map_err(|e| e.to_string())?;
@@ -429,22 +489,51 @@ impl Project {
         fs::create_dir_all(&source_dir).map_err(|e| e.to_string())?;
         fs::write(package.join(".gitignore"), "*\n!.gitignore\n!Cargo.lock\n")
             .map_err(|e| e.to_string())?;
-        let local = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let dependency = if local.join("Cargo.toml").exists() {
-            format!(
-                "{{ version = \"={}\", path = {:?} }}",
-                env!("CARGO_PKG_VERSION"),
-                local.to_str().ok_or("non-UTF-8 blkit source path")?
-            )
-        } else {
-            format!("\"={}\"", env!("CARGO_PKG_VERSION"))
+        let local = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/blkit-core");
+        let features = match (self.build_target.as_str(), self.persistence.as_deref()) {
+            ("api-only", _) => vec!["api-server", "remote-persistence"],
+            ("worker" | "worker-only", _) => vec!["worker", "remote-persistence", "logging"],
+            ("server", _) | ("api-worker", Some("local")) => {
+                vec!["api-server", "worker", "local-persistence", "logging"]
+            }
+            ("api-worker", Some("remote")) => {
+                vec!["api-server", "worker", "remote-persistence", "logging"]
+            }
+            ("api-worker-split", _) => vec!["worker", "remote-persistence", "logging"],
+            _ => vec![],
         };
         let mut manifest = format!(
-            "[package]\nname = {:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit = {dependency}\nrust_decimal = {{ version = \"1.39\", features = [\"serde-str\"] }}\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"time\", \"net\"] }}\naxum = \"0.8\"\n",
-            self.name
+            "[package]\nname = {:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit-core = {{ version = \"={}\", {}default-features = false, features = {:?} }}\n",
+            self.name,
+            env!("CARGO_PKG_VERSION"),
+            if local.join("Cargo.toml").exists() {
+                format!(
+                    "path = {:?}, ",
+                    local.to_str().ok_or("non-UTF-8 blkit-core source path")?
+                )
+            } else {
+                String::new()
+            },
+            features
         );
-        for (name, dependency) in &self.dependencies {
-            if name == "blkit"
+        if self.build_target != "api-only" {
+            manifest.push_str("rust_decimal = { version = \"1.39\", features = [\"serde-str\"] }\nchrono = { version = \"0.4\", features = [\"serde\"] }\nserde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n");
+        }
+        if self.build_target != "crate" {
+            manifest.push_str("tokio = { version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"time\", \"net\"] }\n");
+        }
+        if matches!(
+            self.build_target.as_str(),
+            "server" | "api-only" | "api-worker"
+        ) {
+            manifest.push_str("axum = \"0.8\"\n");
+        }
+        for (name, dependency) in self
+            .dependencies
+            .iter()
+            .filter(|_| self.build_target != "api-only")
+        {
+            if matches!(name.as_str(), "blkit" | "blkit-core")
                 || matches!(
                     name.as_str(),
                     "rust_decimal" | "chrono" | "serde" | "serde_json" | "tokio" | "axum"
@@ -467,16 +556,108 @@ impl Project {
                 manifest.push_str(&format!("{name} = {:?}\n", dependency.version));
             }
         }
+        if self.build_target == "api-worker-split" {
+            manifest.push_str("\n[workspace]\nmembers = [\"api\"]\nresolver = \"2\"\n");
+            let api_source = package.join("api/src");
+            fs::create_dir_all(&api_source).map_err(|e| e.to_string())?;
+            let core_path = if local.join("Cargo.toml").exists() {
+                format!(
+                    "path = {:?}, ",
+                    local.to_str().ok_or("non-UTF-8 blkit-core source path")?
+                )
+            } else {
+                String::new()
+            };
+            fs::write(package.join("api/Cargo.toml"), format!(
+                "[package]\nname = {:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit-core = {{ version = \"={}\", {core_path}default-features = false, features = [\"api-server\", \"remote-persistence\"] }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"time\", \"net\"] }}\naxum = \"0.8\"\n",
+                format!("{}-api", self.name), env!("CARGO_PKG_VERSION")
+            )).map_err(|e| e.to_string())?;
+            fs::write(api_source.join("main.rs"), API_SOURCE).map_err(|e| e.to_string())?;
+        }
         fs::write(package.join("Cargo.toml"), manifest).map_err(|e| e.to_string())?;
-        if !source_dir.join("lib.rs").exists() {
+        if self.build_target != "api-only" && !source_dir.join("lib.rs").exists() {
             fs::write(source_dir.join("lib.rs"), "").map_err(|e| e.to_string())?;
         }
         Ok(package)
     }
 }
 
+const API_SOURCE: &str = r#"use std::{env, sync::Arc, time::Duration};
+use blkit_core::{distributed::DistributedControl, postgres_store::PostgresStore, server::router_distributed};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<_> = env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "--help") {
+        println!("usage: api POSTGRES_URL [BIND_ADDRESS]");
+        return Ok(());
+    }
+    let url = args.get(1).ok_or("usage: api POSTGRES_URL [BIND_ADDRESS]")?;
+    if args.len() > 3 { return Err("usage: api POSTGRES_URL [BIND_ADDRESS]".into()); }
+    let bind = args.get(2).map_or("127.0.0.1:3000", String::as_str);
+    let control = Arc::new(DistributedControl::new(PostgresStore::connect(url).await?));
+    let reconciler = control.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            interval.tick().await;
+            if let Err(error) = reconciler.reconcile_once().await {
+                eprintln!("claim reconciliation failed: {error}");
+            }
+        }
+    });
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    axum::serve(listener, router_distributed(control)).await?;
+    Ok(())
+}
+"#;
+
+const API_WORKER_SOURCE: &str = r#"use std::{env, sync::Arc, time::Duration};
+use blkit_core::{distributed::{DistributedControl, DistributedWorker}, logging, postgres_store::PostgresStore, server::router_distributed};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<_> = env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "--help") {
+        println!("usage: api-worker POSTGRES_URL [MAX_TASKS] [LEASE_MS] [BIND_ADDRESS]");
+        return Ok(());
+    }
+    let _logging = logging::init(concat!(env!("CARGO_PKG_NAME"), "-api-worker"))?;
+    let url = args.get(1).ok_or("usage: api-worker POSTGRES_URL [MAX_TASKS] [LEASE_MS] [BIND_ADDRESS]")?;
+    if args.len() > 5 { return Err("too many arguments".into()); }
+    let limit = args.get(2).map_or(Ok(32), |n| n.parse::<usize>())?;
+    let lease_ms = args.get(3).map_or(Ok(5000), |n| n.parse::<i64>())?;
+    let bind = args.get(4).map_or("127.0.0.1:3000", String::as_str);
+    let store = PostgresStore::connect(url).await?;
+    let worker = DistributedWorker::new(store.clone(), &format!("worker-{}", std::process::id()), PROJECT_CRATE::named_graph_definitions(), limit, lease_ms)?;
+    worker.advertise().await?;
+    let control = Arc::new(DistributedControl::new(store));
+    let reconciler = control.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            interval.tick().await;
+            if let Err(error) = reconciler.reconcile_once().await { eprintln!("claim reconciliation failed: {error}"); }
+        }
+    });
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    let run = async move {
+        loop {
+            worker.run_once().await?;
+            if worker.drain_if_requested().await? { return Ok::<(), String>(()); }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    tokio::select! {
+        result = run => result?,
+        result = axum::serve(listener, router_distributed(control)) => { result?; }
+    }
+    Ok(())
+}
+"#;
+
 const WORKER_SOURCE: &str = r#"use std::{env, time::Duration};
-use blkit::{distributed::DistributedWorker, logging::{self, tracing}, postgres_store::PostgresStore};
+use blkit_core::{distributed::DistributedWorker, logging::{self, tracing}, postgres_store::PostgresStore};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -514,7 +695,7 @@ async fn run(args: &[String]) -> Result<(), &'static str> {
 "#;
 
 const SERVER_SOURCE: &str = r#"use std::{env, path::Path, sync::Arc};
-use blkit::{logging::{self, tracing}, runtime::{Engine, Registry, LocalStore}, server::router};
+use blkit_core::{logging::{self, tracing}, runtime::{Engine, Registry, LocalStore}, server::router};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

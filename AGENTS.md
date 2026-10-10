@@ -3,8 +3,11 @@
 - **OpenSpec** owns requirements and change artifacts for the project itself.
   For non-trivial project changes, start with `openspec` (in Pi, `/opsx-propose`)
   and treat the approved change in `openspec/changes/` as the planning source
-  of truth. Do not use OpenSpec for developer tooling, agent instructions,
-  skills, or other development-workflow changes.
+  of truth. When asked to begin or continue implementation, work through every
+  remaining approved task; a passing milestone is not a stopping point. Stop
+  only on completion, an actual blocker requiring a decision, or user direction.
+  Do not use OpenSpec for developer tooling, agent instructions, skills, or
+  other development-workflow changes.
 - **Superpowers** owns the engineering method: clarification, design review,
   TDD, and implementation discipline. Do not create a second competing plan
   when OpenSpec already has one; use its artifacts as the input.

@@ -1,7 +1,12 @@
+use blkit_transpiler as blkit;
 use std::{
     fs,
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
+};
+use testcontainers_modules::{
+    postgres::Postgres,
+    testcontainers::{ImageExt, runners::AsyncRunner},
 };
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -44,6 +49,29 @@ fn project(manifest: &str, files: &[(&str, &str)]) -> PathBuf {
 const SOURCE: &str = "namespace orders;\nversion \"1\";\n";
 const MANIFEST: &str =
     "[project]\nname = \"orders\"\nblkit = \"0.1.0\"\nbuild_target = \"crate\"\n";
+
+#[test]
+fn generated_project_depends_on_version_matched_core_not_transpiler() {
+    let source = "namespace orders; version \"1\"; start_event start { output value: Number; } end_event done { input result: Number; } process route { flow start -> done; bind start.value -> done.result; }";
+    let root = project(MANIFEST, &[("route.bl", source)]);
+    blkit::project::Project::load(&root)
+        .unwrap()
+        .transpile()
+        .unwrap();
+    let manifest = fs::read_to_string(root.join(".blkit/Cargo.toml")).unwrap();
+    assert!(
+        manifest.contains("blkit-core = { version = \"=0.1.0\""),
+        "{manifest}"
+    );
+    assert!(!manifest.contains("blkit-transpiler"), "{manifest}");
+    assert!(!manifest.contains("\nblkit ="), "{manifest}");
+    let generated = fs::read_to_string(root.join(".blkit/src/lib.rs")).unwrap();
+    assert!(
+        generated.contains("blkit_core::compiled_graph"),
+        "{generated}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
 
 #[test]
 fn numeric_project_builds_checked_arithmetic() {
@@ -202,6 +230,355 @@ fn transpilation_generates_each_target_without_compiling() {
             );
         }
         assert!(!root.join(".blkit/target").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn retargeting_combined_project_to_api_only_removes_stale_binary() {
+    let root = project(
+        &MANIFEST.replace(
+            "build_target = \"crate\"",
+            "build_target = \"api-worker\"\npersistence = \"local\"",
+        ),
+        &[("route.bl", SOURCE)],
+    );
+    blkit::project::Project::load(&root)
+        .unwrap()
+        .transpile()
+        .unwrap();
+    assert!(root.join(".blkit/src/bin/orders-api-worker.rs").exists());
+    fs::write(
+        root.join("blkit.toml"),
+        MANIFEST.replace("crate", "api-only"),
+    )
+    .unwrap();
+    blkit::project::Project::load(&root)
+        .unwrap()
+        .transpile()
+        .unwrap();
+    assert!(!root.join(".blkit/src/bin/orders-api-worker.rs").exists());
+    assert!(!root.join(".blkit/src/lib.rs").exists());
+    cargo_build(&root).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn source_free_api_only_builds_without_generated_definitions() {
+    let root = project(&MANIFEST.replace("crate", "api-only"), &[]);
+    blkit::project::Project::load(&root)
+        .unwrap()
+        .transpile()
+        .unwrap();
+    assert!(!root.join(".blkit/src/lib.rs").exists());
+    assert!(!root.join(".blkit/src/scope_0.rs").exists());
+    let manifest = fs::read_to_string(root.join(".blkit/Cargo.toml")).unwrap();
+    assert!(
+        manifest.contains("api-server")
+            && manifest.contains("remote-persistence")
+            && !manifest.contains("worker\""),
+        "{manifest}"
+    );
+    cargo_build(&root).unwrap();
+    fs::remove_dir_all(root).unwrap();
+    let with_source = project(
+        &MANIFEST.replace("crate", "api-only"),
+        &[("route.bl", SOURCE)],
+    );
+    blkit::project::Project::load(&with_source)
+        .unwrap()
+        .transpile()
+        .unwrap();
+    assert!(!with_source.join(".blkit/src/lib.rs").exists());
+    assert!(!with_source.join(".blkit/src/scope_0.rs").exists());
+    fs::remove_dir_all(with_source).unwrap();
+}
+
+#[tokio::test]
+async fn generated_role_executables_smoke() {
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let source = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } process route { flow start -> done; bind start.input -> done.result; }";
+    let postgres = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(postgres.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        postgres.get_host_port_ipv4(5432).await.unwrap()
+    );
+    for (target, persistence) in [
+        ("api-worker", "local"),
+        ("api-worker", "remote"),
+        ("api-worker-split", ""),
+    ] {
+        let settings = if persistence.is_empty() {
+            String::new()
+        } else {
+            format!("persistence = {persistence:?}\n")
+        };
+        let root = project(
+            &MANIFEST.replace(
+                "build_target = \"crate\"\n",
+                &format!("build_target = {target:?}\n{settings}"),
+            ),
+            &[("route.bl", source)],
+        );
+        blkit::project::Project::load(&root)
+            .unwrap()
+            .transpile()
+            .unwrap();
+        cargo_build(&root).unwrap();
+        if target == "api-worker-split" {
+            let api = root.join(".blkit/api/Cargo.toml");
+            let output = std::process::Command::new("cargo")
+                .args(["build", "--manifest-path"])
+                .arg(api)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let binaries = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or(root.join(".blkit/target"))
+            .join("debug");
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let bind = socket.local_addr().unwrap().to_string();
+        drop(socket);
+        let database = root.join("local.db");
+        let mut children = Vec::new();
+        if target == "api-worker-split" {
+            children.push(Child(
+                std::process::Command::new(binaries.join("orders-worker"))
+                    .args([&url, "2", "1000"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            ));
+        }
+        let mut server = std::process::Command::new(binaries.join("orders-api-worker"));
+        if target == "api-worker-split" {
+            server = std::process::Command::new(binaries.join("orders-api"));
+            server.args([&url, &bind]);
+        } else if persistence == "local" {
+            server.arg(&database).args(["2", &bind]);
+        } else {
+            server.args([&url, "2", "1000", &bind]);
+        }
+        children.push(Child(
+            server
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        ));
+        let endpoint = format!("http://{bind}/processes/orders/1/route/instances");
+        let response = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let output = std::process::Command::new("curl")
+                    .args([
+                        "-sS",
+                        "-H",
+                        "content-type: application/json",
+                        "-d",
+                        "{\"input\":\"5\"}",
+                        &endpoint,
+                    ])
+                    .output()
+                    .unwrap();
+                if output.status.success()
+                    && serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                        .ok()
+                        .and_then(|v| v.get("id").cloned())
+                        .is_some()
+                {
+                    break serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("generated server did not accept request");
+        let status_url = format!(
+            "http://{bind}/instances/{}",
+            response["id"].as_str().unwrap()
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let output = std::process::Command::new("curl")
+                    .args(["-fsS", &status_url])
+                    .output()
+                    .unwrap();
+                let row: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                if row["status"] == "completed" {
+                    assert_eq!(row["result"], "5", "{target}: {row}");
+                    break;
+                }
+                assert!(
+                    matches!(row["status"].as_str(), Some("pending" | "running")),
+                    "{target}: {row}"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("generated worker did not complete request");
+        drop(children);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn combined_and_split_targets_build_their_role_binaries() {
+    for (target, persistence, bin) in [
+        (
+            "api-worker",
+            "persistence = \"local\"\n",
+            "orders-api-worker.rs",
+        ),
+        (
+            "api-worker",
+            "persistence = \"remote\"\n",
+            "orders-api-worker.rs",
+        ),
+        ("worker-only", "", "orders-worker.rs"),
+        ("api-worker-split", "", "orders-worker.rs"),
+    ] {
+        let root = project(
+            &MANIFEST.replace(
+                "build_target = \"crate\"\n",
+                &format!("build_target = {target:?}\n{persistence}"),
+            ),
+            &[("route.bl", SOURCE)],
+        );
+        blkit::project::Project::load(&root)
+            .unwrap()
+            .transpile()
+            .unwrap();
+        assert!(root.join(".blkit/src/bin").join(bin).exists(), "{target}");
+        cargo_build(&root).unwrap();
+        if target == "api-worker-split" {
+            let api = root.join(".blkit/api/Cargo.toml");
+            let manifest = fs::read_to_string(&api).unwrap();
+            assert!(
+                manifest.contains("api-server") && !manifest.contains("\"worker\""),
+                "{manifest}"
+            );
+            let output = std::process::Command::new("cargo")
+                .args(["build", "--manifest-path"])
+                .arg(api)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn new_targets_accept_valid_backend_and_source_combinations() {
+    for (target, persistence, sources) in [
+        ("api-only", "", false),
+        ("api-only", "", true),
+        ("api-worker", "persistence = \"local\"\n", true),
+        ("api-worker", "persistence = \"remote\"\n", true),
+        ("api-worker-split", "", true),
+        ("worker-only", "", true),
+    ] {
+        let manifest = MANIFEST.replace(
+            "build_target = \"crate\"\n",
+            &format!("build_target = {target:?}\n{persistence}"),
+        );
+        let files = if sources {
+            vec![("route.bl", SOURCE)]
+        } else {
+            vec![]
+        };
+        let root = project(&manifest, &files);
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_blkit"))
+            .args(["transpile"])
+            .arg(&root)
+            .env("PATH", "")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{target}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(root.join(".blkit/Cargo.toml").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn new_targets_reject_invalid_backend_and_missing_worker_sources() {
+    for (target, persistence, sources, expected) in [
+        ("api-worker", "", true, "persistence"),
+        (
+            "api-worker",
+            "persistence = \"invalid\"\n",
+            true,
+            "persistence",
+        ),
+        (
+            "api-only",
+            "persistence = \"remote\"\n",
+            false,
+            "persistence",
+        ),
+        (
+            "worker-only",
+            "persistence = \"remote\"\n",
+            true,
+            "persistence",
+        ),
+        ("api-worker-split", "", false, "no .bl files"),
+        (
+            "api-worker",
+            "persistence = \"local\"\n",
+            false,
+            "no .bl files",
+        ),
+        ("worker-only", "", false, "no .bl files"),
+    ] {
+        let manifest = MANIFEST.replace(
+            "build_target = \"crate\"\n",
+            &format!("build_target = {target:?}\n{persistence}"),
+        );
+        let files = if sources {
+            vec![("route.bl", SOURCE)]
+        } else {
+            vec![]
+        };
+        let root = project(&manifest, &files);
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_blkit"))
+            .args(["transpile"])
+            .arg(&root)
+            .output()
+            .unwrap();
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success() && diagnostic.contains(expected),
+            "{target}: {diagnostic}"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }
@@ -1013,7 +1390,7 @@ fn project_server_executes_compiled_process_over_loopback_rest() {
 
 #[tokio::test]
 async fn project_worker_binary_claims_only_its_compiled_process_version() {
-    use blkit::{
+    use blkit_core::{
         compiled_graph::{GraphDefinition, GraphLink, GraphNode, GraphNodeKind},
         postgres_store::PostgresStore,
         runtime::Instance,

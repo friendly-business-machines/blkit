@@ -370,10 +370,36 @@ dependencies = [
 ]
 
 [[package]]
-name = "blkit"
+name = "blkit-core"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "chrono",
+ "chrono-tz",
+ "http",
+ "opentelemetry-appender-tracing",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "regex",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "testcontainers-modules",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "tracing-subscriber",
+ "turso",
+ "unicode-segmentation",
+ "uuid",
+]
+
+[[package]]
+name = "blkit-transpiler"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "blkit-core",
  "chrono",
  "chrono-tz",
  "clap",

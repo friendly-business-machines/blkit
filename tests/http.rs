@@ -2,13 +2,14 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
+extern crate blkit_core as blkit;
 use blkit::{
     RetryPolicy,
     compiled_graph::{GraphDefinition, GraphLink, GraphNode, GraphNodeKind},
     runtime::{Engine, LocalStore, Registry},
     server::router,
-    transpile,
 };
+use blkit_transpiler::transpile;
 use serde_json::{Value, json};
 use std::{
     sync::{

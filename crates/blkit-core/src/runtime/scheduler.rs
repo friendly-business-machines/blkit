@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(feature = "local-persistence")]
 pub(super) async fn run_named(
     graph: Arc<GraphDefinition>,
     instance: Instance,
@@ -112,24 +113,7 @@ async fn save_wait(
     checkpoint: &crate::compiled_graph::GraphCheckpoint,
     wake: i64,
 ) -> Result<(), String> {
-    if let Some(claim) = &context.claim {
-        if !claim
-            .store
-            .release_wait_owned(
-                &context.id,
-                &claim.worker_id,
-                claim.generation,
-                checkpoint,
-                wake,
-            )
-            .await?
-        {
-            return Err("lost claim before wait checkpoint".into());
-        }
-    } else if let Some(store) = &context.store {
-        store.set_wait(&context.id, checkpoint, wake).await?;
-    }
-    Ok(())
+    context.wait_until(checkpoint, wake).await
 }
 
 struct ReadyWork {
@@ -228,17 +212,7 @@ pub(super) async fn execute_named(
         let mut ended = Vec::new();
         if resolve_children(graph, input, &mut next, definitions, &[], &mut ended)? {
             signal_child_scopes(context, &ended, &mut scopes, &mut in_flight).await;
-            if let Some(claim) = &context.claim {
-                if !claim
-                    .store
-                    .commit_checkpoint(&context.id, &claim.worker_id, claim.generation, &next)
-                    .await?
-                {
-                    return Err("lost claim before checkpoint".into());
-                }
-            } else if let Some(store) = &context.store {
-                store.commit_checkpoint(&context.id, &next).await?;
-            }
+            context.checkpoint(&next).await?;
             checkpoint = next;
             continue;
         }
@@ -254,17 +228,7 @@ pub(super) async fn execute_named(
         {
             let mut next = checkpoint.clone();
             graph.resume_due(input, &mut next, crate::store::now_ms())?;
-            if let Some(claim) = &context.claim {
-                if !claim
-                    .store
-                    .commit_checkpoint(&context.id, &claim.worker_id, claim.generation, &next)
-                    .await?
-                {
-                    return Err("lost claim before checkpoint".into());
-                }
-            } else if let Some(store) = &context.store {
-                store.commit_checkpoint(&context.id, &next).await?;
-            }
+            context.checkpoint(&next).await?;
             checkpoint = next;
             continue;
         }
@@ -318,9 +282,8 @@ pub(super) async fn execute_named(
                 return Err("instance cancelled".into());
             }
             if matches!(state.status, "pending" | "retry-waiting") {
-                if let Some(store) = &context.store {
-                    store.begin_attempt(&context.id).await?;
-                }
+                #[cfg(feature = "local-persistence")]
+                context.begin_attempt().await?;
                 state.status = "running";
             }
             let key = state.next;
@@ -366,24 +329,13 @@ pub(super) async fn execute_named(
                     return Err("instance cancelled".into());
                 }
                 if matches!(state.status, "pending" | "retry-waiting") {
-                    if let Some(store) = &context.store {
-                        store.begin_attempt(&context.id).await?;
-                    }
+                    #[cfg(feature = "local-persistence")]
+                    context.begin_attempt().await?;
                     state.status = "running";
                 }
                 let mut next = checkpoint.clone();
                 resume_nested_pending(graph, input, &mut next, definitions)?;
-                if let Some(claim) = &context.claim {
-                    if !claim
-                        .store
-                        .commit_checkpoint(&context.id, &claim.worker_id, claim.generation, &next)
-                        .await?
-                    {
-                        return Err("lost claim before checkpoint".into());
-                    }
-                } else if let Some(store) = &context.store {
-                    store.commit_checkpoint(&context.id, &next).await?;
-                }
+                context.checkpoint(&next).await?;
                 checkpoint = next;
                 drop(state);
                 tokio::task::yield_now().await;
@@ -456,22 +408,7 @@ pub(super) async fn execute_named(
                             &mut in_flight,
                         )
                         .await;
-                        if let Some(claim) = &context.claim {
-                            if !claim
-                                .store
-                                .commit_checkpoint(
-                                    &context.id,
-                                    &claim.worker_id,
-                                    claim.generation,
-                                    &next,
-                                )
-                                .await?
-                            {
-                                return Err("lost claim before checkpoint".into());
-                            }
-                        } else if let Some(store) = &context.store {
-                            store.commit_checkpoint(&context.id, &next).await?;
-                        }
+                        context.checkpoint(&next).await?;
                         checkpoint = next;
                         continue 'drive;
                     }
@@ -499,17 +436,7 @@ pub(super) async fn execute_named(
                 return Ok(NamedOutcome::Waiting(wake));
             }
         }
-        if let Some(claim) = &context.claim {
-            if !claim
-                .store
-                .commit_checkpoint(&context.id, &claim.worker_id, claim.generation, &next)
-                .await?
-            {
-                return Err("lost claim before checkpoint".into());
-            }
-        } else if let Some(store) = &context.store {
-            store.commit_checkpoint(&context.id, &next).await?;
-        }
+        context.checkpoint(&next).await?;
         checkpoint = next;
     }
 }

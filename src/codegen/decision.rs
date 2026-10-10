@@ -153,7 +153,7 @@ fn emit_table(
         ("COLLECT", Some("SUM" | "MIN" | "MAX")) => {
             let operation = match table.aggregation.as_deref().unwrap() {
                 "SUM" => {
-                    "try_fold(Number::ZERO, |sum, value| blkit::number_ops::arithmetic(\"+\", sum, value))?"
+                    "try_fold(Number::ZERO, |sum, value| blkit_core::number_ops::arithmetic(\"+\", sum, value))?"
                 }
                 "MIN" => "min().unwrap()",
                 _ => "max().unwrap()",

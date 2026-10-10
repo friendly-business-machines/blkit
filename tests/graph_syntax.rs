@@ -1,4 +1,5 @@
 use blkit::{graph::PeerKind, parse, validate};
+use blkit_transpiler as blkit;
 
 #[test]
 fn parses_peer_flows_bindings_and_retry_policy() {

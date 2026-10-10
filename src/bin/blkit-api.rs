@@ -1,14 +1,8 @@
 use std::{env, sync::Arc, time::Duration};
 
-use blkit::{
+use blkit_core::{
     distributed::DistributedControl, postgres_store::PostgresStore, server::router_distributed,
 };
-
-// Generated Rust is checked by compilation and integration tests, not style lints.
-#[allow(clippy::all)]
-mod compiled {
-    include!(concat!(env!("OUT_DIR"), "/graph.rs"));
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,10 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let bind = args.get(2).map_or("127.0.0.1:3000", String::as_str);
     let store = PostgresStore::connect(url).await?;
-    let control = Arc::new(DistributedControl::new(
-        store,
-        compiled::named_graph_definitions(),
-    )?);
+    let control = Arc::new(DistributedControl::new(store));
     let reconciler = control.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(100));

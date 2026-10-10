@@ -88,7 +88,7 @@ fn transpile(source: &Path, output: &Path) -> Result<(), CliError> {
         path: source.to_path_buf(),
         details: error.to_string(),
     })?;
-    let rust = blkit::transpile(&text).map_err(|details| CliError {
+    let rust = blkit_transpiler::transpile(&text).map_err(|details| CliError {
         operation: "compile",
         path: source.to_path_buf(),
         details,
@@ -115,10 +115,11 @@ fn project(operation: &'static str, directory: Option<&Path>) -> Result<(), CliE
         progress.enable_steady_tick(Duration::from_millis(120));
         progress
     });
-    let result = blkit::project::Project::load(directory).and_then(|project| match operation {
-        "transpile" => project.transpile(),
-        _ => project.update(),
-    });
+    let result =
+        blkit_transpiler::project::Project::load(directory).and_then(|project| match operation {
+            "transpile" => project.transpile(),
+            _ => project.update(),
+        });
     if let Some(progress) = progress {
         progress.finish_and_clear();
     }

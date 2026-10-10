@@ -10,12 +10,10 @@ mod decision;
 mod expr;
 #[path = "src/graph.rs"]
 mod graph;
-#[path = "src/number_ops.rs"]
-mod number_ops;
+pub use blkit_core::number_ops;
 #[path = "src/semantic/mod.rs"]
 mod semantic;
-#[path = "src/temporal.rs"]
-mod temporal;
+pub use blkit_core::temporal;
 use compiler::{Program, Type, identifier, type_ref};
 
 fn main() {
@@ -25,12 +23,12 @@ fn main() {
         "src/decision.rs",
         "src/expr.rs",
         "src/graph.rs",
-        "src/number_ops.rs",
-        "src/temporal.rs",
-        "src/temporal/duration.rs",
-        "src/temporal/calendar.rs",
-        "src/temporal/business.rs",
-        "src/temporal/financial.rs",
+        "crates/blkit-core/src/number_ops.rs",
+        "crates/blkit-core/src/temporal.rs",
+        "crates/blkit-core/src/temporal/duration.rs",
+        "crates/blkit-core/src/temporal/calendar.rs",
+        "crates/blkit-core/src/temporal/business.rs",
+        "crates/blkit-core/src/temporal/financial.rs",
         "src/semantic/mod.rs",
         "src/semantic/decision.rs",
         "src/semantic/graph.rs",

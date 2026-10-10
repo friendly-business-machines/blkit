@@ -113,9 +113,9 @@ fn emit_source_graph(
     let PeerKind::Start { outputs } = &start.kind else {
         unreachable!()
     };
-    let retry = process.retry.as_ref().map_or("None".into(), |policy| format!("Some(blkit::RetryPolicy {{ max_retries: {}, retry_for: std::time::Duration::from_millis({}), retry_delay: std::time::Duration::from_millis({}), backoff: {:?} }})", policy.max_retries, policy.retry_for.as_millis(), policy.retry_delay.as_millis(), policy.backoff));
-    let deadline = process.deadline.as_ref().map_or("None".into(), |policy| format!("Some(blkit::DeadlinePolicy {{ origin: {:?}, duration: std::time::Duration::from_millis({}) }})", policy.origin, policy.duration.as_millis()));
-    out.push_str(&format!("blkit::compiled_graph::GraphDefinition {{ namespace: NAMESPACE, version: VERSION, name: {:?}, retry: {retry}, deadline: {deadline}, decode_input: Box::new(|value| {{ let object = value.as_object().ok_or(\"start input must be an object\")?; if object.len() != {} {{ return Err(\"invalid start input ports\".into()); }} let mut result = serde_json::Map::new();\n", process.name, outputs.len()));
+    let retry = process.retry.as_ref().map_or("None".into(), |policy| format!("Some(blkit_core::RetryPolicy {{ max_retries: {}, retry_for: std::time::Duration::from_millis({}), retry_delay: std::time::Duration::from_millis({}), backoff: {:?} }})", policy.max_retries, policy.retry_for.as_millis(), policy.retry_delay.as_millis(), policy.backoff));
+    let deadline = process.deadline.as_ref().map_or("None".into(), |policy| format!("Some(blkit_core::DeadlinePolicy {{ origin: {:?}, duration: std::time::Duration::from_millis({}) }})", policy.origin, policy.duration.as_millis()));
+    out.push_str(&format!("blkit_core::compiled_graph::GraphDefinition {{ namespace: NAMESPACE, version: VERSION, name: {:?}, retry: {retry}, deadline: {deadline}, decode_input: Box::new(|value| {{ let object = value.as_object().ok_or(\"start input must be an object\")?; if object.len() != {} {{ return Err(\"invalid start input ports\".into()); }} let mut result = serde_json::Map::new();\n", process.name, outputs.len()));
     for (name, ty) in outputs {
         out.push_str(&format!("let typed: {} = serde_json::from_value(object.get({name:?}).ok_or(\"missing start input port: {name}\")?.clone()).map_err(|e| e.to_string())?; result.insert({name:?}.into(), serde_json::to_value(typed).map_err(|e| e.to_string())?);\n", rust_type(ty)));
     }
@@ -126,25 +126,25 @@ fn emit_source_graph(
             continue;
         }
         let kind = if name == &start.name {
-            "blkit::compiled_graph::GraphNodeKind::Start".to_owned()
+            "blkit_core::compiled_graph::GraphNodeKind::Start".to_owned()
         } else if let Some(peer) = program.peer_nodes.iter().find(|peer| peer.name == *name) {
             match &peer.kind {
-                PeerKind::End { .. } => "blkit::compiled_graph::GraphNodeKind::End".into(),
+                PeerKind::End { .. } => "blkit_core::compiled_graph::GraphNodeKind::End".into(),
                 PeerKind::Split { kind } => {
-                    format!("blkit::compiled_graph::GraphNodeKind::Split({kind:?})")
+                    format!("blkit_core::compiled_graph::GraphNodeKind::Split({kind:?})")
                 }
                 PeerKind::Join { kind, split, .. } => format!(
-                    "blkit::compiled_graph::GraphNodeKind::Join {{ kind: {kind:?}, split: {split:?} }}"
+                    "blkit_core::compiled_graph::GraphNodeKind::Join {{ kind: {kind:?}, split: {split:?} }}"
                 ),
                 PeerKind::Terminal { kind } => {
-                    format!("blkit::compiled_graph::GraphNodeKind::{kind}")
+                    format!("blkit_core::compiled_graph::GraphNodeKind::{kind}")
                 }
                 PeerKind::PauseFor(duration) => format!(
-                    "blkit::compiled_graph::GraphNodeKind::PauseFor(std::time::Duration::from_millis({}))",
+                    "blkit_core::compiled_graph::GraphNodeKind::PauseFor(std::time::Duration::from_millis({}))",
                     duration.as_millis()
                 ),
                 PeerKind::PauseUntil { input } => format!(
-                    "blkit::compiled_graph::GraphNodeKind::PauseUntil(std::sync::Arc::new(|source, values| Ok({})))",
+                    "blkit_core::compiled_graph::GraphNodeKind::PauseUntil(std::sync::Arc::new(|source, values| Ok({})))",
                     bound_value(graph, name, input, program)?
                 ),
                 PeerKind::Subprocess {
@@ -160,7 +160,7 @@ fn emit_source_graph(
                         ));
                     }
                     format!(
-                        "blkit::compiled_graph::GraphNodeKind::Subprocess {{ process: {child:?}, input: std::sync::Arc::new(|source, values| {{ {fields} Ok(serde_json::Value::Object(object)) }}) }}"
+                        "blkit_core::compiled_graph::GraphNodeKind::Subprocess {{ process: {child:?}, input: std::sync::Arc::new(|source, values| {{ {fields} Ok(serde_json::Value::Object(object)) }}) }}"
                     )
                 }
                 PeerKind::Start { .. } => return Err("multiple start events".into()),
@@ -179,7 +179,7 @@ fn emit_source_graph(
                 let ty = &decision.inputs[0].1;
                 let items = route_closure(&multi.items, program)?;
                 format!(
-                    "blkit::compiled_graph::GraphNodeKind::MultiInstance {{ task: std::sync::Arc::new(|item, _| {{ let typed: {} = serde_json::from_value(item.clone()).map_err(|e| e.to_string())?; serde_json::to_value(self::{}(typed)?).map_err(|e| e.to_string()) }}), items: {items}, parallel: {} }}",
+                    "blkit_core::compiled_graph::GraphNodeKind::MultiInstance {{ task: std::sync::Arc::new(|item, _| {{ let typed: {} = serde_json::from_value(item.clone()).map_err(|e| e.to_string())?; serde_json::to_value(self::{}(typed)?).map_err(|e| e.to_string()) }}), items: {items}, parallel: {} }}",
                     rust_type(ty),
                     decision.name,
                     multi.parallel
@@ -218,16 +218,16 @@ fn emit_source_graph(
                         )
                     });
                     format!(
-                        "blkit::compiled_graph::GraphNodeKind::TaskLoop({call}, blkit::compiled_graph::LoopPolicy {{ condition: {condition}, initial: {initial}, before: {}, max_iterations: {max_iterations}, max_duration: {max_duration} }})",
+                        "blkit_core::compiled_graph::GraphNodeKind::TaskLoop({call}, blkit_core::compiled_graph::LoopPolicy {{ condition: {condition}, initial: {initial}, before: {}, max_iterations: {max_iterations}, max_duration: {max_duration} }})",
                         repeat.before
                     )
                 } else {
-                    format!("blkit::compiled_graph::GraphNodeKind::Task({call})")
+                    format!("blkit_core::compiled_graph::GraphNodeKind::Task({call})")
                 }
             }
         };
         out.push_str(&format!(
-            "blkit::compiled_graph::GraphNode {{ name: {name:?}, kind: {kind} }},\n"
+            "blkit_core::compiled_graph::GraphNode {{ name: {name:?}, kind: {kind} }},\n"
         ));
     }
     out.push_str("], links: vec![\n");
@@ -278,14 +278,14 @@ fn emit_source_graph(
             .unwrap_or_else(|| "None".into());
         let fallback = route.is_some_and(|route| route.fallback);
         let label = route.and_then(|route| route.outcome.as_deref().or(route.label.as_deref()));
-        out.push_str(&format!("blkit::compiled_graph::GraphLink {{ source: {source:?}, target: {target:?}, value: {value}, condition: {condition}, fallback: {fallback}, label: {label:?} }},\n"));
+        out.push_str(&format!("blkit_core::compiled_graph::GraphLink {{ source: {source:?}, target: {target:?}, value: {value}, condition: {condition}, fallback: {fallback}, label: {label:?} }},\n"));
     }
     out.push_str("] },\n");
     Ok(())
 }
 
 pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(), String> {
-    out.push_str("#[allow(unused_variables, unused_parens)]\npub fn named_graph_definitions() -> Vec<blkit::compiled_graph::GraphDefinition> { vec![\n");
+    out.push_str("#[allow(unused_variables, unused_parens)]\npub fn named_graph_definitions() -> Vec<blkit_core::compiled_graph::GraphDefinition> { vec![\n");
     for process in program
         .processes
         .iter()
@@ -295,12 +295,12 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
         let scopes = semantic::named_scopes(graph, process, program)?;
         let emit =
             |expr: &Expr, env: &HashMap<String, Type>| emit_typed_expr(expr, program, &[], env);
-        let retry = process.retry.as_ref().map_or("None".into(), |policy| format!("Some(blkit::RetryPolicy {{ max_retries: {}, retry_for: std::time::Duration::from_millis({}), retry_delay: std::time::Duration::from_millis({}), backoff: {:?} }})", policy.max_retries, policy.retry_for.as_millis(), policy.retry_delay.as_millis(), policy.backoff));
-        let deadline = process.deadline.as_ref().map_or("None".into(), |policy| format!("Some(blkit::DeadlinePolicy {{ origin: {:?}, duration: std::time::Duration::from_millis({}) }})", policy.origin, policy.duration.as_millis()));
-        out.push_str(&format!("blkit::compiled_graph::GraphDefinition {{ namespace: NAMESPACE, version: VERSION, name: {:?}, retry: {retry}, deadline: {deadline}, decode_input: Box::new(|value| {{ let typed: {} = serde_json::from_value(value).map_err(|e| e.to_string())?; serde_json::to_value(typed).map_err(|e| e.to_string()) }}), nodes: vec![\n", process.name, rust_type(&process.input_type)));
+        let retry = process.retry.as_ref().map_or("None".into(), |policy| format!("Some(blkit_core::RetryPolicy {{ max_retries: {}, retry_for: std::time::Duration::from_millis({}), retry_delay: std::time::Duration::from_millis({}), backoff: {:?} }})", policy.max_retries, policy.retry_for.as_millis(), policy.retry_delay.as_millis(), policy.backoff));
+        let deadline = process.deadline.as_ref().map_or("None".into(), |policy| format!("Some(blkit_core::DeadlinePolicy {{ origin: {:?}, duration: std::time::Duration::from_millis({}) }})", policy.origin, policy.duration.as_millis()));
+        out.push_str(&format!("blkit_core::compiled_graph::GraphDefinition {{ namespace: NAMESPACE, version: VERSION, name: {:?}, retry: {retry}, deadline: {deadline}, decode_input: Box::new(|value| {{ let typed: {} = serde_json::from_value(value).map_err(|e| e.to_string())?; serde_json::to_value(typed).map_err(|e| e.to_string()) }}), nodes: vec![\n", process.name, rust_type(&process.input_type)));
         for node in &graph.nodes {
             let kind = match &node.kind {
-                NodeKind::Start => "blkit::compiled_graph::GraphNodeKind::Start".into(),
+                NodeKind::Start => "blkit_core::compiled_graph::GraphNodeKind::Start".into(),
                 NodeKind::Subprocess {
                     process: child,
                     input: argument,
@@ -308,7 +308,7 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                     let mut env = scopes[node.name.as_str()].clone();
                     env.remove(&node.name);
                     format!(
-                        "blkit::compiled_graph::GraphNodeKind::Subprocess {{ process: {child:?}, input: {} }}",
+                        "blkit_core::compiled_graph::GraphNodeKind::Subprocess {{ process: {child:?}, input: {} }}",
                         graph_closure(
                             emit(argument, &env),
                             &env,
@@ -318,11 +318,11 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                     )
                 }
                 NodeKind::PauseFor(duration) => format!(
-                    "blkit::compiled_graph::GraphNodeKind::PauseFor(std::time::Duration::from_millis({}))",
+                    "blkit_core::compiled_graph::GraphNodeKind::PauseFor(std::time::Duration::from_millis({}))",
                     duration.as_millis()
                 ),
                 NodeKind::PauseUntil(expression) => format!(
-                    "blkit::compiled_graph::GraphNodeKind::PauseUntil({})",
+                    "blkit_core::compiled_graph::GraphNodeKind::PauseUntil({})",
                     graph_closure(
                         emit(expression, &scopes[node.name.as_str()]),
                         &scopes[node.name.as_str()],
@@ -338,7 +338,7 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                     env.remove(&node.name);
                     let expression = format!("self::{model}({})?", emit(argument, &env));
                     format!(
-                        "blkit::compiled_graph::GraphNodeKind::Task({})",
+                        "blkit_core::compiled_graph::GraphNodeKind::Task({})",
                         graph_closure(expression, &env, &process.input, &process.input_type)
                     )
                 }
@@ -356,13 +356,13 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                             &process.input_type,
                         );
                         format!(
-                            "blkit::compiled_graph::GraphNodeKind::AsyncTask({})",
+                            "blkit_core::compiled_graph::GraphNodeKind::AsyncTask({})",
                             external_graph_closure(task, external, input)?
                         )
                     } else {
                         let expression = task_call(task, &emit(argument, &env), program);
                         format!(
-                            "blkit::compiled_graph::GraphNodeKind::Task({})",
+                            "blkit_core::compiled_graph::GraphNodeKind::Task({})",
                             graph_closure(expression, &env, &process.input, &process.input_type)
                         )
                     }
@@ -383,7 +383,7 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                         );
                         let call = external_graph_closure(task, external, argument)?;
                         format!(
-                            "blkit::compiled_graph::GraphNodeKind::AsyncMultiInstance {{ task: {call}, items: {items}, parallel: {parallel} }}"
+                            "blkit_core::compiled_graph::GraphNodeKind::AsyncMultiInstance {{ task: {call}, items: {items}, parallel: {parallel} }}"
                         )
                     } else {
                         let definition = program
@@ -393,7 +393,7 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                             .ok_or_else(|| format!("unknown task: {task}"))?;
                         let call = task_call(task, "typed", program);
                         format!(
-                            "blkit::compiled_graph::GraphNodeKind::MultiInstance {{ task: std::sync::Arc::new(|item, _| {{ let typed: {} = serde_json::from_value(item.clone()).map_err(|e| e.to_string())?; serde_json::to_value({call}).map_err(|e| e.to_string()) }}), items: {items}, parallel: {parallel} }}",
+                            "blkit_core::compiled_graph::GraphNodeKind::MultiInstance {{ task: std::sync::Arc::new(|item, _| {{ let typed: {} = serde_json::from_value(item.clone()).map_err(|e| e.to_string())?; serde_json::to_value({call}).map_err(|e| e.to_string()) }}), items: {items}, parallel: {parallel} }}",
                             rust_type(&definition.input_type)
                         )
                     }
@@ -462,22 +462,24 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                         )
                     });
                     format!(
-                        "blkit::compiled_graph::GraphNodeKind::{kind}({call}, blkit::compiled_graph::LoopPolicy {{ condition: {condition}, initial: {initial}, before: {before}, max_iterations: {max_iterations}, max_duration: {max_duration} }})"
+                        "blkit_core::compiled_graph::GraphNodeKind::{kind}({call}, blkit_core::compiled_graph::LoopPolicy {{ condition: {condition}, initial: {initial}, before: {before}, max_iterations: {max_iterations}, max_duration: {max_duration} }})"
                     )
                 }
                 NodeKind::Split(kind) => {
-                    format!("blkit::compiled_graph::GraphNodeKind::Split({kind:?})")
+                    format!("blkit_core::compiled_graph::GraphNodeKind::Split({kind:?})")
                 }
                 NodeKind::Join { kind, split, .. } => format!(
-                    "blkit::compiled_graph::GraphNodeKind::Join {{ kind: {kind:?}, split: {split:?} }}"
+                    "blkit_core::compiled_graph::GraphNodeKind::Join {{ kind: {kind:?}, split: {split:?} }}"
                 ),
-                NodeKind::End => "blkit::compiled_graph::GraphNodeKind::End".into(),
-                NodeKind::Error => "blkit::compiled_graph::GraphNodeKind::Error".into(),
-                NodeKind::Cancel => "blkit::compiled_graph::GraphNodeKind::Cancel".into(),
-                NodeKind::Terminate => "blkit::compiled_graph::GraphNodeKind::Terminate".into(),
+                NodeKind::End => "blkit_core::compiled_graph::GraphNodeKind::End".into(),
+                NodeKind::Error => "blkit_core::compiled_graph::GraphNodeKind::Error".into(),
+                NodeKind::Cancel => "blkit_core::compiled_graph::GraphNodeKind::Cancel".into(),
+                NodeKind::Terminate => {
+                    "blkit_core::compiled_graph::GraphNodeKind::Terminate".into()
+                }
             };
             out.push_str(&format!(
-                "blkit::compiled_graph::GraphNode {{ name: {:?}, kind: {kind} }},\n",
+                "blkit_core::compiled_graph::GraphNode {{ name: {:?}, kind: {kind} }},\n",
                 node.name
             ));
         }
@@ -496,7 +498,7 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
                     graph_closure(emit(expr, env), env, &process.input, &process.input_type)
                 )
             });
-            out.push_str(&format!("blkit::compiled_graph::GraphLink {{ source: {:?}, target: {:?}, value: {value}, condition: {condition}, fallback: {}, label: {:?} }},\n", link.source, link.target, link.fallback, link.outcome.as_ref().or(link.label.as_ref())));
+            out.push_str(&format!("blkit_core::compiled_graph::GraphLink {{ source: {:?}, target: {:?}, value: {value}, condition: {condition}, fallback: {}, label: {:?} }},\n", link.source, link.target, link.fallback, link.outcome.as_ref().or(link.label.as_ref())));
         }
         out.push_str("] },\n");
     }

@@ -388,7 +388,7 @@ fn emit_typed_expr(
 fn emit_calendar_target(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> String {
     match expr {
         Expr::List(items) => format!(
-            "blkit::temporal::CalendarTarget::Any(vec![{}])",
+            "blkit_core::temporal::CalendarTarget::Any(vec![{}])",
             items
                 .iter()
                 .map(|item| emit_calendar_target(item, program, knowledge))
@@ -396,17 +396,17 @@ fn emit_calendar_target(expr: &Expr, program: &Program, knowledge: &[Knowledge])
                 .join(", ")
         ),
         Expr::Call(name, args) if name == "pattern" => format!(
-            "blkit::temporal::CalendarTarget::pattern(&({}))?",
+            "blkit_core::temporal::CalendarTarget::pattern(&({}))?",
             emit_expr_with(&args[0], program, knowledge)
         ),
         Expr::Range(..) => {
             let r = emit_expr_with(expr, program, knowledge);
             format!(
-                "{{ let r = {r}; blkit::temporal::CalendarTarget::Range(r.lower.map(Into::into), r.upper.map(Into::into), r.include_lower, r.include_upper) }}"
+                "{{ let r = {r}; blkit_core::temporal::CalendarTarget::Range(r.lower.map(Into::into), r.upper.map(Into::into), r.include_lower, r.include_upper) }}"
             )
         }
         _ => format!(
-            "blkit::temporal::CalendarTarget::from({})",
+            "blkit_core::temporal::CalendarTarget::from({})",
             emit_expr_with(expr, program, knowledge)
         ),
     }
@@ -445,24 +445,24 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 .collect::<Vec<_>>();
             if matches!(name.as_str(), "financialYear" | "financialYearQuarter") {
                 format!(
-                    "blkit::temporal::financial::financial_year({}, {}, {})?",
+                    "blkit_core::temporal::financial::financial_year({}, {}, {})?",
                     values[0],
                     values[1],
                     name == "financialYearQuarter"
                 )
             } else if values.len() == 2 {
                 format!(
-                    "blkit::temporal::financial::difference({}, {}, {name:?}, \"calendar\", false)?",
+                    "blkit_core::temporal::financial::difference({}, {}, {name:?}, \"calendar\", false)?",
                     values[0], values[1]
                 )
             } else if values.len() == 3 {
                 format!(
-                    "blkit::temporal::financial::difference_three({}, {}, {name:?}, {})?",
+                    "blkit_core::temporal::financial::difference_three({}, {}, {name:?}, {})?",
                     values[0], values[1], values[2]
                 )
             } else {
                 format!(
-                    "blkit::temporal::financial::difference({}, {}, {name:?}, &({}), {})?",
+                    "blkit_core::temporal::financial::difference({}, {}, {name:?}, &({}), {})?",
                     values[0], values[1], values[2], values[3]
                 )
             }
@@ -546,17 +546,17 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             };
             if is_predicate {
                 format!(
-                    "blkit::temporal::business::predicate({}, {name:?}, {calendar})?",
+                    "blkit_core::temporal::business::predicate({}, {name:?}, {calendar})?",
                     values[0]
                 )
             } else if is_count {
                 format!(
-                    "blkit::temporal::business::count_between({}, {}, {calendar}, {strict})?",
+                    "blkit_core::temporal::business::count_between({}, {}, {calendar}, {strict})?",
                     values[0], values[1]
                 )
             } else {
                 format!(
-                    "blkit::temporal::business::operation({}, {name:?}, {first}, {second}, {calendar}, {strict})?",
+                    "blkit_core::temporal::business::operation({}, {name:?}, {first}, {second}, {calendar}, {strict})?",
                     values[0]
                 )
             }
@@ -583,7 +583,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                     }
                 }
                 format!(
-                    "{{ let dedupe: Option<String> = {dedupe}; blkit::temporal::Calendar::merge({calendars}, dedupe.as_deref(), &({tiebreak}))? }}"
+                    "{{ let dedupe: Option<String> = {dedupe}; blkit_core::temporal::Calendar::merge({calendars}, dedupe.as_deref(), &({tiebreak}))? }}"
                 )
             } else {
                 let calendar = emit_expr_with(&args[0], program, knowledge);
@@ -619,7 +619,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 "validFrom" => format!("({a}).valid_from().clone()"),
                 "validTo" => format!("({a}).valid_to().clone()"),
                 "validRange" => format!("({a}).valid_range()"),
-                "entryName" => format!("blkit::temporal::entry_name(&({a}))?"),
+                "entryName" => format!("blkit_core::temporal::entry_name(&({a}))?"),
                 "entryValue" => format!("({a}).value.clone()"),
                 "next" | "prev" => format!(
                     "({a}).adjacent({}, {}, {})?",
@@ -652,12 +652,12 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             let value = emit_expr_with(&args[0], program, knowledge);
             if field == "offset" {
                 format!(
-                    "blkit::temporal::offset_property(&({value}), __bl_temporal_clock.clone())?"
+                    "blkit_core::temporal::offset_property(&({value}), __bl_temporal_clock.clone())?"
                 )
             } else if name.starts_with("__bl_temporal_text_") {
-                format!("blkit::temporal::text_property(&({value}), {field:?})?")
+                format!("blkit_core::temporal::text_property(&({value}), {field:?})?")
             } else {
-                format!("blkit::temporal::number_property(&({value}), {field:?})?")
+                format!("blkit_core::temporal::number_property(&({value}), {field:?})?")
             }
         }
         Expr::Call(name, args) if name.starts_with("__bl_duration_op_") => {
@@ -684,7 +684,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 _ => unreachable!(),
             };
             format!(
-                "blkit::temporal::{method}({}, {})?",
+                "blkit_core::temporal::{method}({}, {})?",
                 emit_expr_with(&args[0], program, knowledge),
                 emit_expr_with(&args[1], program, knowledge)
             )
@@ -777,17 +777,17 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             )
         }
         Expr::Call(name, args) if name == "__bl_with_offset_time" => format!(
-            "blkit::temporal::with_offset_time({}, {}, __bl_temporal_clock.clone())?",
+            "blkit_core::temporal::with_offset_time({}, {}, __bl_temporal_clock.clone())?",
             emit_expr_with(&args[0], program, knowledge),
             emit_expr_with(&args[1], program, knowledge)
         ),
         Expr::Call(name, args) if name == "withOffset" => format!(
-            "blkit::temporal::with_offset_datetime({}, {})?",
+            "blkit_core::temporal::with_offset_datetime({}, {})?",
             emit_expr_with(&args[0], program, knowledge),
             emit_expr_with(&args[1], program, knowledge)
         ),
         Expr::Call(name, args) if name == "withTimezone" => format!(
-            "blkit::temporal::with_timezone({}, &({}))?",
+            "blkit_core::temporal::with_timezone({}, &({}))?",
             emit_expr_with(&args[0], program, knowledge),
             emit_expr_with(&args[1], program, knowledge)
         ),
@@ -798,7 +798,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             ) =>
         {
             format!(
-                "blkit::temporal::strip_zone({}, {name:?})",
+                "blkit_core::temporal::strip_zone({}, {name:?})",
                 emit_expr_with(&args[0], program, knowledge)
             )
         }
@@ -808,7 +808,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 .map(|arg| emit_expr_with(arg, program, knowledge))
                 .collect::<Vec<_>>();
             format!(
-                "blkit::temporal::date_from_parts({}, {}, {})?",
+                "blkit_core::temporal::date_from_parts({}, {}, {})?",
                 a[0], a[1], a[2]
             )
         }
@@ -821,28 +821,28 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 .get(3)
                 .map_or("None".to_string(), |value| format!("Some({value})"));
             format!(
-                "blkit::temporal::time_from_parts({}, {}, {}, {offset})?",
+                "blkit_core::temporal::time_from_parts({}, {}, {}, {offset})?",
                 a[0], a[1], a[2]
             )
         }
         Expr::Call(name, args) if name == "__bl_datetime_parts" => format!(
-            "blkit::temporal::combine({}, {})?",
+            "blkit_core::temporal::combine({}, {})?",
             emit_expr_with(&args[0], program, knowledge),
             emit_expr_with(&args[1], program, knowledge)
         ),
         Expr::Call(name, args) if name == "__bl_extract_date" => format!(
-            "blkit::temporal::extract_date({})",
+            "blkit_core::temporal::extract_date({})",
             emit_expr_with(&args[0], program, knowledge)
         ),
         Expr::Call(name, args) if name == "__bl_extract_time" => format!(
-            "blkit::temporal::extract_time({})",
+            "blkit_core::temporal::extract_time({})",
             emit_expr_with(&args[0], program, knowledge)
         ),
         Expr::Call(name, _) if name == "today" => {
-            "blkit::temporal::today(__bl_temporal_clock.clone())".into()
+            "blkit_core::temporal::today(__bl_temporal_clock.clone())".into()
         }
         Expr::Call(name, _) if name == "now" => {
-            "blkit::temporal::now(__bl_temporal_clock.clone())".into()
+            "blkit_core::temporal::now(__bl_temporal_clock.clone())".into()
         }
         Expr::Call(name, args)
             if matches!(name.as_str(), "dtDuration" | "ymDuration")
@@ -930,7 +930,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             let scale = args.get(1).map_or("Number::ZERO".into(), |arg| {
                 emit_expr_with(arg, program, knowledge)
             });
-            format!("blkit::number_ops::round({value}, {scale}, {name:?})?")
+            format!("blkit_core::number_ops::round({value}, {scale}, {name:?})?")
         }
         Expr::Call(name, args)
             if matches!(
@@ -939,7 +939,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             ) && !knowledge.iter().any(|item| item.name == *name) =>
         {
             format!(
-                "blkit::number_ops::aggregate({name:?}, &({}))?",
+                "blkit_core::number_ops::aggregate({name:?}, &({}))?",
                 emit_expr_with(&args[0], program, knowledge)
             )
         }
@@ -954,7 +954,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             } else {
                 "None".into()
             };
-            format!("blkit::number_ops::number(&({text}), {separators})?")
+            format!("blkit_core::number_ops::number(&({text}), {separators})?")
         }
         Expr::Call(name, args)
             if matches!(
@@ -981,10 +981,13 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 name.as_str(),
                 "odd" | "even" | "isPositive" | "isNegative" | "isZero"
             ) {
-                format!("blkit::number_ops::predicate({name:?}, {})?", values[0])
+                format!(
+                    "blkit_core::number_ops::predicate({name:?}, {})?",
+                    values[0]
+                )
             } else {
                 format!(
-                    "blkit::number_ops::math({name:?}, &[{}])?",
+                    "blkit_core::number_ops::math({name:?}, &[{}])?",
                     values.join(", ")
                 )
             }
@@ -1005,20 +1008,20 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                     .map_or("None".to_owned(), |flag| format!("Some(({flag}).as_str())"))
             };
             match name.as_str() {
-                "string" => format!("blkit::string_ops::scalar(&({a}))?"),
-                "stringJoin" => format!("blkit::string_ops::join(&({a}), &({b}))"),
-                "stringLength" => format!("blkit::string_ops::string_length(&({a}))"),
-                "indexOf" => format!("blkit::string_ops::index_of(&({a}), &({b}))"),
+                "string" => format!("blkit_core::string_ops::scalar(&({a}))?"),
+                "stringJoin" => format!("blkit_core::string_ops::join(&({a}), &({b}))"),
+                "stringLength" => format!("blkit_core::string_ops::string_length(&({a}))"),
+                "indexOf" => format!("blkit_core::string_ops::index_of(&({a}), &({b}))"),
                 "substring" => format!(
-                    "blkit::string_ops::substring(&({a}), {b}, {})?",
+                    "blkit_core::string_ops::substring(&({a}), {b}, {})?",
                     values
                         .get(2)
                         .map_or("None".to_owned(), |length| format!("Some({length})"))
                 ),
-                "charAt" => format!("blkit::string_ops::char_at(&({a}), {b})?"),
-                "reverse" => format!("blkit::string_ops::reverse(&({a}))"),
+                "charAt" => format!("blkit_core::string_ops::char_at(&({a}), {b})?"),
+                "reverse" => format!("blkit_core::string_ops::reverse(&({a}))"),
                 "padLeading" | "padTrailing" => format!(
-                    "blkit::string_ops::{}(&({a}), {b}, {})?",
+                    "blkit_core::string_ops::{}(&({a}), {b}, {})?",
                     if name == "padLeading" {
                         "pad_leading"
                     } else {
@@ -1026,9 +1029,9 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                     },
                     flags(2)
                 ),
-                "repeat" => format!("blkit::string_ops::repeat(&({a}), {b})?"),
+                "repeat" => format!("blkit_core::string_ops::repeat(&({a}), {b})?"),
                 "substringBefore" | "substringAfter" => format!(
-                    "blkit::string_ops::{}(&({a}), &({b})).to_owned()",
+                    "blkit_core::string_ops::{}(&({a}), &({b})).to_owned()",
                     if name == "substringBefore" {
                         "before"
                     } else {
@@ -1053,15 +1056,21 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                         _ => "ends_with",
                     }
                 ),
-                "isBlank" => format!("blkit::string_ops::is_blank(&({a}))"),
+                "isBlank" => format!("blkit_core::string_ops::is_blank(&({a}))"),
                 "isEmpty" => format!("({a}).is_empty()"),
-                "split" => format!("blkit::string_ops::split(&({a}), &({b}))?"),
-                "matches" => format!("blkit::string_ops::matches(&({a}), &({b}), {})?", flags(2)),
+                "split" => format!("blkit_core::string_ops::split(&({a}), &({b}))?"),
+                "matches" => format!(
+                    "blkit_core::string_ops::matches(&({a}), &({b}), {})?",
+                    flags(2)
+                ),
                 "replace" => format!(
-                    "blkit::string_ops::replace(&({a}), &({b}), &({c}), {})?",
+                    "blkit_core::string_ops::replace(&({a}), &({b}), &({c}), {})?",
                     flags(3)
                 ),
-                "extract" => format!("blkit::string_ops::extract(&({a}), &({b}), {})?", flags(2)),
+                "extract" => format!(
+                    "blkit_core::string_ops::extract(&({a}), &({b}), {})?",
+                    flags(2)
+                ),
                 _ => unreachable!(),
             }
         }
@@ -1171,7 +1180,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 let b = emit_expr_with(right, program, knowledge);
                 if op == "pointinlist" {
                     return format!(
-                        "{{ let value = {a}; ({b}).iter().try_fold(false, |found, item| if found {{ Ok(true) }} else {{ blkit::temporal::compare_checked(&value, item, __bl_temporal_clock.clone()).map(|order| order.is_eq()) }})? }}"
+                        "{{ let value = {a}; ({b}).iter().try_fold(false, |found, item| if found {{ Ok(true) }} else {{ blkit_core::temporal::compare_checked(&value, item, __bl_temporal_clock.clone()).map(|order| order.is_eq()) }})? }}"
                     );
                 }
                 if let Some(kind) = op.strip_prefix("pointin_") {
@@ -1181,7 +1190,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                         "false"
                     };
                     return format!(
-                        "{{ let value = {a}; let range = {b}; let empty = if let (Some(lower), Some(upper)) = (range.lower.as_ref(), range.upper.as_ref()) {{ let order = blkit::temporal::compare_checked(lower, upper, __bl_temporal_clock.clone())?; order.is_gt() || (order.is_eq() && !(range.include_lower && range.include_upper)) || (!range.include_lower && !range.include_upper && ({adjacent})) }} else {{ false }}; !empty && match range.lower.as_ref() {{ Some(bound) => {{ let order = blkit::temporal::compare_checked(&value, bound, __bl_temporal_clock.clone())?; if range.include_lower {{ order.is_ge() }} else {{ order.is_gt() }} }}, None => true }} && match range.upper.as_ref() {{ Some(bound) => {{ let order = blkit::temporal::compare_checked(&value, bound, __bl_temporal_clock.clone())?; if range.include_upper {{ order.is_le() }} else {{ order.is_lt() }} }}, None => true }} }}"
+                        "{{ let value = {a}; let range = {b}; let empty = if let (Some(lower), Some(upper)) = (range.lower.as_ref(), range.upper.as_ref()) {{ let order = blkit_core::temporal::compare_checked(lower, upper, __bl_temporal_clock.clone())?; order.is_gt() || (order.is_eq() && !(range.include_lower && range.include_upper)) || (!range.include_lower && !range.include_upper && ({adjacent})) }} else {{ false }}; !empty && match range.lower.as_ref() {{ Some(bound) => {{ let order = blkit_core::temporal::compare_checked(&value, bound, __bl_temporal_clock.clone())?; if range.include_lower {{ order.is_ge() }} else {{ order.is_gt() }} }}, None => true }} && match range.upper.as_ref() {{ Some(bound) => {{ let order = blkit_core::temporal::compare_checked(&value, bound, __bl_temporal_clock.clone())?; if range.include_upper {{ order.is_le() }} else {{ order.is_lt() }} }}, None => true }} }}"
                     );
                 }
                 if let Some(operator) = op.strip_prefix("pointcmp") {
@@ -1195,7 +1204,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                         _ => unreachable!(),
                     };
                     return format!(
-                        "blkit::temporal::compare_checked(&({a}), &({b}), __bl_temporal_clock.clone())?.{condition}"
+                        "blkit_core::temporal::compare_checked(&({a}), &({b}), __bl_temporal_clock.clone())?.{condition}"
                     );
                 }
                 if let Some(kind) = op.strip_prefix("pointdiff_") {
@@ -1204,7 +1213,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                     } else {
                         "subtract_datetimes"
                     };
-                    return format!("blkit::temporal::{method}({a}, {b})?");
+                    return format!("blkit_core::temporal::{method}({a}, {b})?");
                 }
                 let (_, ty, dur, operator) = {
                     let mut parts = op.split('_');
@@ -1224,9 +1233,11 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                     _ => unreachable!(),
                 };
                 return if operator == "-" {
-                    format!("blkit::temporal::{method}({a}, ({b}).checked_mul(-Number::ONE)?)?")
+                    format!(
+                        "blkit_core::temporal::{method}({a}, ({b}).checked_mul(-Number::ONE)?)?"
+                    )
                 } else {
-                    format!("blkit::temporal::{method}({a}, {b})?")
+                    format!("blkit_core::temporal::{method}({a}, {b})?")
                 };
             }
             if op.starts_with("duration") {
@@ -1252,7 +1263,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             if matches!(op.as_str(), "num+" | "-" | "*" | "/" | "%" | "**") {
                 let operator = if op == "num+" { "+" } else { op };
                 return format!(
-                    "blkit::number_ops::arithmetic({operator:?}, {}, {})?",
+                    "blkit_core::number_ops::arithmetic({operator:?}, {}, {})?",
                     emit_expr_with(left, program, knowledge),
                     emit_expr_with(right, program, knowledge)
                 );
@@ -1355,7 +1366,7 @@ fn external_graph_closure(
     let (provider, _) = task.split_once('.').ok_or("invalid qualified task")?;
     let output = rust_type(&external.output);
     Ok(format!(
-        "std::sync::Arc::new(|source: serde_json::Value, values: blkit::runtime::Values| {{ let argument: blkit::runtime::Evaluate = {input}; Box::pin(async move {{ let value = argument(&source, &values)?; let result = {provider}::{}(value).await?; let typed: {output} = serde_json::from_value(result).map_err(|e| e.to_string())?; serde_json::to_value(typed).map_err(|e| e.to_string()) }}) }})",
+        "std::sync::Arc::new(|source: serde_json::Value, values: blkit_core::runtime::Values| {{ let argument: blkit_core::runtime::Evaluate = {input}; Box::pin(async move {{ let value = argument(&source, &values)?; let result = {provider}::{}(value).await?; let typed: {output} = serde_json::from_value(result).map_err(|e| e.to_string())?; serde_json::to_value(typed).map_err(|e| e.to_string()) }}) }})",
         external.function
     ))
 }
@@ -1365,7 +1376,7 @@ mod graph;
 
 pub fn generate(program: &Program) -> Result<String, String> {
     let mut out = format!(
-        "pub type Number = rust_decimal::Decimal;\n#[allow(unused_imports)] pub use blkit::temporal::{{Date, Time, DateTime, DTDuration, YMDuration, Calendar, CalendarEntry}};\npub const NAMESPACE: &str = {:?};\npub const VERSION: &str = {:?};\n",
+        "pub type Number = rust_decimal::Decimal;\n#[allow(unused_imports)] pub use blkit_core::temporal::{{Date, Time, DateTime, DTDuration, YMDuration, Calendar, CalendarEntry}};\npub const NAMESPACE: &str = {:?};\npub const VERSION: &str = {:?};\n",
         program.namespace, program.version,
     );
     for model in &program.decisions {
