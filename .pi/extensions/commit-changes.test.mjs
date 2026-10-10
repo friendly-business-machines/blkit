@@ -402,7 +402,13 @@ test('explicit worktree run commits there without touching the session checkout'
     assert.match(await kit.call('inventory'), /new/);
     assert.match(await kit.call('propose', {proposal:{groups:[{source:'working',reason:'Change',changes:[{path:'file.txt'}]}],excluded:[]}}), /approved/i);
     await kit.call('stage'); await kit.call('present_message', {message:'fix: Update linked file'});
-    await kit.call('decide_message'); await kit.call('commit'); await kit.call('review_push');
+    await kit.call('decide_message');
+    assert.match(await kit.call('commit'), /local_merge|merge.*main/i);
+    await assert.rejects(kit.call('review_push'), /No current interactive commit run/i);
+    kit.ctx.cwd = linked;
+    assert.match(await kit.call('local_merge', {proposal:{worktree:linked}}), /Stopped/);
+    kit.ctx.cwd = main;
+    assert.ok(kit.events.some(e => e[0] === 'menu' && e[1].includes(`into ${main}`)));
     assert.equal(git(linked, 'log', '-1', '--format=%s').trim(), 'fix: Update linked file');
     assert.equal(git(main, 'rev-parse', 'HEAD').trim(), before);
     assert.equal(readFileSync(join(main, 'file.txt'), 'utf8'), 'old\n');
@@ -430,7 +436,8 @@ test('API-exposed proposal.worktree starts and commits in the linked worktree', 
     await kit.call('propose', {proposal:{groups:[{source:'working', reason:'Fix linked file', changes:[{path:'file.txt'}]}], excluded:[]}});
     await kit.call('stage');
     await kit.call('present_message', {message:'fix: Update linked file\n\nKeep changes in the selected worktree.'});
-    await kit.call('decide_message'); await kit.call('commit'); await kit.call('stop');
+    await kit.call('decide_message');
+    assert.match(await kit.call('commit'), /local_merge/);
     assert.equal(git(linked, 'log', '-1', '--format=%s').trim(), 'fix: Update linked file');
     assert.equal(git(main, 'rev-parse', 'HEAD').trim(), head);
     assert.equal(readFileSync(join(main, 'file.txt'), 'utf8'), 'old\n');
@@ -495,18 +502,44 @@ test('local merge reviews a clean branch and removes only the merged worktree wi
   } finally { rmSync(parent, {recursive:true, force:true}); }
 });
 
-test('local merge refuses untracked files without moving them', async () => {
-  const parent = mkdtempSync(join(tmpdir(), 'commit-ext-local-guard-'));
+test('fast-forward merge preserves unrelated untracked files and offers separate cleanup', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'commit-ext-local-ff-'));
   const main = join(parent, 'main'), linked = join(parent, 'linked');
   try {
     mkdirSync(main);
     git(main, 'init', '-q'); git(main, 'config', 'user.name', 'Tester'); git(main, 'config', 'user.email', 'test@example.org');
     writeFileSync(join(main, 'base.txt'), 'base\n'); git(main, 'add', 'base.txt'); git(main, 'commit', '-qm', 'init');
     git(main, 'worktree', 'add', '-qb', 'feature', linked);
+    writeFileSync(join(linked, 'feature.txt'), 'feature\n'); git(linked, 'add', 'feature.txt'); git(linked, 'commit', '-qm', 'feature');
     writeFileSync(join(main, 'scratch.txt'), 'untouched\n');
-    const kit = setupExtension(main);
-    await assert.rejects(kit.call('local_merge', {proposal:{worktree:linked}}), /untracked|clean/i);
+    const kit = setupExtension(main, ['Merge locally', 'Remove worktree']);
+    assert.match(await kit.call('local_merge', {proposal:{worktree:linked}}), /perform_local_merge/);
+    assert.match(await kit.call('perform_local_merge'), /remove_worktree/);
+    assert.equal(git(main, 'rev-parse', 'HEAD').trim(), git(linked, 'rev-parse', 'HEAD').trim());
+    assert.equal(git(main, 'rev-list', '--parents', '-n', '1', 'HEAD').trim().split(' ').length, 2);
     assert.equal(readFileSync(join(main, 'scratch.txt'), 'utf8'), 'untouched\n');
+    await kit.call('remove_worktree');
+    assert.equal(existsSync(linked), false);
+    assert.equal(readFileSync(join(main, 'scratch.txt'), 'utf8'), 'untouched\n');
+  } finally { rmSync(parent, {recursive:true, force:true}); }
+});
+
+test('fast-forward merge rejects colliding untracked paths and tracked changes', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'commit-ext-local-collision-'));
+  const main = join(parent, 'main'), linked = join(parent, 'linked');
+  try {
+    mkdirSync(main);
+    git(main, 'init', '-q'); git(main, 'config', 'user.name', 'Tester'); git(main, 'config', 'user.email', 'test@example.org');
+    writeFileSync(join(main, 'base.txt'), 'base\n'); git(main, 'add', 'base.txt'); git(main, 'commit', '-qm', 'init');
+    git(main, 'worktree', 'add', '-qb', 'feature', linked);
+    writeFileSync(join(linked, 'feature.txt'), 'feature\n'); git(linked, 'add', 'feature.txt'); git(linked, 'commit', '-qm', 'feature');
+    writeFileSync(join(main, 'feature.txt'), 'keep me\n');
+    const kit = setupExtension(main, ['Merge locally']);
+    await assert.rejects(kit.call('local_merge', {proposal:{worktree:linked}}), /untracked|overlap|collision/i);
+    rmSync(join(main, 'feature.txt'));
+    writeFileSync(join(main, 'base.txt'), 'working edit\n');
+    await assert.rejects(kit.call('local_merge', {proposal:{worktree:linked}}), /clean|tracked/i);
+    assert.notEqual(git(main, 'rev-parse', 'HEAD').trim(), git(linked, 'rev-parse', 'HEAD').trim());
   } finally { rmSync(parent, {recursive:true, force:true}); }
 });
 

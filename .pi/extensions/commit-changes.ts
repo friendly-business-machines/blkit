@@ -25,6 +25,13 @@ function worktreeRoot(session: string, path?: string): string {
   return root;
 }
 
+function mainWorktree(root: string): string {
+  const listing = execFileSync('git', ['worktree', 'list', '--porcelain'], {cwd: root, encoding: 'utf8'});
+  const path = listing.split('\n')[0];
+  if (!path.startsWith('worktree ')) throw new Error('Main checkout not found');
+  return realpathSync(path.slice(9));
+}
+
 function editable(root: string, path: string): boolean {
   try {
     const target = resolve(root, path);
@@ -74,10 +81,10 @@ export default function (pi: ExtensionAPI) {
         if (active) throw new Error('A commit run is already active');
         if (ctx.mode !== 'tui') throw new Error('Merge approval requires an interactive Pi session');
         if (!params.proposal?.worktree) throw new Error('Specify the registered source worktree in proposal.worktree');
-        const target = worktreeRoot(ctx.cwd);
         const source = worktreeRoot(ctx.cwd, params.proposal.worktree);
+        const target = worktreeRoot(ctx.cwd, mainWorktree(ctx.cwd));
         const local = planLocalMerge(target, source);
-        const choice = await ctx.ui.select(`Merge ${local.branch} (${local.sourceHead}) into ${target} (${local.head})?\nBoth worktrees are clean. No push or branch deletion.`, ['Merge locally', 'Stop']);
+        const choice = await ctx.ui.select(`Merge ${local.branch} (${local.sourceHead}) into ${target} (${local.head})?\n${local.fastForward ? 'Fast-forward only; unrelated untracked target files remain untouched.' : 'Non-fast-forward merge; both worktrees are clean.'} No push or branch deletion.`, ['Merge locally', 'Stop']);
         if (choice !== 'Merge locally') return result('Stopped; no merge attempted.');
         if (JSON.stringify(planLocalMerge(target, source)) !== JSON.stringify(local)) throw new Error('Merge plan changed before approval');
         active = {root:target, session:ctx.cwd, snapshot:inventory(target), phase:'localApproved', index:0, hashes:[], local};
@@ -102,6 +109,11 @@ export default function (pi: ExtensionAPI) {
       if (action === 'perform_local_merge') {
         if (run.phase !== 'localApproved' || !run.local) throw new Error('No approved local merge');
         const prepared = performLocalMerge(run.local);
+        if (prepared.fastForward) {
+          run.mergedHead = run.local.sourceHead;
+          run.phase = 'localCleanup';
+          return result('Fast-forward complete; call commit_changes remove_worktree for separate cleanup approval.');
+        }
         run.mergeBaseline = prepared.baseline;
         run.conflicts = prepared.conflicts;
         run.phase = prepared.conflicts.length ? 'conflicts' : 'mergeReview';
@@ -173,7 +185,13 @@ export default function (pi: ExtensionAPI) {
           }
           run.index++;
           if (run.index >= run.proposal!.groups.length) {
-            if (run.hashes.length) { run.phase = 'push'; return result(`Committed ${run.hashes.length} group(s); review push next.`); }
+            if (run.hashes.length) {
+              if (run.root !== mainWorktree(run.root)) {
+                active = undefined;
+                return result(`Committed ${run.hashes.length} group(s) in a linked worktree. Offer a local_merge into the main checkout next, not a push.`);
+              }
+              run.phase = 'push'; return result(`Committed ${run.hashes.length} group(s); review push next.`);
+            }
             active = undefined; return result('No groups committed. No push attempted.');
           }
           run.receipt = undefined; run.message = undefined; run.phase = 'stage';
@@ -196,6 +214,10 @@ export default function (pi: ExtensionAPI) {
         run.hashes.push(committed.hash!);
         run.index++;
         if (run.index >= run.proposal!.groups.length) {
+          if (run.root !== mainWorktree(run.root)) {
+            active = undefined;
+            return result(`Committed ${committed.hash} in a linked worktree. Offer a local_merge into the main checkout next, not a push.`);
+          }
           run.phase = 'push'; run.receipt = undefined; run.message = undefined;
           return result(`Committed ${committed.hash}. Review push next.`);
         }

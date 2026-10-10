@@ -165,22 +165,39 @@ export function stageRepair(root: string, receipt: StageReceipt, patch: string):
 export type PushPlan = { head: string; hashes: string[]; branch: string; upstream: string; remote: string;
   target: string; fetchUrl: string; pushUrls: string; status: string };
 export type MergeReceipt = { head: string; mergeHead: string; staged: string; message: string };
-export type LocalMergePlan = { target: string; source: string; branch: string; head: string; sourceHead: string };
+export type LocalMergePlan = { target: string; source: string; branch: string; head: string; sourceHead: string; fastForward: boolean };
 
 export function planLocalMerge(target: string, source: string): LocalMergePlan {
   if (realpathSync(target) === realpathSync(source)) throw new Error('Cannot merge a branch into its own worktree');
   assertNoPendingMerge(target);
   const branch = git(source, 'branch', '--show-current').trim();
   if (!branch || branch === git(target, 'branch', '--show-current').trim()) throw new Error('Use a different named source branch');
-  if (git(source, 'status', '--porcelain', '-uall') || git(target, 'status', '--porcelain', '-uall'))
-    throw new Error('Source and target worktrees must be clean, including untracked files');
-  return { target, source, branch, head: git(target, 'rev-parse', 'HEAD').trim(),
-    sourceHead: git(source, 'rev-parse', 'HEAD').trim() };
+  if (git(source, 'status', '--porcelain', '-uall') || git(target, 'status', '--porcelain', '-uno'))
+    throw new Error('Source worktree and target tracked files must be clean');
+  const head = git(target, 'rev-parse', 'HEAD').trim();
+  const sourceHead = git(source, 'rev-parse', 'HEAD').trim();
+  let fastForward = false;
+  try { git(target, 'merge-base', '--is-ancestor', head, sourceHead); fastForward = true; }
+  catch (error) { if ((error as {status?:number}).status !== 1) throw error; }
+  const untracked = names(target, ['ls-files', '--others', '--exclude-standard']);
+  if (!fastForward && untracked.length) throw new Error('Non-fast-forward merge requires a clean target, including untracked files');
+  if (fastForward) {
+    const changed = names(target, ['diff', '--name-only', head, sourceHead]);
+    if (untracked.some(path => changed.some(file => path === file || path.startsWith(`${file}/`) || file.startsWith(`${path}/`))))
+      throw new Error('Untracked path overlaps fast-forward changes');
+  }
+  return { target, source, branch, head, sourceHead, fastForward };
 }
 
-export function performLocalMerge(plan: LocalMergePlan): {baseline: string; conflicts: string[]} {
+export function performLocalMerge(plan: LocalMergePlan): {baseline: string; conflicts: string[]; fastForward?: boolean} {
   if (JSON.stringify(planLocalMerge(plan.target, plan.source)) !== JSON.stringify(plan))
     throw new Error('Merge plan changed after approval');
+  if (plan.fastForward) {
+    git(plan.target, 'merge', '--ff-only', plan.sourceHead);
+    if (git(plan.target, 'rev-parse', 'HEAD').trim() !== plan.sourceHead)
+      throw new Error('Fast-forward did not reach the approved source commit');
+    return {baseline: '', conflicts: [], fastForward: true};
+  }
   try { git(plan.target, 'merge', '--no-ff', '--no-commit', plan.sourceHead); }
   catch (error) {
     const conflicts = names(plan.target, ['diff', '--name-only', '--diff-filter=U']);
