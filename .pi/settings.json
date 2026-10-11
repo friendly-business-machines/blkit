@@ -3,27 +3,28 @@
   "defaultModel": "gpt-6-sol",
   "defaultThinkingLevel": "high",
   "packages": [
-    "npm:@dietrichgebert/ponytail@4.10.0",
-    "npm:@lll9p/pi-better-compaction@0.7.1",
-    "npm:pi-subagents@0.75.0",
-    "npm:pi-web-access@0.31.0",
+    "npm:@dietrichgebert/ponytail@5.1.0",
+    "npm:@lll9p/pi-better-compaction@0.7.4",
+    "npm:pi-subagents@0.77.0",
+    "npm:pi-web-access@0.38.0",
     "npm:@latentminds/pi-quotas@0.5.0",
-    "git:github.com/obra/superpowers@5bf4e78011075bcfc0dc295f0724994cd123ee71",
+    "git:github.com/obra/superpowers@v7.0.0",
     "npm:pi-keep-going@1.1.0",
-    "npm:cc-safety-net"
+    "npm:cc-safety-net@2.6.8"
   ],
   "subagents": {
     "agentOverrides": {
       "worker": {
         "skills": [
           "ponytail",
-          "test-driven-development",
           "systematic-debugging",
+          "test-driven-development",
           "application-errors",
           "error-handling-basics",
           "find-crate-source",
           "library-errors",
-          "rust-best-practice"
+          "rust-best-practice",
+          "rust-skills"
         ]
       }
     }

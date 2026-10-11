@@ -139,14 +139,15 @@ WORKDIR /
 
 # Install the pi coding agent globally so the `pi` command is available to the
 # non-root development user. Keep the version explicit for reproducible builds.
-ARG PI_CODING_AGENT_VERSION=0.87.1
-ARG PI_BETTER_COMPACTION_VERSION=0.7.1
+ARG PI_CODING_AGENT_VERSION=1.1.0
+ARG PI_BETTER_COMPACTION_VERSION=0.7.4
 ARG PI_KEEP_GOING_VERSION=1.1.0
 ARG PI_QUOTAS_VERSION=0.5.0
-ARG PI_SUBAGENTS_VERSION=0.75.0
-ARG PI_WEB_ACCESS_VERSION=0.31.0
-ARG PONYTAIL_VERSION=4.10.0
-ARG SUPERPOWERS_REF=5bf4e78011075bcfc0dc295f0724994cd123ee71
+ARG PI_SUBAGENTS_VERSION=0.77.0
+ARG PI_WEB_ACCESS_VERSION=0.38.0
+ARG PONYTAIL_VERSION=5.1.0
+ARG CC_SAFETY_NET_VERSION=2.6.8
+ARG SUPERPOWERS_REF=v7.0.0
 RUN npm install --global "@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}" \
     && npm install --global "@fission-ai/openspec@1.13.2" \
     && npm install --global "markdownlint-cli2@0.23.3"
@@ -269,6 +270,7 @@ RUN pi install "npm:@dietrichgebert/ponytail@${PONYTAIL_VERSION}" \
     && pi install "npm:pi-subagents@${PI_SUBAGENTS_VERSION}" \
     && pi install "npm:pi-web-access@${PI_WEB_ACCESS_VERSION}" \
     && pi install "npm:@latentminds/pi-quotas@${PI_QUOTAS_VERSION}" \
+    && pi install "npm:cc-safety-net@${CC_SAFETY_NET_VERSION}" \
     && pi install "git:github.com/obra/superpowers@${SUPERPOWERS_REF}"
 
 # Install Fisher from a tagged release and verify the downloaded function before
