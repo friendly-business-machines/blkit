@@ -370,6 +370,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "blkit-cli"
+version = "0.1.0"
+dependencies = [
+ "blkit-core",
+ "blkit-transpiler",
+ "clap",
+ "clap_complete",
+ "console",
+ "indicatif",
+ "miette",
+ "serde_json",
+ "testcontainers-modules",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "blkit-core"
 version = "0.1.0"
 dependencies = [
@@ -395,37 +412,35 @@ dependencies = [
 ]
 
 [[package]]
-name = "blkit-transpiler"
+name = "blkit-dev-harness"
 version = "0.1.0"
 dependencies = [
  "axum",
  "blkit-core",
+ "blkit-transpiler",
  "chrono",
- "chrono-tz",
- "clap",
- "clap_complete",
- "console",
- "futures-util",
- "indicatif",
- "miette",
- "opentelemetry-appender-tracing",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "regex",
  "rust_decimal",
  "serde",
  "serde_json",
  "testcontainers-modules",
- "thiserror",
  "tokio",
  "tokio-postgres",
- "toml_edit",
  "tower",
  "tracing",
  "tracing-subscriber",
- "turso",
- "unicode-segmentation",
  "uuid",
+]
+
+[[package]]
+name = "blkit-transpiler"
+version = "0.1.0"
+dependencies = [
+ "blkit-core",
+ "chrono",
+ "regex",
+ "rust_decimal",
+ "serde_json",
+ "toml_edit",
 ]
 
 [[package]]

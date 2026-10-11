@@ -1,0 +1,26 @@
+[package]
+name = "blkit-dev-harness"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+blkit-core = { version = "=0.1.0", path = "../../crates/blkit-core", features = ["api-server", "worker", "local-persistence", "remote-persistence", "logging"] }
+axum = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1.39", features = ["serde-str"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "std"] }
+uuid = { version = "1", features = ["v4"] }
+
+[build-dependencies]
+blkit-transpiler = { version = "=0.1.0", path = "../../crates/blkit-transpiler" }
+
+[dev-dependencies]
+blkit-transpiler = { version = "=0.1.0", path = "../../crates/blkit-transpiler" }
+testcontainers-modules = { version = "=0.15.0", features = ["postgres"] }
+tokio-postgres = "0.7.18"
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"

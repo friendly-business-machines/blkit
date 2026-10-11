@@ -489,7 +489,8 @@ impl Project {
         fs::create_dir_all(&source_dir).map_err(|e| e.to_string())?;
         fs::write(package.join(".gitignore"), "*\n!.gitignore\n!Cargo.lock\n")
             .map_err(|e| e.to_string())?;
-        let local = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/blkit-core");
+        let local = Path::new(env!("CARGO_MANIFEST_DIR")).join("../blkit-core");
+        let local = local.canonicalize().unwrap_or(local);
         let features = match (self.build_target.as_str(), self.persistence.as_deref()) {
             ("api-only", _) => vec!["api-server", "remote-persistence"],
             ("worker" | "worker-only", _) => vec!["worker", "remote-persistence", "logging"],

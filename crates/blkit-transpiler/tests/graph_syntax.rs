@@ -3,7 +3,7 @@ use blkit_transpiler as blkit;
 
 #[test]
 fn parses_peer_flows_bindings_and_retry_policy() {
-    let source = include_str!("../examples/graph.bl").replace(
+    let source = include_str!("../../../tools/dev-harness/examples/graph.bl").replace(
         "process decide {",
         "process decide { retry max_retries 3 retry_for \"10m\" retry_delay \"1s\" backoff exponential;",
     );
@@ -26,7 +26,7 @@ fn parses_peer_flows_bindings_and_retry_policy() {
 
 #[test]
 fn decision_task_ports_are_checked_against_bindings() {
-    let source = include_str!("../examples/minimal.bl");
+    let source = include_str!("../../../examples/minimal.bl");
     validate(&parse(source).unwrap()).unwrap();
     let invalid = source.replace(
         "decision_task calculate {\n  input amount: Number;",
@@ -41,7 +41,7 @@ fn decision_task_ports_are_checked_against_bindings() {
 
 #[test]
 fn parses_labeled_and_conditional_gateway_flows() {
-    let program = parse(include_str!("../examples/graph.bl")).unwrap();
+    let program = parse(include_str!("../../../tools/dev-harness/examples/graph.bl")).unwrap();
     let parallel = program
         .processes
         .iter()
@@ -67,7 +67,7 @@ fn parses_labeled_and_conditional_gateway_flows() {
 
 #[test]
 fn parses_subprocess_and_distinct_outcome_routes() {
-    let program = parse(include_str!("../examples/subprocess.bl")).unwrap();
+    let program = parse(include_str!("../../../examples/subprocess.bl")).unwrap();
     assert!(program.peer_nodes.iter().any(|node| {
         node.name == "called"
             && matches!(&node.kind, PeerKind::Subprocess { process, .. } if process == "child")
@@ -94,9 +94,9 @@ fn parses_subprocess_and_distinct_outcome_routes() {
 #[test]
 fn documented_graphs_use_braced_peer_references() {
     for source in [
-        include_str!("../examples/graph.bl"),
-        include_str!("../examples/approve.bl"),
-        include_str!("../examples/pricing.bl"),
+        include_str!("../../../tools/dev-harness/examples/graph.bl"),
+        include_str!("../../../examples/approve.bl"),
+        include_str!("../../../examples/pricing.bl"),
     ] {
         let program = parse(source).unwrap();
         validate(&program).unwrap();
@@ -111,7 +111,7 @@ fn documented_graphs_use_braced_peer_references() {
 
 #[test]
 fn conditional_gateway_requires_fallback_and_valid_condition() {
-    let source = include_str!("../examples/graph.bl");
+    let source = include_str!("../../../tools/dev-harness/examples/graph.bl");
     let missing = source.replace(
         "flow offer_fork -> fallback else;",
         "flow offer_fork -> fallback when start.total > 5000;",

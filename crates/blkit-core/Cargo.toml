@@ -26,6 +26,22 @@ uuid = { version = "1", features = ["v4"], optional = true }
 [dev-dependencies]
 testcontainers-modules = { version = "=0.15.0", features = ["postgres"] }
 
+[[test]]
+name = "concurrency"
+required-features = ["worker", "local-persistence"]
+
+[[test]]
+name = "engine"
+required-features = ["worker", "local-persistence"]
+
+[[test]]
+name = "store"
+required-features = ["worker", "local-persistence"]
+
+[[test]]
+name = "logging"
+required-features = ["logging"]
+
 [features]
 default = []
 api-server = ["dep:axum", "dep:tracing"]
