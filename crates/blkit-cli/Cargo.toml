@@ -1,0 +1,24 @@
+[package]
+name = "blkit-cli"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "blkit"
+path = "src/main.rs"
+
+[dependencies]
+blkit-transpiler = { version = "=0.1.0", path = "../blkit-transpiler" }
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+console = "0.16"
+indicatif = "0.18"
+miette = "7"
+thiserror = "2"
+
+[dev-dependencies]
+blkit-core = { path = "../blkit-core", features = ["worker", "remote-persistence"] }
+serde_json = "1"
+testcontainers-modules = { version = "=0.15.0", features = ["postgres"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

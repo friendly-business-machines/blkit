@@ -64,6 +64,14 @@ fn generated_project_depends_on_version_matched_core_not_transpiler() {
         "{manifest}"
     );
     assert!(!manifest.contains("blkit-transpiler"), "{manifest}");
+    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../blkit-core")
+        .canonicalize()
+        .unwrap();
+    assert!(
+        manifest.contains(&format!("path = {:?}", core.to_str().unwrap())),
+        "generated project must use the checkout's core: {manifest}"
+    );
     assert!(!manifest.contains("\nblkit ="), "{manifest}");
     let generated = fs::read_to_string(root.join(".blkit/src/lib.rs")).unwrap();
     assert!(

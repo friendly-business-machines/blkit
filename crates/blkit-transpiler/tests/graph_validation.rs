@@ -48,7 +48,7 @@ fn reject(source: &str, expected: &str) {
 
 #[test]
 fn subprocess_outcomes_require_valid_routes_and_typed_bindings() {
-    let source = include_str!("../examples/subprocess.bl");
+    let source = include_str!("../../../examples/subprocess.bl");
     transpile(source).unwrap();
     reject(
         &source.replace("process child;", "process missing;"),
@@ -79,7 +79,7 @@ fn subprocess_outcomes_require_valid_routes_and_typed_bindings() {
 
 #[test]
 fn subprocess_normal_and_exceptional_outputs_are_exclusive() {
-    let source = include_str!("../examples/subprocess.bl");
+    let source = include_str!("../../../examples/subprocess.bl");
     let duplicate_error = source.replace(
         "flow called -> recover_error on error;",
         "flow called -> recover_error on error; flow called -> failed on error;",
@@ -150,7 +150,7 @@ fn deadlines_require_valid_origin_and_positive_duration() {
 
 #[test]
 fn cycles_require_deadlines_and_reachable_exit() {
-    let source = include_str!("../examples/iteration.bl");
+    let source = include_str!("../../../examples/iteration.bl");
     transpile(source).unwrap();
     reject(&source.replace("deadline queued \"2s\";", ""), "deadline");
     let no_exit = source.replace("flow gate -> stopped else;", "flow gate -> echo else;");
@@ -161,7 +161,7 @@ fn cycles_require_deadlines_and_reachable_exit() {
 
 #[test]
 fn repetition_and_multi_instance_require_typed_bounded_inputs() {
-    let source = include_str!("../examples/iteration.bl");
+    let source = include_str!("../../../examples/iteration.bl");
     for property in [
         "repeat_post echo while echo.result < 3 max_iterations 0;",
         "repeat_pre echo while echo.result < 3 max_iterations 3;",
@@ -220,7 +220,7 @@ fn bindings_check_types_and_route_availability() {
 
 #[test]
 fn gateway_splits_and_joins_validate_branch_shape() {
-    let source = include_str!("../examples/graph.bl");
+    let source = include_str!("../../../tools/dev-harness/examples/graph.bl");
     transpile(source).unwrap();
     reject(
         &source.replace(

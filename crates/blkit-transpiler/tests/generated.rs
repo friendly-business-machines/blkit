@@ -22,7 +22,7 @@ fn compile_and_test(source: &str, assertion: &str) {
     ));
     fs::create_dir_all(directory.join("src")).unwrap();
     let name = directory.file_name().unwrap().to_string_lossy();
-    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/blkit-core");
+    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../blkit-core");
     fs::write(directory.join("Cargo.toml"), format!("[package]\nname = {name:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit-core = {{ path = {core:?} }}\nrust_decimal = \"1.39\"\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\nserde = \"1\"\nserde_json = \"1\"\n")).unwrap();
     fs::write(directory.join("src/lib.rs"), format!("{generated}\n#[cfg(test)] mod generated_checks {{ use blkit_core as blkit; use super::*; #[test] fn behavior() {{ {assertion} }} }}")).unwrap();
     let result = Command::new("cargo")
@@ -54,7 +54,7 @@ fn direct_source_compiles_with_core_without_transpiler_dependency() {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(directory.join("src")).unwrap();
-    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/blkit-core");
+    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../blkit-core");
     fs::write(
         directory.join("Cargo.toml"),
         format!(
@@ -1021,7 +1021,7 @@ process parent { flow start -> called; flow called -> done; bind start.input -> 
 #[test]
 fn documented_subprocess_example_routes_success_and_each_child_outcome() {
     compile_and_test_graph(
-        include_str!("../examples/subprocess.bl"),
+        include_str!("../../../examples/subprocess.bl"),
         "let store = blkit::runtime::LocalStore::open(&std::env::temp_dir().join(format!(\"documented-subprocess-{}.db\", std::process::id()))).await.unwrap(); let engine = blkit::runtime::Engine::new(blkit::runtime::Registry::new(named_graph_definitions()).unwrap(), store, 1).unwrap(); for (input, expected) in [(\"2\", \"2\"), (\"0\", \"100\"), (\"-1\", \"200\"), (\"11\", \"300\")] { let id = engine.start(\"orders\", \"1.0\", \"parent\", serde_json::json!({\"input\":input})).await.unwrap(); let status = tokio::time::timeout(std::time::Duration::from_secs(5), async { loop { let item = engine.status(&id).await.unwrap().unwrap(); if matches!(item.status.as_str(), \"completed\" | \"failed\" | \"business-error\") { break item; } tokio::time::sleep(std::time::Duration::from_millis(10)).await; } }).await.unwrap(); assert_eq!(status.status, \"completed\", \"{input}: {:?}\", status.error); assert_eq!(status.result, Some(serde_json::json!(expected))); }",
     );
 }
@@ -1056,7 +1056,7 @@ process later { flow start -> wait; flow wait -> done; bind start.input -> wait.
 #[test]
 fn documented_example_compiles() {
     compile_and_test_graph(
-        include_str!("../examples/approve.bl"),
+        include_str!("../../../examples/approve.bl"),
         "let graph = named_graph_definitions().remove(0); let input = serde_json::json!({\"input\":{\"total\":\"1250\",\"blocked\":false}}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(\"review\"));",
     );
 }
@@ -1064,11 +1064,11 @@ fn documented_example_compiles() {
 #[test]
 fn pricing_and_iteration_examples_compile_and_execute() {
     compile_and_test_graph(
-        include_str!("../examples/pricing.bl"),
+        include_str!("../../../examples/pricing.bl"),
         "let graph = named_graph_definitions().remove(0); for (amount, expected) in [(\"200\", \"5\"), (\"10\", \"2\")] { let input = serde_json::json!({\"amount\":amount}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(expected)); }",
     );
     compile_and_test_graph(
-        include_str!("../examples/iteration.bl"),
+        include_str!("../../../examples/iteration.bl"),
         "let graph = named_graph_definitions(); let gather = graph.iter().find(|item| item.name == \"gather\").unwrap(); let input = serde_json::json!({\"values\":[\"3\", \"1\"]}); let mut state = gather.checkpoint(&input).unwrap(); assert_eq!(gather.run(&input, &mut state).unwrap(), serde_json::json!([\"3\", \"1\"])); let repeat = graph.iter().find(|item| item.name == \"repeat_until_timeout\").unwrap(); assert_eq!(repeat.deadline.as_ref().unwrap().duration.as_secs(), 2);",
     );
 }
@@ -1107,7 +1107,7 @@ fn compile_and_test_graph(source: &str, assertion: &str) {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(directory.join("src")).unwrap();
-    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/blkit-core");
+    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../blkit-core");
     let name = directory.file_name().unwrap().to_string_lossy();
     fs::write(directory.join("Cargo.toml"), format!("[package]\nname = {name:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit-core = {{ path = {core:?}, default-features = false, features = [\"worker\", \"local-persistence\"] }}\nrust_decimal = {{ version = \"1.39\", features = [\"serde-str\"] }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\nchrono = {{ version = \"0.4\", features = [\"serde\"] }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"time\"] }}\n")).unwrap();
     fs::write(directory.join("src/lib.rs"), format!("{generated}\n#[cfg(test)] mod checks {{ use blkit_core as blkit; use super::*; #[tokio::test] async fn graph() {{ {assertion} }} }}")).unwrap();
@@ -1129,7 +1129,7 @@ fn compile_and_test_graph(source: &str, assertion: &str) {
 #[test]
 fn generated_decision_task_receives_bound_start_port_and_returns_end_port() {
     compile_and_test_graph(
-        include_str!("../examples/minimal.bl"),
+        include_str!("../../../examples/minimal.bl"),
         r#"let graph = named_graph_definitions().remove(0); let input = serde_json::json!({"amount":"7"}); assert!((graph.decode_input)(input.clone()).is_ok()); assert!((graph.decode_input)(serde_json::json!("7")).is_err()); assert!((graph.decode_input)(serde_json::json!({"amount":"7", "extra":1})).is_err()); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!("7"));"#,
     );
 }
@@ -1404,7 +1404,7 @@ decision_task quote {
 #[test]
 fn pricing_example_compiles_and_runs_braced_decision_graph() {
     compile_and_test_graph(
-        include_str!("../examples/pricing.bl"),
+        include_str!("../../../examples/pricing.bl"),
         r#"let graph = named_graph_definitions().remove(0); for (amount, expected) in [("120", "5"), ("10", "2")] { let input = serde_json::json!({"amount":amount}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!(expected)); }"#,
     );
 }
@@ -1565,7 +1565,7 @@ process route {
 
 #[test]
 fn braced_process_rejects_ambiguous_bindings_and_incompatible_normal_ends() {
-    let source = include_str!("../examples/minimal.bl");
+    let source = include_str!("../../../examples/minimal.bl");
     let ambiguous = source.replace(
         "bind start.amount -> calculate.amount;",
         "bind start.amount -> calculate.amount; bind start.amount -> calculate.amount;",
@@ -1632,7 +1632,7 @@ process handled { flow start -> failed_call; flow failed_call -> handled_success
 
 #[test]
 fn braced_wait_policies_and_outcome_routes_reject_invalid_inputs() {
-    let source = include_str!("../examples/minimal.bl");
+    let source = include_str!("../../../examples/minimal.bl");
     let retry = source.replace("process example {", "process example { retry max_retries 1 retry_for \"0s\" retry_delay \"1s\" backoff exponential;");
     assert!(transpile(&retry).unwrap_err().contains("retry_for"));
     let wait = source
@@ -1854,7 +1854,7 @@ process route {
 #[test]
 fn generated_named_graph_compiles_as_a_runtime_definition() {
     compile_and_test_graph(
-        include_str!("../examples/graph.bl"),
+        include_str!("../../../tools/dev-harness/examples/graph.bl"),
         "let graph = named_graph_definitions(); let run = |name: &str, total: &str| { let process = graph.iter().find(|g| g.name == name).unwrap(); let input = serde_json::json!({\"total\": total}); let mut state = process.checkpoint(&input).unwrap(); process.run(&input, &mut state).unwrap() }; assert_eq!(run(\"decide\", \"1200\"), serde_json::json!(\"review\")); assert_eq!(run(\"decide\", \"900\"), serde_json::json!(\"approved\")); assert_eq!(run(\"parallel\", \"42\"), serde_json::json!({\"left\":\"42\",\"right\":\"42\"})); assert_eq!(run(\"offers\", \"1200\"), serde_json::json!([\"1200\",\"1200\"])); assert_eq!(run(\"offers\", \"10\"), serde_json::json!([\"10\"]));",
     );
 }
