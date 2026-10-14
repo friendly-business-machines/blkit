@@ -118,6 +118,22 @@ fn transpile_reports_independent_malformed_statements_without_partial_rust() {
 }
 
 #[test]
+fn lexical_error_does_not_hide_later_malformed_statement_or_emit_rust() {
+    let source =
+        format!("{HEADER}# café\nstart_event start {{ output first: ☃; output second: ; }}");
+    let error = transpile(&source).unwrap_err();
+    let first = source.find('☃').unwrap();
+    let second = source.find("second: ;").unwrap() + "second: ".len();
+    let lines: Vec<_> = error.lines().collect();
+    assert_eq!(lines.len(), 2, "{error}");
+    assert!(
+        lines[0].contains(&format!("invalid character at byte {first}")),
+        "{error}"
+    );
+    assert!(lines[1].ends_with(&format!("at byte {second}")), "{error}");
+}
+
+#[test]
 fn invalid_unicode_token_reports_original_bytes_and_emits_no_rust() {
     let source = format!("{HEADER}enum Café:\n  ready;\n");
     let error = transpile(&source).unwrap_err();

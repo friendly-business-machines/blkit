@@ -6,6 +6,7 @@ pub(crate) struct CompilerError {
     pub(crate) message: String,
     pub(crate) source_name: String,
     pub(crate) span: Option<Range<usize>>,
+    related: Vec<Self>,
 }
 
 impl CompilerError {
@@ -14,6 +15,7 @@ impl CompilerError {
             message: message.into(),
             source_name: String::new(),
             span: Some(span),
+            related: Vec::new(),
         }
     }
 
@@ -23,7 +25,14 @@ impl CompilerError {
     }
 
     pub(crate) fn append(&mut self, other: Self) {
-        self.message.push_str(&format!("\n{other}"));
+        self.related.push(other);
+    }
+
+    fn set_source_name(&mut self, source_name: &str) {
+        self.source_name = source_name.to_owned();
+        for error in &mut self.related {
+            error.set_source_name(source_name);
+        }
     }
 }
 
@@ -33,6 +42,7 @@ impl From<String> for CompilerError {
             message,
             source_name: String::new(),
             span: None,
+            related: Vec::new(),
         }
     }
 }
@@ -51,6 +61,9 @@ impl std::fmt::Display for CompilerError {
         write!(f, "{}", self.message)?;
         if let Some(span) = &self.span {
             write!(f, " at byte {}", span.start)?;
+        }
+        for error in &self.related {
+            write!(f, "\n{error}")?;
         }
         Ok(())
     }
@@ -348,14 +361,17 @@ fn body_parser<'a>(
             .collect::<Vec<_>>()
             .then(just(Token::Semicolon).map_with(|_, extra| extra.span()))
             .map(|(parts, terminator)| {
-                Some(BodyItem::Statement(
-                    parts
-                        .into_iter()
-                        .flatten()
-                        .filter(|(token, _)| !matches!(token, Token::Newline | Token::Indent))
-                        .collect(),
-                    terminator,
-                ))
+                let tokens: Vec<_> = parts
+                    .into_iter()
+                    .flatten()
+                    .filter(|(token, _)| !matches!(token, Token::Newline | Token::Indent))
+                    .collect();
+                // Lexing reports this statement; only inspect later statements for syntax errors.
+                if tokens.iter().any(|(token, _)| *token == Token::Invalid) {
+                    None
+                } else {
+                    Some(BodyItem::Statement(tokens, terminator))
+                }
             })
             .recover_with(chumsky::recovery::via_parser(
                 any()
@@ -616,20 +632,19 @@ pub(crate) fn parse_source<'a>(
             source,
         })
         .map_err(|mut error| {
-            error.source_name = source_name.to_owned();
+            error.set_source_name(source_name);
             error
         })
 }
 
 fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
     let lexed = lexer::lex_legacy_quotes(source);
-    if let Some((_, span)) = lexed
+    let mut errors: Vec<_> = lexed
         .tokens
         .iter()
-        .find(|(token, _)| *token == Token::Invalid)
-    {
-        return Err(CompilerError::located("invalid character", span.clone()));
-    }
+        .filter(|(token, _)| *token == Token::Invalid)
+        .map(|(_, span)| CompilerError::located("invalid character", span.clone()))
+        .collect();
     let tokens: Vec<_> = lexed
         .tokens
         .into_iter()
@@ -642,41 +657,66 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
                 .split_token_span((lexed.eof..lexed.eof).into()),
         )
         .into_output_errors();
-    let mut errors: Vec<_> = syntax_errors
+    let lexical_spans: Vec<_> = errors
         .iter()
-        .map(|error| {
-            let span = error.span().into_range();
-            if let Some([(_, kind_span), (_, name_span)]) =
-                tokens.windows(2).find(|pair| pair[1].1.start == span.start)
-                && text(source, *kind_span) == "type"
-            {
-                let name = text(source, *name_span);
-                return CompilerError::located(
-                    format!("type {name}: is unsupported; use {name} = {{field: Type, ...}};"),
-                    span,
-                );
-            }
-            let prefix = if !source.contains("namespace ") {
-                "expected namespace declaration"
-            } else if !source.contains("version ") {
-                "expected version declaration"
-            } else if span.start == source.len() {
-                "unclosed brace or missing semicolon"
-            } else if tokens.iter().any(|(token, location)| {
-                *token == Token::CloseBrace && location.start == span.start
-            }) {
-                "missing semicolon"
-            } else if tokens
-                .iter()
-                .any(|(token, location)| *token == Token::OpenParen && location.start == span.start)
-            {
-                "invalid declaration name"
-            } else {
-                "invalid declaration or statement"
-            };
-            CompilerError::located(format!("{prefix}: {error:?}"), span)
-        })
+        .filter_map(|error| error.span.clone())
         .collect();
+    errors.extend(
+        syntax_errors
+            .iter()
+            .filter(|error| {
+                let at = error.span().start;
+                // A boundary error after invalid text is a cascade until a previous boundary intervenes.
+                let boundary = tokens.iter().any(|(token, span)| {
+                    span.start == at
+                        && matches!(token, Token::Semicolon | Token::CloseBrace | Token::Newline)
+                });
+                !lexical_spans.iter().any(|span| {
+                    (span.start <= at && at < span.end)
+                        || (boundary
+                            && span.end <= at
+                            && !tokens.iter().any(|(token, location)| {
+                                location.start >= span.end
+                                    && location.start < at
+                                    && matches!(
+                                        token,
+                                        Token::Semicolon | Token::CloseBrace | Token::Newline
+                                    )
+                            }))
+                })
+            })
+            .map(|error| {
+                let span = error.span().into_range();
+                if let Some([(_, kind_span), (_, name_span)]) =
+                    tokens.windows(2).find(|pair| pair[1].1.start == span.start)
+                    && text(source, *kind_span) == "type"
+                {
+                    let name = text(source, *name_span);
+                    return CompilerError::located(
+                        format!("type {name}: is unsupported; use {name} = {{field: Type, ...}};"),
+                        span,
+                    );
+                }
+                let prefix = if !source.contains("namespace ") {
+                    "expected namespace declaration"
+                } else if !source.contains("version ") {
+                    "expected version declaration"
+                } else if span.start == source.len() {
+                    "unclosed brace or missing semicolon"
+                } else if tokens.iter().any(|(token, location)| {
+                    *token == Token::CloseBrace && location.start == span.start
+                }) {
+                    "missing semicolon"
+                } else if tokens.iter().any(|(token, location)| {
+                    *token == Token::OpenParen && location.start == span.start
+                }) {
+                    "invalid declaration name"
+                } else {
+                    "invalid declaration or statement"
+                };
+                CompilerError::located(format!("{prefix}: {error:?}"), span)
+            }),
+    );
     if let Some(Err(error)) = output.as_ref() {
         errors.push(error.clone());
     }
@@ -832,6 +872,54 @@ mod diagnostic_tests {
             "{error}"
         );
         assert!(super::transpile(source).is_err());
+    }
+
+    #[test]
+    fn lexical_error_recovers_at_semicolon_without_duplicate_syntax_error() {
+        let source = "namespace demo; version \"1.0\";\n# café\nstart_event start { output first: ☃; output second: ; }";
+        let error = parse_source(source, "mixed.bl").err().unwrap();
+        let snowman = source.find('☃').unwrap();
+        let second = source.find("second: ;").unwrap() + "second: ".len();
+        assert_eq!(error.span, Some(snowman..snowman + '☃'.len_utf8()));
+        let lines: Vec<_> = error.to_string().lines().map(str::to_owned).collect();
+        assert_eq!(lines.len(), 2, "{error}");
+        assert!(
+            lines[0].contains(&format!("invalid character at byte {snowman}")),
+            "{error}"
+        );
+        assert!(lines[1].contains(&format!("at byte {second}")), "{error}");
+        assert_eq!(error.related[0].source_name, "mixed.bl");
+        assert_eq!(error.related[0].span, Some(second..second));
+        assert!(super::transpile(source).is_err());
+    }
+
+    #[test]
+    fn invalid_token_before_brace_has_no_second_syntax_diagnostic() {
+        let source = "namespace demo; version \"1.0\"; start_event start { output first: ☃ }";
+        let error = parse_source(source, "single.bl").err().unwrap();
+        assert_eq!(
+            error.span,
+            Some(source.find('☃').unwrap()..source.find('☃').unwrap() + '☃'.len_utf8())
+        );
+        assert_eq!(error.to_string().lines().count(), 1, "{error}");
+        assert!(super::transpile(source).is_err());
+    }
+
+    #[test]
+    fn aggregated_diagnostics_keep_each_message_with_its_own_span() {
+        let source = "namespace demo; version \"1.0\"; start_event start { output first: ; output second: ; }";
+        let error = parse_source(source, "pairs.bl").err().unwrap();
+        let first = source.find("first: ;").unwrap() + "first: ".len();
+        let second = source.find("second: ;").unwrap() + "second: ".len();
+        let lines: Vec<_> = error.to_string().lines().map(str::to_owned).collect();
+        assert_eq!(lines.len(), 2, "{error}");
+        assert!(lines[0].ends_with(&format!("at byte {first}")), "{error}");
+        assert!(lines[1].ends_with(&format!("at byte {second}")), "{error}");
+        assert_eq!(error.span, Some(first..first));
+        assert_eq!(error.source_name, "pairs.bl");
+        assert_eq!(error.related.len(), 1);
+        assert_eq!(error.related[0].source_name, "pairs.bl");
+        assert_eq!(error.related[0].span, Some(second..second));
     }
 
     #[test]
