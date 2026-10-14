@@ -825,11 +825,16 @@ fn graph_statement<'a>(
 fn statements(
     source: &str,
     body: &[crate::compiler::BodyItem],
-) -> Result<Vec<GraphStatement>, crate::compiler::CompilerError> {
+) -> Result<Option<Vec<GraphStatement>>, crate::compiler::CompilerError> {
     let mut parsed = Vec::new();
+    let mut damaged = false;
     let mut errors: Option<crate::compiler::CompilerError> = None;
     for item in body {
         let result = match item {
+            crate::compiler::BodyItem::Invalid => {
+                damaged = true;
+                continue;
+            }
             crate::compiler::BodyItem::Statement(tokens, terminator) => {
                 crate::compiler::statement(tokens, *terminator, graph_statement(source)).map_err(
                     |error| {
@@ -871,7 +876,7 @@ fn statements(
             }
         }
     }
-    errors.map_or(Ok(parsed), Err)
+    errors.map_or(Ok((!damaged).then_some(parsed)), Err)
 }
 
 pub(crate) fn parse_peer_tokens(
@@ -879,8 +884,10 @@ pub(crate) fn parse_peer_tokens(
     kind: &str,
     name: &str,
     body: &[crate::compiler::BodyItem],
-) -> Result<Peer, crate::compiler::CompilerError> {
-    let items = statements(source, body)?;
+) -> Result<Option<Peer>, crate::compiler::CompilerError> {
+    let Some(items) = statements(source, body)? else {
+        return Ok(None);
+    };
     let mut inputs = Vec::new();
     let mut outputs = Vec::new();
     let mut split = None;
@@ -994,23 +1001,22 @@ pub(crate) fn parse_peer_tokens(
         },
         _ => return Err(format!("invalid peer: {kind}").into()),
     };
-    Ok(Peer {
+    Ok(Some(Peer {
         name: name.into(),
         kind,
-    })
+    }))
 }
+
+type ParsedSourceGraph = (
+    SourceGraph,
+    Option<crate::compiler::RetryPolicy>,
+    Option<crate::compiler::DeadlinePolicy>,
+);
 
 pub(crate) fn parse_source_tokens(
     source: &str,
     body: &[crate::compiler::BodyItem],
-) -> Result<
-    (
-        SourceGraph,
-        Option<crate::compiler::RetryPolicy>,
-        Option<crate::compiler::DeadlinePolicy>,
-    ),
-    crate::compiler::CompilerError,
-> {
+) -> Result<Option<ParsedSourceGraph>, crate::compiler::CompilerError> {
     let mut retry = None;
     let mut deadline = None;
     let mut graph = SourceGraph {
@@ -1020,9 +1026,12 @@ pub(crate) fn parse_source_tokens(
         repetitions: vec![],
         multi_instances: vec![],
     };
-    for item in
+    let Some(items) =
         statements(source, body).map_err(|error| error.context("invalid process statement"))?
-    {
+    else {
+        return Ok(None);
+    };
+    for item in items {
         match item {
             GraphStatement::Retry(max_retries, retry_for, retry_delay) => {
                 if retry.is_some() || !graph.flows.is_empty() || !graph.bindings.is_empty() {
@@ -1152,5 +1161,5 @@ pub(crate) fn parse_source_tokens(
             _ => return Err("invalid process statement".into()),
         }
     }
-    Ok((graph, retry, deadline))
+    Ok(Some((graph, retry, deadline)))
 }

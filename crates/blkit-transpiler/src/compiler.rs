@@ -247,6 +247,7 @@ pub(crate) fn type_parser<'a>(
 pub(crate) enum BodyItem {
     Statement(Vec<(Token, SimpleSpan)>, SimpleSpan),
     Block(String, String, Vec<BodyItem>, SimpleSpan),
+    Invalid,
 }
 
 pub(crate) fn assignment<'a, O, P, A, B>(
@@ -366,9 +367,9 @@ fn body_parser<'a>(
                     .flatten()
                     .filter(|(token, _)| !matches!(token, Token::Newline | Token::Indent))
                     .collect();
-                // Lexing reports this statement; only inspect later statements for syntax errors.
+                // Lexing reports this statement; retain a marker to avoid derived missing fields.
                 if tokens.iter().any(|(token, _)| *token == Token::Invalid) {
-                    None
+                    Some(BodyItem::Invalid)
                 } else {
                     Some(BodyItem::Statement(tokens, terminator))
                 }
@@ -569,7 +570,8 @@ fn program_parser<'a>(
                     Declaration::Enum(item) => program.enums.push(item),
                     Declaration::Body(kind, name, body) => match kind.as_str() {
                         "decision_task" => match decision::parse_tokens(source, &name, &body) {
-                            Ok(item) => program.decisions.push(item),
+                            Ok(Some(item)) => program.decisions.push(item),
+                            Ok(None) => {}
                             Err(error) => {
                                 if let Some(errors) = &mut errors {
                                     errors.append(error);
@@ -579,7 +581,7 @@ fn program_parser<'a>(
                             }
                         },
                         "process" => match graph::parse_source_tokens(source, &body) {
-                            Ok((graph, retry, deadline)) => program.processes.push(Process {
+                            Ok(Some((graph, retry, deadline))) => program.processes.push(Process {
                                 name,
                                 input: String::new(),
                                 input_type: Type::Named("Number".into()),
@@ -590,6 +592,7 @@ fn program_parser<'a>(
                                 retry,
                                 deadline,
                             }),
+                            Ok(None) => {}
                             Err(error) => {
                                 if let Some(errors) = &mut errors {
                                     errors.append(error);
@@ -599,7 +602,8 @@ fn program_parser<'a>(
                             }
                         },
                         _ => match graph::parse_peer_tokens(source, &kind, &name, &body) {
-                            Ok(item) => program.peer_nodes.push(item),
+                            Ok(Some(item)) => program.peer_nodes.push(item),
+                            Ok(None) => {}
                             Err(error) => {
                                 if let Some(errors) = &mut errors {
                                     errors.append(error);
@@ -890,6 +894,44 @@ mod diagnostic_tests {
         assert!(lines[1].contains(&format!("at byte {second}")), "{error}");
         assert_eq!(error.related[0].source_name, "mixed.bl");
         assert_eq!(error.related[0].span, Some(second..second));
+        assert!(super::transpile(source).is_err());
+    }
+
+    #[test]
+    fn invalid_required_decision_expression_has_no_missing_field_cascade_but_keeps_later_error() {
+        let source = "namespace demo; version \"1.0\";\n# café\ndecision_task check { input value: Number; output result: Number = node; literal_expression node { output result: Number; expression ☃; expression value + ; } }";
+        let error = parse_source(source, "decision.bl").err().unwrap();
+        let invalid = source.find('☃').unwrap();
+        let later = source.find("+ ;").unwrap() + 2;
+        assert_eq!(error.span, Some(invalid..invalid + '☃'.len_utf8()));
+        let lines: Vec<_> = error.to_string().lines().map(str::to_owned).collect();
+        assert_eq!(lines.len(), 2, "{error}");
+        assert!(
+            lines[0].contains(&format!("invalid character at byte {invalid}")),
+            "{error}"
+        );
+        assert!(lines[1].contains(&format!("expression")), "{error}");
+        assert!(lines[1].ends_with(&format!("at byte {later}")), "{error}");
+        assert!(super::transpile(source).is_err());
+    }
+
+    #[test]
+    fn invalid_required_decision_expression_has_only_lexical_diagnostic() {
+        let source = "namespace demo; version \"1.0\"; decision_task check { input value: Number; output result: Number = node; literal_expression node { output result: Number; expression ☃; } }";
+        let error = parse_source(source, "decision.bl").err().unwrap();
+        let invalid = source.find('☃').unwrap();
+        assert_eq!(error.span, Some(invalid..invalid + '☃'.len_utf8()));
+        assert_eq!(error.to_string().lines().count(), 1, "{error}");
+        assert!(super::transpile(source).is_err());
+    }
+
+    #[test]
+    fn invalid_required_graph_statement_has_only_lexical_diagnostic() {
+        let source = "namespace demo; version \"1.0\"; pause_for wait { duration ☃; }";
+        let error = parse_source(source, "graph.bl").err().unwrap();
+        let invalid = source.find('☃').unwrap();
+        assert_eq!(error.span, Some(invalid..invalid + '☃'.len_utf8()));
+        assert_eq!(error.to_string().lines().count(), 1, "{error}");
         assert!(super::transpile(source).is_err());
     }
 

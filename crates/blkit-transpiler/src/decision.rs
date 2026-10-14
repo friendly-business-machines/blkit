@@ -755,6 +755,7 @@ fn parse_item(
                 kind_span.into_range(),
             ));
         }
+        crate::compiler::BodyItem::Invalid => return Err("invalid decision statement".into()),
     };
     crate::compiler::statement(tokens, *terminator, decision_statement(source, columns)).map_err(
         |error| {
@@ -775,7 +776,7 @@ fn node_tokens(
     kind: &str,
     name: &str,
     body: &[crate::compiler::BodyItem],
-) -> Result<Result<DecisionNode, Knowledge>, crate::compiler::CompilerError> {
+) -> Result<Option<Result<DecisionNode, Knowledge>>, crate::compiler::CompilerError> {
     let mut output = None;
     let mut expression = None;
     let mut entries = Vec::new();
@@ -791,7 +792,12 @@ fn node_tokens(
         default: None,
     };
     let mut errors: Option<crate::compiler::CompilerError> = None;
+    let mut damaged = false;
     for (index, item) in body.iter().enumerate() {
+        if matches!(item, crate::compiler::BodyItem::Invalid) {
+            damaged = true;
+            continue;
+        }
         let columns = table
             .inputs
             .iter()
@@ -873,23 +879,26 @@ fn node_tokens(
     if let Some(error) = errors {
         return Err(error);
     }
+    if damaged {
+        return Ok(None);
+    }
     let (output_name, output) = output.ok_or_else(|| format!("missing {kind} output"))?;
     match kind {
-        "knowledge" => Ok(Err(Knowledge {
+        "knowledge" => Ok(Some(Err(Knowledge {
             name: name.into(),
             params,
             output_name,
             output,
             body: expression.ok_or("missing knowledge expression")?,
             braced: true,
-        })),
-        "literal_expression" => Ok(Ok(DecisionNode {
+        }))),
+        "literal_expression" => Ok(Some(Ok(DecisionNode {
             name: name.into(),
             output,
             output_name,
             kind: DecisionKind::Literal(expression.ok_or("missing literal expression")?),
-        })),
-        "context" => Ok(Ok(DecisionNode {
+        }))),
+        "context" => Ok(Some(Ok(DecisionNode {
             name: name.into(),
             output,
             output_name,
@@ -897,13 +906,13 @@ fn node_tokens(
                 entries,
                 result: result.ok_or("missing context result")?,
             },
-        })),
-        "decision_table" if !table.policy.is_empty() => Ok(Ok(DecisionNode {
+        }))),
+        "decision_table" if !table.policy.is_empty() => Ok(Some(Ok(DecisionNode {
             name: name.into(),
             output,
             output_name,
             kind: DecisionKind::Table(table),
-        })),
+        }))),
         "decision_table" => Err("missing table policy".into()),
         _ => Err(format!("invalid decision block: {kind}").into()),
     }
@@ -913,11 +922,16 @@ pub(crate) fn parse_tokens(
     source: &str,
     name: &str,
     items: &[crate::compiler::BodyItem],
-) -> Result<DecisionModel, crate::compiler::CompilerError> {
+) -> Result<Option<DecisionModel>, crate::compiler::CompilerError> {
     let (mut inputs, mut outputs, mut nodes, mut knowledge) = (vec![], vec![], vec![], vec![]);
     let mut errors: Option<crate::compiler::CompilerError> = None;
+    let mut damaged = false;
     for item in items {
         let result = match item {
+            crate::compiler::BodyItem::Invalid => {
+                damaged = true;
+                continue;
+            }
             crate::compiler::BodyItem::Statement(..) => {
                 parse_item(source, item, &[]).and_then(|statement| {
                     match statement {
@@ -934,8 +948,9 @@ pub(crate) fn parse_tokens(
             }
             crate::compiler::BodyItem::Block(kind, name, body, _) => {
                 node_tokens(source, kind, name, body).map(|node| match node {
-                    Ok(node) => nodes.push(node),
-                    Err(model) => knowledge.push(model),
+                    Some(Ok(node)) => nodes.push(node),
+                    Some(Err(model)) => knowledge.push(model),
+                    None => damaged = true,
                 })
             }
         };
@@ -950,5 +965,10 @@ pub(crate) fn parse_tokens(
     if let Some(error) = errors {
         return Err(error);
     }
-    finish_braced(name, inputs, outputs, nodes, knowledge).map_err(Into::into)
+    if damaged {
+        return Ok(None);
+    }
+    finish_braced(name, inputs, outputs, nodes, knowledge)
+        .map(Some)
+        .map_err(Into::into)
 }
