@@ -2768,3 +2768,231 @@ fn all_and_any_require_typed_boolean_lists() {
         );
     }
 }
+
+#[test]
+fn public_program_ast_preserves_declaration_and_field_order() {
+    let source = r##"# file comment
+namespace orders;
+version "v;#1";
+# preceding record comment
+First = {"a,b:c#d": List<Dictionary<Number>>, second: Bool};
+enum State:
+  waiting;
+  ready;
+# between declarations
+Second = {first: First};
+enum Result:
+  yes;
+  no;
+"##;
+    let program = parse(source).unwrap();
+    assert_eq!(
+        (program.namespace.as_str(), program.version.as_str()),
+        ("orders", "v;#1")
+    );
+    assert_eq!(
+        program
+            .records
+            .iter()
+            .map(|record| record.name.as_str())
+            .collect::<Vec<_>>(),
+        ["First", "Second"]
+    );
+    assert_eq!(program.records[0].fields[0].0, "a,b:c#d");
+    assert_eq!(
+        program.records[0].fields[0].1.to_string(),
+        "List<Dictionary<Number>>"
+    );
+    assert_eq!(program.records[0].fields[1].0, "second");
+    assert_eq!(
+        program
+            .enums
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>(),
+        ["State", "Result"]
+    );
+    assert_eq!(program.enums[0].variants, ["waiting", "ready"]);
+    assert_eq!(program.enums[1].variants, ["yes", "no"]);
+}
+
+#[test]
+fn enum_layout_and_record_delimiters_reject_malformed_sources() {
+    for source in [
+        format!("{HEADER}enum State:\n waiting;"),
+        format!("{HEADER}enum State:\n    waiting;"),
+        format!("{HEADER}enum State:\n  waiting"),
+        format!("{HEADER}enum State:\n  waiting;\n  ready extra;"),
+        format!("{HEADER}Record = {{value: List<Number>;"),
+        format!("{HEADER}Record = {{value: Number}}; extra"),
+        format!("{HEADER}Record = {{value: List<Number>}}"),
+    ] {
+        assert!(parse(&source).is_err(), "accepted: {source}");
+    }
+}
+
+#[test]
+fn quotes_preserve_punctuation_and_inline_hash_is_not_a_comment() {
+    use blkit::expr::Expr;
+
+    assert_eq!(
+        blkit::expr::expression("\"a;,{#}..b\"").unwrap(),
+        Expr::String("a;,{#}..b".into())
+    );
+    let source = format!(
+        "{HEADER}# full-line comment\nOrder = {{\"key;#,:\": String}}; # not a full-line comment"
+    );
+    assert!(parse(&source).is_err());
+    for text in [
+        "\"unterminated",
+        "1.5e",
+        "1e+",
+        "1 @ 2",
+        "[1, 2",
+        "{a: 1",
+        "(1 + 2]",
+    ] {
+        assert!(blkit::expr::expression(text).is_err(), "accepted: {text}");
+    }
+}
+
+#[test]
+fn expression_ast_preserves_precedence_and_lowerings() {
+    use blkit::expr::{self, Expr};
+
+    let expected = Expr::Binary(
+        Box::new(Expr::Binary(
+            Box::new(Expr::Number("0".into())),
+            "-".into(),
+            Box::new(Expr::Binary(
+                Box::new(Expr::Number("2".into())),
+                "**".into(),
+                Box::new(Expr::Binary(
+                    Box::new(Expr::Number("3".into())),
+                    "**".into(),
+                    Box::new(Expr::Number("2".into())),
+                )),
+            )),
+        )),
+        "+".into(),
+        Box::new(Expr::Binary(
+            Box::new(Expr::Number("4".into())),
+            "*".into(),
+            Box::new(Expr::Number("5".into())),
+        )),
+    );
+    assert_eq!(expr::expression("-2 ** 3 ** 2 + 4 * 5").unwrap(), expected);
+    assert_eq!(
+        expr::expression("{a: 1}[\"a\"]").unwrap(),
+        Expr::Call(
+            "__bl_index".into(),
+            vec![
+                Expr::Call(
+                    "__bl_dictionary".into(),
+                    vec![Expr::String("a".into()), Expr::Number("1".into())]
+                ),
+                Expr::String("a".into()),
+            ]
+        )
+    );
+}
+
+#[test]
+fn range_ast_distinguishes_bounds_and_delimiters_from_lists() {
+    use blkit::expr::{self, Expr};
+
+    for (text, lower, upper, lower_closed, upper_closed) in [
+        ("[1..5]", Some("1"), Some("5"), true, true),
+        ("(1..5]", Some("1"), Some("5"), false, true),
+        ("[null..5)", None, Some("5"), true, false),
+        ("(1..null)", Some("1"), None, false, false),
+    ] {
+        assert_eq!(
+            expr::expression(text).unwrap(),
+            Expr::Range(
+                lower.map(|n| Box::new(Expr::Number(n.into()))),
+                upper.map(|n| Box::new(Expr::Number(n.into()))),
+                lower_closed,
+                upper_closed
+            ),
+            "{text}"
+        );
+    }
+    assert_eq!(
+        expr::expression("[1,5]").unwrap(),
+        Expr::List(vec![Expr::Number("1".into()), Expr::Number("5".into())])
+    );
+    for text in ["(null)", "[1..5", "[1..5}"] {
+        assert!(expr::expression(text).is_err(), "accepted: {text}");
+    }
+}
+
+#[test]
+fn decision_table_ast_preserves_rule_priority_and_default_order() {
+    use blkit::{decision::DecisionKind, expr::Expr};
+
+    let source = format!(
+        "{HEADER}decision_task check {{ input amount: Number; output result: Number = table; decision_table table {{ output result: Number; policy PRIORITY; input value: Number = amount; output score: Number; priority 9; priority 3; rule value matches (< 10, [20..30]) -> 9; rule value >= 10 -> 3; default 0; }} }}"
+    );
+    let program = parse(&source).unwrap();
+    let model = &program.decisions[0];
+    assert_eq!(model.outputs[0].2, "table");
+    let DecisionKind::Table(table) = &model.nodes[0].kind else {
+        panic!("expected table")
+    };
+    assert_eq!(table.policy, "PRIORITY");
+    assert_eq!(table.inputs[0].0, "value");
+    assert_eq!(table.outputs[0].0, "score");
+    assert_eq!(
+        table.priorities,
+        vec![
+            vec![Expr::Number("9".into())],
+            vec![Expr::Number("3".into())]
+        ]
+    );
+    assert!(matches!(&table.rules[0].0, Expr::Binary(_, op, _) if op == "or"));
+    assert!(matches!(&table.rules[1].0, Expr::Binary(_, op, _) if op == ">="));
+    assert_eq!(table.rules[0].1, [Expr::Number("9".into())]);
+    assert_eq!(table.rules[1].1, [Expr::Number("3".into())]);
+    assert_eq!(
+        table.default.as_deref(),
+        Some([Expr::Number("0".into())].as_slice())
+    );
+    for broken in [
+        source.replace("rule value >= 10 -> 3;", "rule value >= 10 -> ;"),
+        source.replace("rule value >= 10 -> 3;", "rule other matches (< 10) -> 3;"),
+        source.replace("policy PRIORITY;", "policy UNKNOWN;"),
+    ] {
+        assert!(parse(&broken).is_err(), "accepted: {broken}");
+    }
+    assert!(blkit::expr::expression("value matches (< 10)").is_err());
+}
+
+#[test]
+fn context_ast_orders_dependencies_without_reordering_authored_nodes() {
+    use blkit::{decision::DecisionKind, expr::Expr};
+
+    let source = format!(
+        "{HEADER}decision_task check {{ input amount: Number; output result: Number = final; context final {{ output result: Number; entry total: Number = base + 1; entry base: Number = amount; result total; }} literal_expression spare {{ output result: Number; expression amount; }} }}"
+    );
+    let model = &parse(&source).unwrap().decisions.remove(0);
+    assert_eq!(
+        model
+            .nodes
+            .iter()
+            .map(|node| node.name.as_str())
+            .collect::<Vec<_>>(),
+        ["final", "spare"]
+    );
+    let DecisionKind::Context { entries, result } = &model.nodes[0].kind else {
+        panic!("expected context")
+    };
+    assert_eq!(
+        entries
+            .iter()
+            .map(|(name, _, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["base", "total"]
+    );
+    assert_eq!(result, &Expr::Name("total".into()));
+}

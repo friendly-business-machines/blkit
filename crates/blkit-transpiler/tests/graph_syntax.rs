@@ -127,3 +127,91 @@ fn conditional_gateway_requires_fallback_and_valid_condition() {
     );
     assert!(parse(&invalid).is_err());
 }
+
+#[test]
+fn graph_ast_preserves_peer_flow_route_and_binding_order() {
+    use blkit::expr::Expr;
+
+    let source = r##"namespace demo; version "v;#1";
+# comment before declarations
+start_event start { output first: Number; output second: Number; }
+xor_split fork {}
+end_event left { input first: Number; }
+end_event right { input second: Number; }
+process run {
+  flow start -> fork;
+  flow fork -> right when start.second > 0;
+  flow fork -> left else;
+  bind start.second -> right.second;
+  bind start.first -> left.first;
+}"##;
+    let program = parse(source).unwrap();
+    assert_eq!(
+        program
+            .peer_nodes
+            .iter()
+            .map(|peer| peer.name.as_str())
+            .collect::<Vec<_>>(),
+        ["start", "fork", "left", "right"]
+    );
+    let PeerKind::Start { outputs } = &program.peer_nodes[0].kind else {
+        panic!("expected start")
+    };
+    assert_eq!(
+        outputs
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    let graph = program.processes[0].source_graph.as_ref().unwrap();
+    assert_eq!(
+        graph.flows,
+        [
+            ("start".into(), "fork".into()),
+            ("fork".into(), "right".into()),
+            ("fork".into(), "left".into())
+        ]
+    );
+    assert_eq!(
+        graph
+            .routes
+            .iter()
+            .map(|route| (route.target.as_str(), route.fallback))
+            .collect::<Vec<_>>(),
+        [("right", false), ("left", true)]
+    );
+    assert!(matches!(&graph.routes[0].condition, Some(Expr::Binary(_, op, _)) if op == ">"));
+    assert_eq!(
+        graph
+            .bindings
+            .iter()
+            .map(|binding| (binding.output.as_str(), binding.input.as_str()))
+            .collect::<Vec<_>>(),
+        [("second", "second"), ("first", "first")]
+    );
+}
+
+#[test]
+fn process_statements_require_complete_delimiters_and_reject_inline_comments() {
+    let source = r##"namespace demo; version "1";
+start_event start { output value: Number; }
+end_event done { input value: Number; }
+process run { flow start -> done; bind start.value -> done.value; }"##;
+    parse(source).unwrap();
+    for broken in [
+        source.replace("flow start -> done;", "flow start -> done"),
+        source.replace(
+            "bind start.value -> done.value;",
+            "bind start.value -> done.value",
+        ),
+        source.replace("done.value; }", "done.value;"),
+        source.replace("flow start -> done;", "flow start -> done; # inline"),
+        source.replace(
+            "bind start.value -> done.value;",
+            "bind start.value -> done.value; # inline",
+        ),
+    ] {
+        assert!(parse(&broken).is_err(), "accepted: {broken}");
+    }
+}
