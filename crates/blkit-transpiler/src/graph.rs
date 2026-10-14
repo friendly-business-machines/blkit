@@ -662,7 +662,7 @@ enum GraphStatement {
     Reference(String, String),
     Duration(String, chumsky::span::SimpleSpan),
     Retry(u32, String, String),
-    Deadline(String, String),
+    Deadline(String, String, chumsky::span::SimpleSpan),
     Repeat(String, bool, Expr, Option<Expr>, Vec<(String, String)>),
     Multi(String, Expr, String),
     Flow(String, String, Option<Expr>, Option<FlowModifier>),
@@ -738,8 +738,8 @@ fn graph_statement<'a>(
         });
     let deadline = word(source, "deadline")
         .ignore_then(name.clone())
-        .then(quoted(source))
-        .map(|(origin, span)| GraphStatement::Deadline(origin, span));
+        .then(quoted(source).map_with(|value, extra| (value, extra.span())))
+        .map(|(origin, (value, span))| GraphStatement::Deadline(origin, value, span));
     let expr = expr::expression_parser(source, &[]).boxed();
     let bound = choice((
         word(source, "max_iterations").to("max_iterations"),
@@ -1044,7 +1044,7 @@ pub(crate) fn parse_source_tokens(
                     backoff: "exponential",
                 });
             }
-            GraphStatement::Deadline(origin, value) => {
+            GraphStatement::Deadline(origin, value, span) => {
                 if !matches!(origin.as_str(), "queued" | "first_claimed")
                     || deadline.is_some()
                     || !graph.flows.is_empty()
@@ -1052,7 +1052,9 @@ pub(crate) fn parse_source_tokens(
                 {
                     return Err("invalid or duplicate deadline declaration".into());
                 }
-                let duration = duration(&value)?;
+                let duration = duration(&value).map_err(|error| {
+                    crate::compiler::CompilerError::located(error, span.into_range())
+                })?;
                 if duration.is_zero() {
                     return Err("deadline must be positive".into());
                 }

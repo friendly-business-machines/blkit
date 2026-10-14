@@ -962,6 +962,32 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn invalid_process_deadline_after_lexical_retry_reports_both_original_bytes() {
+        let source = "namespace demo; version \"1.0\";\n# café\nprocess route { retry max_retries ☃ retry_for \"1s\" retry_delay \"1s\" backoff exponential; deadline queued \"bogus\"; }";
+        let error = parse_source(source, "graph.bl").err().unwrap();
+        let invalid = source.find('☃').unwrap();
+        let deadline = source.find("\"bogus\"").unwrap();
+        assert_eq!(error.span, Some(invalid..invalid + '☃'.len_utf8()));
+        let lines: Vec<_> = error.to_string().lines().map(str::to_owned).collect();
+        assert_eq!(lines.len(), 2, "{error}");
+        assert!(
+            lines[0].ends_with(&format!("invalid character at byte {invalid}")),
+            "{error}"
+        );
+        assert!(lines[1].contains("invalid retry duration"), "{error}");
+        assert!(
+            lines[1].ends_with(&format!("at byte {deadline}")),
+            "{error}"
+        );
+        assert_eq!(
+            error.related[0].span,
+            Some(deadline..deadline + "\"bogus\"".len())
+        );
+        assert_eq!(error.related[0].source_name, "graph.bl");
+        assert!(super::transpile(source).is_err());
+    }
+
+    #[test]
     fn invalid_token_before_brace_has_no_second_syntax_diagnostic() {
         let source = "namespace demo; version \"1.0\"; start_event start { output first: ☃ }";
         let error = parse_source(source, "single.bl").err().unwrap();
