@@ -537,6 +537,16 @@ pub fn parse_braced(name: &str, items: &[String]) -> Result<DecisionModel, Strin
             return Err(format!("invalid decision task statement: {statement}"));
         }
     }
+    finish_braced(name, inputs, outputs, nodes, knowledge)
+}
+
+fn finish_braced(
+    name: &str,
+    inputs: Vec<(String, Type)>,
+    outputs: Vec<(String, Type, String)>,
+    mut nodes: Vec<DecisionNode>,
+    mut knowledge: Vec<Knowledge>,
+) -> Result<DecisionModel, String> {
     let (input, input_type) = inputs
         .first()
         .ok_or("decision task requires an input port")?;
@@ -841,4 +851,284 @@ pub fn parse(header: &str, lines: &[String]) -> Result<DecisionModel, String> {
         return Err("missing decision output".into());
     }
     Ok(model)
+}
+
+#[derive(Debug)]
+enum DecisionStatement {
+    Input(String, Type),
+    Output(String, Type, Option<(String, Option<String>)>),
+    Expression(Expr),
+    Entry(String, Type, Expr),
+    Result(Expr),
+    Policy(String, Option<String>),
+    Rule(Expr, Vec<Expr>),
+    Priority(Vec<Expr>),
+    Default(Vec<Expr>),
+}
+
+fn decision_statement<'a>(
+    source: &'a str,
+    columns: &'a [String],
+) -> impl chumsky::Parser<
+    'a,
+    crate::compiler::Tokens<'a>,
+    DecisionStatement,
+    crate::compiler::ParseError<'a>,
+> {
+    use crate::{
+        compiler::{assignment, name, typed_port, word},
+        lexer::Token,
+    };
+    use chumsky::prelude::*;
+    let name = name(source);
+    let typed = typed_port(source);
+    let expression = expr::expression_parser(source, columns).boxed();
+    let values = expression
+        .clone()
+        .separated_by(just(Token::Comma))
+        .at_least(1)
+        .collect::<Vec<_>>();
+    let input = word(source, "input").ignore_then(choice((
+        assignment(source, typed.clone(), expression.clone())
+            .map(|(port, expr)| DecisionStatement::Entry(port.0, port.1, expr)),
+        typed
+            .clone()
+            .map(|(port, ty)| DecisionStatement::Input(port, ty)),
+    )));
+    let reference = name
+        .clone()
+        .map_with(|value, extra| (value, extra.span()))
+        .then(
+            just(Token::Dot)
+                .map_with(|_, extra| extra.span())
+                .then(name.clone().map_with(|value, extra| (value, extra.span())))
+                .or_not(),
+        )
+        .try_map_with(|((node, node_span), port), extra| {
+            if let Some((dot, (port, port_span))) = port {
+                if node_span.end != dot.start || dot.end != port_span.start {
+                    return Err(Rich::custom(
+                        extra.span(),
+                        "invalid decision output reference",
+                    ));
+                }
+                Ok((node, Some(port)))
+            } else {
+                Ok((node, None))
+            }
+        });
+    let output = word(source, "output").ignore_then(choice((
+        assignment(source, typed.clone(), reference)
+            .map(|((port, ty), reference)| DecisionStatement::Output(port, ty, Some(reference))),
+        typed
+            .clone()
+            .map(|(port, ty)| DecisionStatement::Output(port, ty, None)),
+    )));
+    let entry = word(source, "entry")
+        .ignore_then(assignment(source, typed, expression.clone()))
+        .map(|((name, ty), expression)| DecisionStatement::Entry(name, ty, expression));
+    let expression_stmt = word(source, "expression")
+        .ignore_then(expression.clone())
+        .map(DecisionStatement::Expression);
+    let result = word(source, "result")
+        .ignore_then(expression.clone())
+        .map(DecisionStatement::Result);
+    let policy = word(source, "policy")
+        .ignore_then(name.clone())
+        .then(name.or_not())
+        .map(|(policy, aggregation)| DecisionStatement::Policy(policy, aggregation));
+    let rule = word(source, "rule")
+        .ignore_then(crate::graph::edge(source, expression, values.clone()))
+        .map(|(condition, values)| DecisionStatement::Rule(condition, values));
+    let priority = word(source, "priority")
+        .ignore_then(values.clone())
+        .map(DecisionStatement::Priority);
+    let default = word(source, "default")
+        .ignore_then(values)
+        .map(DecisionStatement::Default);
+    choice((
+        input.boxed(),
+        output.boxed(),
+        entry.boxed(),
+        expression_stmt.boxed(),
+        result.boxed(),
+        policy.boxed(),
+        rule.boxed(),
+        priority.boxed(),
+        default.boxed(),
+    ))
+}
+
+fn parse_item(
+    source: &str,
+    item: &crate::compiler::BodyItem,
+    columns: &[String],
+) -> Result<DecisionStatement, String> {
+    let crate::compiler::BodyItem::Statement(tokens) = item else {
+        return Err("unexpected nested decision block".into());
+    };
+    crate::compiler::statement(source, tokens, decision_statement(source, columns)).map_err(
+        |error| {
+            if tokens
+                .first()
+                .is_some_and(|(_, span)| &source[span.into_range()] == "expression")
+            {
+                format!("expression: {error}")
+            } else {
+                error
+            }
+        },
+    )
+}
+
+fn node_tokens(
+    source: &str,
+    kind: &str,
+    name: &str,
+    body: &[crate::compiler::BodyItem],
+) -> Result<Result<DecisionNode, Knowledge>, String> {
+    let mut output = None;
+    let mut expression = None;
+    let mut entries = Vec::new();
+    let mut params = Vec::new();
+    let mut result = None;
+    let mut table = DecisionTable {
+        policy: String::new(),
+        aggregation: None,
+        inputs: vec![],
+        outputs: vec![],
+        rules: vec![],
+        priorities: vec![],
+        default: None,
+    };
+    for (index, item) in body.iter().enumerate() {
+        let columns = table
+            .inputs
+            .iter()
+            .map(|(name, _, _): &(String, Type, Expr)| name.clone())
+            .collect::<Vec<_>>();
+        match (kind, parse_item(source, item, &columns)?) {
+            (
+                "literal_expression" | "knowledge" | "context",
+                DecisionStatement::Output(port, ty, None),
+            ) if output.is_none() => {
+                output = Some((port, ty));
+            }
+            ("decision_table", DecisionStatement::Output(port, ty, None))
+                if index == 0 && output.is_none() =>
+            {
+                output = Some((port, ty));
+            }
+            ("decision_table", DecisionStatement::Output(port, ty, None)) if index > 0 => {
+                table.outputs.push((port, ty))
+            }
+            ("knowledge", DecisionStatement::Input(port, ty))
+                if !params
+                    .iter()
+                    .any(|(name, _): &(String, Type)| name == &port) =>
+            {
+                params.push((port, ty))
+            }
+            ("literal_expression" | "knowledge", DecisionStatement::Expression(expr))
+                if expression.is_none() =>
+            {
+                expression = Some(expr);
+            }
+            ("context", DecisionStatement::Entry(port, ty, expr)) => entries.push((port, ty, expr)),
+            ("context", DecisionStatement::Result(expr)) if result.is_none() => {
+                result = Some(expr);
+            }
+            ("decision_table", DecisionStatement::Entry(port, ty, expr)) => {
+                table.inputs.push((port, ty, expr))
+            }
+            ("decision_table", DecisionStatement::Policy(policy, aggregation))
+                if table.policy.is_empty()
+                    && matches!(
+                        policy.as_str(),
+                        "UNIQUE"
+                            | "ANY"
+                            | "FIRST"
+                            | "PRIORITY"
+                            | "RULE_ORDER"
+                            | "OUTPUT_ORDER"
+                            | "COLLECT"
+                    ) =>
+            {
+                table.policy = policy;
+                table.aggregation = aggregation;
+            }
+            ("decision_table", DecisionStatement::Rule(condition, values)) => {
+                table.rules.push((condition, values))
+            }
+            ("decision_table", DecisionStatement::Priority(values)) => {
+                table.priorities.push(values)
+            }
+            ("decision_table", DecisionStatement::Default(values)) if table.default.is_none() => {
+                table.default = Some(values);
+            }
+            _ => return Err(format!("invalid {kind} statement")),
+        }
+    }
+    let (output_name, output) = output.ok_or_else(|| format!("missing {kind} output"))?;
+    match kind {
+        "knowledge" => Ok(Err(Knowledge {
+            name: name.into(),
+            params,
+            output_name,
+            output,
+            body: expression.ok_or("missing knowledge expression")?,
+            braced: true,
+        })),
+        "literal_expression" => Ok(Ok(DecisionNode {
+            name: name.into(),
+            output,
+            output_name,
+            kind: DecisionKind::Literal(expression.ok_or("missing literal expression")?),
+        })),
+        "context" => Ok(Ok(DecisionNode {
+            name: name.into(),
+            output,
+            output_name,
+            kind: DecisionKind::Context {
+                entries,
+                result: result.ok_or("missing context result")?,
+            },
+        })),
+        "decision_table" if !table.policy.is_empty() => Ok(Ok(DecisionNode {
+            name: name.into(),
+            output,
+            output_name,
+            kind: DecisionKind::Table(table),
+        })),
+        "decision_table" => Err("missing table policy".into()),
+        _ => Err(format!("invalid decision block: {kind}")),
+    }
+}
+
+pub(crate) fn parse_tokens(
+    source: &str,
+    name: &str,
+    items: &[crate::compiler::BodyItem],
+) -> Result<DecisionModel, String> {
+    let (mut inputs, mut outputs, mut nodes, mut knowledge) = (vec![], vec![], vec![], vec![]);
+    for item in items {
+        match item {
+            crate::compiler::BodyItem::Statement(_) => match parse_item(source, item, &[])? {
+                DecisionStatement::Input(port, ty) => inputs.push((port, ty)),
+                DecisionStatement::Output(port, ty, Some((node, field))) => outputs.push((
+                    port,
+                    ty,
+                    field.map_or(node.clone(), |field| format!("{node}.{field}")),
+                )),
+                _ => return Err("invalid decision task statement".into()),
+            },
+            crate::compiler::BodyItem::Block(kind, name, body) => {
+                match node_tokens(source, kind, name, body)? {
+                    Ok(node) => nodes.push(node),
+                    Err(model) => knowledge.push(model),
+                }
+            }
+        }
+    }
+    finish_braced(name, inputs, outputs, nodes, knowledge)
 }

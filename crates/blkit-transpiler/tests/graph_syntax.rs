@@ -193,6 +193,72 @@ process run {
 }
 
 #[test]
+fn repeat_bound_keyword_inside_quoted_condition_is_not_a_delimiter() {
+    use blkit::expr::Expr;
+
+    let source = r#"namespace demo; version "1";
+process run { repeat_post work while " max_iterations " == " max_iterations " max_iterations 3; }"#;
+    let program = parse(source).unwrap();
+    let repetition = &program.processes[0]
+        .source_graph
+        .as_ref()
+        .unwrap()
+        .repetitions[0];
+    assert_eq!(repetition.max_iterations, Some(3));
+    assert!(
+        matches!(&repetition.condition, Expr::Binary(left, op, right)
+        if op == "==" && matches!(left.as_ref(), Expr::String(value) if value == " max_iterations ")
+        && matches!(right.as_ref(), Expr::String(value) if value == " max_iterations "))
+    );
+}
+
+#[test]
+fn graph_port_and_edge_spacing_remains_part_of_the_existing_grammar() {
+    let source = r#"namespace demo; version "1";
+start_event start { output value: Number; }
+end_event done { input value: Number; }
+process run { flow start -> done; bind start.value -> done.value; }"#;
+    for broken in [
+        source.replace("output value: Number", "output value:Number"),
+        source.replace("flow start -> done", "flow start->done"),
+        source.replace(
+            "bind start.value -> done.value",
+            "bind start.value->done.value",
+        ),
+        source.replace(
+            "bind start.value -> done.value",
+            "bind start .value -> done.value",
+        ),
+    ] {
+        assert!(parse(&broken).is_err(), "accepted: {broken}");
+    }
+}
+
+#[test]
+fn decision_assignment_spacing_remains_part_of_the_existing_grammar() {
+    let source = r#"namespace demo; version "1";
+decision_task check { input amount: Number; output result: Number = value;
+literal_expression value { output result: Number; expression amount; } }"#;
+    for broken in [
+        source.replace("Number = value", "Number=value"),
+        source.replace("Number = value", "Number = value .result"),
+        source.replace("output result: Number", "output result:Number"),
+    ] {
+        assert!(parse(&broken).is_err(), "accepted: {broken}");
+    }
+}
+
+#[test]
+fn table_rule_arrow_requires_existing_spaces() {
+    let source = r#"namespace demo; version "1";
+decision_task check { input amount: Number; output result: Number = table;
+decision_table table { output result: Number; policy FIRST;
+input value: Number = amount; output result: Number; rule value > 0 -> 1; default 0; } }"#;
+    parse(source).unwrap();
+    assert!(parse(&source.replace("value > 0 -> 1", "value > 0->1")).is_err());
+}
+
+#[test]
 fn process_statements_require_complete_delimiters_and_reject_inline_comments() {
     let source = r##"namespace demo; version "1";
 start_event start { output value: Number; }

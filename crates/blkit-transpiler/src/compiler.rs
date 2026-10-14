@@ -153,24 +153,26 @@ use chumsky::{
     prelude::*,
 };
 
-type Tokens<'a> = MappedInput<'a, Token, SimpleSpan, &'a [(Token, SimpleSpan)]>;
-type ParseError<'a> = extra::Err<Rich<'a, Token>>;
+pub(crate) type Tokens<'a> = MappedInput<'a, Token, SimpleSpan, &'a [(Token, SimpleSpan)]>;
+pub(crate) type ParseError<'a> = extra::Err<Rich<'a, Token>>;
 
 enum Declaration {
     Record(Record),
     Enum(Enum),
-    Body(String, String, Vec<String>),
+    Body(String, String, Vec<BodyItem>),
 }
 
 fn text(source: &str, span: SimpleSpan) -> &str {
     &source[span.into_range()]
 }
 
-fn name<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, String, ParseError<'a>> + Clone {
+pub(crate) fn name<'a>(
+    source: &'a str,
+) -> impl Parser<'a, Tokens<'a>, String, ParseError<'a>> + Clone {
     just(Token::Identifier).map_with(move |_, extra| text(source, extra.span()).into())
 }
 
-fn word<'a>(
+pub(crate) fn word<'a>(
     source: &'a str,
     expected: &'static str,
 ) -> impl Parser<'a, Tokens<'a>, (), ParseError<'a>> + Clone {
@@ -180,7 +182,9 @@ fn word<'a>(
         .ignored()
 }
 
-fn type_parser<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, Type, ParseError<'a>> + Clone {
+pub(crate) fn type_parser<'a>(
+    source: &'a str,
+) -> impl Parser<'a, Tokens<'a>, Type, ParseError<'a>> + Clone {
     recursive(|ty| {
         name(source)
             .then(
@@ -194,35 +198,89 @@ fn type_parser<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, Type, ParseEr
     })
 }
 
-// The not-yet-migrated graph/decision parsers accept statement strings. Preserve
-// their delimiters and quoted text while dropping layout and full-line comments.
-fn statement_text(source: &str, tokens: &[(Token, SimpleSpan)]) -> String {
-    let mut result = String::new();
-    let mut end = None;
-    for (token, span) in tokens {
-        if matches!(token, Token::Newline | Token::Indent) {
-            continue;
-        }
-        let span = span.into_range();
-        if let Some(previous) = end {
-            let gap = &source[previous..span.start];
-            if !gap.is_empty() {
-                if gap.contains('#') || gap.contains('\n') || gap.contains('\r') {
-                    result.push(' ');
-                } else {
-                    result.push_str(gap);
-                }
+#[derive(Debug)]
+pub(crate) enum BodyItem {
+    Statement(Vec<(Token, SimpleSpan)>),
+    Block(String, String, Vec<BodyItem>),
+}
+
+pub(crate) fn assignment<'a, O, P, A, B>(
+    source: &'a str,
+    left: A,
+    right: B,
+) -> impl Parser<'a, Tokens<'a>, (O, P), ParseError<'a>> + Clone
+where
+    A: Parser<'a, Tokens<'a>, O, ParseError<'a>> + Clone,
+    B: Parser<'a, Tokens<'a>, P, ParseError<'a>> + Clone,
+{
+    left.map_with(|value, extra| (value, extra.span()))
+        .then(just(Token::Equal).map_with(|_, extra| extra.span()))
+        .then(right.map_with(|value, extra| (value, extra.span())))
+        .try_map_with(move |(((left, a), equal), (right, b)), extra| {
+            if &source[a.end..equal.start] == " " && &source[equal.end..b.start] == " " {
+                Ok((left, right))
+            } else {
+                Err(Rich::custom(extra.span(), "invalid assignment spacing"))
             }
-        }
-        result.push_str(&source[span.clone()]);
-        end = Some(span.end);
-    }
-    result
+        })
+}
+
+pub(crate) fn typed_port<'a>(
+    source: &'a str,
+) -> impl Parser<'a, Tokens<'a>, (String, Type), ParseError<'a>> + Clone {
+    name(source)
+        .map_with(|name, extra| (name, extra.span()))
+        .then(just(Token::Colon).map_with(|_, extra| extra.span()))
+        .then(type_parser(source).map_with(|ty, extra| (ty, extra.span())))
+        .try_map_with(move |(((name, name_span), colon), (ty, ty_span)), extra| {
+            if name_span.end != colon.start
+                || &source[colon.end..ty_span.start] != " "
+                || text(source, ty_span) != ty.to_string()
+            {
+                Err(Rich::custom(extra.span(), "invalid typed port"))
+            } else {
+                Ok((name, ty))
+            }
+        })
+}
+
+pub(crate) fn number<'a>(
+    source: &'a str,
+) -> impl Parser<'a, Tokens<'a>, String, ParseError<'a>> + Clone {
+    just(Token::Number).map_with(move |_, extra| text(source, extra.span()).to_owned())
+}
+
+pub(crate) fn quoted<'a>(
+    source: &'a str,
+) -> impl Parser<'a, Tokens<'a>, String, ParseError<'a>> + Clone {
+    just(Token::String).map_with(move |_, extra| text(source, extra.span()).to_owned())
+}
+
+pub(crate) fn statement<'a, O, P>(
+    source: &'a str,
+    tokens: &'a [(Token, SimpleSpan)],
+    parser: P,
+) -> Result<O, String>
+where
+    P: Parser<'a, Tokens<'a>, O, ParseError<'a>>,
+{
+    let eof = tokens.last().map_or(source.len(), |(_, span)| span.end);
+    parser
+        .then_ignore(end())
+        .parse(tokens.split_token_span((eof..eof).into()))
+        .into_result()
+        .map_err(|errors| {
+            format!(
+                "statement at byte {}: {:?}",
+                errors[0].span().start,
+                errors[0]
+            )
+        })
 }
 
 fn body_parser<'a>(
     source: &'a str,
-) -> impl Parser<'a, Tokens<'a>, Vec<String>, ParseError<'a>> + Clone {
+) -> impl Parser<'a, Tokens<'a>, Vec<BodyItem>, ParseError<'a>> + Clone {
     recursive(|body| {
         let layout = choice((just(Token::Newline), just(Token::Indent)))
             .repeated()
@@ -258,11 +316,15 @@ fn body_parser<'a>(
             .at_least(1)
             .collect::<Vec<_>>()
             .then_ignore(just(Token::Semicolon))
-            .map(move |parts| {
-                statement_text(source, &parts.into_iter().flatten().collect::<Vec<_>>())
-            })
-            .filter(|value| !value.is_empty())
-            .map(|value| vec![value]);
+            .map(|parts| {
+                BodyItem::Statement(
+                    parts
+                        .into_iter()
+                        .flatten()
+                        .filter(|(token, _)| !matches!(token, Token::Newline | Token::Indent))
+                        .collect(),
+                )
+            });
         let nested_kind = choice((
             word(source, "literal_expression").to("literal_expression"),
             word(source, "decision_table").to("decision_table"),
@@ -274,20 +336,13 @@ fn body_parser<'a>(
             .then_ignore(just(Token::OpenBrace))
             .then(body)
             .then_ignore(just(Token::CloseBrace))
-            .map(|((kind, name), body)| {
-                let mut items = vec![format!("{kind} {name}"), "{".into()];
-                items.extend(body);
-                items.push("}".into());
-                items
-            });
-        layout
-            .ignore_then(
-                choice((nested, statement))
-                    .padded_by(layout)
-                    .repeated()
-                    .collect::<Vec<_>>(),
-            )
-            .map(|items| items.into_iter().flatten().collect())
+            .map(|((kind, name), body)| BodyItem::Block(kind.into(), name, body));
+        layout.ignore_then(
+            choice((nested, statement))
+                .padded_by(layout)
+                .repeated()
+                .collect::<Vec<_>>(),
+        )
     })
 }
 
@@ -433,12 +488,13 @@ fn program_parser<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, Program, P
                     Declaration::Enum(item) => program.enums.push(item),
                     Declaration::Body(kind, name, body) => match kind.as_str() {
                         "decision_task" => program.decisions.push(
-                            decision::parse_braced(&name, &body)
+                            decision::parse_tokens(source, &name, &body)
                                 .map_err(|message| Rich::custom(extra.span(), message))?,
                         ),
                         "process" => {
-                            let (graph, retry, deadline) = graph::parse_source(&body)
-                                .map_err(|message| Rich::custom(extra.span(), message))?;
+                            let (graph, retry, deadline) =
+                                graph::parse_source_tokens(source, &body)
+                                    .map_err(|message| Rich::custom(extra.span(), message))?;
                             program.processes.push(Process {
                                 name,
                                 input: String::new(),
@@ -452,7 +508,7 @@ fn program_parser<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, Program, P
                             });
                         }
                         _ => program.peer_nodes.push(
-                            graph::parse_peer(&kind, &name, &body)
+                            graph::parse_peer_tokens(source, &kind, &name, &body)
                                 .map_err(|message| Rich::custom(extra.span(), message))?,
                         ),
                     },

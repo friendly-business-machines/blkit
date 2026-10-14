@@ -975,3 +975,485 @@ pub fn parse_named(
     }
     Ok((graph, retry, deadline))
 }
+
+// Active braced grammar: consume original spanned tokens, not rendered statements.
+#[derive(Debug)]
+enum GraphStatement {
+    Port(String, String, Type),
+    Reference(String, String),
+    Duration(String),
+    Retry(u32, String, String),
+    Deadline(String, String),
+    Repeat(String, bool, Expr, Option<Expr>, Vec<(String, String)>),
+    Multi(String, Expr, String),
+    Flow(String, String, Option<Expr>, Option<FlowModifier>),
+    Bind(String, String, String, String),
+}
+
+#[derive(Debug, Clone)]
+enum FlowModifier {
+    Else,
+    Label(String),
+    Outcome(String),
+}
+
+pub(crate) fn edge<'a, O, P, A, B>(
+    source: &'a str,
+    left: A,
+    right: B,
+) -> impl chumsky::Parser<'a, crate::compiler::Tokens<'a>, (O, P), crate::compiler::ParseError<'a>> + Clone
+where
+    A: chumsky::Parser<'a, crate::compiler::Tokens<'a>, O, crate::compiler::ParseError<'a>> + Clone,
+    B: chumsky::Parser<'a, crate::compiler::Tokens<'a>, P, crate::compiler::ParseError<'a>> + Clone,
+{
+    use chumsky::prelude::*;
+    left.map_with(|value, extra| (value, extra.span()))
+        .then(just(crate::lexer::Token::Arrow).map_with(|_, extra| extra.span()))
+        .then(right.map_with(|value, extra| (value, extra.span())))
+        .try_map_with(move |(((left, a), arrow), (right, b)), extra| {
+            if &source[a.end..arrow.start] == " " && &source[arrow.end..b.start] == " " {
+                Ok((left, right))
+            } else {
+                Err(Rich::custom(extra.span(), "invalid arrow spacing"))
+            }
+        })
+}
+
+fn graph_statement<'a>(
+    source: &'a str,
+) -> impl chumsky::Parser<'a, crate::compiler::Tokens<'a>, GraphStatement, crate::compiler::ParseError<'a>>
+{
+    use crate::{
+        compiler::{name, number, quoted, typed_port, word},
+        lexer::Token,
+    };
+    use chumsky::prelude::*;
+    let name = name(source);
+    let port = choice((
+        word(source, "input").to("input"),
+        word(source, "output").to("output"),
+    ))
+    .then(typed_port(source))
+    .map(|(direction, (name, ty))| GraphStatement::Port(direction.into(), name, ty));
+    let reference = choice((
+        word(source, "process").to("process"),
+        word(source, "split").to("split"),
+    ))
+    .then(name.clone())
+    .map(|(kind, name)| GraphStatement::Reference(kind.into(), name));
+    let duration = word(source, "duration")
+        .ignore_then(quoted(source))
+        .map(GraphStatement::Duration);
+    let retry = word(source, "retry")
+        .ignore_then(word(source, "max_retries"))
+        .ignore_then(number(source).map(|value| value.parse::<u32>().ok()))
+        .then_ignore(word(source, "retry_for"))
+        .then(quoted(source))
+        .then_ignore(word(source, "retry_delay"))
+        .then(quoted(source))
+        .then_ignore(word(source, "backoff"))
+        .then_ignore(word(source, "exponential"))
+        .try_map_with(|((max, window), delay), extra| {
+            max.map(|max| GraphStatement::Retry(max, window, delay))
+                .ok_or_else(|| Rich::custom(extra.span(), "invalid max_retries"))
+        });
+    let deadline = word(source, "deadline")
+        .ignore_then(name.clone())
+        .then(quoted(source))
+        .map(|(origin, span)| GraphStatement::Deadline(origin, span));
+    let expr = expr::expression_parser(source, &[]).boxed();
+    let bound = choice((
+        word(source, "max_iterations").to("max_iterations"),
+        word(source, "max_duration").to("max_duration"),
+    ))
+    .then(choice((quoted(source), number(source))));
+    let repeat = choice((
+        word(source, "repeat_pre").to(true),
+        word(source, "repeat_post").to(false),
+    ))
+    .then(name.clone())
+    .then_ignore(word(source, "while"))
+    .then(expr.clone())
+    .then(word(source, "initial").ignore_then(expr.clone()).or_not())
+    .then(bound.repeated().at_least(1).at_most(2).collect::<Vec<_>>())
+    .map(|((((before, node), condition), initial), bounds)| {
+        GraphStatement::Repeat(
+            node,
+            before,
+            condition,
+            initial,
+            bounds
+                .into_iter()
+                .map(|(key, value)| (key.into(), value))
+                .collect(),
+        )
+    });
+    let multi = word(source, "multi_instance")
+        .ignore_then(name.clone())
+        .then_ignore(word(source, "each"))
+        .then(expr.clone())
+        .then(name.clone())
+        .map(|((node, items), mode)| GraphStatement::Multi(node, items, mode));
+    let modifier = choice((
+        word(source, "when")
+            .ignore_then(expr)
+            .map(|expr| (Some(expr), None)),
+        word(source, "else").to((None, Some(FlowModifier::Else))),
+        word(source, "as")
+            .ignore_then(name.clone())
+            .map(|name| (None, Some(FlowModifier::Label(name)))),
+        word(source, "on")
+            .ignore_then(name.clone())
+            .map(|name| (None, Some(FlowModifier::Outcome(name)))),
+    ));
+    let flow = word(source, "flow")
+        .ignore_then(edge(source, name.clone(), name.clone()))
+        .then(modifier.or_not())
+        .map(|((source, target), modifier)| {
+            let (condition, tail) = modifier.unwrap_or_default();
+            GraphStatement::Flow(source, target, condition, tail)
+        });
+    let dotted = name
+        .clone()
+        .map_with(|value, extra| (value, extra.span()))
+        .then(just(Token::Dot).map_with(|_, extra| extra.span()))
+        .then(name.clone().map_with(|value, extra| (value, extra.span())))
+        .try_map_with(|(((node, a), dot), (port, b)), extra| {
+            if a.end == dot.start && dot.end == b.start {
+                Ok((node, port))
+            } else {
+                Err(Rich::custom(extra.span(), "invalid binding port"))
+            }
+        });
+    let bind = word(source, "bind")
+        .ignore_then(edge(source, dotted.clone(), dotted))
+        .map(|((source, output), (target, input))| {
+            GraphStatement::Bind(source, output, target, input)
+        });
+    choice((
+        port.boxed(),
+        reference.boxed(),
+        duration.boxed(),
+        retry.boxed(),
+        deadline.boxed(),
+        repeat.boxed(),
+        multi.boxed(),
+        flow.boxed(),
+        bind.boxed(),
+    ))
+}
+
+fn statements(
+    source: &str,
+    body: &[crate::compiler::BodyItem],
+) -> Result<Vec<GraphStatement>, String> {
+    body.iter()
+        .map(|item| match item {
+            crate::compiler::BodyItem::Statement(tokens) => {
+                crate::compiler::statement(source, tokens, graph_statement(source)).map_err(
+                    |error| {
+                        if error.contains("end of input") {
+                            let label = if tokens
+                                .first()
+                                .is_some_and(|(_, span)| &source[span.into_range()] == "flow")
+                                && tokens
+                                    .iter()
+                                    .skip(1)
+                                    .any(|(_, span)| &source[span.into_range()] == "bind")
+                            {
+                                "invalid flow"
+                            } else {
+                                "missing semicolon"
+                            };
+                            format!("{label}: {error}")
+                        } else {
+                            error
+                        }
+                    },
+                )
+            }
+            crate::compiler::BodyItem::Block(..) => Err("invalid graph block".into()),
+        })
+        .collect()
+}
+
+pub(crate) fn parse_peer_tokens(
+    source: &str,
+    kind: &str,
+    name: &str,
+    body: &[crate::compiler::BodyItem],
+) -> Result<Peer, String> {
+    let items = statements(source, body)?;
+    let mut inputs = Vec::new();
+    let mut outputs = Vec::new();
+    let mut split = None;
+    let mut process = None;
+    let mut pause = None;
+    for item in items {
+        match item {
+            GraphStatement::Port(direction, port, ty)
+                if matches!(
+                    kind,
+                    "start_event"
+                        | "end_event"
+                        | "pause_until"
+                        | "subprocess"
+                        | "xor_join"
+                        | "and_join"
+                        | "or_join"
+                ) =>
+            {
+                let target = if direction == "output" {
+                    &mut outputs
+                } else {
+                    &mut inputs
+                };
+                if (kind == "start_event" && direction != "output")
+                    || (matches!(kind, "end_event" | "pause_until") && direction != "input")
+                    || target
+                        .iter()
+                        .any(|(used, _): &(String, Type)| used == &port)
+                {
+                    return Err(format!("invalid or duplicate {kind} port: {port}"));
+                }
+                target.push((port, ty));
+            }
+            GraphStatement::Reference(key, value)
+                if key == "split" && kind.ends_with("_join") && split.is_none() =>
+            {
+                split = Some(value);
+            }
+            GraphStatement::Reference(key, value)
+                if key == "process" && kind == "subprocess" && process.is_none() =>
+            {
+                process = Some(value);
+            }
+            GraphStatement::Duration(value) if kind == "pause_for" && pause.is_none() => {
+                pause = Some(duration(&value)?)
+            }
+            _ if matches!(kind, "error_event" | "cancel_event" | "terminate_event") => {
+                return Err(format!("terminal {name} does not accept statements"));
+            }
+            _ => return Err(format!("invalid {kind} statement")),
+        }
+    }
+    let kind = match kind {
+        "start_event" => PeerKind::Start { outputs },
+        "end_event" => PeerKind::End { inputs },
+        "xor_split" | "and_split" | "or_split"
+            if inputs.is_empty()
+                && outputs.is_empty()
+                && split.is_none()
+                && process.is_none()
+                && pause.is_none() =>
+        {
+            PeerKind::Split {
+                kind: match kind {
+                    "xor_split" => "xor",
+                    "and_split" => "and",
+                    _ => "or",
+                },
+            }
+        }
+        "xor_join" | "and_join" | "or_join" => PeerKind::Join {
+            kind: match kind {
+                "xor_join" => "xor",
+                "and_join" => "and",
+                _ => "or",
+            },
+            split: split.ok_or("join requires split")?,
+            inputs,
+            outputs,
+        },
+        "subprocess" => PeerKind::Subprocess {
+            process: process.ok_or("subprocess requires process target")?,
+            inputs,
+            outputs,
+        },
+        "pause_until" => {
+            let [(input, Type::Named(ty))] = inputs.as_slice() else {
+                return Err("pause_until requires one DateTime input".into());
+            };
+            if ty != "DateTime" {
+                return Err("pause_until input must be DateTime".into());
+            }
+            PeerKind::PauseUntil {
+                input: input.clone(),
+            }
+        }
+        "pause_for" => {
+            let duration = pause.ok_or("pause_for requires duration")?;
+            if duration.is_zero() {
+                return Err("pause_for duration must be positive".into());
+            }
+            PeerKind::PauseFor(duration)
+        }
+        "error_event" | "cancel_event" | "terminate_event" => PeerKind::Terminal {
+            kind: match kind {
+                "error_event" => "Error",
+                "cancel_event" => "Cancel",
+                _ => "Terminate",
+            },
+        },
+        _ => return Err(format!("invalid peer: {kind}")),
+    };
+    Ok(Peer {
+        name: name.into(),
+        kind,
+    })
+}
+
+pub(crate) fn parse_source_tokens(
+    source: &str,
+    body: &[crate::compiler::BodyItem],
+) -> Result<
+    (
+        SourceGraph,
+        Option<crate::compiler::RetryPolicy>,
+        Option<crate::compiler::DeadlinePolicy>,
+    ),
+    String,
+> {
+    let mut retry = None;
+    let mut deadline = None;
+    let mut graph = SourceGraph {
+        flows: vec![],
+        routes: vec![],
+        bindings: vec![],
+        repetitions: vec![],
+        multi_instances: vec![],
+    };
+    for item in
+        statements(source, body).map_err(|error| format!("invalid process statement: {error}"))?
+    {
+        match item {
+            GraphStatement::Retry(max_retries, retry_for, retry_delay) => {
+                if retry.is_some() || !graph.flows.is_empty() || !graph.bindings.is_empty() {
+                    return Err("retry declaration must appear once before flows".into());
+                }
+                retry = Some(crate::compiler::RetryPolicy {
+                    max_retries,
+                    retry_for: duration(&retry_for)?,
+                    retry_delay: duration(&retry_delay)?,
+                    backoff: "exponential",
+                });
+            }
+            GraphStatement::Deadline(origin, value) => {
+                if !matches!(origin.as_str(), "queued" | "first_claimed")
+                    || deadline.is_some()
+                    || !graph.flows.is_empty()
+                    || !graph.bindings.is_empty()
+                {
+                    return Err("invalid or duplicate deadline declaration".into());
+                }
+                let duration = duration(&value)?;
+                if duration.is_zero() {
+                    return Err("deadline must be positive".into());
+                }
+                deadline = Some(crate::compiler::DeadlinePolicy {
+                    origin: if origin == "queued" {
+                        "queued"
+                    } else {
+                        "first_claimed"
+                    },
+                    duration,
+                });
+            }
+            GraphStatement::Repeat(node, before, condition, initial, bounds) => {
+                if graph
+                    .repetitions
+                    .iter()
+                    .any(|item: &Repetition| item.node == node)
+                {
+                    return Err(format!("duplicate repeat node: {node}"));
+                }
+                if before != initial.is_some() {
+                    return Err("repeat_pre requires initial; repeat_post forbids initial".into());
+                }
+                let (mut max_iterations, mut max_duration) = (None, None);
+                for (key, value) in bounds {
+                    match key.as_str() {
+                        "max_iterations" if max_iterations.is_none() => {
+                            let count =
+                                value.parse::<u32>().map_err(|_| "invalid max_iterations")?;
+                            if count == 0 {
+                                return Err("max_iterations must be positive".into());
+                            }
+                            max_iterations = Some(count);
+                        }
+                        "max_duration" if max_duration.is_none() => {
+                            let span = duration(&value)?;
+                            if span.is_zero() || i64::try_from(span.as_millis()).is_err() {
+                                return Err(
+                                    "max_duration must be positive and fit milliseconds".into()
+                                );
+                            }
+                            max_duration = Some(span);
+                        }
+                        _ => return Err("invalid repeat bounds".into()),
+                    }
+                }
+                graph.repetitions.push(Repetition {
+                    node,
+                    condition,
+                    before,
+                    initial,
+                    max_iterations,
+                    max_duration,
+                });
+            }
+            GraphStatement::Multi(node, items, mode) => {
+                if !matches!(mode.as_str(), "parallel" | "sequential")
+                    || graph
+                        .multi_instances
+                        .iter()
+                        .any(|item: &MultiInstance| item.node == node)
+                {
+                    return Err("invalid or duplicate multi_instance declaration".into());
+                }
+                graph.multi_instances.push(MultiInstance {
+                    node,
+                    items,
+                    parallel: mode == "parallel",
+                });
+            }
+            GraphStatement::Flow(from, to, condition, tail) => {
+                if graph.flows.iter().any(|(a, b)| a == &from && b == &to) {
+                    return Err(format!("duplicate flow: {from} -> {to}"));
+                }
+                let (fallback, label, outcome) = match tail {
+                    None => (false, None, None),
+                    Some(FlowModifier::Else) => (true, None, None),
+                    Some(FlowModifier::Label(label)) => (false, Some(label), None),
+                    Some(FlowModifier::Outcome(outcome))
+                        if matches!(outcome.as_str(), "error" | "cancel" | "terminate") =>
+                    {
+                        (false, None, Some(outcome))
+                    }
+                    Some(FlowModifier::Outcome(outcome)) => {
+                        return Err(format!("invalid subprocess outcome: {outcome}"));
+                    }
+                };
+                if condition.is_some() || fallback || label.is_some() || outcome.is_some() {
+                    graph.routes.push(Route {
+                        source: from.clone(),
+                        target: to.clone(),
+                        condition,
+                        fallback,
+                        label,
+                        outcome,
+                    });
+                }
+                graph.flows.push((from, to));
+            }
+            GraphStatement::Bind(source, output, target, input) => graph.bindings.push(Binding {
+                source,
+                output,
+                target,
+                input,
+            }),
+            _ => return Err("invalid process statement".into()),
+        }
+    }
+    Ok((graph, retry, deadline))
+}

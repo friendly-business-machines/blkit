@@ -123,7 +123,7 @@ fn quoted_text<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, String, Parse
     })
 }
 
-fn expression_parser<'a>(
+pub(crate) fn expression_parser<'a>(
     source: &'a str,
     columns: &'a [String],
 ) -> impl Parser<'a, Tokens<'a>, Expr, ParseError<'a>> {
