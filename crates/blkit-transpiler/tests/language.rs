@@ -2832,12 +2832,16 @@ fn enum_layout_and_record_delimiters_reject_malformed_sources() {
 }
 
 #[test]
-fn quotes_preserve_punctuation_and_inline_hash_is_not_a_comment() {
+fn quotes_preserve_backslashes_and_punctuation_but_not_inline_comments() {
     use blkit::expr::Expr;
 
     assert_eq!(
         blkit::expr::expression("\"a;,{#}..b\"").unwrap(),
         Expr::String("a;,{#}..b".into())
+    );
+    assert_eq!(
+        blkit::expr::expression(r#""order-(\d+);#""#).unwrap(),
+        Expr::String("order-(\\d+);#".into())
     );
     let source = format!(
         "{HEADER}# full-line comment\nOrder = {{\"key;#,:\": String}}; # not a full-line comment"
