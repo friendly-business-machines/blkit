@@ -17,6 +17,38 @@ The generated Rust exposes `named_graph_definitions()`. For `example`, pass JSON
 
 The `blkit` CLI accepts `blkit SOURCE.bl OUTPUT.rs` for one file, `blkit transpile [PROJECT_DIR]` to generate a Rust Cargo project, and `blkit update [PROJECT_DIR]` to refresh its lockfile. Project commands default to the current directory. `blkit build` is no longer supported: compile the generated project yourself with Cargo. Run `blkit --help` or `blkit transpile --help` for usage, `blkit --version` for the CLI version, or `blkit --completions bash` to print shell completion (also supports `elvish`, `fish`, `powershell`, and `zsh`). From this checkout, replace `blkit` with `cargo run -p blkit-cli --` in these examples. Build only the distributable CLI with `cargo build -p blkit-cli --release --bin blkit` (or `cargo build --release` using the workspace default); this does not compile the development graph or binaries. Project `transpile` and `update` show a temporary spinner on an interactive stderr terminal; errors include the file or project path on stderr. Redirected stderr, `NO_COLOR`, and `CLICOLOR=0` disable styling and animation, so scripts receive plain diagnostics. Completion scripts go to stdout without progress output.
 
+### Compiler diagnostics
+
+Invalid `.bl` sources report an explanation on stderr, with the source path, an excerpt and a one-based line/column label when the error can be located. Plain redirected or `NO_COLOR` stderr uses readable `snippet line` and `label at line` text without terminal styling; errors without a reliable location have no invented label. Compilation exits nonzero, writes nothing to stdout and does not create the Rust output.
+
+For a direct compile, put this in `input.bl`:
+
+```bl
+namespace orders; version "1";
+# café
+start_event start { output amount: Missing; }
+```
+
+`blkit input.bl output.rs` fails with `input.bl: unknown type: Missing`; stderr excerpts line 3 and labels `Missing` at **line 3, columns 36 to 42**. No `output.rs` is written.
+
+For a project with the `blkit.toml` shown below under **Build a blkit project**, put these files in its directory:
+
+`a.bl`:
+
+```bl
+namespace orders; version "1"; start_event start { output amount: Number; } end_event done { input result: Number; }
+```
+
+`z.bl`:
+
+```bl
+namespace orders; version "1";
+# café
+process route { flow start -> done; bind start.missing -> done.result; }
+```
+
+`blkit transpile /path/to/project` fails with `/path/to/project/z.bl: unknown binding output: start.missing`; stderr excerpts line 3 of `z.bl` and labels `start.missing` at **line 3, columns 42 to 54**, not in `a.bl`. No `.blkit/src/lib.rs` is written.
+
 ## Braced decisions and inferred dependencies
 
 [`examples/pricing.bl`](examples/pricing.bl) compiles with `cargo run -p blkit-cli -- examples/pricing.bl /tmp/pricing.rs`. Its `decision_task price` declares typed input/output ports and a `decision_table tier` with `policy FIRST;`, typed input/output columns, ordered `rule ... -> ...;` statements, and `default 2;`. The `context quoted` node contains a typed `entry offer: Number = tier.result;` and `result offer;`. The reference to `tier.result` establishes the dependency automatically—there is no decision `link`. The task's `output result: Number = quoted;` uses sole-output shorthand for `quoted.result`; when qualifying a node output, use `node.port`. Braced `knowledge` definitions use `input`, `output`, and `expression` statements and may be called from decision expressions and contexts. All statements end with semicolons.
