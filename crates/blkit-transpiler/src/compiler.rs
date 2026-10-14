@@ -81,13 +81,19 @@ pub use blkit_core::{DeadlinePolicy, RetryPolicy};
 pub fn transpile(source: &str) -> Result<String, String> {
     let parsed = parse_source(source, "<input>").map_err(|error| error.to_string())?;
     semantic::validate(&parsed.program).map_err(|error| {
-        validation_error(error, [(parsed.source_name, parsed.source)]).to_string()
+        validation_error(
+            error,
+            &parsed.program,
+            [(parsed.source_name, parsed.source)],
+        )
+        .to_string()
     })?;
     codegen::generate(&parsed.program)
 }
 
 pub(crate) fn validation_error<'a>(
     message: String,
+    program: &Program,
     sources: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> CompilerError {
     let sources: Vec<_> = sources.into_iter().collect();
@@ -125,7 +131,33 @@ pub(crate) fn validation_error<'a>(
                 {
                     if let Some(nodes) = nodes {
                         if format!("{} -> {}", part(index + 1), part(index + 5)) == nodes {
-                            matches.push((name, tokens[index + 5].1.clone()));
+                            let graphs: Vec<_> = program
+                                .processes
+                                .iter()
+                                .filter_map(|process| process.source_graph.as_ref())
+                                .filter(|graph| {
+                                    graph.bindings.iter().any(|binding| {
+                                        binding.source == part(index + 1)
+                                            && binding.target == part(index + 5)
+                                    })
+                                })
+                                .collect();
+                            let span = if let [graph] = graphs.as_slice() {
+                                let in_process = |node: &str| {
+                                    graph
+                                        .flows
+                                        .iter()
+                                        .any(|(source, target)| source == node || target == node)
+                                };
+                                match (in_process(part(index + 1)), in_process(part(index + 5))) {
+                                    (false, true) => tokens[index + 1].1.clone(),
+                                    (true, false) => tokens[index + 5].1.clone(),
+                                    _ => tokens[index].1.start..tokens[index + 8].1.end,
+                                }
+                            } else {
+                                tokens[index].1.start..tokens[index + 8].1.end
+                            };
+                            matches.push((name, span));
                         }
                     } else if let Some(port) = port {
                         let (start, end) = if message.starts_with("unknown binding output:") {
@@ -1121,6 +1153,32 @@ mod diagnostic_tests {
             "{error}"
         );
         assert!(error.ends_with(&format!("at byte {byte}")), "{error}");
+    }
+
+    #[test]
+    fn direct_binding_outside_process_locates_source_node_without_rust() {
+        let source = "namespace demo; version \"1\";\n# café\nstart_event start { output amount: Number; } end_event done { input result: Number; } end_event spare { input result: Number; } process route { flow start -> done; bind spare.result -> done.result; }";
+        let error = super::transpile(source).unwrap_err();
+        let byte = source.find("spare.result").unwrap();
+        assert!(
+            error.contains("binding node outside process: spare -> done"),
+            "{error}"
+        );
+        assert!(error.ends_with(&format!("at byte {byte}")), "{error}");
+    }
+
+    #[test]
+    fn binding_with_both_nodes_outside_process_locates_the_bind_statement() {
+        let source = "namespace demo; version \"1\"; start_event start { output amount: Number; } end_event done { input result: Number; } end_event spare { input result: Number; } end_event other { input result: Number; } process route { flow start -> done; bind spare.result -> other.result; }";
+        let error = super::transpile(source).unwrap_err();
+        assert!(
+            error.contains("binding node outside process: spare -> other"),
+            "{error}"
+        );
+        assert!(
+            error.ends_with(&format!("at byte {}", source.find("bind spare").unwrap())),
+            "{error}"
+        );
     }
 
     #[test]

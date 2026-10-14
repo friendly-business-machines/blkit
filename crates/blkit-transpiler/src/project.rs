@@ -362,6 +362,7 @@ impl Project {
                     .collect();
                 compiler::validation_error(
                     error,
+                    &program,
                     sources.iter().map(|(name, text)| (name.as_str(), *text)),
                 )
                 .to_string()
