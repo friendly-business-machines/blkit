@@ -826,8 +826,10 @@ fn statements(
     source: &str,
     body: &[crate::compiler::BodyItem],
 ) -> Result<Vec<GraphStatement>, crate::compiler::CompilerError> {
-    body.iter()
-        .map(|item| match item {
+    let mut parsed = Vec::new();
+    let mut errors: Option<crate::compiler::CompilerError> = None;
+    for item in body {
+        let result = match item {
             crate::compiler::BodyItem::Statement(tokens, terminator) => {
                 crate::compiler::statement(tokens, *terminator, graph_statement(source)).map_err(
                     |error| {
@@ -857,8 +859,19 @@ fn statements(
                     kind_span.into_range(),
                 ))
             }
-        })
-        .collect()
+        };
+        match result {
+            Ok(statement) => parsed.push(statement),
+            Err(error) => {
+                if let Some(errors) = &mut errors {
+                    errors.append(error);
+                } else {
+                    errors = Some(error);
+                }
+            }
+        }
+    }
+    errors.map_or(Ok(parsed), Err)
 }
 
 pub(crate) fn parse_peer_tokens(

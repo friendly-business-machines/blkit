@@ -790,13 +790,25 @@ fn node_tokens(
         priorities: vec![],
         default: None,
     };
+    let mut errors: Option<crate::compiler::CompilerError> = None;
     for (index, item) in body.iter().enumerate() {
         let columns = table
             .inputs
             .iter()
             .map(|(name, _, _): &(String, Type, Expr)| name.clone())
             .collect::<Vec<_>>();
-        match (kind, parse_item(source, item, &columns)?) {
+        let statement = match parse_item(source, item, &columns) {
+            Ok(statement) => statement,
+            Err(error) => {
+                if let Some(errors) = &mut errors {
+                    errors.append(error);
+                } else {
+                    errors = Some(error);
+                }
+                continue;
+            }
+        };
+        match (kind, statement) {
             (
                 "literal_expression" | "knowledge" | "context",
                 DecisionStatement::Output(port, ty, None),
@@ -858,6 +870,9 @@ fn node_tokens(
             _ => return Err(format!("invalid {kind} statement").into()),
         }
     }
+    if let Some(error) = errors {
+        return Err(error);
+    }
     let (output_name, output) = output.ok_or_else(|| format!("missing {kind} output"))?;
     match kind {
         "knowledge" => Ok(Err(Knowledge {
@@ -900,24 +915,40 @@ pub(crate) fn parse_tokens(
     items: &[crate::compiler::BodyItem],
 ) -> Result<DecisionModel, crate::compiler::CompilerError> {
     let (mut inputs, mut outputs, mut nodes, mut knowledge) = (vec![], vec![], vec![], vec![]);
+    let mut errors: Option<crate::compiler::CompilerError> = None;
     for item in items {
-        match item {
-            crate::compiler::BodyItem::Statement(..) => match parse_item(source, item, &[])? {
-                DecisionStatement::Input(port, ty) => inputs.push((port, ty)),
-                DecisionStatement::Output(port, ty, Some((node, field))) => outputs.push((
-                    port,
-                    ty,
-                    field.map_or(node.clone(), |field| format!("{node}.{field}")),
-                )),
-                _ => return Err("invalid decision task statement".into()),
-            },
+        let result = match item {
+            crate::compiler::BodyItem::Statement(..) => {
+                parse_item(source, item, &[]).and_then(|statement| {
+                    match statement {
+                        DecisionStatement::Input(port, ty) => inputs.push((port, ty)),
+                        DecisionStatement::Output(port, ty, Some((node, field))) => outputs.push((
+                            port,
+                            ty,
+                            field.map_or(node.clone(), |field| format!("{node}.{field}")),
+                        )),
+                        _ => return Err("invalid decision task statement".into()),
+                    }
+                    Ok(())
+                })
+            }
             crate::compiler::BodyItem::Block(kind, name, body, _) => {
-                match node_tokens(source, kind, name, body)? {
+                node_tokens(source, kind, name, body).map(|node| match node {
                     Ok(node) => nodes.push(node),
                     Err(model) => knowledge.push(model),
-                }
+                })
+            }
+        };
+        if let Err(error) = result {
+            if let Some(errors) = &mut errors {
+                errors.append(error);
+            } else {
+                errors = Some(error);
             }
         }
+    }
+    if let Some(error) = errors {
+        return Err(error);
     }
     finish_braced(name, inputs, outputs, nodes, knowledge).map_err(Into::into)
 }

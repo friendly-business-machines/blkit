@@ -21,6 +21,10 @@ impl CompilerError {
         self.message = format!("{context}: {}", self.message);
         self
     }
+
+    pub(crate) fn append(&mut self, other: Self) {
+        self.message.push_str(&format!("\n{other}"));
+    }
 }
 
 impl From<String> for CompilerError {
@@ -344,15 +348,26 @@ fn body_parser<'a>(
             .collect::<Vec<_>>()
             .then(just(Token::Semicolon).map_with(|_, extra| extra.span()))
             .map(|(parts, terminator)| {
-                BodyItem::Statement(
+                Some(BodyItem::Statement(
                     parts
                         .into_iter()
                         .flatten()
                         .filter(|(token, _)| !matches!(token, Token::Newline | Token::Indent))
                         .collect(),
                     terminator,
-                )
-            });
+                ))
+            })
+            .recover_with(chumsky::recovery::via_parser(
+                any()
+                    .and_is(choice((just(Token::Semicolon), just(Token::CloseBrace))).not())
+                    .repeated()
+                    .at_least(1)
+                    .then_ignore(choice((
+                        just(Token::Semicolon).ignored(),
+                        just(Token::CloseBrace).rewind().ignored(),
+                    )))
+                    .map(|_| None),
+            ));
         let nested_kind = choice((
             word(source, "literal_expression").to("literal_expression"),
             word(source, "decision_table").to("decision_table"),
@@ -366,13 +381,14 @@ fn body_parser<'a>(
             .then(body)
             .then_ignore(just(Token::CloseBrace))
             .map(|(((kind, kind_span), name), body)| {
-                BodyItem::Block(kind.into(), name, body, kind_span)
+                Some(BodyItem::Block(kind.into(), name, body, kind_span))
             });
         layout.ignore_then(
             choice((nested, statement))
                 .padded_by(layout)
                 .repeated()
-                .collect::<Vec<_>>(),
+                .collect::<Vec<_>>()
+                .map(|items| items.into_iter().flatten().collect()),
         )
     })
 }
@@ -453,8 +469,18 @@ fn program_parser<'a>(
     let variant = just(Token::Indent)
         .map_with(move |_, extra| text(source, extra.span()))
         .filter(|indent| *indent == "  ")
-        .ignore_then(name(source))
-        .then_ignore(just(Token::Semicolon));
+        .ignore_then(
+            name(source)
+                .then_ignore(just(Token::Semicolon))
+                .map(Some)
+                .recover_with(chumsky::recovery::via_parser(
+                    any()
+                        .and_is(choice((just(Token::Semicolon), just(Token::Newline))).not())
+                        .repeated()
+                        .then_ignore(choice((just(Token::Semicolon), just(Token::Newline))))
+                        .to(None),
+                )),
+        );
     let enum_decl = word(source, "enum")
         .ignore_then(name(source))
         .then_ignore(just(Token::Colon))
@@ -465,7 +491,12 @@ fn program_parser<'a>(
                 .at_least(1)
                 .collect::<Vec<_>>(),
         )
-        .map(|(name, variants)| Declaration::Enum(Enum { name, variants }));
+        .map(|(name, variants)| {
+            Declaration::Enum(Enum {
+                name,
+                variants: variants.into_iter().flatten().collect(),
+            })
+        });
     let kind = choice((
         word(source, "start_event").to("start_event"),
         word(source, "end_event").to("end_event"),
@@ -515,18 +546,24 @@ fn program_parser<'a>(
                 peer_nodes: Vec::new(),
                 external_tasks: BTreeMap::new(),
             };
+            let mut errors: Option<CompilerError> = None;
             for declaration in declarations {
                 match declaration {
                     Declaration::Record(record) => program.records.push(record),
                     Declaration::Enum(item) => program.enums.push(item),
                     Declaration::Body(kind, name, body) => match kind.as_str() {
-                        "decision_task" => program
-                            .decisions
-                            .push(decision::parse_tokens(source, &name, &body)?),
-                        "process" => {
-                            let (graph, retry, deadline) =
-                                graph::parse_source_tokens(source, &body)?;
-                            program.processes.push(Process {
+                        "decision_task" => match decision::parse_tokens(source, &name, &body) {
+                            Ok(item) => program.decisions.push(item),
+                            Err(error) => {
+                                if let Some(errors) = &mut errors {
+                                    errors.append(error);
+                                } else {
+                                    errors = Some(error);
+                                }
+                            }
+                        },
+                        "process" => match graph::parse_source_tokens(source, &body) {
+                            Ok((graph, retry, deadline)) => program.processes.push(Process {
                                 name,
                                 input: String::new(),
                                 input_type: Type::Named("Number".into()),
@@ -536,15 +573,29 @@ fn program_parser<'a>(
                                 source_graph: Some(graph),
                                 retry,
                                 deadline,
-                            });
-                        }
-                        _ => program
-                            .peer_nodes
-                            .push(graph::parse_peer_tokens(source, &kind, &name, &body)?),
+                            }),
+                            Err(error) => {
+                                if let Some(errors) = &mut errors {
+                                    errors.append(error);
+                                } else {
+                                    errors = Some(error);
+                                }
+                            }
+                        },
+                        _ => match graph::parse_peer_tokens(source, &kind, &name, &body) {
+                            Ok(item) => program.peer_nodes.push(item),
+                            Err(error) => {
+                                if let Some(errors) = &mut errors {
+                                    errors.append(error);
+                                } else {
+                                    errors = Some(error);
+                                }
+                            }
+                        },
                     },
                 }
             }
-            Ok(program)
+            errors.map_or(Ok(program), Err)
         })
 }
 
@@ -584,15 +635,16 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
         .into_iter()
         .map(|(token, span)| (token, span.into()))
         .collect();
-    program_parser(source)
+    let (output, syntax_errors) = program_parser(source)
         .parse(
             tokens
                 .as_slice()
                 .split_token_span((lexed.eof..lexed.eof).into()),
         )
-        .into_result()
-        .map_err(|errors| {
-            let error = &errors[0];
+        .into_output_errors();
+    let mut errors: Vec<_> = syntax_errors
+        .iter()
+        .map(|error| {
             let span = error.span().into_range();
             if let Some([(_, kind_span), (_, name_span)]) =
                 tokens.windows(2).find(|pair| pair[1].1.start == span.start)
@@ -623,7 +675,20 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
                 "invalid declaration or statement"
             };
             CompilerError::located(format!("{prefix}: {error:?}"), span)
-        })?
+        })
+        .collect();
+    if let Some(Err(error)) = output.as_ref() {
+        errors.push(error.clone());
+    }
+    if !errors.is_empty() {
+        errors.sort_by_key(|error| error.span.as_ref().map_or(usize::MAX, |span| span.start));
+        let mut first = errors.remove(0);
+        for error in errors {
+            first.append(error);
+        }
+        return Err(first);
+    }
+    output.expect("Chumsky returns either a program or parse errors")
 }
 
 #[cfg(test)]
@@ -672,6 +737,98 @@ mod diagnostic_tests {
         assert_eq!(error.span, Some(kind..kind + "context".len()));
         assert!(
             error.message.contains("unexpected nested decision block"),
+            "{error}"
+        );
+        assert!(super::transpile(source).is_err());
+    }
+
+    #[test]
+    fn independent_malformed_statements_report_once_each_and_emit_no_rust() {
+        let source = "namespace demo; version \"1.0\";\n# café\nstart_event start { output first: ; output second: ; }";
+        let error = parse_source(source, "twice.bl").err().unwrap().to_string();
+        for name in ["first", "second"] {
+            let at = source.find(&format!("{name}: ;")).unwrap() + name.len() + 2;
+            assert_eq!(error.matches(&format!("byte {at}")).count(), 1, "{error}");
+        }
+        assert!(error.contains("twice.bl"), "{error}");
+        assert!(super::transpile(source).is_err());
+    }
+
+    #[test]
+    fn recovery_stops_at_brace_and_enum_variant_boundaries() {
+        let source = "namespace demo; version \"1.0\";\nenum State:\n  123;\n  ready;\nstart_event start { output amount: Number; }\nstart_event other { output missing: ; }";
+        let error = parse_source(source, "boundaries.bl")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            error.contains(&format!("byte {}", source.find("123").unwrap())),
+            "{error}"
+        );
+        assert!(
+            error.contains(&format!(
+                "byte {}",
+                source.find("missing: ;").unwrap() + "missing: ".len()
+            )),
+            "{error}"
+        );
+        assert!(super::transpile(source).is_err());
+    }
+
+    #[test]
+    fn enum_variant_missing_semicolon_recovers_at_newline() {
+        let source = "namespace demo; version \"1.0\";\nenum State:\n  broken\n  ready;\nstart_event start { output missing: ; }";
+        let error = parse_source(source, "variants.bl")
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            error
+                .matches(&format!("byte {}", source.find("\n  ready").unwrap()))
+                .count(),
+            1,
+            "{error}"
+        );
+        assert_eq!(
+            error
+                .matches(&format!(
+                    "byte {}",
+                    source.find("missing: ;").unwrap() + "missing: ".len()
+                ))
+                .count(),
+            1,
+            "{error}"
+        );
+        assert!(super::transpile(source).is_err());
+    }
+
+    #[test]
+    fn malformed_decision_statements_report_both_original_bytes() {
+        let source = "namespace demo; version \"1.0\"; decision_task check { input value: Number; output result: Number = node; literal_expression node { output result: Number; expression value + ; expression value * ; } }";
+        let error = parse_source(source, "decision.bl")
+            .err()
+            .unwrap()
+            .to_string();
+        for part in ["+ ;", "* ;"] {
+            let at = source.find(part).unwrap() + 2;
+            assert_eq!(error.matches(&format!("byte {at}")).count(), 1, "{error}");
+        }
+        assert!(super::transpile(source).is_err());
+    }
+
+    #[test]
+    fn missing_semicolon_recovers_at_brace_without_hiding_next_declaration() {
+        let source = "namespace demo; version \"1.0\";\nstart_event start { output amount: Number }\nstart_event other { output missing: ; }";
+        let error = parse_source(source, "braces.bl").err().unwrap().to_string();
+        assert!(
+            error.contains(&format!("byte {}", source.find("}\nstart_event").unwrap())),
+            "{error}"
+        );
+        assert!(
+            error.contains(&format!(
+                "byte {}",
+                source.find("missing: ;").unwrap() + "missing: ".len()
+            )),
             "{error}"
         );
         assert!(super::transpile(source).is_err());

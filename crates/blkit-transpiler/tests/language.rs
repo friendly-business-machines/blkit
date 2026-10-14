@@ -107,6 +107,17 @@ fn malformed_nested_expression_reports_original_byte_and_emits_no_rust() {
 }
 
 #[test]
+fn transpile_reports_independent_malformed_statements_without_partial_rust() {
+    let source =
+        format!("{HEADER}# café\nstart_event start {{ output first: ; output second: ; }}");
+    let error = transpile(&source).unwrap_err();
+    for name in ["first", "second"] {
+        let at = source.find(&format!("{name}: ;")).unwrap() + name.len() + 2;
+        assert_eq!(error.matches(&format!("byte {at}")).count(), 1, "{error}");
+    }
+}
+
+#[test]
 fn invalid_unicode_token_reports_original_bytes_and_emits_no_rust() {
     let source = format!("{HEADER}enum Café:\n  ready;\n");
     let error = transpile(&source).unwrap_err();
