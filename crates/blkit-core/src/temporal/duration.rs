@@ -199,6 +199,124 @@ macro_rules! checked_arithmetic {
 checked_arithmetic!(DTDuration);
 checked_arithmetic!(YMDuration);
 
+fn aggregate_duration(name: &str, values: &[Decimal]) -> Result<Decimal, String> {
+    if name == "mean" || name == "median" && values.len() % 2 == 0 && !values.is_empty() {
+        let mut sorted = values.to_vec();
+        let values = if name == "median" {
+            sorted.sort();
+            &sorted[sorted.len() / 2 - 1..sorted.len() / 2 + 1]
+        } else {
+            values
+        };
+        if values.is_empty() {
+            return Err(format!("{name} requires values"));
+        }
+        // Divide before summing, carrying exact remainders so MAX-sized inputs do not overflow or round early.
+        let divisor = Decimal::from(values.len());
+        let (whole, remainder) = values.iter().try_fold(
+            (Decimal::ZERO, Decimal::ZERO),
+            |(whole, remainder), value| {
+                let part = *value % divisor;
+                Ok::<_, String>((
+                    whole
+                        .checked_add((value - part) / divisor)
+                        .ok_or("duration overflow")?,
+                    remainder.checked_add(part).ok_or("duration overflow")?,
+                ))
+            },
+        )?;
+        return whole
+            .checked_add(remainder / divisor)
+            .ok_or_else(|| "duration overflow".into());
+    }
+    crate::number_ops::aggregate(name, values)
+}
+
+pub fn aggregate_dt(name: &str, values: &[DTDuration]) -> Result<DTDuration, String> {
+    if !matches!(name, "sum" | "mean" | "median") {
+        return Err(format!("unsupported duration aggregate: {name}"));
+    }
+    aggregate_duration(
+        name,
+        &values.iter().map(|value| value.0).collect::<Vec<_>>(),
+    )
+    .map(DTDuration)
+}
+
+pub fn aggregate_ym(name: &str, values: &[YMDuration]) -> Result<YMDuration, String> {
+    if !matches!(name, "sum" | "mean" | "median") {
+        return Err(format!("unsupported duration aggregate: {name}"));
+    }
+    aggregate_duration(
+        name,
+        &values.iter().map(|value| value.0).collect::<Vec<_>>(),
+    )
+    .map(YMDuration)
+}
+
+#[cfg(test)]
+mod aggregate_tests {
+    use super::*;
+
+    #[test]
+    fn duration_mean_and_median_allow_representable_boundary_results() {
+        for name in ["mean", "median"] {
+            assert_eq!(
+                aggregate_dt(name, &[DTDuration(Decimal::MAX), DTDuration(Decimal::MAX)]),
+                Ok(DTDuration(Decimal::MAX))
+            );
+            assert_eq!(
+                aggregate_ym(name, &[YMDuration(-Decimal::MAX), YMDuration(Decimal::MAX)]),
+                Ok(YMDuration(Decimal::ZERO))
+            );
+            assert_eq!(
+                aggregate_dt(
+                    name,
+                    &[DTDuration(-Decimal::MAX), DTDuration(-Decimal::MAX)]
+                ),
+                Ok(DTDuration(-Decimal::MAX))
+            );
+            assert_eq!(
+                aggregate_ym(
+                    name,
+                    &[
+                        YMDuration(-Decimal::MAX + Decimal::ONE),
+                        YMDuration(Decimal::MAX),
+                    ]
+                ),
+                Ok(YMDuration(Decimal::new(5, 1)))
+            );
+        }
+    }
+
+    #[test]
+    fn duration_aggregates_preserve_kind_and_check_overflow() {
+        assert_eq!(aggregate_dt("sum", &[]).unwrap(), DTDuration(Decimal::ZERO));
+        assert_eq!(aggregate_ym("sum", &[]).unwrap(), YMDuration(Decimal::ZERO));
+        assert_eq!(
+            aggregate_dt(
+                "median",
+                &[DTDuration(Decimal::ONE), DTDuration(Decimal::TWO)]
+            )
+            .unwrap(),
+            DTDuration(Decimal::new(15, 1))
+        );
+        assert_eq!(
+            aggregate_ym(
+                "mean",
+                &[YMDuration(Decimal::from(12)), YMDuration(Decimal::from(24))]
+            )
+            .unwrap(),
+            YMDuration(Decimal::from(18))
+        );
+        assert!(
+            aggregate_dt("sum", &[DTDuration(Decimal::MAX), DTDuration(Decimal::ONE)]).is_err()
+        );
+        assert!(aggregate_ym("mean", &[]).is_err());
+        assert!(aggregate_dt("product", &[DTDuration(Decimal::ONE)]).is_err());
+    }
+}
+
 impl DTDuration {
     pub fn total_seconds(self) -> Decimal {
         self.0

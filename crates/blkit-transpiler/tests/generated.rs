@@ -107,6 +107,776 @@ process route {
 }
 
 #[test]
+fn standalone_list_knowledge_and_context_compose_and_report_invalid_positions() {
+    compile_and_test(
+        r#"namespace lists; version "1";
+decision_task summarize {
+  input values: List<Number>;
+  input position: Number;
+  output result: Number = total;
+  knowledge selected {
+    input items: List<Number>;
+    output result: List<Number>;
+    expression sort(distinct(items[.item > 0]), "desc");
+  }
+  context total {
+    output result: Number;
+    entry subtotal: Number = sum(selected(values));
+    entry remainder: List<Number> = sublist(values, position);
+    result subtotal + count(remainder);
+  }
+}"#,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert_eq!(summarize(vec![n("3"), n("-1"), n("3"), n("2")], n("2")).unwrap(), n("8")); for position in ["0", "1.5", "2"] { let error = summarize(vec![n("1")], n(position)).unwrap_err(); assert!(error.to_string().contains("list position"), "{position}: {error}"); }"#,
+    );
+}
+
+#[test]
+fn graph_list_condition_routes_and_reports_invalid_index() {
+    compile_and_test_graph(
+        r#"namespace lists; version "1";
+start_event start { output values: List<Number>; }
+xor_split gate {}
+end_event done { input result: Number; }
+decision_task calculate { input values: List<Number>; output result: Number = calc; literal_expression calc { output result: Number; expression sum(sort(distinct(values))); } }
+decision_task fallback { input values: List<Number>; output result: Number = calc; literal_expression calc { output result: Number; expression 0; } }
+process route {
+  flow start -> gate;
+  flow gate -> calculate when start.values[1] > 0 and count(start.values[.item > 0]) > 0;
+  flow gate -> fallback else;
+  flow calculate -> done;
+  flow fallback -> done;
+  bind start.values -> calculate.values;
+  bind start.values -> fallback.values;
+  bind calculate.result -> done.result;
+  bind fallback.result -> done.result;
+}"#,
+        r#"let graph = named_graph_definitions().remove(0); for (values, expected) in [(serde_json::json!(["2","1","2"]), serde_json::json!("3")), (serde_json::json!(["-1","2"]), serde_json::json!("0"))] { let input = serde_json::json!({"values":values}); let mut state = graph.checkpoint(&input).unwrap(); assert_eq!(graph.run(&input, &mut state).unwrap(), expected); } let input = serde_json::json!({"values":[]}); let error = graph.checkpoint(&input).and_then(|mut state| graph.run(&input, &mut state)).unwrap_err(); assert!(error.contains("list position out of bounds"), "{error}");"#,
+    );
+}
+
+#[test]
+fn generated_list_expressions_preserve_order_scope_and_checked_errors() {
+    let mut source =
+        String::from("namespace lists; version \"1\";\nOrder = {name: String, amount: Number};\n");
+    for (name, input, output, expression) in [
+        ("index", "List<Number>", "Number", "value[-1]"),
+        (
+            "filter",
+            "List<Number>",
+            "List<Number>",
+            "value[.item mod 2 == 0]",
+        ),
+        ("project", "List<Order>", "List<String>", "value.name"),
+        ("member", "List<Number>", "Bool", "2 in value"),
+        ("equal", "List<Number>", "Bool", "value == [1,2]"),
+        (
+            "mapped",
+            "List<Number>",
+            "List<Number>",
+            "for x in value, y in [x, x + 1] return y",
+        ),
+        (
+            "all",
+            "List<Number>",
+            "Bool",
+            "every x in value, y in [x, x + 1] satisfies y >= x",
+        ),
+        (
+            "any",
+            "List<Number>",
+            "Bool",
+            "some x in value, y in [x, x + 1] satisfies y > 2",
+        ),
+        ("sequence", "Number", "List<Number>", "4:2"),
+    ] {
+        source.push_str(&format!("decision_task {name} {{ input value: {input}; output result: {output} = calc; literal_expression calc {{ output result: {output}; expression {expression}; }} }}\n"));
+    }
+    compile_and_test_graph(
+        &source,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert_eq!(index(vec![n("1"),n("2")]).unwrap(), n("2")); assert!(index(vec![]).is_err()); assert_eq!(filter(vec![n("1"),n("2"),n("3"),n("4")]).unwrap(), vec![n("2"),n("4")]); assert!(filter(vec![n("1"),n("2")]).is_ok()); assert_eq!(project(vec![Order { name: "A".into(), amount: n("1") }, Order { name: "B".into(), amount: n("2") }]).unwrap(), vec!["A", "B"]); assert!(member(vec![n("2")] ).unwrap()); assert!(equal(vec![n("1"),n("2")]).unwrap()); assert_eq!(mapped(vec![n("1"),n("2")]).unwrap(), vec![n("1"),n("2"),n("2"),n("3")]); assert!(all(vec![]).unwrap()); assert!(!any(vec![]).unwrap()); assert!(any(vec![n("2")]).unwrap()); assert_eq!(sequence(n("0")).unwrap(), vec![n("4"),n("3"),n("2")]);"#,
+    );
+}
+
+#[test]
+fn generated_readme_list_expression_examples_compile_and_execute() {
+    let mut source =
+        String::from("namespace lists; version \"1\";\nOrder = {name: String, item: Number};\n");
+    for (name, input, output, expression) in [
+        ("first", "Number", "Number", "[1,2,3,4][1]"),
+        ("from_end", "Number", "Number", "[1,2,3,4][-2]"),
+        ("filtered", "Number", "List<Number>", "[1,2,3,4][.item > 2]"),
+        (
+            "even",
+            "Number",
+            "List<Number>",
+            "[1,2,3,4][.item mod 2 == 0]",
+        ),
+        ("odd_values", "Number", "List<Number>", "[1,2][odd(.item)]"),
+        ("same", "Number", "Bool", "[1,2] == [1,2]"),
+        ("different", "Number", "Bool", "[1,2] != [2,1]"),
+        ("member", "Number", "Bool", "2 in [1,2,3]"),
+        (
+            "pairs",
+            "Number",
+            "List<Number>",
+            "for x in [1,2], y in [3,4] return x * y",
+        ),
+        (
+            "any_pair",
+            "Number",
+            "Bool",
+            "some x in [1,2], y in [3,4] satisfies x + y > 5",
+        ),
+        (
+            "all_pairs",
+            "Number",
+            "Bool",
+            "every x in [1,2], y in [3,4] satisfies x + y >= 4",
+        ),
+        ("descending", "Number", "List<Number>", "4:2"),
+        ("empty", "Number", "List<Number>", "[]"),
+        ("position", "Number", "Number", "[4,5][item]"),
+        ("field", "Order", "Number", "order.item"),
+        ("names", "List<Order>", "List<String>", "orders.name"),
+    ] {
+        let input_name = match name {
+            "position" => "item",
+            "field" => "order",
+            "names" => "orders",
+            _ => "unused",
+        };
+        source.push_str(&format!("decision_task {name} {{ input {input_name}: {input}; output result: {output} = calc; literal_expression calc {{ output result: {output}; expression {expression}; }} }}\n"));
+    }
+    compile_and_test_graph(
+        &source,
+        r#"let n = |v: i64| Number::from(v);
+        assert_eq!(first(n(0)).unwrap(), n(1));
+        assert_eq!(from_end(n(0)).unwrap(), n(3));
+        assert_eq!(filtered(n(0)).unwrap(), vec![n(3), n(4)]);
+        assert_eq!(even(n(0)).unwrap(), vec![n(2), n(4)]);
+        assert_eq!(odd_values(n(0)).unwrap(), vec![n(1)]);
+        assert!(same(n(0)).unwrap());
+        assert!(different(n(0)).unwrap());
+        assert!(member(n(0)).unwrap());
+        assert_eq!(pairs(n(0)).unwrap(), vec![n(3), n(4), n(6), n(8)]);
+        assert!(any_pair(n(0)).unwrap());
+        assert!(all_pairs(n(0)).unwrap());
+        assert_eq!(descending(n(0)).unwrap(), vec![n(4), n(3), n(2)]);
+        assert_eq!(empty(n(0)).unwrap(), Vec::<Number>::new());
+        assert_eq!(position(n(2)).unwrap(), n(5));
+        assert_eq!(field(Order { name: "A".into(), item: n(7) }).unwrap(), n(7));
+        assert_eq!(names(vec![Order { name: "A".into(), item: n(7) }, Order { name: "B".into(), item: n(8) }]).unwrap(), vec!["A", "B"]);"#,
+    );
+}
+
+#[test]
+fn generated_readme_sort_join_sequence_and_boolean_examples_compile_and_execute() {
+    let mut source = String::from("namespace lists; version \"1\";\n");
+    let mut assertions = String::from("let n = |value: &str| value.parse::<Number>().unwrap();\n");
+    let readme = include_str!("../../../README.md");
+    for (name, output, expression, expected) in [
+        (
+            "natural",
+            "List<Number>",
+            "sort([3,1,2])",
+            "vec![n(\"1\"),n(\"2\"),n(\"3\")]",
+        ),
+        (
+            "descending",
+            "List<Number>",
+            "sort([3,1,2], \"desc\")",
+            "vec![n(\"3\"),n(\"2\"),n(\"1\")]",
+        ),
+        (
+            "priority",
+            "List<String>",
+            "sort([\"m\",\"s\",\"xl\"], [\"s\",\"m\",\"l\"])",
+            "vec![\"s\",\"m\",\"xl\"]",
+        ),
+        ("joined", "String", "stringJoin([\"a\",\"b\"])", "\"ab\""),
+        (
+            "wrapped",
+            "String",
+            "stringJoin([\"a\",\"b\"], \"-\", \"[\", \"]\")",
+            "\"[a-b]\"",
+        ),
+        (
+            "empty_join",
+            "String",
+            "stringJoin([], \"-\", \"[\", \"]\")",
+            "\"[]\"",
+        ),
+        (
+            "zip_scalar",
+            "List<String>",
+            "zipStringJoin([[\"a\",\"b\"],[\"1\",\"2\"]], \"-\", \"[\", \"]\")",
+            "vec![\"[a-1]\",\"[b-2]\"]",
+        ),
+        (
+            "zip_columns",
+            "List<String>",
+            "zipStringJoin([[\"a\",\"b\"],[\"1\",\"2\"],[\"x\",\"y\"]], [\"-\", \":\"], [\"<\",\"(\",\"{\"], [\">\",\")\",\"}\"])",
+            "vec![\"<a>-(1):{x}\",\"<b>-(2):{y}\"]",
+        ),
+        (
+            "zip_empty",
+            "List<String>",
+            "zipStringJoin([], [], [], [])",
+            "Vec::<String>::new()",
+        ),
+        (
+            "forward",
+            "List<Number>",
+            "seq(5,10)",
+            "vec![n(\"5\"),n(\"6\"),n(\"7\"),n(\"8\"),n(\"9\"),n(\"10\")]",
+        ),
+        (
+            "backward",
+            "List<Number>",
+            "seq(10,5)",
+            "vec![n(\"10\"),n(\"9\"),n(\"8\"),n(\"7\"),n(\"6\"),n(\"5\")]",
+        ),
+        (
+            "fractional",
+            "List<Number>",
+            "seq(0,1,0.25)",
+            "vec![n(\"0\"),n(\"0.25\"),n(\"0.5\"),n(\"0.75\"),n(\"1\")]",
+        ),
+        (
+            "opposite",
+            "List<Number>",
+            "seq(5,10,-1)",
+            "vec![n(\"5\"),n(\"6\"),n(\"7\"),n(\"8\"),n(\"9\"),n(\"10\")]",
+        ),
+        (
+            "unreached",
+            "List<Number>",
+            "seq(0,0.95,0.1)",
+            "vec![n(\"0\"),n(\"0.1\"),n(\"0.2\"),n(\"0.3\"),n(\"0.4\"),n(\"0.5\"),n(\"0.6\"),n(\"0.7\"),n(\"0.8\"),n(\"0.9\")]",
+        ),
+        (
+            "colon",
+            "List<Number>",
+            "10:5",
+            "vec![n(\"10\"),n(\"9\"),n(\"8\"),n(\"7\"),n(\"6\"),n(\"5\")]",
+        ),
+        ("all_values", "Bool", "all([true,true,false])", "false"),
+        ("any_values", "Bool", "any([false,false,true])", "true"),
+        ("all_empty", "Bool", "all([])", "true"),
+        ("any_empty", "Bool", "any([])", "false"),
+    ] {
+        assert!(
+            readme.contains(&format!("| `{expression}` |")),
+            "README missing {expression}"
+        );
+        source.push_str(&format!("decision_task {name} {{ input unused: Number; output result: {output} = calc; literal_expression calc {{ output result: {output}; expression {expression}; }} }}\n"));
+        assertions.push_str(&format!(
+            "assert_eq!({name}(Number::ZERO).unwrap(), {expected});\n"
+        ));
+    }
+    compile_and_test(&source, &assertions);
+}
+
+#[test]
+fn generated_readme_aggregate_migration_and_examples_compile_and_execute() {
+    let migration = r#"decision_task modes {
+  input values: List<Number>;
+  output result: List<Number> = calc;
+  literal_expression calc {
+    output result: List<Number>;
+    expression mode(values);
+  }
+}"#;
+    let readme = include_str!("../../../README.md");
+    assert!(readme.contains(migration), "README missing mode migration");
+    let mut source = format!("namespace aggregates; version \"1\";\n{migration}\n");
+    let mut assertions = String::from(
+        "let n = |v: &str| v.parse::<Number>().unwrap();\n\
+         assert_eq!(modes(vec![n(\"3\"),n(\"2\"),n(\"3\"),n(\"2\")]).unwrap(), vec![n(\"2\"),n(\"3\")]);\n\
+         assert_eq!(modes(vec![n(\"3\"),n(\"2\"),n(\"3\")]).unwrap(), vec![n(\"3\")]);\n\
+         assert!(modes(vec![]).is_err());\n\
+         assert!(modes(vec![n(\"1\"); 1025]).is_err());\n",
+    );
+    for (name, output, expression, displayed, expected) in [
+        (
+            "ties",
+            "List<Number>",
+            "mode([6,1,6,1])",
+            "[1,6]",
+            "vec![n(\"1\"),n(\"6\")]",
+        ),
+        (
+            "winner",
+            "List<Number>",
+            "mode([3,2,3])",
+            "[3]",
+            "vec![n(\"3\")]",
+        ),
+        ("first", "Number", "mode([6,1,6,1])[1]", "1", "n(\"1\")"),
+        (
+            "hours",
+            "DTDuration",
+            "sum([dtDuration(\"PT1H\"),dtDuration(\"PT2H\")])",
+            "dtDuration(\"PT3H\")",
+            "\"PT3H\"",
+        ),
+        (
+            "months",
+            "YMDuration",
+            "sum([ymDuration(\"P1Y\"),ymDuration(\"P6M\")])",
+            "ymDuration(\"P1Y6M\")",
+            "\"P1Y6M\"",
+        ),
+        (
+            "average",
+            "DTDuration",
+            "mean([dtDuration(\"PT1H\"),dtDuration(\"PT2H\")])",
+            "dtDuration(\"PT1H30M\")",
+            "\"PT1H30M\"",
+        ),
+        (
+            "middle",
+            "YMDuration",
+            "median([ymDuration(\"P1Y\"),ymDuration(\"P2Y\")])",
+            "ymDuration(\"P1Y6M\")",
+            "\"P1Y6M\"",
+        ),
+        (
+            "low",
+            "String",
+            "min([\"banana\",\"Apple\"])",
+            "\"Apple\"",
+            "\"Apple\"",
+        ),
+        (
+            "high",
+            "Date",
+            "max([date(\"2025-01-01\"),date(\"2025-02-01\")])",
+            "date(\"2025-02-01\")",
+            "\"2025-02-01\"",
+        ),
+        (
+            "multiplied",
+            "Number",
+            "product([2,3,4])",
+            "24",
+            "n(\"24\")",
+        ),
+        ("deviation", "Number", "stddev([1,2,3])", "1", "n(\"1\")"),
+        ("zero", "Number", "sum([])", "0", "n(\"0\")"),
+        ("one", "Number", "product([])", "1", "n(\"1\")"),
+        (
+            "zero_duration",
+            "DTDuration",
+            "sum([])",
+            "dtDuration(\"PT0S\")",
+            "\"PT0S\"",
+        ),
+    ] {
+        assert!(
+            readme.contains(&format!("| `{expression}` | `{output}` | `{displayed}` |")),
+            "README missing {expression}: {output} = {displayed}"
+        );
+        source.push_str(&format!("decision_task {name} {{ input unused: Number; output result: {output} = calc; literal_expression calc {{ output result: {output}; expression {expression}; }} }}\n"));
+        if output == "DTDuration" || output == "YMDuration" || output == "Date" {
+            assertions.push_str(&format!(
+                "assert_eq!({name}(Number::ZERO).unwrap().to_string(), {expected});\n"
+            ));
+        } else {
+            assertions.push_str(&format!(
+                "assert_eq!({name}(Number::ZERO).unwrap(), {expected});\n"
+            ));
+        }
+    }
+    compile_and_test(&source, &assertions);
+}
+
+#[test]
+fn generated_readme_list_operation_examples_compile_and_execute() {
+    let mut source = String::from("namespace lists; version \"1\";\n");
+    let mut assertions = String::from("let n = |v: i64| Number::from(v);\n");
+    for (name, output, expression, expected) in [
+        ("count_three", "Number", "count([1,2,3])", "n(3)"),
+        ("is_empty", "Bool", "isEmpty(input)", "true"),
+        ("contains", "Bool", "listContains([1,2,3], 2)", "true"),
+        (
+            "positions",
+            "List<Number>",
+            "indexOf([1,2,3,2], 2)",
+            "vec![n(2),n(4)]",
+        ),
+        (
+            "slice",
+            "List<Number>",
+            "sublist([1,2,3], -2)",
+            "vec![n(2),n(3)]",
+        ),
+        (
+            "append",
+            "List<Number>",
+            "append([1], 2, 3)",
+            "vec![n(1),n(2),n(3)]",
+        ),
+        (
+            "prepend",
+            "List<Number>",
+            "prepend([2,3], 1)",
+            "vec![n(1),n(2),n(3)]",
+        ),
+        (
+            "concatenate",
+            "List<Number>",
+            "concatenate([1,2], [3])",
+            "vec![n(1),n(2),n(3)]",
+        ),
+        (
+            "union",
+            "List<Number>",
+            "union([2,1], [1,3])",
+            "vec![n(2),n(1),n(3)]",
+        ),
+        (
+            "reverse",
+            "List<Number>",
+            "reverse([1,2,3])",
+            "vec![n(3),n(2),n(1)]",
+        ),
+        (
+            "flatten",
+            "List<Number>",
+            "flatten([[[1,2]],[[3,4]]])",
+            "vec![n(1),n(2),n(3),n(4)]",
+        ),
+        (
+            "before_first",
+            "List<Number>",
+            "insertBefore([1,3], 1, 2)",
+            "vec![n(2),n(1),n(3)]",
+        ),
+        (
+            "before_last",
+            "List<Number>",
+            "insertBefore([10,20,30], -1, 5)",
+            "vec![n(10),n(20),n(5),n(30)]",
+        ),
+        (
+            "after_last",
+            "List<Number>",
+            "insertAfter([10,20,30], -1, 5)",
+            "vec![n(10),n(20),n(30),n(5)]",
+        ),
+        (
+            "spread",
+            "List<Number>",
+            "insertAfter([1,5], 1, [2,3,4])",
+            "vec![n(1),n(2),n(3),n(4),n(5)]",
+        ),
+        (
+            "nested",
+            "List<List<Number>>",
+            "insertBefore([[1],[4]], 2, [[2,3]])",
+            "vec![vec![n(1)],vec![n(2),n(3)],vec![n(4)]]",
+        ),
+        (
+            "remove_second",
+            "List<Number>",
+            "remove([1,2,3], 2)",
+            "vec![n(1),n(3)]",
+        ),
+        (
+            "remove_last",
+            "List<Number>",
+            "remove([10,20,30], -1)",
+            "vec![n(10),n(20)]",
+        ),
+        (
+            "replace_second",
+            "List<Number>",
+            "listReplace([1,2,3], 2, 9)",
+            "vec![n(1),n(9),n(3)]",
+        ),
+        (
+            "replace_last",
+            "List<Number>",
+            "listReplace([10,20,30], -1, 5)",
+            "vec![n(10),n(20),n(5)]",
+        ),
+        (
+            "remove_matches",
+            "List<Number>",
+            "remove([1,2,3,2], function(i) i == 2)",
+            "vec![n(1),n(3)]",
+        ),
+        (
+            "replace_matches",
+            "List<Number>",
+            "listReplace([2,4,7], function(i) i < 5, 5)",
+            "vec![n(5),n(5),n(7)]",
+        ),
+        (
+            "distinct",
+            "List<Number>",
+            "distinct([2,1,2,3,1])",
+            "vec![n(2),n(1),n(3)]",
+        ),
+        (
+            "duplicates",
+            "List<Number>",
+            "duplicateValues([2,1,1,2,2])",
+            "vec![n(2),n(1)]",
+        ),
+        (
+            "intersection",
+            "List<Number>",
+            "intersection([3,2,3,1], [2,3])",
+            "vec![n(3),n(2)]",
+        ),
+    ] {
+        let name = format!("example_{name}");
+        source.push_str(&format!("decision_task {name} {{ input input: List<Number>; output result: {output} = calc; literal_expression calc {{ output result: {output}; expression {expression}; }} }}\n"));
+        assertions.push_str(&format!(
+            "assert_eq!({name}(vec![]).unwrap(), {expected});\n"
+        ));
+    }
+    compile_and_test(&source, &assertions);
+}
+
+#[test]
+fn generated_context_item_filters_and_numeric_entry_positions_remain_distinct() {
+    let source = r#"namespace lists; version "1";
+decision_task filter { input input: Number; output result: Number = value; context value { output result: Number; entry item: Number = sum(selected); entry selected: List<Number> = [1,2][odd(.item)]; result item; } }
+decision_task position { input input: Number; output result: Number = value; context value { output result: Number; entry selected: Number = [4,5][item]; entry item: Number = input; result selected; } }
+"#;
+    compile_and_test_graph(
+        source,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert_eq!(filter(n("0")).unwrap(), n("1")); assert_eq!(position(n("2")).unwrap(), n("5")); assert!(position(n("0")).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_item_filters_and_numeric_input_positions_remain_distinct() {
+    let source = r#"namespace lists;
+version "1";
+decision_task field_filter { input orders: List<Order>; output result: List<Order> = selected; literal_expression selected { output result: List<Order>; expression orders[.item.active];}}
+Order = {active: Bool};
+decision_task call_filter { input input: List<Number>; output result: List<Number> = selected; knowledge positive { input value: Number; output result: Bool; expression value > 0; } literal_expression selected { output result: List<Number>; expression input[positive(.item)]; } }
+decision_task numeric_position { input item: Number; output result: Number = selected; literal_expression selected { output result: Number; expression [4,5][item]; } }
+"#;
+    compile_and_test_graph(
+        source,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert_eq!(field_filter(vec![Order { active: false }, Order { active: true }]).unwrap(), vec![Order { active: true }]); assert_eq!(call_filter(vec![n("-1"),n("2")]).unwrap(), vec![n("2")]); assert_eq!(numeric_position(n("2")).unwrap(), n("5")); assert!(numeric_position(n("0")).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_explicit_filter_item_preserves_outer_names_and_nested_scope() {
+    let source = r#"namespace lists; version "1";
+decision_task outer { input values: List<Number>; input item: Bool; output result: List<Number> = selected; literal_expression selected { output result: List<Number>; expression values[.item > 1 and item]; } }
+decision_task nested { input value: Number; output result: List<Number> = selected; literal_expression selected { output result: List<Number>; expression [1,2][[.item,3][.item > 1] == [3]]; } }
+decision_task node { input value: Number; output result: Number = item; literal_expression item { output result: Number; expression value + 1; } }
+"#;
+    compile_and_test_graph(
+        source,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert_eq!(outer(vec![n("1"),n("2")], true).unwrap(), vec![n("2")]); assert_eq!(outer(vec![n("1"),n("2")], false).unwrap(), Vec::<Number>::new()); assert_eq!(nested(n("0")).unwrap(), vec![n("1")]); assert_eq!(node(n("2")).unwrap(), n("3"));"#,
+    );
+}
+
+#[test]
+fn generated_context_mixed_explicit_filter_and_numeric_item_dependencies() {
+    let source = r#"namespace lists; version "1";
+decision_task mixed { input input: Number; output result: Number = value; context value { output result: Number; entry selected: Number = [4,5][item]; entry subtotal: Number = sum(values); entry item: Number = subtotal; entry values: List<Number> = [1,2][odd(.item)]; result selected; } }
+"#;
+    compile_and_test_graph(
+        source,
+        r#"assert_eq!(mixed(Number::ZERO).unwrap(), Number::from(4));"#,
+    );
+}
+
+#[test]
+fn generated_decision_item_node_is_a_checked_numeric_index_dependency() {
+    let source = r#"namespace lists; version "1";
+decision_task indexed { input position: Number; output result: Number = selected;
+  literal_expression selected { output result: Number; expression [4,5][item]; }
+  literal_expression item { output result: Number; expression position; }
+}"#;
+    compile_and_test_graph(
+        source,
+        r#"assert_eq!(indexed(Number::from(2)).unwrap(), Number::from(5)); assert!(indexed(Number::ZERO).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_list_operands_do_not_capture_user_names() {
+    let source = "namespace lists; version \"1\"; decision_task sequence { input current: Number; output result: List<Number> = calc; literal_expression calc { output result: List<Number>; expression 1:current; } } decision_task position { input items: Number; output result: Number = calc; literal_expression calc { output result: Number; expression [4,5][items]; } } decision_task filter { input result: Number; output selected: List<Number> = calc; literal_expression calc { output selected: List<Number>; expression [1,2,3][.item > result]; } }";
+    compile_and_test_graph(
+        source,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert_eq!(sequence(n("3")).unwrap(), vec![n("1"),n("2"),n("3")]); assert_eq!(position(n("2")).unwrap(), n("5")); assert_eq!(filter(n("1")).unwrap(), vec![n("2"),n("3")]);"#,
+    );
+}
+
+#[test]
+fn generated_iteration_enum_variant_and_shadowed_dictionary_field_are_distinct() {
+    let source = "namespace lists; version \"1\"; enum Status:\n  ready;\ndecision_task variant { input input: Number; output result: List<Status> = value; literal_expression value { output result: List<Status>; expression for x in [Status.ready] return x; } } decision_task shadow { input input: Number; output result: List<Bool> = value; literal_expression value { output result: List<Bool>; expression for Status in [{ready: true}] return Status.ready; } }";
+    compile_and_test_graph(
+        source,
+        r#"assert_eq!(variant(Number::ZERO).unwrap(), vec![Status::ready]); assert_eq!(shadow(Number::ZERO).unwrap(), vec![true]);"#,
+    );
+}
+
+#[test]
+fn generated_iteration_temporaries_do_not_capture_user_names() {
+    let source = "namespace lists; version \"1\"; decision_task mapped { input __bl_iteration: Number; output result: List<Number> = calc; literal_expression calc { output result: List<Number>; expression for x in [1] return x + __bl_iteration; } } decision_task every_match { input __bl_every: Number; output result: Bool = calc; literal_expression calc { output result: Bool; expression every x in [1] satisfies x < __bl_every; } } decision_task some_match { input __bl_some: Number; output result: Bool = calc; literal_expression calc { output result: Bool; expression some x in [1] satisfies x == __bl_some; } }";
+    compile_and_test_graph(
+        source,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert_eq!(mapped(n("2")).unwrap(), vec![n("3")]); assert!(every_match(n("2")).unwrap()); assert!(some_match(n("1")).unwrap());"#,
+    );
+}
+
+#[test]
+fn generated_record_projection_composes_with_sum() {
+    let source = "namespace lists; version \"1\"; Order = {amount: Number}; decision_task total { input orders: List<Order>; output result: Number = calc; literal_expression calc { output result: Number; expression sum(orders.amount); } }";
+    compile_and_test_graph(
+        source,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert_eq!(total(vec![Order { amount: n("2") }, Order { amount: n("3") }]).unwrap(), n("5"));"#,
+    );
+}
+
+#[test]
+fn generated_empty_filter_uses_contextual_element_type() {
+    let source = "namespace lists; version \"1\"; decision_task filtered { input value: Number; output result: List<Number> = calc; literal_expression calc { output result: List<Number>; expression [][.item > 0]; } }";
+    compile_and_test_graph(
+        source,
+        r#"assert_eq!(filtered(Number::ZERO).unwrap(), Vec::<Number>::new());"#,
+    );
+}
+
+#[test]
+fn generated_empty_filter_in_knowledge_argument_uses_parameter_type() {
+    let source = "namespace lists; version \"1\"; decision_task filtered { input value: Number; output result: List<Number> = calc; knowledge positive_list { input items: List<Number>; output result: List<Number>; expression items; } literal_expression calc { output result: List<Number>; expression positive_list([][.item > 0]); } }";
+    compile_and_test_graph(
+        source,
+        r#"assert_eq!(filtered(Number::ZERO).unwrap(), Vec::<Number>::new());"#,
+    );
+}
+
+#[test]
+fn generated_nested_empty_filter_uses_output_element_type() {
+    let source = "namespace lists; version \"1\"; decision_task filtered { input value: Number; output result: List<List<Number>> = calc; literal_expression calc { output result: List<List<Number>>; expression [[][.item > 0]]; } }";
+    compile_and_test_graph(
+        source,
+        r#"assert_eq!(filtered(Number::ZERO).unwrap(), vec![Vec::<Number>::new()]);"#,
+    );
+}
+
+#[test]
+fn generated_nested_empty_filter_in_knowledge_argument_uses_parameter_element_type() {
+    let source = "namespace lists; version \"1\"; decision_task filtered { input value: Number; output result: List<List<Number>> = calc; knowledge consume { input items: List<List<Number>>; output result: List<List<Number>>; expression items; } literal_expression calc { output result: List<List<Number>>; expression consume([[][.item > 0]]); } }";
+    compile_and_test_graph(
+        source,
+        r#"assert_eq!(filtered(Number::ZERO).unwrap(), vec![Vec::<Number>::new()]);"#,
+    );
+}
+
+#[test]
+fn generated_empty_iteration_source_infers_element_from_body() {
+    let source = "namespace lists; version \"1\"; decision_task mapped { input value: Number; output result: List<Bool> = calc; literal_expression calc { output result: List<Bool>; expression for x in [] return x > 0; } }";
+    compile_and_test_graph(
+        source,
+        r#"assert_eq!(mapped(Number::ZERO).unwrap(), Vec::<bool>::new());"#,
+    );
+}
+
+#[test]
+fn generated_empty_iteration_sources_use_body_types_for_map_and_quantifiers() {
+    let source = "namespace lists; version \"1\"; decision_task mapped { input input: Number; output result: List<Bool> = calc; knowledge positive { input n: Number; output result: Bool; expression n > 0; } literal_expression calc { output result: List<Bool>; expression for x in [] return positive(x); } } decision_task all { input input: Number; output result: Bool = calc; literal_expression calc { output result: Bool; expression every x in [] satisfies x > 0; } } decision_task any { input input: Number; output result: Bool = calc; literal_expression calc { output result: Bool; expression some x in [] satisfies odd(x); } }";
+    compile_and_test_graph(
+        source,
+        r#"assert_eq!(mapped(Number::ZERO).unwrap(), Vec::<bool>::new()); assert!(all(Number::ZERO).unwrap()); assert!(!any(Number::ZERO).unwrap());"#,
+    );
+}
+
+#[test]
+fn generated_empty_cartesian_binding_uses_later_source_constraint() {
+    let source = "namespace lists; version \"1\"; decision_task mapped { input value: Number; output result: List<Number> = calc; literal_expression calc { output result: List<Number>; expression for x in [], y in [x, x + 1] return 1; } }";
+    compile_and_test_graph(
+        source,
+        r#"assert_eq!(mapped(Number::ONE).unwrap(), Vec::<Number>::new());"#,
+    );
+}
+
+#[test]
+fn generated_unused_empty_binding_can_be_shadowed_by_nested_iteration() {
+    let source = "namespace lists; version \"1\"; decision_task mapped { input value: Number; output result: List<List<Bool>> = calc; literal_expression calc { output result: List<List<Bool>>; expression for x in [] return for x in [true] return x; } }";
+    compile_and_test_graph(
+        source,
+        r#"assert_eq!(mapped(Number::ONE).unwrap(), Vec::<Vec<bool>>::new());"#,
+    );
+}
+
+#[test]
+fn generated_empty_iteration_calls_compile_with_shared_binding_types() {
+    let source = "namespace lists; version \"1\"; decision_task aggregate { input input: Number; output result: List<Number> = calc; literal_expression calc { output result: List<Number>; expression for x in [] return x + min([1, 2]); } } decision_task relation { input input: Number; output result: List<Bool> = calc; literal_expression calc { output result: List<Bool>; expression for x in [] return before(0, [x..5]); } }";
+    compile_and_test_graph(
+        source,
+        r#"assert_eq!(aggregate(Number::ZERO).unwrap(), Vec::<Number>::new()); assert_eq!(relation(Number::ZERO).unwrap(), Vec::<bool>::new());"#,
+    );
+}
+
+#[test]
+fn generated_empty_iteration_source_uses_duration_result_constraint() {
+    let source = "namespace lists; version \"1\"; decision_task mapped { input value: Number; output result: List<DTDuration> = calc; literal_expression calc { output result: List<DTDuration>; expression for x in [] return 0 - x; } }";
+    compile_and_test_graph(
+        source,
+        r#"assert_eq!(mapped(Number::ONE).unwrap(), Vec::<blkit_core::temporal::DTDuration>::new());"#,
+    );
+}
+
+#[test]
+fn generated_empty_cartesian_source_uses_output_element_type() {
+    let source = "namespace lists; version \"1\"; decision_task mapped { input value: Number; output result: List<Number> = calc; literal_expression calc { output result: List<Number>; expression for x in [1], y in [] return y; } }";
+    compile_and_test_graph(
+        source,
+        r#"assert_eq!(mapped(Number::ONE).unwrap(), Vec::<Number>::new());"#,
+    );
+}
+
+#[test]
+fn generated_nested_for_keeps_nested_lists_without_comma_bindings() {
+    let source = "namespace lists; version \"1\"; decision_task nested { input value: List<Number>; output result: List<List<Number>> = calc; literal_expression calc { output result: List<List<Number>>; expression for x in value return (for y in [x, x + 1] return y); } }";
+    compile_and_test_graph(
+        source,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert_eq!(nested(vec![n("1"),n("2")]).unwrap(), vec![vec![n("1"),n("2")],vec![n("2"),n("3")]]);"#,
+    );
+}
+
+#[test]
+fn generated_dictionary_list_projection_checks_missing_keys() {
+    let source = "namespace lists; version \"1\"; decision_task projected { input value: List<Dictionary<Number>>; output result: List<Number> = calc; literal_expression calc { output result: List<Number>; expression value.score; } }";
+    compile_and_test_graph(
+        source,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; let row = std::collections::BTreeMap::from([("score".into(), n("7"))]); assert_eq!(projected(vec![row.clone()]).unwrap(), vec![n("7")]); assert!(projected(vec![std::collections::BTreeMap::new()]).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_some_short_circuits_before_later_predicate_errors() {
+    let source = "namespace lists; version \"1\"; decision_task any { input value: List<Number>; output result: Bool = calc; literal_expression calc { output result: Bool; expression some x in value, y in [1, 0] satisfies 1 / y > 0; } }";
+    compile_and_test_graph(
+        source,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert!(!any(vec![]).unwrap()); assert!(any(vec![n("1")]).unwrap());"#,
+    );
+}
+
+#[test]
+fn generated_list_dynamic_positions_and_predicate_errors() {
+    let source = "namespace lists; version \"1\"; decision_task at { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression [1,2][value]; } } decision_task filtered { input value: Number; output result: List<Number> = calc; literal_expression calc { output result: List<Number>; expression [1,2][.item / value > 0]; } } decision_task remainder { input value: Number; output result: List<Number> = calc; literal_expression calc { output result: List<Number>; expression [1,2,3][.item mod value == 0]; } }";
+    compile_and_test_graph(
+        source,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; for bad in ["0", "3", "-3", "1.5"] { assert!(at(n(bad)).is_err(), "{bad}"); } assert_eq!(at(n("-1")).unwrap(), n("2")); assert!(filtered(n("0")).is_err()); assert_eq!(remainder(n("2")).unwrap(), vec![n("2")]); assert!(remainder(n("0")).is_err());"#,
+    );
+}
+
+#[test]
 fn generated_numeric_points_compare_finite_range_endpoints() {
     let mut source = String::from("namespace numbers; version \"1\";\n");
     for (name, expression) in [
@@ -133,11 +903,137 @@ fn generated_numeric_aggregates_handle_empty_lists_and_sample_stddev() {
     for name in [
         "min", "max", "sum", "mean", "median", "product", "stddev", "mode",
     ] {
-        source.push_str(&format!("decision_task {name}_values {{ input values: List<Number>; output result: Number = calc; literal_expression calc {{ output result: Number; expression {name}(values); }} }}\n"));
+        let output = if name == "mode" {
+            "List<Number>"
+        } else {
+            "Number"
+        };
+        source.push_str(&format!("decision_task {name}_values {{ input values: List<Number>; output result: {output} = calc; literal_expression calc {{ output result: {output}; expression {name}(values); }} }}\n"));
     }
     compile_and_test_graph(
         &source,
-        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; let list = |v: &[&str]| v.iter().map(|s| n(s)).collect(); assert_eq!(min_values(list(&["3","1","2"])).unwrap(), n("1")); assert_eq!(max_values(list(&["3","1","2"])).unwrap(), n("3")); assert_eq!(sum_values(list(&["1","2","3"])).unwrap(), n("6")); assert_eq!(mean_values(list(&["1","2","3"])).unwrap(), n("2")); assert_eq!(median_values(list(&["1","2","3","4"])).unwrap(), n("2.5")); assert_eq!(product_values(list(&["2","3","4"])).unwrap(), n("24")); assert_eq!(stddev_values(list(&["1","2","3"])).unwrap(), n("1")); assert_eq!(mode_values(list(&["3","2","3","2"])).unwrap(), n("2")); assert_eq!(sum_values(vec![]).unwrap(), Number::ZERO); assert_eq!(product_values(vec![]).unwrap(), Number::ONE); for result in [min_values(vec![]), max_values(vec![]), mean_values(vec![]), median_values(vec![]), mode_values(vec![]), stddev_values(vec![]), stddev_values(vec![n("5")]), sum_values(vec![Number::MAX, Number::ONE]), product_values(vec![Number::MAX, n("2")])] { assert!(result.is_err()); }"#,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; let list = |v: &[&str]| v.iter().map(|s| n(s)).collect(); assert_eq!(min_values(list(&["3","1","2"])).unwrap(), n("1")); assert_eq!(max_values(list(&["3","1","2"])).unwrap(), n("3")); assert_eq!(sum_values(list(&["1","2","3"])).unwrap(), n("6")); assert_eq!(mean_values(list(&["1","2","3"])).unwrap(), n("2")); assert_eq!(median_values(list(&["1","2","3","4"])).unwrap(), n("2.5")); assert_eq!(product_values(list(&["2","3","4"])).unwrap(), n("24")); assert_eq!(product_values(list(&["-0.5","2","3"])).unwrap(), n("-3")); assert_eq!(stddev_values(list(&["1","2","3"])).unwrap(), n("1")); assert_eq!(mode_values(list(&["3","2","3","2"])).unwrap(), list(&["2","3"])); assert_eq!(mode_values(list(&["3","2","3","1"])).unwrap(), list(&["3"])); assert_eq!(mode_values(list(&["6","1","6","1"])).unwrap(), list(&["1","6"])); assert_eq!(sum_values(vec![]).unwrap(), Number::ZERO); assert_eq!(product_values(vec![]).unwrap(), Number::ONE); for result in [min_values(vec![]), max_values(vec![]), mean_values(vec![]), median_values(vec![]), stddev_values(vec![]), stddev_values(vec![n("5")]), sum_values(vec![Number::MAX, Number::ONE]), product_values(vec![Number::MAX, n("2")]), stddev_values(vec![Number::MAX, -Number::MAX])] { assert!(result.is_err()); } assert!(mode_values(vec![]).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_duration_aggregates_keep_kind_and_check_empty_and_precision() {
+    let mut source = String::from("namespace durations; version \"1\";\n");
+    for (kind, suffix) in [("DTDuration", "dt"), ("YMDuration", "ym")] {
+        for name in ["sum", "mean", "median", "min", "max"] {
+            source.push_str(&format!("decision_task {name}_{suffix} {{ input values: List<{kind}>; output result: {kind} = calc; literal_expression calc {{ output result: {kind}; expression {name}(values); }} }}\n"));
+        }
+    }
+    compile_and_test_graph(
+        &source,
+        r#"let dt = |values: &[&str]| values.iter().map(|s| s.parse().unwrap()).collect();
+let ym = |values: &[&str]| values.iter().map(|s| s.parse().unwrap()).collect();
+assert_eq!(sum_dt(dt(&["PT1H", "PT2H"])).unwrap().to_string(), "PT3H");
+assert_eq!(sum_dt(dt(&[])).unwrap().to_string(), "PT0S");
+assert_eq!(mean_dt(dt(&["PT1H", "PT2H"])).unwrap().to_string(), "PT1H30M");
+assert_eq!(median_dt(dt(&["PT3H", "PT1H", "PT2H", "PT4H"])).unwrap().to_string(), "PT2H30M");
+assert_eq!(min_dt(dt(&["PT2H", "PT1H"])).unwrap().to_string(), "PT1H");
+assert_eq!(max_dt(dt(&["PT2H", "PT1H"])).unwrap().to_string(), "PT2H");
+assert_eq!(sum_ym(ym(&["P1Y", "P6M"])).unwrap().to_string(), "P1Y6M");
+assert_eq!(sum_ym(ym(&[])).unwrap().to_string(), "P0M");
+assert_eq!(mean_ym(ym(&["P1Y", "P2Y"])).unwrap().to_string(), "P1Y6M");
+assert_eq!(median_ym(ym(&["P3Y", "P1Y", "P2Y", "P4Y"])).unwrap().to_string(), "P2Y6M");
+assert_eq!(mean_dt(vec![DTDuration(Number::MAX); 2]).unwrap(), DTDuration(Number::MAX));
+assert_eq!(median_ym(vec![YMDuration(-Number::MAX), YMDuration(Number::MAX)]).unwrap(), YMDuration(Number::ZERO));
+assert_eq!(min_ym(ym(&["P2Y", "P1Y"])).unwrap().to_string(), "P1Y");
+assert_eq!(max_ym(ym(&["P2Y", "P1Y"])).unwrap().to_string(), "P2Y");
+assert!(mean_dt(dt(&[])).is_err()); assert!(median_ym(ym(&[])).is_err());
+assert!(sum_dt(dt(&["PT79228162514264337593543950335S", "PT1S"])).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_comparable_aggregates_order_strings_and_temporal_values() {
+    compile_and_test_graph(
+        r#"namespace comparable; version "1";
+decision_task low_string { input values: List<String>; output result: String = calc; literal_expression calc { output result: String; expression min(values); } }
+decision_task high_string { input values: List<String>; output result: String = calc; literal_expression calc { output result: String; expression max(values); } }
+decision_task low_date { input values: List<Date>; output result: Date = calc; literal_expression calc { output result: Date; expression min(values); } }
+decision_task high_time { input values: List<Time>; output result: Time = calc; literal_expression calc { output result: Time; expression max(values); } }
+decision_task low_datetime { input values: List<DateTime>; output result: DateTime = calc; literal_expression calc { output result: DateTime; expression min(values); } }
+"#,
+        r#"assert_eq!(low_string(vec!["é".into(), "z".into()]).unwrap(), "z");
+assert_eq!(high_string(vec!["é".into(), "z".into()]).unwrap(), "é");
+assert_eq!(low_date(vec!["2025-02-01".parse().unwrap(), "2025-01-01".parse().unwrap()]).unwrap().to_string(), "2025-01-01");
+assert_eq!(high_time(vec!["11:00:00Z".parse().unwrap(), "12:00:00+01:00".parse().unwrap()]).unwrap().to_string(), "11:00:00Z");
+assert_eq!(low_datetime(vec!["2025-01-01T09:00:00Z".parse().unwrap(), "2025-01-01T09:30:00+01:00".parse().unwrap()]).unwrap().to_string(), "2025-01-01T09:30:00+01:00");
+assert!(low_string(vec![]).is_err()); assert!(high_time(vec![]).is_err());
+assert!(high_time(vec!["11:00:00".parse().unwrap(), "12:00:00Z".parse().unwrap()]).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_unordered_modes_keep_first_occurrence_ties_and_unique_winners() {
+    compile_and_test_graph(
+        r#"namespace modes; version "1";
+decision_task strings { input values: List<String>; output result: List<String> = calc; literal_expression calc { output result: List<String>; expression mode(values); } }
+decision_task booleans { input values: List<Bool>; output result: List<Bool> = calc; literal_expression calc { output result: List<Bool>; expression mode(values); } }
+"#,
+        r#"assert_eq!(strings(vec!["z".into(), "a".into(), "z".into()]).unwrap(), vec!["z"]);
+assert_eq!(booleans(vec![true, false, true, false]).unwrap(), vec![true, false]);
+assert_eq!(booleans(vec![false, true, false]).unwrap(), vec![false]);
+assert!(strings(vec![]).is_err());
+assert!(booleans(vec![true; 1025]).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_calendar_mode_uses_calendar_equality() {
+    compile_and_test_graph(
+        r#"namespace modes; version "1";
+decision_task calendars { input values: List<Calendar>; output result: List<Calendar> = calc; literal_expression calc { output result: List<Calendar>; expression mode(values); } }
+"#,
+        r##"let a: Calendar = serde_json::from_str(r#"{"validFrom":"2025-01-01","validTo":"2025-01-31","entries":[]}"#).unwrap();
+let b: Calendar = serde_json::from_str(r#"{"validFrom":"2025-02-01","validTo":"2025-02-28","entries":[]}"#).unwrap();
+assert_eq!(calendars(vec![a.clone(), b.clone(), a.clone(), b.clone()]).unwrap(), vec![a, b]);"##,
+    );
+}
+
+#[test]
+fn generated_nested_and_dynamic_modes_preserve_first_occurrence_ties() {
+    compile_and_test_graph(
+        r#"namespace modes; version "1";
+decision_task nested { input values: List<List<Number>>; output result: List<List<Number>> = calc; literal_expression calc { output result: List<List<Number>>; expression mode(values); } }
+decision_task dynamic { input values: List<Value>; output result: List<Value> = calc; literal_expression calc { output result: List<Value>; expression mode(values); } }
+"#,
+        r#"assert_eq!(nested(vec![vec![Number::TWO], vec![Number::ONE], vec![Number::TWO], vec![Number::ONE]]).unwrap(), vec![vec![Number::TWO], vec![Number::ONE]]);
+assert_eq!(dynamic(vec![serde_json::json!({"x": 1}), serde_json::json!([1]), serde_json::json!({"x": 1}), serde_json::json!([1])]).unwrap(), vec![serde_json::json!({"x": 1}), serde_json::json!([1])]);"#,
+    );
+}
+
+#[test]
+fn generated_aggregates_infer_empty_iteration_bindings_from_results() {
+    compile_and_test_graph(
+        r#"namespace aggregates; version "1";
+decision_task sum_empty { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression sum(for x in [] return x); } }
+decision_task mode_empty { input value: Number; output result: List<Number> = calc; literal_expression calc { output result: List<Number>; expression mode(for x in [] return x); } }
+"#,
+        "assert_eq!(sum_empty(Number::ZERO).unwrap(), Number::ZERO); assert!(mode_empty(Number::ZERO).is_err());",
+    );
+}
+
+#[test]
+fn generated_empty_mode_literal_reports_evaluation_error() {
+    compile_and_test_graph(
+        r#"namespace modes; version "1";
+decision_task empty_mode { input value: Number; output result: List<Bool> = calc; literal_expression calc { output result: List<Bool>; expression mode([]); } }
+"#,
+        "assert!(empty_mode(Number::ZERO).is_err());",
+    );
+}
+
+#[test]
+fn generated_temporal_modes_compare_instants_and_reject_incompatible_zones() {
+    compile_and_test_graph(
+        r#"namespace modes; version "1";
+decision_task modes { input values: List<DateTime>; output result: List<DateTime> = calc; literal_expression calc { output result: List<DateTime>; expression mode(values); } }
+"#,
+        r#"let instant = "2025-01-01T10:00:00Z".parse().unwrap(); let equivalent = "2025-01-01T11:00:00+01:00".parse().unwrap(); let other = "2025-01-01T09:00:00Z".parse().unwrap(); assert_eq!(modes(vec![instant, equivalent, other]).unwrap()[0].to_string(), "2025-01-01T10:00:00Z"); assert!(modes(vec![instant, "2025-01-01T10:00:00".parse().unwrap()]).is_err());"#,
     );
 }
 
@@ -410,6 +1306,7 @@ decision_task drop_exact_range { input c: Calendar; output result: Calendar = ou
 decision_task keep_within { input c: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarKeep(c, [date("2025-04-18")..date("2025-04-20")], rangeMatch="entryWithin"); } }
 decision_task keep_enclosing { input c: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarKeep(c, [date("2025-04-19")..date("2025-04-19")], rangeMatch="entryEncloses"); } }
 decision_task mixed_targets { input c: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarKeep(c, [date("2025-04-18"), pattern("^Easter")]); } }
+decision_task nested_heterogeneous_targets { input c: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarKeep(c, ["Good Friday", [date("2025-04-21"), [date("2025-04-18")..date("2025-04-20")], pattern("^Not Found$")]]); } }
 decision_task merge { input c: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarMerge([c, c], dedupeBy="value", tiebreak="first"); } }
 decision_task merge_named { input a: Calendar; input b: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarMerge([a, b], tiebreak="name", dedupeBy="value"); } }
 decision_task merge_by_both { input a: Calendar; input b: Calendar; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarMerge([a, b], dedupeBy="valueAndName"); } }"#,
@@ -422,6 +1319,11 @@ assert_eq!(drop_exact_range(c.clone()).unwrap().entries().len(), 2);
 assert_eq!(keep_within(c.clone()).unwrap().entries().len(), 2);
 assert_eq!(keep_enclosing(c.clone()).unwrap().entries().len(), 1);
 assert_eq!(mixed_targets(c.clone()).unwrap().entries().len(), 3);
+let nested = nested_heterogeneous_targets(c.clone()).unwrap();
+assert_eq!(nested.entries().len(), 3);
+assert_eq!(nested.entries()[0].name.as_deref(), Some("Good Friday"));
+assert_eq!(nested.entries()[1].name.as_deref(), Some("Easter break"));
+assert_eq!(nested.entries()[2].name.as_deref(), Some("Easter Monday"));
 assert_eq!(merge(c.clone()).unwrap().entries().len(), 3);
 let mut changed = serde_json::to_value(&c).unwrap();
 changed["entries"][0]["name"] = "A name".into();
@@ -1892,5 +2794,876 @@ process route { flow start -> graph_definitions; flow graph_definitions -> done;
         transpile(source)
             .unwrap_err()
             .contains("reserved generated name")
+    );
+}
+
+// One generated decision per function keeps failures attributable to that overload.
+fn compile_list_operation(input: &str, output: &str, expression: &str, assertion: &str) {
+    let source = format!(
+        "namespace lists; version \"1\"; decision_task evaluate {{ input input: {input}; input position: Number; output result: {output} = value; literal_expression value {{ output result: {output}; expression {expression}; }} }}"
+    );
+    compile_and_test(&source, assertion);
+}
+
+#[test]
+fn generated_list_count_handles_empty_inputs() {
+    compile_list_operation(
+        "List<Number>",
+        "Number",
+        "count(input)",
+        "assert_eq!(evaluate(vec![Number::ONE], Number::ZERO).unwrap(), Number::ONE); assert_eq!(evaluate(vec![], Number::ZERO).unwrap(), Number::ZERO);",
+    );
+}
+
+#[test]
+fn generated_sort_numbers_is_stable_natural_descending_and_priority_ordered() {
+    compile_and_test(
+        r#"namespace sorting; version "1";
+decision_task natural { input value: List<Number>; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression sort(value); } }
+decision_task ascending { input value: List<Number>; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression sort(value, "asc"); } }
+decision_task descending { input value: List<Number>; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression sort(value, "desc"); } }
+decision_task priority { input value: List<Number>; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression sort(value, [3,1,3]); } }
+decision_task invalid_order { input value: String; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression sort([1,2], value); } }"#,
+        r#"let n = |x| Number::from(x); let values = vec![n(3),n(1),n(2),n(1)]; assert_eq!(natural(values.clone()).unwrap(), vec![n(1),n(1),n(2),n(3)]); assert_eq!(ascending(values.clone()).unwrap(), vec![n(1),n(1),n(2),n(3)]); assert_eq!(descending(values.clone()).unwrap(), vec![n(3),n(2),n(1),n(1)]); assert_eq!(priority(vec![n(2),n(1),n(3),n(2),n(1)]).unwrap(), vec![n(3),n(1),n(1),n(2),n(2)]); assert!(natural(vec![]).unwrap().is_empty()); assert!(invalid_order("sideways".into()).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_sort_priority_reads_original_values_after_reversing_source() {
+    compile_and_test(
+        r#"namespace sorting; version "1";
+decision_task prioritize { input values: List<Number>; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression sort(reverse(values), values); } }"#,
+        "let n = |x| Number::from(x); assert_eq!(prioritize(vec![n(1), n(2), n(3)]).unwrap(), vec![n(1), n(2), n(3)]);",
+    );
+}
+
+#[test]
+fn generated_sort_empty_priority_keeps_input_unchanged() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "sort(input, [])",
+        "let values = vec![Number::from(2),Number::ZERO,Number::ONE]; assert_eq!(evaluate(values.clone(), Number::ZERO).unwrap(), [Number::ZERO,Number::ONE,Number::from(2)]); assert_eq!(values, [Number::from(2),Number::ZERO,Number::ONE]);",
+    );
+}
+
+#[test]
+fn generated_sort_descending_reverses_natural_order() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "sort(input, \"desc\")",
+        "let n = |x| Number::from(x); assert_eq!(evaluate(vec![n(2),n(1),n(3)], Number::ZERO).unwrap(), [n(3),n(2),n(1)]);",
+    );
+}
+
+#[test]
+fn generated_sort_strings_uses_unicode_code_point_order_and_unlisted_natural_order() {
+    compile_list_operation(
+        "List<String>",
+        "List<String>",
+        "sort(input)",
+        r#"assert_eq!(evaluate(vec!["café".into(), "cafz".into(), "banana".into(), "Apple".into(), "apple".into(), "app".into()], Number::ZERO).unwrap(), ["Apple","app","apple","banana","cafz","café"]);"#,
+    );
+    compile_list_operation(
+        "List<String>",
+        "List<String>",
+        "sort(input, [\"s\",\"m\",\"l\"])",
+        r#"assert_eq!(evaluate(vec!["xl".into(), "m".into(), "s".into(), "café".into(), "cafz".into(), "banana".into(), "Apple".into(), "app".into(), "apple".into()], Number::ZERO).unwrap(), ["s","m","Apple","app","apple","banana","cafz","café","xl"]);"#,
+    );
+}
+
+#[test]
+fn generated_sort_temporal_kinds_compare_and_reject_incompatible_zones() {
+    for (ty, first, second) in [
+        ("Date", "2026-01-02", "2026-01-01"),
+        ("Time", "12:00:00", "11:00:00"),
+        ("DateTime", "2026-01-02T00:00:00Z", "2026-01-01T00:00:00Z"),
+        ("DTDuration", "PT2H", "PT1H"),
+        ("YMDuration", "P2M", "P1M"),
+    ] {
+        compile_list_operation(
+            ty,
+            &format!("List<{ty}>"),
+            &format!(
+                "sort([input, {constructor}(\"{second}\")])",
+                constructor = match ty {
+                    "Date" => "date",
+                    "Time" => "time",
+                    "DateTime" => "datetime",
+                    "DTDuration" => "dtDuration",
+                    _ => "ymDuration",
+                }
+            ),
+            &format!(
+                "assert_eq!(serde_json::to_value(evaluate(serde_json::from_value(serde_json::json!({first:?})).unwrap(), Number::ZERO).unwrap()).unwrap(), serde_json::json!([{second:?}, {first:?}]));"
+            ),
+        );
+    }
+    compile_list_operation(
+        "DateTime",
+        "List<DateTime>",
+        "sort([input, datetime(\"2026-01-01T00:00:00Z\")])",
+        r#"assert!(evaluate("2026-01-01T00:00:00".parse().unwrap(), Number::ZERO).is_err()); let first = "2026-01-01T01:00:00+01:00".parse().unwrap(); assert_eq!(serde_json::to_value(evaluate(first, Number::ZERO).unwrap()).unwrap(), serde_json::json!(["2026-01-01T01:00:00+01:00","2026-01-01T00:00:00Z"]));"#,
+    );
+}
+
+#[test]
+fn generated_string_join_wraps_the_completed_string_and_empty_list() {
+    compile_list_operation(
+        "List<String>",
+        "String",
+        "stringJoin(input, \"-\", \"[\", \"]\")",
+        "assert_eq!(evaluate(vec![\"a\".into(),\"b\".into()], Number::ZERO).unwrap(), \"[a-b]\"); assert_eq!(evaluate(vec![], Number::ZERO).unwrap(), \"[]\");",
+    );
+}
+
+#[test]
+fn generated_string_join_defaults_to_empty_separator() {
+    compile_list_operation(
+        "List<String>",
+        "String",
+        "stringJoin(input)",
+        "assert_eq!(evaluate(vec![\"a\".into(),\"b\".into()], Number::ZERO).unwrap(), \"ab\"); assert_eq!(evaluate(vec![], Number::ZERO).unwrap(), \"\");",
+    );
+}
+
+#[test]
+fn generated_zip_string_join_defaults_to_empty_delimiter_and_wrappers() {
+    compile_list_operation(
+        "List<List<String>>",
+        "List<String>",
+        "zipStringJoin(input)",
+        "assert_eq!(evaluate(vec![vec![\"a\".into()],vec![\"b\".into()]], Number::ZERO).unwrap(), [\"ab\"]);",
+    );
+}
+
+#[test]
+fn generated_zip_string_join_supports_scalar_delimiter_and_wrappers() {
+    compile_list_operation(
+        "List<List<String>>",
+        "List<String>",
+        "zipStringJoin(input, \"-\", \"[\", \"]\")",
+        r#"assert_eq!(evaluate(vec![vec!["a".into(),"b".into()],vec!["1".into(),"2".into()]], Number::ZERO).unwrap(), ["[a-1]","[b-2]"]); assert_eq!(evaluate(vec![vec![],vec![]], Number::ZERO).unwrap(), Vec::<String>::new()); assert_eq!(evaluate(vec![], Number::ZERO).unwrap(), Vec::<String>::new()); assert!(evaluate(vec![vec!["a".into()], vec![]], Number::ZERO).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_zip_string_join_supports_per_gap_and_per_column_wrappers() {
+    compile_list_operation(
+        "List<List<String>>",
+        "List<String>",
+        "zipStringJoin(input, [\"-\", \":\"], [\"<\",\"(\",\"{\"], [\">\",\")\",\"}\"])",
+        r#"assert_eq!(evaluate(vec![vec!["a".into(),"b".into()],vec!["1".into(),"2".into()],vec!["x".into(),"y".into()]], Number::ZERO).unwrap(), ["<a>-(1):{x}","<b>-(2):{y}"]);"#,
+    );
+}
+
+#[test]
+fn generated_zip_string_join_allows_independent_scalar_and_column_wrappers() {
+    compile_list_operation(
+        "List<List<String>>",
+        "List<String>",
+        "zipStringJoin(input, [\"-\",\":\"], [\"<\",\"(\",\"{\"], \"!\")",
+        r#"assert_eq!(evaluate(vec![vec!["a".into()],vec!["1".into()],vec!["x".into()]], Number::ZERO).unwrap(), ["<a-(1:{x!"]);"#,
+    );
+    compile_list_operation(
+        "List<List<String>>",
+        "List<String>",
+        "zipStringJoin(input, \"-\", \"[\", [\"]\",\")\"])",
+        r#"assert_eq!(evaluate(vec![vec!["a".into()],vec!["1".into()]], Number::ZERO).unwrap(), ["[a]-1)"]);"#,
+    );
+}
+
+#[test]
+fn generated_zip_string_join_rejects_bad_delimiter_and_wrapper_lengths() {
+    for (expression, columns) in [
+        ("zipStringJoin(input, [\"-\",\":\"])", 2),
+        ("zipStringJoin(input, \"-\", [\"[\"], \"]\")", 2),
+        ("zipStringJoin(input, \"-\", \"[\", [\"]\"])", 2),
+    ] {
+        compile_list_operation(
+            "List<List<String>>",
+            "List<String>",
+            expression,
+            &format!(
+                "let input = vec![vec![String::from(\"a\")]; {columns}]; assert!(evaluate(input, Number::ZERO).is_err());"
+            ),
+        );
+    }
+}
+
+#[test]
+fn generated_zip_string_join_empty_columns_validate_format_lengths() {
+    compile_list_operation(
+        "List<List<String>>",
+        "List<String>",
+        r#"zipStringJoin(input, ["-"], "[", "]")"#,
+        r#"assert_eq!(evaluate(vec![vec![],vec![]], Number::ZERO).unwrap(), Vec::<String>::new()); assert!(evaluate(vec![vec![]], Number::ZERO).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_zip_string_join_zero_columns_require_empty_list_formatters() {
+    compile_list_operation(
+        "Number",
+        "List<String>",
+        "zipStringJoin([], [], [], [])",
+        "assert_eq!(evaluate(Number::ZERO, Number::ZERO).unwrap(), Vec::<String>::new());",
+    );
+    compile_list_operation(
+        "List<List<String>>",
+        "List<String>",
+        "zipStringJoin(input, [], [], [])",
+        "assert_eq!(evaluate(vec![], Number::ZERO).unwrap(), Vec::<String>::new()); assert!(evaluate(vec![vec![]], Number::ZERO).is_err());",
+    );
+    compile_list_operation(
+        "List<List<String>>",
+        "List<String>",
+        "zipStringJoin(input, [\"-\"], [], [])",
+        "assert!(evaluate(vec![], Number::ZERO).is_err());",
+    );
+}
+
+#[test]
+fn generated_seq_includes_reached_endpoints_and_stops_before_unreached_endpoints() {
+    compile_and_test(
+        r#"namespace sequences; version "1";
+decision_task forward { input value: Number; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression seq(5,10); } }
+decision_task backward { input value: Number; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression seq(10,5); } }
+decision_task fractional { input value: Number; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression seq(0,1,0.25); } }
+decision_task unreached { input value: Number; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression seq(0,0.95,0.1); } }
+decision_task opposite { input value: Number; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression seq(5,10,-1); } }"#,
+        r#"let n = |v: &str| v.parse::<Number>().unwrap(); assert_eq!(forward(n("0")).unwrap(), (5..=10).map(Number::from).collect::<Vec<_>>()); assert_eq!(backward(n("0")).unwrap(), (5..=10).rev().map(Number::from).collect::<Vec<_>>()); assert_eq!(fractional(n("0")).unwrap(), [n("0"),n("0.25"),n("0.5"),n("0.75"),n("1")]); assert_eq!(unreached(n("0")).unwrap().last(), Some(&n("0.9"))); assert_eq!(opposite(n("0")).unwrap(), forward(n("0")).unwrap());"#,
+    );
+}
+
+#[test]
+fn generated_seq_opposite_sign_step_follows_endpoint_direction() {
+    compile_list_operation(
+        "Number",
+        "List<Number>",
+        "seq(5,10,-1)",
+        "let n = |x| Number::from(x); assert_eq!(evaluate(n(0), Number::ZERO).unwrap(), (5..=10).map(n).collect::<Vec<_>>());",
+    );
+}
+
+#[test]
+fn generated_seq_rejects_zero_step_and_unrepresentable_result_sizes() {
+    compile_and_test(
+        r#"namespace sequences; version "1";
+decision_task steps { input value: Number; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression seq(0,1,value); } }
+decision_task enormous { input value: Number; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression seq(0,value); } }
+decision_task endpoints { input value: Number; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression [value - 1, value]; } }
+decision_task precision_limit { input value: Number; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression seq(value - 1, value, 0.0000000000000000000000000001); } }"#,
+        r#"assert!(steps(Number::ZERO).is_err()); assert!(steps("0.0000000000000000000000000001".parse().unwrap()).is_err()); assert!(enormous(Number::MAX).is_err()); assert_eq!(endpoints(Number::MAX).unwrap(), [Number::MAX.checked_sub(Number::ONE).unwrap(), Number::MAX]); assert!(precision_limit(Number::MAX).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_all_any_use_boolean_values_and_empty_identities() {
+    compile_and_test(
+        r#"namespace bools; version "1";
+decision_task all_values { input value: List<Bool>; output result: Bool = out; literal_expression out { output result: Bool; expression all(value); } }
+decision_task any_values { input value: List<Bool>; output result: Bool = out; literal_expression out { output result: Bool; expression any(value); } }"#,
+        r#"assert!(all_values(vec![]).unwrap()); assert!(!any_values(vec![]).unwrap()); assert!(!all_values(vec![true,true,false]).unwrap()); assert!(all_values(vec![true,true]).unwrap()); assert!(any_values(vec![false,false,true]).unwrap()); assert!(!any_values(vec![false,false]).unwrap());"#,
+    );
+}
+
+#[test]
+fn generated_boolean_aggregates_propagate_list_element_errors() {
+    compile_and_test(
+        r#"namespace bools; version "1";
+decision_task all_values { input value: Number; output result: Bool = out; literal_expression out { output result: Bool; expression all([false, 1 / value > 0]); } }
+decision_task any_values { input value: Number; output result: Bool = out; literal_expression out { output result: Bool; expression any([true, 1 / value > 0]); } }"#,
+        "assert!(all_values(Number::ZERO).is_err()); assert!(any_values(Number::ZERO).is_err());",
+    );
+}
+
+#[test]
+fn generated_boolean_aggregates_preserve_knowledge_shadowing() {
+    compile_and_test(
+        r#"namespace shadows; version "1";
+decision_task check { input value: Number; output result: Number = out; knowledge all { input number: Number; output result: Number; expression number + 1; } knowledge any { input number: Number; output result: Number; expression number + 2; } literal_expression out { output result: Number; expression all(value) + any(value); } }"#,
+        "assert_eq!(check(Number::from(3)).unwrap(), Number::from(9));",
+    );
+}
+
+#[test]
+fn generated_any_boolean_list_uses_false_empty_identity() {
+    compile_list_operation(
+        "List<Bool>",
+        "Bool",
+        "any(input)",
+        "assert!(!evaluate(vec![], Number::ZERO).unwrap()); assert!(evaluate(vec![false,true], Number::ZERO).unwrap());",
+    );
+}
+
+#[test]
+fn generated_colon_sequences_keep_range_and_dictionary_colons() {
+    compile_and_test(
+        r#"namespace colons; version "1";
+decision_task descending { input value: Number; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression 10:5; } }
+decision_task fractional { input value: Number; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression 0.5:2.5; } }
+decision_task range_member { input value: Number; output result: Bool = out; literal_expression out { output result: Bool; expression value in [1..3]; } }
+decision_task dictionary_key { input value: Number; output result: Number = out; literal_expression out { output result: Number; expression {score: value}.score; } }"#,
+        r#"let n = |v: i64| Number::from(v); assert_eq!(descending(n(0)).unwrap(), (5..=10).rev().map(n).collect::<Vec<_>>()); assert_eq!(fractional(n(0)).unwrap(), ["0.5".parse().unwrap(), "1.5".parse().unwrap(), "2.5".parse().unwrap()]); assert!(range_member(n(2)).unwrap()); assert_eq!(dictionary_key(n(7)).unwrap(), n(7));"#,
+    );
+}
+
+#[test]
+fn generated_list_is_empty_handles_empty_inputs() {
+    compile_list_operation(
+        "List<Number>",
+        "Bool",
+        "isEmpty(input)",
+        "assert!(evaluate(vec![], Number::ZERO).unwrap()); assert!(!evaluate(vec![Number::ONE], Number::ZERO).unwrap());",
+    );
+}
+
+#[test]
+fn generated_list_contains_uses_element_equality() {
+    compile_list_operation(
+        "List<List<Number>>",
+        "Bool",
+        "listContains(input, [1,2])",
+        "let n = |v: i64| Number::from(v); assert!(evaluate(vec![vec![n(1),n(2)],vec![n(3)]], n(0)).unwrap()); assert!(!evaluate(vec![vec![n(2),n(1)]], n(0)).unwrap());",
+    );
+}
+
+#[test]
+fn generated_list_contains_contextually_typed_empty_literal() {
+    compile_list_operation(
+        "List<Number>",
+        "Bool",
+        "listContains([], 2)",
+        "assert!(!evaluate(vec![Number::ONE], Number::ZERO).unwrap());",
+    );
+}
+
+#[test]
+fn generated_list_index_of_infers_empty_source_from_match() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "indexOf([], 2)",
+        "assert_eq!(evaluate(vec![Number::ONE], Number::ZERO).unwrap(), Vec::<Number>::new());",
+    );
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "indexOf([], input)",
+        "assert_eq!(evaluate(vec![Number::ONE], Number::ZERO).unwrap(), Vec::<Number>::new());",
+    );
+    compile_list_operation(
+        "List<Dictionary<Number>>",
+        "List<Number>",
+        "indexOf([], {x: 1})",
+        "assert_eq!(evaluate(vec![], Number::ZERO).unwrap(), Vec::<Number>::new());",
+    );
+}
+
+#[test]
+fn generated_list_index_of_matches_structural_dictionaries() {
+    compile_list_operation(
+        "List<Dictionary<Number>>",
+        "List<Number>",
+        "indexOf(input, {x: 1})",
+        "let a = [(String::from(\"x\"), Number::from(1))].into(); let b = [(String::from(\"x\"), Number::from(2))].into(); assert_eq!(evaluate(vec![a, b, [(String::from(\"x\"), Number::from(1))].into()], Number::ZERO).unwrap(), vec![Number::from(1), Number::from(3)]);",
+    );
+}
+
+#[test]
+fn generated_list_index_of_does_not_shadow_needle_input() {
+    compile_and_test(
+        r#"namespace lists; version "1";
+decision_task positions { input needle: List<Number>; output result: List<Number> = found; literal_expression found { output result: List<Number>; expression indexOf(needle, 2); } }"#,
+        "let n = |v: i64| Number::from(v); assert_eq!(positions(vec![n(1),n(2),n(2)]).unwrap(), vec![n(2),n(3)]);",
+    );
+}
+
+#[test]
+fn generated_list_index_of_returns_all_one_based_matches() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "indexOf(input, 2)",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![n(1),n(2),n(3),n(2)], n(0)).unwrap(), vec![n(2),n(4)]); assert_eq!(evaluate(vec![n(1)], n(0)).unwrap(), Vec::<Number>::new());",
+    );
+}
+
+#[test]
+fn generated_sublist_checks_signed_positions_and_lengths() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "sublist(input, position)",
+        "let n = |v: i64| Number::from(v); let input = vec![n(1),n(2),n(3)]; assert_eq!(evaluate(input.clone(), n(1)).unwrap(), input); assert_eq!(evaluate(input.clone(), n(-2)).unwrap(), vec![n(2),n(3)]); assert_eq!(evaluate(input.clone(), n(-1)).unwrap(), vec![n(3)]); for bad in [n(0),n(4),n(-4), \"1.5\".parse().unwrap()] { assert!(evaluate(input.clone(), bad).is_err(), \"{bad}\"); } assert!(evaluate(vec![], n(1)).is_err());",
+    );
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "sublist(input, 2, position)",
+        "let n = |v: i64| Number::from(v); let input = vec![n(1),n(2),n(3)]; assert_eq!(evaluate(input.clone(), n(0)).unwrap(), Vec::<Number>::new()); assert_eq!(evaluate(input.clone(), n(9)).unwrap(), vec![n(2),n(3)]); assert_eq!(evaluate(input.clone(), \"9999999999999999999999999999\".parse().unwrap()).unwrap(), vec![n(2),n(3)]); for bad in [n(-1), \"1.5\".parse().unwrap()] { assert!(evaluate(input.clone(), bad).is_err(), \"{bad}\"); }",
+    );
+}
+
+#[test]
+fn generated_sublist_contextually_types_empty_source_before_reporting_invalid_start() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "sublist([], 1)",
+        "assert!(evaluate(vec![Number::ONE], Number::ZERO).is_err());",
+    );
+}
+
+#[test]
+fn generated_append_does_not_mutate_input_or_reorder_elements() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "append(input, 2, 3)",
+        "let n = |v: i64| Number::from(v); let original = vec![n(1)]; assert_eq!(evaluate(original.clone(), n(0)).unwrap(), vec![n(1),n(2),n(3)]); assert_eq!(original, vec![n(1)]);",
+    );
+}
+
+#[test]
+fn generated_append_contextually_types_two_empty_nested_lists() {
+    compile_list_operation(
+        "List<Number>",
+        "List<List<Number>>",
+        "append([], [])",
+        "assert_eq!(evaluate(vec![], Number::ZERO).unwrap(), vec![Vec::<Number>::new()]);",
+    );
+}
+
+#[test]
+fn generated_prepend_contextually_types_two_empty_nested_lists() {
+    compile_list_operation(
+        "List<Number>",
+        "List<List<Number>>",
+        "prepend([], [])",
+        "assert_eq!(evaluate(vec![], Number::ZERO).unwrap(), vec![Vec::<Number>::new()]);",
+    );
+}
+
+#[test]
+fn generated_prepend_does_not_mutate_input_or_reorder_elements() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "prepend(input, 1, 2)",
+        "let n = |v: i64| Number::from(v); let original = vec![n(3)]; assert_eq!(evaluate(original.clone(), n(0)).unwrap(), vec![n(1),n(2),n(3)]); assert_eq!(original, vec![n(3)]);",
+    );
+}
+
+#[test]
+fn generated_concatenate_preserves_argument_order() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "concatenate(input, [3], [4])",
+        "let n = |v: i64| Number::from(v); let original = vec![n(1),n(2)]; assert_eq!(evaluate(original.clone(), n(0)).unwrap(), vec![n(1),n(2),n(3),n(4)]); assert_eq!(original, vec![n(1),n(2)]);",
+    );
+}
+
+#[test]
+fn generated_union_stably_removes_structural_duplicates() {
+    compile_list_operation(
+        "List<List<Number>>",
+        "List<List<Number>>",
+        "union(input, [[2,1], [3]])",
+        "let n = |v: i64| Number::from(v); let original = vec![vec![n(1),n(2)],vec![n(2),n(1)]]; assert_eq!(evaluate(original.clone(), n(0)).unwrap(), vec![vec![n(1),n(2)],vec![n(2),n(1)],vec![n(3)]]); assert_eq!(original.len(), 2);",
+    );
+}
+
+#[test]
+fn generated_union_does_not_capture_result_iteration_binding() {
+    compile_list_operation(
+        "List<Number>",
+        "List<List<Number>>",
+        "for result in [1] return union([result], [result])",
+        "assert_eq!(evaluate(vec![], Number::ZERO).unwrap(), vec![vec![Number::ONE]]);",
+    );
+}
+
+#[test]
+fn generated_union_deduplicates_dictionaries_regardless_of_key_insertion_order() {
+    compile_list_operation(
+        "List<Dictionary<Number>>",
+        "List<Dictionary<Number>>",
+        "union(input, [{y: 2, x: 1}, {x: 3, y: 4}])",
+        "let first = [(String::from(\"x\"), Number::ONE), (String::from(\"y\"), Number::from(2))].into(); let distinct = [(String::from(\"x\"), Number::from(3)), (String::from(\"y\"), Number::from(4))].into(); let original = vec![first]; assert_eq!(evaluate(original.clone(), Number::ZERO).unwrap(), vec![original[0].clone(), distinct]); assert_eq!(original.len(), 1);",
+    );
+}
+
+#[test]
+fn generated_list_reverse_does_not_change_string_reverse() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "reverse(input)",
+        "let n = |v: i64| Number::from(v); let original = vec![n(1),n(2),n(3)]; assert_eq!(evaluate(original.clone(), n(0)).unwrap(), vec![n(3),n(2),n(1)]); assert_eq!(original, vec![n(1),n(2),n(3)]);",
+    );
+}
+
+#[test]
+fn generated_flatten_recurses_through_uniformly_nested_lists() {
+    compile_list_operation(
+        "List<List<List<Number>>>",
+        "List<Number>",
+        "flatten(input)",
+        "let n = |v: i64| Number::from(v); let original = vec![vec![vec![n(1),n(2)]],vec![vec![n(3),n(4)]]]; assert_eq!(evaluate(original.clone(), n(0)).unwrap(), vec![n(1),n(2),n(3),n(4)]); assert_eq!(original.len(), 2);",
+    );
+}
+
+#[test]
+fn generated_list_transformations_handle_empty_and_structural_values() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "append([], input[1])",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![n(4)], n(0)).unwrap(), vec![n(4)]);",
+    );
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "prepend([], input[1])",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![n(4)], n(0)).unwrap(), vec![n(4)]);",
+    );
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "concatenate([], input)",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![n(4)], n(0)).unwrap(), vec![n(4)]);",
+    );
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "union([], input, [4,5])",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![n(4)], n(0)).unwrap(), vec![n(4),n(5)]);",
+    );
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "reverse([])",
+        "assert_eq!(evaluate(vec![Number::ONE], Number::ZERO).unwrap(), Vec::<Number>::new());",
+    );
+    compile_list_operation(
+        "List<List<Number>>",
+        "List<Number>",
+        "flatten(input)",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![vec![n(1),n(2)],vec![n(3)]], n(0)).unwrap(), vec![n(1),n(2),n(3)]); assert_eq!(evaluate(vec![], n(0)).unwrap(), Vec::<Number>::new());",
+    );
+    compile_list_operation(
+        "List<List<Number>>",
+        "List<List<Number>>",
+        "union(input, [[1,2], [3]])",
+        "let n = |v: i64| Number::from(v); let input = vec![vec![n(1),n(2)]]; assert_eq!(evaluate(input.clone(), n(0)).unwrap(), vec![vec![n(1),n(2)],vec![n(3)]]); assert_eq!(input.len(), 1);",
+    );
+}
+
+#[test]
+fn generated_insert_before_spreads_or_wraps_nested_items() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "insertBefore(input, position, 5)",
+        "let n = |v: i64| Number::from(v); let original = vec![n(10),n(20),n(30)]; assert_eq!(evaluate(original.clone(), n(1)).unwrap(), vec![n(5),n(10),n(20),n(30)]); assert_eq!(evaluate(original.clone(), n(2)).unwrap(), vec![n(10),n(5),n(20),n(30)]); assert_eq!(evaluate(original.clone(), n(-1)).unwrap(), vec![n(10),n(20),n(5),n(30)]); for bad in [n(0),n(4),n(-4), \"1.5\".parse().unwrap()] { assert!(evaluate(original.clone(), bad).is_err(), \"{bad}\"); } assert_eq!(original.len(), 3);",
+    );
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "insertBefore(input, 2, [2,3])",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![n(1),n(4)], n(0)).unwrap(), vec![n(1),n(2),n(3),n(4)]);",
+    );
+    compile_list_operation(
+        "List<List<Number>>",
+        "List<List<Number>>",
+        "insertBefore(input, 2, [[2,3]])",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![vec![n(1)],vec![n(4)]], n(0)).unwrap(), vec![vec![n(1)],vec![n(2),n(3)],vec![n(4)]]);",
+    );
+}
+
+#[test]
+fn generated_insert_before_infers_nested_empty_binding_as_spread() {
+    compile_list_operation(
+        "List<List<Number>>",
+        "List<List<List<Number>>>",
+        "for x in [] return insertBefore(input, 1, x)",
+        "assert_eq!(evaluate(vec![vec![Number::ONE]], Number::ZERO).unwrap(), Vec::<Vec<Vec<Number>>>::new());",
+    );
+}
+
+#[test]
+fn generated_insert_after_spreads_items_and_checks_positions() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "insertAfter(input, 1, 5)",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![n(1),n(2)], n(0)).unwrap(), vec![n(1),n(5),n(2)]);",
+    );
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "insertAfter(input, position, [2,3,4])",
+        "let n = |v: i64| Number::from(v); let original = vec![n(1),n(5)]; assert_eq!(evaluate(original.clone(), n(1)).unwrap(), vec![n(1),n(2),n(3),n(4),n(5)]); assert_eq!(evaluate(original.clone(), n(-1)).unwrap(), vec![n(1),n(5),n(2),n(3),n(4)]); for bad in [n(0),n(3),n(-3), \"1.5\".parse().unwrap()] { assert!(evaluate(original.clone(), bad).is_err(), \"{bad}\"); } assert_eq!(original.len(), 2);",
+    );
+}
+
+#[test]
+fn generated_remove_by_position_checks_one_based_boundaries() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "remove(input, position)",
+        "let n = |v: i64| Number::from(v); let original = vec![n(1),n(2),n(3)]; assert_eq!(evaluate(original.clone(), n(2)).unwrap(), vec![n(1),n(3)]); assert_eq!(evaluate(original.clone(), n(-1)).unwrap(), vec![n(1),n(2)]); for bad in [n(0),n(4),n(-4), \"1.5\".parse().unwrap()] { assert!(evaluate(original.clone(), bad).is_err(), \"{bad}\"); } assert_eq!(original.len(), 3);",
+    );
+}
+
+#[test]
+fn generated_list_replace_by_position_checks_one_based_boundaries() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "listReplace(input, position, 9)",
+        "let n = |v: i64| Number::from(v); let original = vec![n(1),n(2),n(3)]; assert_eq!(evaluate(original.clone(), n(2)).unwrap(), vec![n(1),n(9),n(3)]); assert_eq!(evaluate(original.clone(), n(-1)).unwrap(), vec![n(1),n(2),n(9)]); for bad in [n(0),n(4),n(-4), \"1.5\".parse().unwrap()] { assert!(evaluate(original.clone(), bad).is_err(), \"{bad}\"); } assert_eq!(original.len(), 3);",
+    );
+}
+
+#[test]
+fn generated_positional_edits_accept_first_negative_and_reject_empty_positions() {
+    for (expression, expected) in [
+        ("insertBefore(input, position, 5)", "vec![n(5),n(1),n(2)]"),
+        ("insertAfter(input, position, 5)", "vec![n(1),n(5),n(2)]"),
+        ("remove(input, position)", "vec![n(2)]"),
+        ("listReplace(input, position, 5)", "vec![n(5),n(2)]"),
+    ] {
+        compile_list_operation(
+            "List<Number>",
+            "List<Number>",
+            expression,
+            &format!(
+                "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![n(1),n(2)], n(-2)).unwrap(), {expected}); assert!(evaluate(vec![], n(1)).is_err()); assert!(evaluate(vec![], n(-1)).is_err());"
+            ),
+        );
+    }
+}
+
+#[test]
+fn generated_knowledge_remove_preserves_forward_entry_dependency() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task check { input input: List<Number>; output result: List<Number> = value;
+knowledge position { input item: Number; output result: Number; expression item; }
+knowledge remove { input items: List<Number>; input position: Number; output result: List<Number>; expression items; }
+context value { output result: List<Number>; entry selected: List<Number> = remove(input, position(i)); entry i: Number = 2; result selected; } }"#,
+        "assert_eq!(check(vec![Number::from(1), Number::from(2)]).unwrap(), vec![Number::from(1), Number::from(2)]);",
+    );
+}
+
+#[test]
+fn generated_remove_by_predicate_removes_every_match() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "remove(input, function(i) i == 2)",
+        "let n = |v: i64| Number::from(v); let original = vec![n(1),n(2),n(3),n(2)]; assert_eq!(evaluate(original.clone(), n(0)).unwrap(), vec![n(1),n(3)]); assert_eq!(original.len(), 4);",
+    );
+}
+
+#[test]
+fn generated_list_replace_by_predicate_replaces_every_match() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "listReplace(input, function(i) i < 5, 5)",
+        "let n = |v: i64| Number::from(v); let original = vec![n(2),n(4),n(7)]; assert_eq!(evaluate(original.clone(), n(0)).unwrap(), vec![n(5),n(5),n(7)]); assert_eq!(original, vec![n(2),n(4),n(7)]);",
+    );
+}
+
+#[test]
+fn generated_predicate_edits_propagate_checked_errors() {
+    for expression in [
+        "remove(input, function(i) 1 / (i - 2) > 0)",
+        "listReplace(input, function(i) 1 / (i - 2) > 0, 9)",
+    ] {
+        compile_list_operation(
+            "List<Number>",
+            "List<Number>",
+            expression,
+            "let n = |v: i64| Number::from(v); assert!(evaluate(vec![n(1),n(2),n(3)], n(0)).is_err());",
+        );
+    }
+}
+
+#[test]
+fn generated_predicate_edits_keep_outer_binding_and_nested_scopes() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "listReplace(input, function(position) count(remove([1,2], function(position) position == 2)) == position, position)",
+        "let n = |v: i64| Number::from(v); let original = vec![n(1),n(2),n(1)]; assert_eq!(evaluate(original.clone(), n(7)).unwrap(), vec![n(7),n(2),n(7)]); assert_eq!(original, vec![n(1),n(2),n(1)]);",
+    );
+}
+
+#[test]
+fn generated_predicate_edits_type_empty_lists() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "remove([], function(i) i == position)",
+        "assert!(evaluate(vec![Number::ONE], Number::ONE).unwrap().is_empty());",
+    );
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "listReplace([], function(i) i == position, 9)",
+        "assert!(evaluate(vec![Number::ONE], Number::ONE).unwrap().is_empty());",
+    );
+}
+
+#[test]
+fn generated_predicate_edits_avoid_internal_name_capture() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "remove(input, function(__bl_match_result) __bl_match_result == position)",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![n(1),n(2),n(1)], n(1)).unwrap(), vec![n(2)]);",
+    );
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "listReplace(input, function(__bl_match_items) __bl_match_items == 2, position)",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![n(1),n(2),n(2)], n(7)).unwrap(), vec![n(1),n(7),n(7)]);",
+    );
+}
+
+#[test]
+fn generated_predicate_edit_preserves_forward_context_dependency() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task check { input input: List<Number>; output result: List<Number> = value;
+context value { output result: List<Number>; entry selected: List<Number> = remove(input, function(item) item > threshold); entry threshold: Number = 2; result selected; } }"#,
+        "let n = |v: i64| Number::from(v); assert_eq!(check(vec![n(1),n(3),n(2),n(4)]).unwrap(), vec![n(1),n(2)]);",
+    );
+}
+
+#[test]
+fn generated_distinct_retains_first_structural_occurrence() {
+    compile_list_operation(
+        "List<List<Number>>",
+        "List<List<Number>>",
+        "distinct(input)",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![vec![n(2)],vec![n(1)],vec![n(2)],vec![n(1)]], n(0)).unwrap(), vec![vec![n(2)],vec![n(1)]]);",
+    );
+}
+
+#[test]
+fn generated_duplicate_values_retains_first_duplicate_order() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "duplicateValues(input)",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![n(2),n(1),n(1),n(2),n(2)], n(0)).unwrap(), vec![n(2),n(1)]); assert_eq!(evaluate(vec![n(1)], n(0)).unwrap(), Vec::<Number>::new());",
+    );
+}
+
+#[test]
+fn generated_intersection_retains_first_list_order_once() {
+    compile_list_operation(
+        "List<Number>",
+        "List<Number>",
+        "intersection(input, [2,3,2], [2,4,3])",
+        "let n = |v: i64| Number::from(v); let original = vec![n(3),n(2),n(3),n(1)]; assert_eq!(evaluate(original.clone(), n(0)).unwrap(), vec![n(3),n(2)]); assert_eq!(original.len(), 4);",
+    );
+}
+
+#[test]
+fn generated_set_functions_handle_empty_lists_and_repeated_nested_values() {
+    compile_list_operation(
+        "List<List<Number>>",
+        "List<List<Number>>",
+        "distinct(input)",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![], n(0)).unwrap(), Vec::<Vec<Number>>::new()); assert_eq!(evaluate(vec![vec![n(1)],vec![n(1)],vec![n(2)]], n(0)).unwrap(), vec![vec![n(1)],vec![n(2)]]);",
+    );
+    compile_list_operation(
+        "List<List<Number>>",
+        "List<List<Number>>",
+        "duplicateValues(input)",
+        "let n = |v: i64| Number::from(v); assert_eq!(evaluate(vec![], n(0)).unwrap(), Vec::<Vec<Number>>::new()); assert_eq!(evaluate(vec![vec![n(2)],vec![n(1)],vec![n(1)],vec![n(2)],vec![n(2)]], n(0)).unwrap(), vec![vec![n(2)],vec![n(1)]]);",
+    );
+    compile_list_operation(
+        "List<List<Number>>",
+        "List<List<Number>>",
+        "intersection(input, [[2], [1]], [[1], [2]])",
+        "let n = |v: i64| Number::from(v); let original = vec![vec![n(2)],vec![n(1)],vec![n(2)]]; assert_eq!(evaluate(original.clone(), n(0)).unwrap(), vec![vec![n(2)],vec![n(1)]]); assert_eq!(evaluate(vec![], n(0)).unwrap(), Vec::<Vec<Number>>::new()); assert_eq!(original.len(), 3);",
+    );
+}
+
+#[test]
+fn generated_set_functions_do_not_capture_iteration_bindings() {
+    for expression in [
+        "distinct([result, result])",
+        "duplicateValues([result, result])",
+        "intersection([result, result], [result])",
+    ] {
+        compile_list_operation(
+            "List<Number>",
+            "List<List<Number>>",
+            &format!("for result in [1] return {expression}"),
+            "assert_eq!(evaluate(vec![], Number::ZERO).unwrap(), vec![vec![Number::ONE]]);",
+        );
+    }
+}
+
+#[test]
+fn generated_existing_string_overloads_survive_list_dispatch() {
+    compile_and_test(
+        r#"namespace strings; version "1";
+decision_task position { input value: String; output result: Number = out; literal_expression out { output result: Number; expression indexOf(value, "b"); } }
+decision_task backward { input value: String; output result: String = out; literal_expression out { output result: String; expression reverse(value); } }
+decision_task empty { input value: String; output result: Bool = out; literal_expression out { output result: Bool; expression isEmpty(value); } }"#,
+        "assert_eq!(position(\"abc\".into()).unwrap(), Number::from(2)); assert_eq!(backward(\"abc\".into()).unwrap(), \"cba\"); assert!(empty(\"\".into()).unwrap());",
+    );
+}
+
+#[test]
+fn generated_distinct_uses_structural_dictionary_equality() {
+    compile_list_operation(
+        "List<Dictionary<Number>>",
+        "List<Dictionary<Number>>",
+        "distinct(input)",
+        "let a = [(String::from(\"x\"), Number::from(1))].into(); let b = [(String::from(\"x\"), Number::from(2))].into(); let original = vec![a, b, [(String::from(\"x\"), Number::from(1))].into()]; assert_eq!(evaluate(original.clone(), Number::ZERO).unwrap(), vec![original[0].clone(), original[1].clone()]); assert_eq!(original.len(), 3);",
+    );
+}
+
+#[test]
+fn generated_duplicate_values_uses_structural_dictionary_equality() {
+    compile_list_operation(
+        "List<Dictionary<Number>>",
+        "List<Dictionary<Number>>",
+        "duplicateValues(input)",
+        "let a = [(String::from(\"x\"), Number::from(1))].into(); let b = [(String::from(\"x\"), Number::from(2))].into(); let original = vec![a, b, [(String::from(\"x\"), Number::from(1))].into(), [(String::from(\"x\"), Number::from(2))].into(), [(String::from(\"x\"), Number::from(1))].into()]; assert_eq!(evaluate(original.clone(), Number::ZERO).unwrap(), vec![original[0].clone(), original[1].clone()]); assert_eq!(original.len(), 5);",
+    );
+}
+
+#[test]
+fn generated_intersection_uses_structural_dictionary_equality() {
+    compile_list_operation(
+        "List<Dictionary<Number>>",
+        "List<Dictionary<Number>>",
+        "intersection(input, [{x: 2}, {x: 1}])",
+        "let a = [(String::from(\"x\"), Number::from(1))].into(); let b = [(String::from(\"x\"), Number::from(2))].into(); let original = vec![a, b, [(String::from(\"x\"), Number::from(3))].into(), [(String::from(\"x\"), Number::from(1))].into()]; assert_eq!(evaluate(original.clone(), Number::ZERO).unwrap(), vec![original[0].clone(), original[1].clone()]); assert_eq!(original.len(), 4);",
+    );
+}
+
+#[test]
+fn generated_list_dictionary_fixture_compiles() {
+    compile_list_operation(
+        "List<Dictionary<Number>>",
+        "List<Dictionary<Number>>",
+        "input",
+        "let original: Vec<std::collections::BTreeMap<String, Number>> = vec![[(String::from(\"x\"), Number::from(1))].into()]; assert_eq!(evaluate(original.clone(), Number::ZERO).unwrap(), original);",
     );
 }

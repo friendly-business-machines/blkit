@@ -1,7 +1,7 @@
 //! Civil temporal values with explicit naive, fixed-offset, and IANA zone kinds.
 #[path = "temporal/duration.rs"]
 mod duration;
-pub use duration::{DTDuration, YMDuration};
+pub use duration::{DTDuration, YMDuration, aggregate_dt, aggregate_ym};
 #[path = "temporal/business.rs"]
 pub mod business;
 #[path = "temporal/calendar.rs"]

@@ -117,6 +117,14 @@ fn infer_dependencies(
         Expr::Field(value, _) | Expr::Not(value) => {
             infer_dependencies(value, target, nodes, links)?
         }
+        Expr::InlinePredicate { binding, body } => {
+            let scoped: Vec<_> = nodes
+                .iter()
+                .filter(|(name, _)| name != binding)
+                .cloned()
+                .collect();
+            infer_dependencies(body, target, &scoped, links)?;
+        }
         Expr::Binary(left, _, right) => {
             infer_dependencies(left, target, nodes, links)?;
             infer_dependencies(right, target, nodes, links)?;
@@ -326,6 +334,7 @@ fn expr_calls<'a>(expr: &'a Expr, found: &mut Vec<&'a str>) {
             }
         }
         Expr::Field(value, _) | Expr::Not(value) => expr_calls(value, found),
+        Expr::InlinePredicate { body, .. } => expr_calls(body, found),
         Expr::Binary(left, _, right) => {
             expr_calls(left, found);
             expr_calls(right, found);
@@ -376,6 +385,11 @@ fn expr_names<'a>(expr: &'a Expr, found: &mut Vec<&'a str>) {
     match expr {
         Expr::Name(name) => found.push(name),
         Expr::Field(value, _) | Expr::Not(value) => expr_names(value, found),
+        Expr::InlinePredicate { binding, body } => {
+            let mut local = Vec::new();
+            expr_names(body, &mut local);
+            found.extend(local.into_iter().filter(|name| *name != binding));
+        }
         Expr::Binary(left, _, right) => {
             expr_names(left, found);
             expr_names(right, found);

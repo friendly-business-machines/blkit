@@ -27,6 +27,46 @@ pub fn arithmetic(op: &str, left: Decimal, right: Decimal) -> Result<Decimal, St
         .ok_or_else(|| format!("Number {op} failed: division by zero, invalid power, or overflow"))
 }
 
+pub fn sequence(start: Decimal, end: Decimal, step: Decimal) -> Result<Vec<Decimal>, String> {
+    if step.is_zero() {
+        return Err("sequence step must not be zero".into());
+    }
+    let step = if start <= end {
+        step.abs()
+    } else {
+        -step.abs()
+    };
+    let mut values = Vec::new();
+    let mut current = start;
+    loop {
+        // shortcut: cap sequences at one million elements; increase only with a bounded allocation policy.
+        if values.len() >= 1_000_000 {
+            return Err("sequence too large".into());
+        }
+        values.push(current);
+        if current == end
+            || (if step > Decimal::ZERO {
+                end.checked_sub(current)
+            } else {
+                current.checked_sub(end)
+            })
+            .is_some_and(|remaining| remaining < step.abs())
+        {
+            return Ok(values);
+        }
+        let next = current
+            .checked_add(step)
+            .ok_or("sequence Number overflow")?;
+        if next.checked_sub(current) != Some(step) {
+            return Err("sequence step exceeds Number precision".into());
+        }
+        if (step > Decimal::ZERO && next > end) || (step < Decimal::ZERO && next < end) {
+            return Ok(values);
+        }
+        current = next;
+    }
+}
+
 pub fn round(value: Decimal, scale: Decimal, mode: &str) -> Result<Decimal, String> {
     let places = scale
         .to_i32()
@@ -272,17 +312,6 @@ pub fn aggregate(name: &str, values: &[Decimal]) -> Result<Decimal, String> {
             let variance = arithmetic("/", squares, Decimal::from((values.len() - 1) as u64))?;
             math("sqrt", &[variance])
         }
-        "mode" if !values.is_empty() => {
-            let mut frequencies = std::collections::BTreeMap::new();
-            for &value in values {
-                *frequencies.entry(value).or_insert(0usize) += 1;
-            }
-            Ok(frequencies
-                .into_iter()
-                .max_by_key(|(value, count)| (*count, std::cmp::Reverse(*value)))
-                .unwrap()
-                .0)
-        }
         _ => Err(format!(
             "{name} requires a nonempty list{}",
             if name == "stddev" {
@@ -340,6 +369,60 @@ mod tests {
         ] {
             assert!(math(name, values).is_err(), "{name}: {values:?}");
         }
+    }
+
+    #[test]
+    fn sequence_rejects_unrepresentable_progress() {
+        let tiny = Decimal::new(1, 28);
+        let start = Decimal::MAX - Decimal::ONE;
+        assert!(sequence(start, Decimal::MAX, tiny).is_err());
+        assert!(sequence(Decimal::ZERO, Decimal::ONE, Decimal::ZERO).is_err());
+        assert!(sequence(Decimal::ZERO, Decimal::MAX, Decimal::ONE).is_err());
+    }
+
+    #[test]
+    fn sequence_follows_endpoints_with_exact_decimal_steps() {
+        let tenth = Decimal::new(1, 1);
+        assert_eq!(
+            sequence(Decimal::ZERO, Decimal::new(35, 2), -tenth),
+            Ok(vec![
+                Decimal::ZERO,
+                tenth,
+                Decimal::new(2, 1),
+                Decimal::new(3, 1)
+            ])
+        );
+        assert_eq!(
+            sequence(Decimal::new(3, 1), Decimal::ZERO, tenth),
+            Ok(vec![
+                Decimal::new(3, 1),
+                Decimal::new(2, 1),
+                tenth,
+                Decimal::ZERO
+            ])
+        );
+        assert_eq!(
+            sequence(Decimal::MAX - Decimal::ONE, Decimal::MAX, Decimal::TWO),
+            Ok(vec![Decimal::MAX - Decimal::ONE])
+        );
+    }
+
+    #[test]
+    fn aggregates_check_overflow_and_sample_denominator() {
+        assert_eq!(
+            aggregate("stddev", &[Decimal::ONE, Decimal::TWO, Decimal::from(3)]),
+            Ok(Decimal::ONE)
+        );
+        assert_eq!(
+            aggregate("median", &[Decimal::ONE, Decimal::TWO]),
+            Ok(Decimal::new(15, 1))
+        );
+        assert_eq!(aggregate("sum", &[]), Ok(Decimal::ZERO));
+        assert_eq!(aggregate("product", &[]), Ok(Decimal::ONE));
+        assert!(aggregate("mean", &[]).is_err());
+        assert!(aggregate("stddev", &[Decimal::ONE]).is_err());
+        assert!(aggregate("sum", &[Decimal::MAX, Decimal::ONE]).is_err());
+        assert!(aggregate("product", &[Decimal::MAX, Decimal::TWO]).is_err());
     }
 
     #[test]

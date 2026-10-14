@@ -11,6 +11,7 @@ use crate::{
     graph::{NamedGraph, NodeKind, PeerKind, SourceGraph},
 };
 
+mod constraints;
 mod decision;
 mod graph;
 mod types;

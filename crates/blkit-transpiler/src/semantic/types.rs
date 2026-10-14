@@ -1,3 +1,4 @@
+use super::constraints::{self, Constraints, Term};
 use super::*;
 
 pub(super) fn record_cycle(
@@ -156,6 +157,140 @@ fn constant_number(expr: &Expr) -> Option<Result<Decimal, String>> {
     }
 }
 
+fn call_types_match(name: &str, arguments: &[Type], result: &Type) -> bool {
+    !constraints::call_branches(
+        &Constraints::default(),
+        &constraints::fixed_call_signatures(name).expect("known built-in"),
+        &arguments.iter().map(Term::from).collect::<Vec<_>>(),
+        &Term::from(result),
+    )
+    .is_empty()
+}
+
+fn calendar_call_types_match(name: &str, arguments: &[Type], result: &Type) -> bool {
+    !constraints::call_branches(
+        &Constraints::default(),
+        &constraints::calendar_call_signatures(name).expect("known calendar call"),
+        &arguments.iter().map(Term::from).collect::<Vec<_>>(),
+        &Term::from(result),
+    )
+    .is_empty()
+}
+
+fn check_call_signature(
+    name: &str,
+    args: &[Expr],
+    signatures: &[(Vec<Type>, Type)],
+    env: &HashMap<String, Type>,
+    program: &Program,
+    knowledge: &[Knowledge],
+) -> Result<Type, String> {
+    let Some((parameters, output)) = signatures
+        .iter()
+        .find(|(parameters, _)| parameters.len() == args.len())
+    else {
+        return Err(format!("invalid {name} argument count"));
+    };
+    let actual = args
+        .iter()
+        .zip(parameters)
+        .map(|(arg, ty)| infer_with(arg, Some(ty), env, program, knowledge))
+        .collect::<Result<Vec<_>, _>>()?;
+    let arguments: Vec<_> = actual.iter().map(Term::from).collect();
+    if constraints::call_branches(
+        &Constraints::default(),
+        signatures,
+        &arguments,
+        &Term::from(output),
+    )
+    .is_empty()
+    {
+        let (expected, got) = parameters
+            .iter()
+            .zip(&actual)
+            .find(|(expected, got)| *expected != *got)
+            .unwrap();
+        return Err(format!("{name} requires {expected}, got {got}"));
+    }
+    Ok(output.clone())
+}
+
+fn binding_used(expr: &Expr, name: &str) -> bool {
+    match expr {
+        Expr::Name(value) => value == name,
+        Expr::Iteration {
+            binding,
+            source,
+            body,
+            ..
+        } => binding_used(source, name) || binding != name && binding_used(body, name),
+        Expr::InlinePredicate { binding, body } => binding != name && binding_used(body, name),
+        Expr::Not(value) | Expr::Field(value, _) => binding_used(value, name),
+        Expr::Binary(left, _, right) => binding_used(left, name) || binding_used(right, name),
+        Expr::Call(call, args) if call == "__bl_dictionary" => {
+            let mut shadowed = false;
+            args.chunks_exact(2).any(|entry| {
+                let used = !shadowed && binding_used(&entry[1], name);
+                shadowed |= matches!(&entry[0], Expr::String(key) if key == name);
+                used
+            })
+        }
+        Expr::List(items) | Expr::Call(_, items) => {
+            items.iter().any(|item| binding_used(item, name))
+        }
+        Expr::Range(lower, upper, _, _) => lower
+            .iter()
+            .chain(upper.iter())
+            .any(|item| binding_used(item, name)),
+        _ => false,
+    }
+}
+
+pub(crate) fn empty_iteration_element(
+    expr: &Expr,
+    expected: Option<&Type>,
+    env: &HashMap<String, Type>,
+    program: &Program,
+    knowledge: &[Knowledge],
+) -> Result<Option<Type>, String> {
+    let Expr::Iteration {
+        binding,
+        source,
+        body,
+        ..
+    } = expr
+    else {
+        return Ok(None);
+    };
+    if !matches!(source.as_ref(), Expr::List(items) if items.is_empty())
+        || !binding_used(body, binding)
+    {
+        return Ok(None);
+    }
+    let result = expected.map_or(Term::Var(0), Term::from);
+    let symbolic_env = env
+        .iter()
+        .map(|(name, ty)| (name.clone(), Term::from(ty)))
+        .collect();
+    let mut bindings = HashMap::new();
+    let branches = constraints::expression_branches_with_bindings(
+        expr,
+        &result,
+        &symbolic_env,
+        &program.records,
+        knowledge,
+        &program.enums,
+        &mut bindings,
+    )
+    .ok_or("cannot constrain empty iteration source")?;
+    let binding_term = bindings
+        .get(&std::ptr::from_ref(expr))
+        .expect("iteration binding");
+    Constraints::unique_type(&branches, binding_term)
+        .map(Some)
+        .ok_or("ambiguous empty iteration source binding type".into())
+}
+
 pub(crate) fn infer_with(
     expr: &Expr,
     expected: Option<&Type>,
@@ -181,7 +316,107 @@ pub(crate) fn infer_with(
             .get(name)
             .cloned()
             .ok_or_else(|| format!("unknown name: {name}")),
+        FilterItem => env
+            .get(".item")
+            .cloned()
+            .ok_or(".item requires a list filter predicate".into()),
+        InlinePredicate { .. } => {
+            Err("inline predicate requires remove or listReplace match argument".into())
+        }
         Call(name, args) => {
+            if matches!(
+                name.as_str(),
+                "insertBefore" | "insertAfter" | "remove" | "listReplace"
+            ) && !knowledge.iter().any(|definition| definition.name == *name)
+                && !matches!(args.get(1), Some(InlinePredicate { .. }))
+            {
+                let arity = if name == "remove" { 2 } else { 3 };
+                if args.len() != arity {
+                    return Err(format!("invalid {name} argument count"));
+                }
+                let item_hint = if matches!(name.as_str(), "insertBefore" | "insertAfter") {
+                    args.get(2).and_then(|arg| {
+                        infer_with(arg, None, env, program, knowledge)
+                            .ok()
+                            .map(|ty| {
+                                if matches!(ty, Type::Generic(ref kind, _) if kind == "List") {
+                                    ty
+                                } else {
+                                    Type::Generic("List".into(), Box::new(ty))
+                                }
+                            })
+                    })
+                } else {
+                    None
+                };
+                let source = infer_with(
+                    &args[0],
+                    item_hint.as_ref().or(expected),
+                    env,
+                    program,
+                    knowledge,
+                )?;
+                let Type::Generic(kind, item) = &source else {
+                    return Err(format!("{name} requires List<T>, got {source}"));
+                };
+                if kind != "List" {
+                    return Err(format!("{name} requires List<T>, got {source}"));
+                }
+                let position =
+                    infer_with(&args[1], Some(&named("Number")), env, program, knowledge)?;
+                if position != named("Number") {
+                    return Err(format!("{name} requires Number, got {position}"));
+                }
+                if let Some(argument) = args.get(2) {
+                    let required = if name == "listReplace" {
+                        item.as_ref()
+                    } else {
+                        &source
+                    };
+                    let got = infer_with(argument, Some(required), env, program, knowledge)?;
+                    if &got != required
+                        && (name == "listReplace"
+                            || &got != item.as_ref()
+                            || matches!(got, Type::Generic(ref kind, _) if kind == "List"))
+                    {
+                        return Err(format!("{name} requires {required}, got {got}"));
+                    }
+                }
+                return Ok(source);
+            }
+            if matches!(name.as_str(), "remove" | "listReplace")
+                && !knowledge.iter().any(|definition| definition.name == *name)
+                && matches!(args.get(1), Some(InlinePredicate { .. }))
+            {
+                let valid_arity = if name == "remove" { 2 } else { 3 };
+                if args.len() != valid_arity {
+                    return Err(format!("invalid {name} argument count"));
+                }
+                let source = infer_with(&args[0], expected, env, program, knowledge)?;
+                let Type::Generic(kind, item) = &source else {
+                    return Err(format!("{name} requires List"));
+                };
+                if kind != "List" {
+                    return Err(format!("{name} requires List"));
+                }
+                let InlinePredicate { binding, body } = &args[1] else {
+                    unreachable!()
+                };
+                check_name(binding)?;
+                let mut local = env.clone();
+                local.insert(binding.clone(), *item.clone());
+                let predicate = infer_with(body, Some(&named("Bool")), &local, program, knowledge)?;
+                if predicate != named("Bool") {
+                    return Err(format!("{name} predicate must be Bool, got {predicate}"));
+                }
+                if name == "listReplace" {
+                    let replacement = infer_with(&args[2], Some(item), env, program, knowledge)?;
+                    if &replacement != item.as_ref() {
+                        return Err(format!("listReplace requires {item}, got {replacement}"));
+                    }
+                }
+                return Ok(source);
+            }
             if name == "__bl_dictionary" {
                 let schema = expected.and_then(|ty| match ty {
                     Type::Named(name) => program.records.iter().find(|record| &record.name == name),
@@ -200,6 +435,7 @@ pub(crate) fn infer_with(
                 };
                 let mut scope = env.clone();
                 let mut homogeneous = None;
+                let mut fields = Vec::new();
                 for entry in args.chunks_exact(2) {
                     let Expr::String(key) = &entry[0] else {
                         return Err("invalid dictionary key".into());
@@ -234,11 +470,12 @@ pub(crate) fn infer_with(
                     } else if homogeneous.is_none() {
                         homogeneous = Some(ty.clone());
                     }
+                    fields.push((key.clone(), Term::from(&ty)));
                     if crate::compiler::identifier(key) {
                         scope.insert(key.clone(), ty);
                     }
                 }
-                return Ok(if let Some(ty) = expected {
+                let result = if let Some(ty) = expected {
                     if schema.is_some() || element_type.is_some() {
                         ty.clone()
                     } else {
@@ -252,7 +489,18 @@ pub(crate) fn infer_with(
                     }
                 } else {
                     named("Dictionary")
-                });
+                };
+                if constraints::dictionary_literal_branches(
+                    &Constraints::default(),
+                    &fields,
+                    &Term::from(&result),
+                    &program.records,
+                )
+                .is_empty()
+                {
+                    return Err("dictionary fields have incompatible types".into());
+                }
+                return Ok(result);
             }
             if matches!(name.as_str(), "dictionaryPut" | "dictionaryRemove") {
                 let Some(source) = args.first() else {
@@ -282,8 +530,23 @@ pub(crate) fn infer_with(
                 if key != named("String") && !(name == "dictionaryPut" && key == list) {
                     return Err(format!("invalid {name} arguments"));
                 }
+                let mut arguments = vec![Term::from(&ty), Term::from(&key)];
                 if name == "dictionaryPut" {
-                    infer_with(&args[2], None, env, program, knowledge)?;
+                    arguments.push(Term::from(&infer_with(
+                        &args[2], None, env, program, knowledge,
+                    )?));
+                }
+                if constraints::dictionary_call_branches(
+                    &Constraints::default(),
+                    name,
+                    &arguments,
+                    &Term::from(&named("Dictionary")),
+                    &program.records,
+                    None,
+                )
+                .is_empty()
+                {
+                    return Err(format!("invalid {name} arguments"));
                 }
                 return Ok(named("Dictionary"));
             }
@@ -302,9 +565,15 @@ pub(crate) fn infer_with(
                     return Err("dictionaryMerge requires a list of dictionaries".into());
                 };
                 if kind != "List"
-                    || !matches!(*element,
-                    Type::Named(ref kind) if kind == "Dictionary" || program.records.iter().any(|record| &record.name == kind))
-                        && !matches!(*element, Type::Generic(ref kind, _) if kind == "Dictionary")
+                    || constraints::dictionary_call_branches(
+                        &Constraints::default(),
+                        name,
+                        &[Term::from(&Type::Generic(kind, element))],
+                        &Term::from(&named("Dictionary")),
+                        &program.records,
+                        None,
+                    )
+                    .is_empty()
                 {
                     return Err("dictionaryMerge requires a list of dictionaries".into());
                 }
@@ -328,17 +597,40 @@ pub(crate) fn infer_with(
                     _ => named("Value"),
                 };
                 let text = named("String");
-                let valid = match name.as_str() {
-                    "has" => args.len() == 2 && infer_with(&args[1], Some(&text), env, program, knowledge)? == text,
-                    "getValue" => args.len() == 2 && {
-                        let key = if matches!(&args[1], Expr::List(items) if items.is_empty()) {
-                            infer_with(&args[1], Some(&Type::Generic("List".into(), Box::new(text.clone()))), env, program, knowledge)?
-                        } else { infer_with(&args[1], None, env, program, knowledge)? };
-                        key == text || key == Type::Generic("List".into(), Box::new(text.clone()))
-                    },
-                    _ => args.len() == 1,
+                let key_type = if matches!(name.as_str(), "has" | "getValue") && args.len() == 2 {
+                    Some(if matches!(&args[1], Expr::List(items) if items.is_empty()) && name == "getValue" {
+                        infer_with(&args[1], Some(&Type::Generic("List".into(), Box::new(text.clone()))), env, program, knowledge)?
+                    } else { infer_with(&args[1], Some(&text), env, program, knowledge)? })
+                } else { None };
+                let arguments = std::iter::once(Term::from(&dictionary_type))
+                    .chain(key_type.as_ref().map(Term::from)).collect::<Vec<_>>();
+                if name == "getValue" && let Expr::List(path) = &args[1] {
+                    for _ in 1..path.len() {
+                        inner = if let Type::Generic(kind, value) = inner {
+                            if kind == "Dictionary" { *value } else { named("Value") }
+                        } else { named("Value") };
+                    }
+                }
+                let result_type = match name.as_str() {
+                    "keys" => Type::Generic("List".into(), Box::new(text.clone())),
+                    "values" => Type::Generic("List".into(), Box::new(inner.clone())),
+                    "getEntries" => Type::Generic("List".into(), Box::new(Type::Generic("DictionaryEntry".into(), Box::new(inner.clone())))),
+                    "size" => named("Number"),
+                    "has" | "isEmpty" => named("Bool"),
+                    _ => inner.clone(),
                 };
-                if !valid { return Err(format!("invalid {name} dictionary arguments")); }
+                let path = if name == "getValue" {
+                    match &args[1] {
+                        Expr::String(key) => Some((1, Some(key.as_str()))),
+                        Expr::List(items) => Some((items.len(), items.first().and_then(|item| match item {
+                            Expr::String(key) => Some(key.as_str()), _ => None,
+                        }))),
+                        _ => None,
+                    }
+                } else { None };
+                if constraints::dictionary_call_branches(&Constraints::default(), name, &arguments, &Term::from(&result_type), &program.records, path).is_empty() {
+                    return Err(format!("invalid {name} dictionary arguments"));
+                }
                 if name == "getValue" {
                     let path: Vec<_> = match &args[1] {
                         Expr::String(key) => vec![key.as_str()],
@@ -361,13 +653,6 @@ pub(crate) fn infer_with(
                         }
                     }
                 }
-                if name == "getValue" && let Expr::List(path) = &args[1] {
-                    for _ in 1..path.len() {
-                        inner = if let Type::Generic(kind, value) = inner {
-                            if kind == "Dictionary" { *value } else { named("Value") }
-                        } else { named("Value") };
-                    }
-                }
                 if name == "getValue" && inner == named("Value") && let Some(target) = expected {
                     inner = target.clone();
                 }
@@ -380,20 +665,115 @@ pub(crate) fn infer_with(
                     _ => inner,
                 });
             }
+            if name == "__bl_sequence" {
+                let [start, end] = args.as_slice() else {
+                    return Err("sequence requires two bounds".into());
+                };
+                for bound in [start, end] {
+                    if infer_with(bound, Some(&named("Number")), env, program, knowledge)?
+                        != named("Number")
+                    {
+                        return Err("sequence bounds require Number".into());
+                    }
+                }
+                return Ok(Type::Generic("List".into(), Box::new(named("Number"))));
+            }
+            if name == "__bl_some" {
+                let [body] = args.as_slice() else {
+                    return Err("some requires iteration".into());
+                };
+                let list = Type::Generic("List".into(), Box::new(named("Bool")));
+                if infer_with(body, Some(&list), env, program, knowledge)? != list {
+                    return Err("some predicate must be Bool".into());
+                }
+                return Ok(named("Bool"));
+            }
             if name == "__bl_index" {
                 let [base, key] = args.as_slice() else {
                     return Err("dictionary index requires key".into());
                 };
+                let base_expected = if matches!(base, List(elements) if elements.is_empty())
+                    && matches!(expected, Some(Type::Generic(kind, _)) if kind == "List")
+                {
+                    expected
+                } else {
+                    None
+                };
+                let base_type = infer_with(base, base_expected, env, program, knowledge)?;
+                if let Type::Generic(kind, element) = &base_type
+                    && kind == "List"
+                {
+                    if infer_with(key, None, env, program, knowledge).ok() == Some(named("Number"))
+                    {
+                        let result = *element.clone();
+                        if constraints::index_branches(
+                            &Constraints::default(),
+                            &Term::from(&base_type),
+                            &Term::from(&named("Number")),
+                            &Term::from(&result),
+                            &program.records,
+                            None,
+                        )
+                        .is_empty()
+                        {
+                            return Err("list index requires Number".into());
+                        }
+                        return Ok(result);
+                    }
+                    let mut local = env.clone();
+                    local.insert(".item".into(), *element.clone());
+                    let predicate = infer_with(key, None, &local, program, knowledge)?;
+                    if constraints::index_branches(
+                        &Constraints::default(),
+                        &Term::from(&base_type),
+                        &Term::from(&predicate),
+                        &Term::from(&base_type),
+                        &program.records,
+                        None,
+                    )
+                    .is_empty()
+                    {
+                        return Err("list predicate must be Bool".into());
+                    }
+                    return Ok(base_type);
+                }
                 if infer_with(key, Some(&named("String")), env, program, knowledge)?
                     != named("String")
                 {
                     return Err("dictionary key requires String".into());
                 }
-                let base_type = infer_with(base, None, env, program, knowledge)?;
                 return match base_type {
-                    Type::Generic(kind, ty) if kind == "Dictionary" => Ok(*ty),
+                    Type::Generic(kind, ty) if kind == "Dictionary" => {
+                        let result = *ty;
+                        if constraints::index_branches(
+                            &Constraints::default(),
+                            &Term::from(&Type::Generic(kind, Box::new(result.clone()))),
+                            &Term::from(&named("String")),
+                            &Term::from(&result),
+                            &program.records,
+                            None,
+                        )
+                        .is_empty()
+                        {
+                            return Err("dictionary index requires a dictionary".into());
+                        }
+                        Ok(result)
+                    }
                     Type::Named(name) if matches!(name.as_str(), "Dictionary" | "Value") => {
-                        Ok(expected.cloned().unwrap_or_else(|| named("Value")))
+                        let result = expected.cloned().unwrap_or_else(|| named("Value"));
+                        if constraints::index_branches(
+                            &Constraints::default(),
+                            &Term::from(&named(&name)),
+                            &Term::from(&named("String")),
+                            &Term::from(&result),
+                            &program.records,
+                            None,
+                        )
+                        .is_empty()
+                        {
+                            return Err("dictionary index requires a dictionary".into());
+                        }
+                        Ok(result)
                     }
                     Type::Named(name) => {
                         let record = program
@@ -402,14 +782,40 @@ pub(crate) fn infer_with(
                             .find(|record| record.name == name)
                             .ok_or("dictionary index requires a dictionary")?;
                         let Expr::String(key) = key else {
-                            return Ok(named("Value"));
+                            let result = named("Value");
+                            if constraints::index_branches(
+                                &Constraints::default(),
+                                &Term::from(&named(&name)),
+                                &Term::from(&named("String")),
+                                &Term::from(&result),
+                                &program.records,
+                                None,
+                            )
+                            .is_empty()
+                            {
+                                return Err("dictionary index requires a dictionary".into());
+                            }
+                            return Ok(result);
                         };
-                        record
+                        let result = record
                             .fields
                             .iter()
                             .find(|(field, _)| field == key)
                             .map(|(_, ty)| ty.clone())
-                            .ok_or_else(|| format!("unknown dictionary field: {key}"))
+                            .ok_or_else(|| format!("unknown dictionary field: {key}"))?;
+                        if constraints::index_branches(
+                            &Constraints::default(),
+                            &Term::from(&named(&name)),
+                            &Term::from(&named("String")),
+                            &Term::from(&result),
+                            &program.records,
+                            Some(key),
+                        )
+                        .is_empty()
+                        {
+                            return Err(format!("unknown dictionary field: {key}"));
+                        }
+                        Ok(result)
                     }
                     _ => Err("dictionary index requires a dictionary".into()),
                 };
@@ -418,15 +824,195 @@ pub(crate) fn infer_with(
                 if args.len() != definition.params.len() {
                     return Err(format!("knowledge argument count for {name}"));
                 }
-                for (arg, (_, ty)) in args.iter().zip(&definition.params) {
-                    let actual = infer_with(arg, Some(ty), env, program, knowledge)?;
-                    if actual != *ty {
-                        return Err(format!(
-                            "knowledge argument type for {name}: expected {ty}, got {actual}"
-                        ));
+                let parameters: Vec<_> =
+                    definition.params.iter().map(|(_, ty)| ty.clone()).collect();
+                return check_call_signature(
+                    name,
+                    args,
+                    &[(parameters, definition.output.clone())],
+                    env,
+                    program,
+                    knowledge,
+                )
+                .map_err(|error| {
+                    if let Some((expected, got)) = error
+                        .strip_prefix(&format!("{name} requires "))
+                        .and_then(|message| message.split_once(", got "))
+                    {
+                        format!(
+                            "knowledge argument type for {name}: expected {expected}, got {got}"
+                        )
+                    } else {
+                        error
                     }
+                });
+            }
+            if name == "sort" {
+                if !matches!(args.len(), 1 | 2) {
+                    return Err("invalid sort argument count".into());
                 }
-                return Ok(definition.output.clone());
+                let list = infer_with(&args[0], expected, env, program, knowledge)?;
+                let Type::Generic(kind, element) = &list else {
+                    return Err(format!("sort requires List<T>, got {list}"));
+                };
+                if kind != "List" {
+                    return Err(format!("sort requires List<T>, got {list}"));
+                }
+                let signatures = constraints::sort_call_signatures();
+                if !signatures
+                    .iter()
+                    .any(|(parameters, _)| parameters[0] == list)
+                {
+                    return Err(format!("sort does not support {element}"));
+                }
+                let mut arguments = vec![Term::from(&list)];
+                if let Some(order) = args.get(1) {
+                    let hint = if matches!(order, Expr::List(_)) {
+                        Some(&list)
+                    } else {
+                        None
+                    };
+                    let order = infer_with(order, hint, env, program, knowledge)?;
+                    arguments.push(Term::from(&order));
+                }
+                if constraints::call_branches(
+                    &Constraints::default(),
+                    &signatures,
+                    &arguments,
+                    &Term::from(&list),
+                )
+                .is_empty()
+                {
+                    return Err(format!("sort requires String or {list} order"));
+                }
+                return Ok(list);
+            }
+            if matches!(
+                name.as_str(),
+                "count"
+                    | "isEmpty"
+                    | "listContains"
+                    | "indexOf"
+                    | "sublist"
+                    | "append"
+                    | "prepend"
+                    | "concatenate"
+                    | "union"
+                    | "distinct"
+                    | "duplicateValues"
+                    | "intersection"
+                    | "reverse"
+                    | "flatten"
+            ) && (!matches!(name.as_str(), "count" | "isEmpty" | "indexOf" | "reverse")
+                || matches!(name.as_str(), "indexOf" | "reverse")
+                    && matches!(args.first(), Some(List(items)) if items.is_empty())
+                || args.first().is_some_and(|arg| {
+                    matches!(
+                        infer_with(arg, None, env, program, knowledge),
+                        Ok(Type::Generic(ref kind, _)) if kind == "List"
+                    )
+                }))
+            {
+                if matches!(name.as_str(), "distinct" | "duplicateValues") && args.len() != 1 {
+                    return Err(format!("invalid {name} argument count"));
+                }
+                let Some(first) = args.first() else {
+                    return Err(format!("invalid {name} argument count"));
+                };
+                let list_hint = if matches!(
+                    name.as_str(),
+                    "sublist"
+                        | "reverse"
+                        | "append"
+                        | "prepend"
+                        | "concatenate"
+                        | "union"
+                        | "distinct"
+                        | "duplicateValues"
+                        | "intersection"
+                ) {
+                    expected
+                        .filter(|ty| matches!(ty, Type::Generic(kind, _) if kind == "List"))
+                        .cloned()
+                } else {
+                    None
+                };
+                let list_hint = if list_hint.is_none()
+                    && matches!(first, List(items) if items.is_empty())
+                {
+                    if matches!(
+                        name.as_str(),
+                        "listContains" | "indexOf" | "append" | "prepend"
+                    ) {
+                        args.get(1)
+                            .map(|item| infer_with(item, None, env, program, knowledge))
+                            .transpose()?
+                            .map(|ty| Type::Generic("List".into(), Box::new(ty)))
+                    } else if matches!(name.as_str(), "concatenate" | "union" | "intersection") {
+                        args.get(1)
+                            .map(|arg| infer_with(arg, None, env, program, knowledge))
+                            .transpose()?
+                    } else {
+                        None
+                    }
+                } else {
+                    list_hint
+                };
+                let list = infer_with(first, list_hint.as_ref(), env, program, knowledge)?;
+                let Type::Generic(kind, element) = &list else {
+                    return Err(format!("{name} requires List<T>, got {list}"));
+                };
+                if kind != "List" {
+                    return Err(format!("{name} requires List<T>, got {list}"));
+                }
+                let output = match name.as_str() {
+                    "count" => named("Number"),
+                    "isEmpty" | "listContains" => named("Bool"),
+                    "indexOf" => Type::Generic("List".into(), Box::new(named("Number"))),
+                    "sublist" | "append" | "prepend" | "concatenate" | "union" | "intersection"
+                    | "distinct" | "duplicateValues" | "reverse" => list.clone(),
+                    "flatten" => {
+                        let mut leaf = element.as_ref();
+                        while let Type::Generic(kind, inner) = leaf {
+                            if kind != "List" {
+                                break;
+                            }
+                            leaf = inner;
+                        }
+                        Type::Generic("List".into(), Box::new(leaf.clone()))
+                    }
+                    _ => unreachable!(),
+                };
+                let number = named("Number");
+                let mut actual = vec![list.clone()];
+                for arg in &args[1..] {
+                    let required = if matches!(
+                        name.as_str(),
+                        "listContains" | "indexOf" | "append" | "prepend"
+                    ) {
+                        element.as_ref()
+                    } else if matches!(name.as_str(), "concatenate" | "union" | "intersection") {
+                        &list
+                    } else {
+                        &number
+                    };
+                    let got = infer_with(arg, Some(required), env, program, knowledge)?;
+                    if &got != required {
+                        return Err(format!("{name} requires {required}, got {got}"));
+                    }
+                    actual.push(got);
+                }
+                if constraints::list_call_branches(
+                    &Constraints::default(),
+                    name,
+                    &actual.iter().map(Term::from).collect::<Vec<_>>(),
+                    &Term::from(&output),
+                )
+                .is_empty()
+                {
+                    return Err(format!("invalid {name} argument count"));
+                }
+                return Ok(output);
             }
             if matches!(
                 name.as_str(),
@@ -444,15 +1030,37 @@ pub(crate) fn infer_with(
                 {
                     return Err(format!("{name} requires Date or DateTime"));
                 }
-                let is_datetime = point == named("DateTime");
-                if matches!(name.as_str(), "financialYear" | "financialYearQuarter") {
-                    if args.len() != 2 {
-                        return Err(format!("{name} requires a financial year basis"));
+                let actual = args[1..]
+                    .iter()
+                    .map(|arg| infer_with(arg, None, env, program, knowledge))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let types: Vec<_> = std::iter::once(point.clone()).chain(actual).collect();
+                let result = named(if name.starts_with("financialYear") {
+                    "String"
+                } else {
+                    "Number"
+                });
+                if !call_types_match(name, &types, &result) {
+                    if name.starts_with("financialYear") {
+                        return Err(if args.len() != 2 {
+                            format!("{name} requires a financial year basis")
+                        } else {
+                            "invalid financial year basis type".into()
+                        });
                     }
-                    let basis = infer_with(&args[1], None, env, program, knowledge)?;
-                    if basis != named("String") && basis != named("Number") {
-                        return Err("invalid financial year basis type".into());
+                    if types.get(1).is_some_and(|ty| ty != &point) {
+                        return Err(format!("{name} requires two matching points"));
                     }
+                    if types.get(2).is_some_and(|ty| ty == &named("Bool")) && point == named("Date")
+                        || types.last() == Some(&named("Bool"))
+                            && point == named("Date")
+                            && types.len() > 3
+                    {
+                        return Err("includeTime requires DateTime and Bool".into());
+                    }
+                    return Err(format!("invalid {name} arguments"));
+                }
+                if name.starts_with("financialYear") {
                     if let Expr::String(value) = &args[1]
                         && !matches!(
                             value.as_str(),
@@ -466,53 +1074,21 @@ pub(crate) fn infer_with(
                     {
                         return Err(format!("invalid financial year month: {value}"));
                     }
-                    return Ok(named("String"));
+                } else if name != "daysBetween"
+                    && let Some(Expr::String(value)) = args.get(2)
+                    && !matches!(
+                        value.as_str(),
+                        "calendar"
+                            | "actual/365"
+                            | "actual/360"
+                            | "actual/actual"
+                            | "30/360"
+                            | "30E/360"
+                    )
+                {
+                    return Err(format!("invalid day-count basis: {value}"));
                 }
-                if args.len() < 2 || args.len() > if name == "daysBetween" { 3 } else { 4 } {
-                    return Err(format!("invalid {name} argument count"));
-                }
-                if infer_with(&args[1], Some(&point), env, program, knowledge)? != point {
-                    return Err(format!("{name} requires two matching points"));
-                }
-                let options = &args[2..];
-                if name == "daysBetween" {
-                    if let Some(flag) = options.first()
-                        && (!is_datetime
-                            || infer_with(flag, Some(&named("Bool")), env, program, knowledge)?
-                                != named("Bool"))
-                    {
-                        return Err("includeTime requires DateTime and Bool".into());
-                    }
-                } else {
-                    let mut remaining = options;
-                    if let Some(basis) = remaining.first()
-                        && infer_with(basis, None, env, program, knowledge)? == named("String")
-                    {
-                        if let Expr::String(value) = basis
-                            && !matches!(
-                                value.as_str(),
-                                "calendar"
-                                    | "actual/365"
-                                    | "actual/360"
-                                    | "actual/actual"
-                                    | "30/360"
-                                    | "30E/360"
-                            )
-                        {
-                            return Err(format!("invalid day-count basis: {value}"));
-                        }
-                        remaining = &remaining[1..];
-                    }
-                    if let Some(flag) = remaining.first()
-                        && (!is_datetime
-                            || remaining.len() != 1
-                            || infer_with(flag, Some(&named("Bool")), env, program, knowledge)?
-                                != named("Bool"))
-                    {
-                        return Err("includeTime requires DateTime and Bool".into());
-                    }
-                }
-                return Ok(named("Number"));
+                return Ok(result);
             }
             if matches!(
                 name.as_str(),
@@ -538,97 +1114,81 @@ pub(crate) fn infer_with(
                     | "weekdaysBetween"
                     | "businessDaysBetween"
             ) {
-                let Some(value) = args.first() else {
+                let Some(first) = args.first() else {
                     return Err(format!("{name} requires Date or DateTime"));
                 };
-                let point = infer_with(value, None, env, program, knowledge)?;
+                let point = infer_with(first, None, env, program, knowledge)?;
                 if !matches!(point, Type::Named(ref kind) if matches!(kind.as_str(), "Date" | "DateTime"))
                 {
                     return Err(format!("{name} requires Date or DateTime"));
                 }
-                let number = named("Number");
-                let calendar = named("Calendar");
-                let boolean = named("Bool");
-                let mut index = 1;
-                if matches!(name.as_str(), "weekdaysBetween" | "businessDaysBetween") {
-                    if args.get(index).is_none_or(|arg| {
-                        infer_with(arg, Some(&point), env, program, knowledge).ok()
-                            != Some(point.clone())
-                    }) {
-                        return Err(format!("{name} requires two matching points"));
-                    }
-                    index += 1;
-                }
-                let numeric = match name.as_str() {
-                    "nthDayOfWeekInMonth" => 2,
-                    "firstDayOfWeekInMonth"
-                    | "lastDayOfWeekInMonth"
-                    | "nextDayOfWeek"
-                    | "prevDayOfWeek"
-                    | "addBusinessDays"
-                    | "subtractBusinessDays" => 1,
-                    _ => 0,
+                let rest = args[1..]
+                    .iter()
+                    .map(|arg| infer_with(arg, None, env, program, knowledge))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let types: Vec<_> = std::iter::once(point.clone()).chain(rest).collect();
+                let result = if matches!(
+                    name.as_str(),
+                    "isWeekday" | "isWeekend" | "isPublicHoliday" | "isBusinessDay"
+                ) {
+                    named("Bool")
+                } else if matches!(name.as_str(), "weekdaysBetween" | "businessDaysBetween") {
+                    named("Number")
+                } else {
+                    point
                 };
-                for arg in args.iter().skip(index).take(numeric) {
-                    if infer_with(arg, Some(&number), env, program, knowledge)? != number {
-                        return Err(format!("{name} requires Number"));
+                if !call_types_match(name, &types, &result) {
+                    let signatures = constraints::fixed_call_signatures(name).unwrap();
+                    let nearest = signatures
+                        .iter()
+                        .filter(|(parameters, output)| {
+                            output == &result && parameters[0] == types[0]
+                        })
+                        .max_by_key(|(parameters, _)| {
+                            (
+                                parameters
+                                    .iter()
+                                    .zip(&types)
+                                    .take_while(|(expected, actual)| *expected == *actual)
+                                    .count(),
+                                parameters.len(),
+                            )
+                        });
+                    if let Some((parameters, _)) = nearest {
+                        if let Some(index) = parameters
+                            .iter()
+                            .zip(&types)
+                            .position(|(expected, actual)| expected != actual)
+                        {
+                            return Err(match parameters[index].to_string().as_str() {
+                                "Date" | "DateTime" => {
+                                    format!("{name} requires two matching points")
+                                }
+                                "Number" => format!("{name} requires Number"),
+                                "Calendar" => format!("{name} requires Calendar"),
+                                "Bool" => "strictCalendarRange requires Bool".into(),
+                                _ => format!("invalid {name} arguments"),
+                            });
+                        }
+                        if parameters.len() > types.len() {
+                            if parameters[types.len()] == named("Number") {
+                                let numeric = parameters
+                                    .iter()
+                                    .filter(|ty| **ty == named("Number"))
+                                    .count();
+                                return Err(format!("{name} requires {numeric} Number arguments"));
+                            }
+                            if name == "isPublicHoliday" {
+                                return Err("isPublicHoliday requires Calendar".into());
+                            }
+                            if matches!(name.as_str(), "weekdaysBetween" | "businessDaysBetween") {
+                                return Err(format!("{name} requires two matching points"));
+                            }
+                        }
                     }
-                }
-                if args.len() < index + numeric {
-                    return Err(format!("{name} requires {numeric} Number arguments"));
-                }
-                index += numeric;
-                let accepts_calendar = matches!(
-                    name.as_str(),
-                    "isPublicHoliday"
-                        | "isBusinessDay"
-                        | "nextBusinessDay"
-                        | "prevBusinessDay"
-                        | "addBusinessDays"
-                        | "subtractBusinessDays"
-                        | "businessDaysBetween"
-                );
-                if name == "isPublicHoliday" && args.len() == index {
-                    return Err("isPublicHoliday requires Calendar".into());
-                }
-                if accepts_calendar && args.len() > index {
-                    if infer_with(&args[index], Some(&calendar), env, program, knowledge)?
-                        != calendar
-                    {
-                        return Err(format!("{name} requires Calendar"));
-                    }
-                    index += 1;
-                }
-                let strict = matches!(
-                    name.as_str(),
-                    "nextBusinessDay"
-                        | "prevBusinessDay"
-                        | "addBusinessDays"
-                        | "subtractBusinessDays"
-                        | "businessDaysBetween"
-                );
-                if strict && args.len() > index {
-                    if infer_with(&args[index], Some(&boolean), env, program, knowledge)? != boolean
-                    {
-                        return Err("strictCalendarRange requires Bool".into());
-                    }
-                    index += 1;
-                }
-                if args.len() != index {
                     return Err(format!("invalid {name} argument count"));
                 }
-                return Ok(
-                    if matches!(
-                        name.as_str(),
-                        "isWeekday" | "isWeekend" | "isPublicHoliday" | "isBusinessDay"
-                    ) {
-                        boolean
-                    } else if matches!(name.as_str(), "weekdaysBetween" | "businessDaysBetween") {
-                        number
-                    } else {
-                        point
-                    },
-                );
+                return Ok(result);
             }
             if matches!(
                 name.as_str(),
@@ -643,6 +1203,7 @@ pub(crate) fn infer_with(
                     if infer_with(list, Some(&expected), env, program, knowledge)? != expected {
                         return Err("calendarMerge requires List<Calendar>".into());
                     }
+                    let mut types = vec![expected];
                     for option in &args[1..] {
                         let Expr::Call(key, values) = option else {
                             return Err("calendarMerge options must be named".into());
@@ -652,11 +1213,17 @@ pub(crate) fn infer_with(
                         {
                             return Err(format!("unknown calendarMerge option: {key}"));
                         }
-                        if infer_with(&values[0], Some(&named("String")), env, program, knowledge)?
-                            != named("String")
-                        {
+                        let ty = infer_with(
+                            &values[0],
+                            Some(&named("String")),
+                            env,
+                            program,
+                            knowledge,
+                        )?;
+                        if ty != named("String") {
                             return Err(format!("{key} requires String"));
                         }
+                        types.push(ty);
                         if let Expr::String(value) = &values[0] {
                             let valid = if key.ends_with("dedupeBy") {
                                 matches!(value.as_str(), "value" | "valueAndName")
@@ -668,6 +1235,9 @@ pub(crate) fn infer_with(
                             }
                         }
                     }
+                    if !calendar_call_types_match(name, &types, &calendar) {
+                        return Err("invalid calendarMerge arguments".into());
+                    }
                 } else {
                     let [first, target, options @ ..] = args.as_slice() else {
                         return Err(format!("{name} requires Calendar and target"));
@@ -676,6 +1246,7 @@ pub(crate) fn infer_with(
                         return Err(format!("{name} requires Calendar"));
                     }
                     fn check_target(
+                        name: &str,
                         expr: &Expr,
                         env: &HashMap<std::string::String, Type>,
                         program: &Program,
@@ -684,11 +1255,11 @@ pub(crate) fn infer_with(
                         match expr {
                             Expr::List(items) => {
                                 for item in items {
-                                    check_target(item, env, program, knowledge)?;
+                                    check_target(name, item, env, program, knowledge)?;
                                 }
                                 Ok(())
                             }
-                            Expr::Call(name, args) if name == "pattern" => {
+                            Expr::Call(call, args) if call == "pattern" => {
                                 let [pattern] = args.as_slice() else {
                                     return Err("pattern requires one String".into());
                                 };
@@ -700,13 +1271,22 @@ pub(crate) fn infer_with(
                                 if let Expr::String(value) = pattern {
                                     regex::Regex::new(value).map_err(|e| e.to_string())?;
                                 }
+                                if !calendar_call_types_match(
+                                    name,
+                                    &[Type::Named("Calendar".into()), Type::Named("String".into())],
+                                    &Type::Named("Calendar".into()),
+                                ) {
+                                    return Err("invalid calendar target".into());
+                                }
                                 Ok(())
                             }
                             other => {
                                 let ty = infer_with(other, None, env, program, knowledge)?;
-                                if matches!(ty, Type::Named(ref kind) if matches!(kind.as_str(), "String" | "Date" | "DateTime"))
-                                    || matches!(ty, Type::Generic(ref kind, ref inner) if kind == "Range" && matches!(inner.as_ref(), Type::Named(point) if matches!(point.as_str(), "Date" | "DateTime")))
-                                {
+                                if calendar_call_types_match(
+                                    name,
+                                    &[Type::Named("Calendar".into()), ty.clone()],
+                                    &Type::Named("Calendar".into()),
+                                ) {
                                     Ok(())
                                 } else {
                                     Err(format!("invalid calendar target: {ty}"))
@@ -714,10 +1294,11 @@ pub(crate) fn infer_with(
                             }
                         }
                     }
-                    check_target(target, env, program, knowledge)?;
+                    check_target(name, target, env, program, knowledge)?;
                     if options.len() > 1 {
                         return Err(format!("{name} accepts only rangeMatch"));
                     }
+                    let mut option_type = None;
                     if let Some(option) = options.first() {
                         let Expr::Call(key, values) = option else {
                             return Err("rangeMatch must be named".into());
@@ -725,11 +1306,17 @@ pub(crate) fn infer_with(
                         if key != "__bl_named_rangeMatch" || values.len() != 1 {
                             return Err(format!("unknown {name} option: {key}"));
                         }
-                        if infer_with(&values[0], Some(&named("String")), env, program, knowledge)?
-                            != named("String")
-                        {
+                        let ty = infer_with(
+                            &values[0],
+                            Some(&named("String")),
+                            env,
+                            program,
+                            knowledge,
+                        )?;
+                        if ty != named("String") {
                             return Err("rangeMatch requires String".into());
                         }
+                        option_type = Some(ty);
                         if let Expr::String(value) = &values[0]
                             && !matches!(
                                 value.as_str(),
@@ -739,6 +1326,29 @@ pub(crate) fn infer_with(
                             return Err(format!("invalid rangeMatch: {value}"));
                         }
                     }
+                    // Lists and patterns have AST-specific target validation above; each leaf
+                    // uses the same call relation, and String is an existential witness here.
+                    let mut types = vec![calendar.clone(), named("String")];
+                    types.extend(option_type);
+                    if !calendar_call_types_match(name, &types, &calendar) {
+                        return Err(format!("invalid {name} arguments"));
+                    }
+                }
+                let symbolic_env = env
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), Term::from(ty)))
+                    .collect();
+                if constraints::expression_branches(
+                    expr,
+                    &Term::from(&calendar),
+                    &symbolic_env,
+                    &program.records,
+                    knowledge,
+                    &program.enums,
+                )
+                .is_none_or(|branches| branches.is_empty())
+                {
+                    return Err(format!("invalid {name} arguments"));
                 }
                 return Ok(calendar);
             }
@@ -746,14 +1356,16 @@ pub(crate) fn infer_with(
                 let [entry] = args.as_slice() else {
                     return Err(format!("{name} requires one CalendarEntry"));
                 };
-                if infer_with(entry, None, env, program, knowledge)? != named("CalendarEntry") {
-                    return Err(format!("{name} requires CalendarEntry"));
-                }
-                return Ok(named(if name == "entryName" {
+                let actual = infer_with(entry, None, env, program, knowledge)?;
+                let result = named(if name == "entryName" {
                     "String"
                 } else {
                     "CalendarValue"
-                }));
+                });
+                if !calendar_call_types_match(name, &[actual], &result) {
+                    return Err(format!("{name} requires CalendarEntry"));
+                }
+                return Ok(result);
             }
             if matches!(
                 name.as_str(),
@@ -774,53 +1386,30 @@ pub(crate) fn infer_with(
             ) && args.first().is_some_and(|arg| {
                 infer_with(arg, None, env, program, knowledge).ok() == Some(named("Calendar"))
             }) {
-                let [_, rest @ ..] = args.as_slice() else {
-                    unreachable!()
-                };
-                let point = |arg: &Expr| -> Result<(), std::string::String> {
-                    if matches!(infer_with(arg, None, env, program, knowledge)?, Type::Named(kind) if matches!(kind.as_str(), "Date" | "DateTime"))
-                    {
-                        Ok(())
-                    } else {
-                        Err(format!("{name} requires a Date or DateTime point"))
-                    }
-                };
-                let result = match (name.as_str(), rest) {
-                    ("count", []) => named("Number"),
-                    ("isEmpty", []) | ("contains", [_]) | ("overlaps", [_]) => named("Bool"),
-                    ("entries", []) | ("find", [_]) | ("entriesFor", [_]) | ("entriesIn", [_]) => {
+                let rest = args[1..]
+                    .iter()
+                    .map(|arg| infer_with(arg, None, env, program, knowledge))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let types: Vec<_> = std::iter::once(named("Calendar")).chain(rest).collect();
+                let result = match name.as_str() {
+                    "count" => named("Number"),
+                    "isEmpty" | "contains" | "overlaps" => named("Bool"),
+                    "entries" | "find" | "entriesFor" | "entriesIn" => {
                         Type::Generic("List".into(), Box::new(named("CalendarEntry")))
                     }
-                    ("names", []) => Type::Generic("List".into(), Box::new(named("String"))),
-                    ("validFrom", []) | ("validTo", []) => named("CalendarPoint"),
-                    ("validRange", []) => named("CalendarRange"),
-                    ("next" | "prev", [_] | [_, _]) => named("CalendarEntry"),
-                    _ => return Err(format!("invalid {name} arguments")),
+                    "names" => Type::Generic("List".into(), Box::new(named("String"))),
+                    "validFrom" | "validTo" => named("CalendarPoint"),
+                    "validRange" => named("CalendarRange"),
+                    _ => named("CalendarEntry"),
                 };
-                match (name.as_str(), rest) {
-                    ("find", [value]) => {
-                        if infer_with(value, Some(&named("String")), env, program, knowledge)?
-                            != named("String")
-                        {
-                            return Err("find requires String name".into());
-                        }
+                if !calendar_call_types_match(name, &types, &result) {
+                    if matches!(name.as_str(), "next" | "prev")
+                        && types.len() == 3
+                        && types[2] != named("Number")
+                    {
+                        return Err(format!("{name} requires numeric n"));
                     }
-                    ("contains" | "entriesFor" | "next" | "prev", [value, ..]) => point(value)?,
-                    ("overlaps" | "entriesIn", [range]) => {
-                        let ty = infer_with(range, None, env, program, knowledge)?;
-                        if !matches!(ty, Type::Generic(ref kind, ref inner) if kind == "Range" && matches!(inner.as_ref(), Type::Named(point) if matches!(point.as_str(), "Date" | "DateTime")))
-                            && ty != named("CalendarRange")
-                        {
-                            return Err(format!("{name} requires a Date/DateTime range"));
-                        }
-                    }
-                    _ => {}
-                }
-                if let ("next" | "prev", [_, n]) = (name.as_str(), rest)
-                    && infer_with(n, Some(&named("Number")), env, program, knowledge)?
-                        != named("Number")
-                {
-                    return Err(format!("{name} requires numeric n"));
+                    return Err(format!("invalid {name} arguments"));
                 }
                 return Ok(result);
             }
@@ -836,6 +1425,13 @@ pub(crate) fn infer_with(
                             == Some(number.clone())
                             && infer_with(range, Some(&range_type), env, program, knowledge).ok()
                                 == Some(range_type.clone())
+                            && !constraints::range_relation_branches(
+                                &Constraints::default(),
+                                name,
+                                &[Term::from(&number), Term::from(&range_type)],
+                                &Term::from(&named("Bool")),
+                            )
+                            .is_empty()
                         {
                             return Ok(named("Bool"));
                         }
@@ -871,13 +1467,28 @@ pub(crate) fn infer_with(
                         return Err(format!("{name} requires matching range types"));
                     }
                 }
+                let symbolic_env = env
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), Term::from(ty)))
+                    .collect();
+                if constraints::expression_branches(
+                    expr,
+                    &Term::from(&named("Bool")),
+                    &symbolic_env,
+                    &program.records,
+                    knowledge,
+                    &program.enums,
+                )
+                .is_none_or(|branches| branches.is_empty())
+                {
+                    return Err(format!("{name} requires matching range types"));
+                }
                 return Ok(named("Bool"));
             }
             if name == "dateTime" {
                 return Err("dateTime(...) was renamed to datetime(...)".into());
             }
             if matches!(name.as_str(), "date" | "time" | "datetime") {
-                let number = named("Number");
                 let result = named(match name.as_str() {
                     "date" => "Date",
                     "time" => "Time",
@@ -887,24 +1498,21 @@ pub(crate) fn infer_with(
                     .iter()
                     .map(|arg| infer_with(arg, None, env, program, knowledge))
                     .collect::<Result<_, _>>()?;
-                let valid = match (name.as_str(), actual.as_slice()) {
-                    ("date" | "time" | "datetime", [ty]) if *ty == named("String") => {
-                        if let [Expr::String(value)] = args.as_slice() {
-                            let valid = match name.as_str() {
-                                "date" => value.parse::<crate::temporal::Date>().is_ok(),
-                                "time" => value.parse::<crate::temporal::Time>().is_ok(),
-                                _ => value.parse::<crate::temporal::DateTime>().is_ok(),
-                            };
-                            if !valid {
-                                return Err(format!("invalid {name} literal: {value}"));
-                            }
+                if !call_types_match(name, &actual, &result) {
+                    return Err(format!("invalid {name} arguments"));
+                }
+                match (name.as_str(), args.as_slice()) {
+                    ("date" | "time" | "datetime", [Expr::String(value)]) => {
+                        let valid = match name.as_str() {
+                            "date" => value.parse::<crate::temporal::Date>().is_ok(),
+                            "time" => value.parse::<crate::temporal::Time>().is_ok(),
+                            _ => value.parse::<crate::temporal::DateTime>().is_ok(),
+                        };
+                        if !valid {
+                            return Err(format!("invalid {name} literal: {value}"));
                         }
-                        true
                     }
-                    ("date" | "time", [ty]) if *ty == named("DateTime") => true,
-                    ("date", [y, m, d]) | ("time", [y, m, d])
-                        if [y, m, d].iter().all(|ty| **ty == number) =>
-                    {
+                    ("date" | "time", [_, _, _]) => {
                         if let [Some(Ok(a)), Some(Ok(b)), Some(Ok(c))] = args
                             .iter()
                             .map(constant_number)
@@ -920,17 +1528,8 @@ pub(crate) fn infer_with(
                                 return Err(format!("invalid {name} components"));
                             }
                         }
-                        true
                     }
-                    ("time", [a, b, c, offset])
-                        if [a, b, c].iter().all(|ty| *ty == &number)
-                            && *offset == named("DTDuration") =>
-                    {
-                        true
-                    }
-                    ("datetime", [day, time])
-                        if *day == named("Date") && *time == named("Time") =>
-                    {
+                    ("datetime", [_, _]) => {
                         if let [Expr::Call(_, day), Expr::Call(_, time)] = args.as_slice()
                             && let ([Expr::String(day)], [Expr::String(time)]) =
                                 (day.as_slice(), time.as_slice())
@@ -939,20 +1538,17 @@ pub(crate) fn infer_with(
                             let time = time.parse::<crate::temporal::Time>()?;
                             crate::temporal::combine(day, time)?;
                         }
-                        true
                     }
-                    _ => false,
-                };
-                if !valid {
-                    return Err(format!("invalid {name} arguments"));
+                    _ => {}
                 }
                 return Ok(result);
             }
             if matches!(name.as_str(), "today" | "now") {
-                if !args.is_empty() {
+                let result = named(if name == "today" { "Date" } else { "DateTime" });
+                if !args.is_empty() || !call_types_match(name, &[], &result) {
                     return Err(format!("{name} requires no arguments"));
                 }
-                return Ok(named(if name == "today" { "Date" } else { "DateTime" }));
+                return Ok(result);
             }
             if matches!(
                 name.as_str(),
@@ -966,25 +1562,13 @@ pub(crate) fn infer_with(
                     .iter()
                     .map(|arg| infer_with(arg, None, env, program, knowledge))
                     .collect::<Result<Vec<_>, _>>()?;
-                return match (name.as_str(), actual.as_slice()) {
-                    ("withOffset", [value, offset])
-                        if matches!(value, Type::Named(ty) if matches!(ty.as_str(), "Time" | "DateTime"))
-                            && *offset == named("DTDuration") =>
-                    {
-                        Ok(value.clone())
-                    }
-                    ("withTimezone", [value, zone])
-                        if *value == named("DateTime") && *zone == named("String") =>
-                    {
-                        Ok(value.clone())
-                    }
-                    ("withoutOffset" | "withoutTimezone" | "withoutOffsetOrTimezone", [value])
-                        if matches!(value, Type::Named(ty) if matches!(ty.as_str(), "Date" | "DateTime")) =>
-                    {
-                        Ok(value.clone())
-                    }
-                    _ => Err(format!("invalid {name} arguments")),
+                let Some(result) = actual.first() else {
+                    return Err(format!("invalid {name} arguments"));
                 };
+                if !call_types_match(name, &actual, result) {
+                    return Err(format!("invalid {name} arguments"));
+                }
+                return Ok(result.clone());
             }
             let text = named("String");
             let number = named("Number");
@@ -992,7 +1576,13 @@ pub(crate) fn infer_with(
                 let [arg] = args.as_slice() else {
                     return Err(format!("{name} requires one String argument"));
                 };
-                if infer_with(arg, Some(&text), env, program, knowledge)? != text {
+                let actual = infer_with(arg, Some(&text), env, program, knowledge)?;
+                let result = named(if name == "dtDuration" {
+                    "DTDuration"
+                } else {
+                    "YMDuration"
+                });
+                if !call_types_match(name, &[actual], &result) {
                     return Err(format!("{name} requires String"));
                 }
                 if let Expr::String(value) = arg {
@@ -1002,11 +1592,7 @@ pub(crate) fn infer_with(
                         value.parse::<crate::temporal::YMDuration>()?;
                     }
                 }
-                return Ok(named(if name == "dtDuration" {
-                    "DTDuration"
-                } else {
-                    "YMDuration"
-                }));
+                return Ok(result);
             }
             if matches!(name.as_str(), "dtDurationBetween" | "ymDurationBetween") {
                 let [from, to] = args.as_slice() else {
@@ -1014,39 +1600,76 @@ pub(crate) fn infer_with(
                 };
                 let first = infer_with(from, None, env, program, knowledge)?;
                 let second = infer_with(to, Some(&first), env, program, knowledge)?;
-                if first != second
-                    || !matches!(first, Type::Named(ref ty) if matches!(ty.as_str(), "Date" | "DateTime"))
-                {
-                    return Err(format!("{name} requires two Dates or two DateTimes"));
-                }
-                return Ok(named(if name == "dtDurationBetween" {
+                let result = named(if name == "dtDurationBetween" {
                     "DTDuration"
                 } else {
                     "YMDuration"
-                }));
+                });
+                if !call_types_match(name, &[first, second], &result) {
+                    return Err(format!("{name} requires two Dates or two DateTimes"));
+                }
+                return Ok(result);
             }
             if matches!(
                 name.as_str(),
                 "min" | "max" | "sum" | "mean" | "median" | "product" | "stddev" | "mode"
             ) {
                 let [values] = args.as_slice() else {
-                    return Err(format!("{name} requires one List<Number> argument"));
+                    return Err(format!("{name} requires one List argument"));
                 };
-                let list = Type::Generic("List".into(), Box::new(number.clone()));
-                if infer_with(values, Some(&list), env, program, knowledge)? != list {
-                    return Err(format!("{name} requires List<Number>"));
+                let hint = expected.and_then(|ty| {
+                    if name == "mode" {
+                        matches!(ty, Type::Generic(kind, _) if kind == "List").then_some(ty.clone())
+                    } else {
+                        Some(Type::Generic("List".into(), Box::new(ty.clone())))
+                    }
+                });
+                let default = Type::Generic("List".into(), Box::new(number.clone()));
+                let actual = infer_with(
+                    values,
+                    if matches!(values, Expr::List(items) if items.is_empty())
+                        || matches!(values, Expr::Iteration { .. })
+                    {
+                        Some(hint.as_ref().unwrap_or(&default))
+                    } else {
+                        None
+                    },
+                    env,
+                    program,
+                    knowledge,
+                )?;
+                let Type::Generic(kind, element) = &actual else {
+                    return Err(format!("{name} requires a List"));
+                };
+                if kind != "List"
+                    || (name != "mode"
+                        && !call_types_match(name, std::slice::from_ref(&actual), element))
+                    || (name == "mode"
+                        && constraints::list_call_branches(
+                            &Constraints::default(),
+                            name,
+                            &[Term::from(&actual)],
+                            &Term::from(&actual),
+                        )
+                        .is_empty())
+                {
+                    return Err(format!("{name} does not support {actual}"));
                 }
-                return Ok(number);
+                return Ok(if name == "mode" {
+                    actual
+                } else {
+                    *element.clone()
+                });
             }
             if name == "number" {
-                if !matches!(args.len(), 1 | 3) {
-                    return Err("number requires one or three String arguments".into());
-                }
-                for arg in args {
-                    if infer_with(arg, Some(&text), env, program, knowledge)? != text {
-                        return Err("number requires String arguments".into());
-                    }
-                }
+                check_call_signature(
+                    name,
+                    args,
+                    &constraints::fixed_call_signatures(name).unwrap(),
+                    env,
+                    program,
+                    knowledge,
+                )?;
                 if let [Expr::String(group), Expr::String(decimal)] = &args[1..] {
                     crate::number_ops::number("0", Some((group, decimal)))?;
                 }
@@ -1073,7 +1696,14 @@ pub(crate) fn infer_with(
                 let actual = infer_with(&args[0], None, env, program, knowledge)?;
                 if matches!(actual, Type::Named(ref ty) if matches!(ty.as_str(), "DTDuration" | "YMDuration"))
                 {
-                    return Ok(if name == "abs" { actual } else { named("Bool") });
+                    let result = if name == "abs" {
+                        actual.clone()
+                    } else {
+                        named("Bool")
+                    };
+                    if call_types_match(name, &[actual], &result) {
+                        return Ok(result);
+                    }
                 }
             }
             if matches!(
@@ -1089,7 +1719,8 @@ pub(crate) fn infer_with(
                 let first = infer_with(&args[0], None, env, program, knowledge)?;
                 if matches!(first, Type::Named(ref ty) if matches!(ty.as_str(), "DTDuration" | "YMDuration"))
                 {
-                    if infer_with(&args[1], Some(&first), env, program, knowledge)? != first {
+                    let second = infer_with(&args[1], Some(&first), env, program, knowledge)?;
+                    if !call_types_match(name, &[first.clone(), second], &first) {
                         return Err(format!("{name} requires two matching durations"));
                     }
                     return Ok(first);
@@ -1106,18 +1737,14 @@ pub(crate) fn infer_with(
                     | "floor"
                     | "ceiling"
             ) {
-                let optional = matches!(name.as_str(), "floor" | "ceiling");
-                if args.len() != 2 && !(optional && args.len() == 1) {
-                    return Err(format!(
-                        "{name} requires {} Number arguments",
-                        if optional { "one or two" } else { "two" }
-                    ));
-                }
-                for arg in args {
-                    if infer_with(arg, Some(&number), env, program, knowledge)? != number {
-                        return Err(format!("{name} requires Number arguments"));
-                    }
-                }
+                check_call_signature(
+                    name,
+                    args,
+                    &constraints::fixed_call_signatures(name).unwrap(),
+                    env,
+                    program,
+                    knowledge,
+                )?;
                 if let Some(Some(scale)) = args.get(1).map(constant_number) {
                     crate::number_ops::round(Decimal::ZERO, scale?, name)?;
                 }
@@ -1138,20 +1765,14 @@ pub(crate) fn infer_with(
                     | "isNegative"
                     | "isZero"
             ) {
-                let valid_arity = match name.as_str() {
-                    "modulo" => args.len() == 2,
-                    "log" => matches!(args.len(), 1 | 2),
-                    "clamp" => args.len() == 3,
-                    _ => args.len() == 1,
-                };
-                if !valid_arity {
-                    return Err(format!("invalid {name} argument count"));
-                }
-                for arg in args {
-                    if infer_with(arg, Some(&number), env, program, knowledge)? != number {
-                        return Err(format!("{name} requires Number arguments"));
-                    }
-                }
+                let output = check_call_signature(
+                    name,
+                    args,
+                    &constraints::fixed_call_signatures(name).unwrap(),
+                    env,
+                    program,
+                    knowledge,
+                )?;
                 if let Some(constants) =
                     args.iter().map(constant_number).collect::<Option<Vec<_>>>()
                 {
@@ -1165,26 +1786,15 @@ pub(crate) fn infer_with(
                         crate::number_ops::math(name, &constants)?;
                     }
                 }
-                return Ok(
-                    if matches!(
-                        name.as_str(),
-                        "odd" | "even" | "isPositive" | "isNegative" | "isZero"
-                    ) {
-                        named("Bool")
-                    } else {
-                        number
-                    },
-                );
+                return Ok(output);
             }
-            let boolean = named("Bool");
             let texts = Type::Generic("List".into(), Box::new(text.clone()));
             if name == "string" {
                 let [value] = args.as_slice() else {
                     return Err("string requires one argument".into());
                 };
                 let ty = infer_with(value, None, env, program, knowledge)?;
-                if !matches!(&ty, Type::Named(n) if matches!(n.as_str(), "String" | "Number" | "Bool" | "Date" | "Time" | "DateTime"))
-                {
+                if !call_types_match(name, std::slice::from_ref(&ty), &text) {
                     return Err(format!("string cannot convert {ty}"));
                 }
                 return Ok(text);
@@ -1200,77 +1810,39 @@ pub(crate) fn infer_with(
                     List(_) => infer_with(delimiters, Some(&texts), env, program, knowledge)?,
                     _ => infer_with(delimiters, None, env, program, knowledge)?,
                 };
-                if delimiter_type != text && delimiter_type != texts {
+                if !call_types_match(name, &[text.clone(), delimiter_type], &texts) {
                     return Err("split requires String or List<String> delimiters".into());
                 }
                 return Ok(texts);
             }
-            let (parameters, optional, output) = match name.as_str() {
-                "stringJoin" => (vec![texts, text.clone()], false, text.clone()),
-                "stringLength" | "indexOf" => (
-                    if name == "indexOf" {
-                        vec![text.clone(), text.clone()]
-                    } else {
-                        vec![text.clone()]
-                    },
-                    false,
-                    number.clone(),
-                ),
-                "substring" => (
-                    vec![text.clone(), number.clone(), number.clone()],
-                    true,
-                    text.clone(),
-                ),
-                "charAt" => (vec![text.clone(), number.clone()], false, text.clone()),
-                "padLeading" | "padTrailing" => (
-                    vec![text.clone(), number.clone(), text.clone()],
-                    true,
-                    text.clone(),
-                ),
-                "repeat" => (vec![text.clone(), number.clone()], false, text.clone()),
-                "substringBefore" | "substringAfter" => {
-                    (vec![text.clone(), text.clone()], false, text.clone())
+            if name == "zipStringJoin" {
+                if !matches!(args.len(), 1 | 2 | 4) {
+                    return Err("invalid zipStringJoin argument count".into());
                 }
-                "upperCase" | "lowerCase" | "trim" | "trimLeading" | "trimTrailing" | "reverse" => {
-                    (vec![text.clone()], false, text.clone())
+                let columns = Type::Generic("List".into(), Box::new(texts.clone()));
+                let actual = args
+                    .iter()
+                    .enumerate()
+                    .map(|(index, arg)| {
+                        let hint = if index == 0 {
+                            Some(&columns)
+                        } else if matches!(arg, List(_)) {
+                            Some(&texts)
+                        } else {
+                            Some(&text)
+                        };
+                        infer_with(arg, hint, env, program, knowledge)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !call_types_match(name, &actual, &texts) {
+                    return Err("zipStringJoin requires String columns and String or List<String> formatting".into());
                 }
-                "contains" | "startsWith" | "endsWith" => {
-                    (vec![text.clone(), text.clone()], false, boolean.clone())
-                }
-                "isBlank" | "isEmpty" => (vec![text.clone()], false, boolean.clone()),
-                "matches" => (
-                    vec![text.clone(), text.clone(), text.clone()],
-                    true,
-                    boolean.clone(),
-                ),
-                "replace" => (
-                    vec![text.clone(), text.clone(), text.clone(), text.clone()],
-                    true,
-                    text.clone(),
-                ),
-                "extract" => (
-                    vec![text.clone(), text.clone(), text.clone()],
-                    true,
-                    Type::Generic(
-                        "List".into(),
-                        Box::new(Type::Generic("List".into(), Box::new(text.clone()))),
-                    ),
-                ),
-                _ => return Err(format!("unknown knowledge model: {name}")),
+                return Ok(texts);
+            }
+            let Some(signatures) = constraints::fixed_call_signatures(name) else {
+                return Err(format!("unknown knowledge model: {name}"));
             };
-            if args.len() != parameters.len() && !(optional && args.len() == parameters.len() - 1) {
-                return Err(format!(
-                    "{name} requires {}{} arguments",
-                    parameters.len() - usize::from(optional),
-                    if optional { " or one more" } else { "" }
-                ));
-            }
-            for (arg, ty) in args.iter().zip(&parameters) {
-                let actual = infer_with(arg, Some(ty), env, program, knowledge)?;
-                if actual != *ty {
-                    return Err(format!("{name} requires {ty}, got {actual}"));
-                }
-            }
+            let output = check_call_signature(name, args, &signatures, env, program, knowledge)?;
             if matches!(name.as_str(), "matches" | "replace" | "extract") {
                 let flags = args.get(if name == "replace" { 3 } else { 2 });
                 let flags = match flags {
@@ -1313,6 +1885,7 @@ pub(crate) fn infer_with(
                 }
             }
             if let Name(name) = base.as_ref()
+                && !env.contains_key(name)
                 && let Some(item) = program.enums.iter().find(|item| item.name == *name)
             {
                 return if item.variants.contains(field) {
@@ -1323,74 +1896,109 @@ pub(crate) fn infer_with(
             }
             let ty = infer_with(base, None, env, program, knowledge)?;
             if let Type::Generic(kind, inner) = &ty {
-                if kind == "Dictionary" {
-                    return Ok(inner.as_ref().clone());
-                }
-                if kind == "DictionaryEntry" {
-                    return match field.as_str() {
-                        "key" => Ok(named("String")),
-                        "value" => Ok(inner.as_ref().clone()),
-                        _ => Err(format!("unknown dictionary entry field: {field}")),
+                if kind == "List" {
+                    let projection_supported = match inner.as_ref() {
+                        Type::Generic(kind, _) => {
+                            matches!(kind.as_str(), "Dictionary" | "DictionaryEntry")
+                        }
+                        Type::Named(name) => {
+                            matches!(name.as_str(), "Dictionary" | "Value")
+                                || program.records.iter().any(|record| record.name == *name)
+                        }
                     };
+                    if !projection_supported {
+                        return Err(format!(
+                            "field projection requires dictionary elements, got {inner}"
+                        ));
+                    }
+                    if let Expr::List(elements) = base.as_ref() {
+                        for element in elements {
+                            if let Expr::Call(name, entries) = element
+                                && name == "__bl_dictionary"
+                                && !entries.chunks_exact(2).any(
+                                    |entry| matches!(&entry[0], Expr::String(key) if key == field),
+                                )
+                            {
+                                return Err(format!("missing dictionary field: {field}"));
+                            }
+                        }
+                    }
+                    let item = infer_with(
+                        &Expr::Field(Box::new(Expr::Name("item".into())), field.clone()),
+                        None,
+                        &HashMap::from([("item".into(), *inner.clone())]),
+                        program,
+                        knowledge,
+                    )?;
+                    let projected = Type::Generic("List".into(), Box::new(item));
+                    if constraints::field_branches(
+                        &Constraints::default(),
+                        field,
+                        &Term::from(&ty),
+                        &Term::from(&projected),
+                        &program.records,
+                    )
+                    .is_empty()
+                    {
+                        return Err(format!("unknown field: {field}"));
+                    }
+                    return Ok(projected);
+                }
+                if matches!(kind.as_str(), "Dictionary" | "DictionaryEntry") {
+                    let result = Term::Var(0);
+                    let branches = constraints::field_branches(
+                        &Constraints::default(),
+                        field,
+                        &Term::from(&ty),
+                        &result,
+                        &program.records,
+                    );
+                    return Constraints::unique_type(&branches, &result)
+                        .ok_or_else(|| format!("unknown {kind} field: {field}"));
                 }
             }
             if let Type::Named(name) = ty {
                 if matches!(name.as_str(), "Dictionary" | "Value") {
-                    return Ok(expected.cloned().unwrap_or_else(|| named("Value")));
+                    let result = expected.cloned().unwrap_or_else(|| named("Value"));
+                    if constraints::field_branches(
+                        &Constraints::default(),
+                        field,
+                        &Term::from(&named(&name)),
+                        &Term::from(&result),
+                        &program.records,
+                    )
+                    .is_empty()
+                    {
+                        return Err(format!("unknown field: {field}"));
+                    }
+                    return Ok(result);
                 }
-                if matches!(name.as_str(), "Date" | "Time" | "DateTime") {
-                    let calendar = matches!(name.as_str(), "Date" | "DateTime");
-                    let clock = matches!(name.as_str(), "Time" | "DateTime");
-                    let kind = match field.as_str() {
-                        "year" | "month" | "day" | "dayOfYear" | "weekOfYear" | "isoWeekOfYear"
-                        | "quarter"
-                            if calendar =>
-                        {
-                            Some("Number")
-                        }
-                        "hour" | "minute" | "second" if clock => Some("Number"),
-                        "offset" => Some("DTDuration"),
-                        "timezone" | "dayName" | "dayNameShort" | "isoYearWeek" | "monthName"
-                        | "monthNameShort" | "yearQuarter"
-                            if calendar || field == "timezone" =>
-                        {
-                            Some("String")
-                        }
-                        _ => None,
-                    };
-                    if let Some(kind) = kind {
-                        return Ok(named(kind));
+                if matches!(
+                    name.as_str(),
+                    "Date" | "Time" | "DateTime" | "DTDuration" | "YMDuration"
+                ) {
+                    let result = Term::Var(0);
+                    let branches = constraints::field_branches(
+                        &Constraints::default(),
+                        field,
+                        &Term::from(&named(&name)),
+                        &result,
+                        &program.records,
+                    );
+                    if let Some(ty) = Constraints::unique_type(&branches, &result) {
+                        return Ok(ty);
                     }
                 }
-                if matches!(name.as_str(), "DTDuration" | "YMDuration") {
-                    let valid = if name == "DTDuration" {
-                        matches!(
-                            field.as_str(),
-                            "days"
-                                | "hours"
-                                | "minutes"
-                                | "seconds"
-                                | "totalSeconds"
-                                | "totalMinutes"
-                                | "totalHours"
-                                | "totalDays"
-                        )
-                    } else {
-                        matches!(
-                            field.as_str(),
-                            "years" | "months" | "totalMonths" | "totalYears"
-                        )
-                    };
-                    if valid {
-                        return Ok(named("Number"));
-                    }
-                }
-                if let Some(record) = program.records.iter().find(|item| item.name == name) {
-                    return record
-                        .fields
-                        .iter()
-                        .find(|(key, _)| key == field)
-                        .map(|(_, value)| value.clone())
+                if program.records.iter().any(|item| item.name == name) {
+                    let result = Term::Var(0);
+                    let branches = constraints::field_branches(
+                        &Constraints::default(),
+                        field,
+                        &Term::from(&named(&name)),
+                        &result,
+                        &program.records,
+                    );
+                    return Constraints::unique_type(&branches, &result)
                         .ok_or_else(|| format!("unknown field: {name}.{field}"));
                 }
             }
@@ -1418,21 +2026,63 @@ pub(crate) fn infer_with(
                     ));
                 }
             }
+            let range_type = Type::Generic("Range".into(), Box::new(ty.clone()));
+            if constraints::range_branches(
+                &Constraints::default(),
+                &lower
+                    .iter()
+                    .chain(upper.iter())
+                    .map(|_| Term::from(&ty))
+                    .collect::<Vec<_>>(),
+                &Term::from(&range_type),
+            )
+            .is_empty()
+            {
+                return Err(format!("unsupported range bound type: {ty}"));
+            }
             if let (Some(a), Some(b)) = (lower, upper)
                 && reversed_constants(a, b, &ty)
             {
                 return Err("inverted range bounds".into());
             }
-            Ok(Type::Generic("Range".into(), Box::new(ty)))
+            let symbolic_env = env
+                .iter()
+                .map(|(name, ty)| (name.clone(), Term::from(ty)))
+                .collect();
+            if constraints::expression_branches(
+                expr,
+                &Term::from(&range_type),
+                &symbolic_env,
+                &program.records,
+                knowledge,
+                &program.enums,
+            )
+            .is_some_and(|branches| branches.is_empty())
+            {
+                return Err("range bounds require matching types".into());
+            }
+            Ok(range_type)
         }
         Iteration {
             every,
+            flatten,
             binding,
             source,
             body,
         } => {
             check_name(binding)?;
-            let empty_source = Type::Generic("List".into(), Box::new(named("Value")));
+            let resolved = empty_iteration_element(expr, expected, env, program, knowledge)?;
+            let source_element = resolved.unwrap_or_else(|| {
+                if !*every {
+                    match expected {
+                        Some(Type::Generic(kind, element)) if kind == "List" => *element.clone(),
+                        _ => named("Value"),
+                    }
+                } else {
+                    named("Value")
+                }
+            });
+            let empty_source = Type::Generic("List".into(), Box::new(source_element));
             let context = if matches!(source.as_ref(), Expr::List(elements) if elements.is_empty())
             {
                 Some(&empty_source)
@@ -1448,13 +2098,18 @@ pub(crate) fn infer_with(
                 return Err("iteration source must be List".into());
             }
             let mut local = env.clone();
-            local.insert(binding.clone(), *element);
+            let binding_type = *element;
+            local.insert(binding.clone(), binding_type.clone());
             let boolean = named("Bool");
             let result_type = if *every {
                 Some(&boolean)
             } else if let Some(Type::Generic(kind, inner)) = expected {
                 if kind == "List" {
-                    Some(inner.as_ref())
+                    if *flatten {
+                        Some(expected.unwrap())
+                    } else {
+                        Some(inner.as_ref())
+                    }
                 } else {
                     None
                 }
@@ -1462,14 +2117,42 @@ pub(crate) fn infer_with(
                 None
             };
             let result = infer_with(body, result_type, &local, program, knowledge)?;
-            if *every {
-                if result != named("Bool") {
-                    return Err("every predicate must be Bool".into());
-                }
-                Ok(named("Bool"))
-            } else {
-                Ok(Type::Generic("List".into(), Box::new(result)))
+            if *every && result != named("Bool") {
+                return Err("every predicate must be Bool".into());
             }
+            if *flatten && !matches!(result, Type::Generic(ref kind, _) if kind == "List") {
+                return Err("iteration binding body must be List".into());
+            }
+            let output = if *every {
+                named("Bool")
+            } else if *flatten {
+                result.clone()
+            } else {
+                Type::Generic("List".into(), Box::new(result.clone()))
+            };
+            if constraints::iteration_branches(
+                &Constraints::default(),
+                &Term::from(&Type::Generic(
+                    "List".into(),
+                    Box::new(binding_type.clone()),
+                )),
+                &Term::from(&binding_type),
+                &Term::from(&result),
+                &Term::from(&output),
+                if *every {
+                    constraints::IterationKind::Every
+                } else if *flatten {
+                    constraints::IterationKind::Flatten
+                } else {
+                    constraints::IterationKind::Map
+                },
+                &Term::Var(0),
+            )
+            .is_empty()
+            {
+                return Err("iteration source and body have incompatible types".into());
+            }
+            Ok(output)
         }
         List(elements) => {
             let element_type = if let Some(Type::Generic(name, inner)) = expected {
@@ -1490,7 +2173,15 @@ pub(crate) fn infer_with(
                 .ok_or("cannot infer empty list type")?;
             for element in elements {
                 let actual = infer_with(element, Some(&element_type), env, program, knowledge)?;
-                if actual != element_type
+                if constraints::list_branches(
+                    &Constraints::default(),
+                    &[Term::from(&actual)],
+                    &Term::from(&Type::Generic(
+                        "List".into(),
+                        Box::new(element_type.clone()),
+                    )),
+                )
+                .is_empty()
                     && !(element_type == named("Dictionary")
                         && (matches!(actual, Type::Generic(ref kind, _) if kind == "Dictionary")
                             || matches!(actual, Type::Named(ref kind) if program.records.iter().any(|record| &record.name == kind))))
@@ -1502,7 +2193,13 @@ pub(crate) fn infer_with(
         }
         Not(value) => {
             let ty = infer_with(value, None, env, program, knowledge)?;
-            if ty != named("Bool") {
+            if constraints::not_branches(
+                &Constraints::default(),
+                &Term::from(&ty),
+                &Term::from(&named("Bool")),
+            )
+            .is_empty()
+            {
                 return Err(format!("not requires Bool, got {ty}"));
             }
             Ok(named("Bool"))
@@ -1513,12 +2210,22 @@ pub(crate) fn infer_with(
                 if matches!(lhs, Type::Named(ref name) if matches!(name.as_str(), "Date" | "DateTime"))
                 {
                     let rhs = infer_with(right, None, env, program, knowledge);
-                    if matches!(rhs, Ok(Type::Named(ref name)) if matches!(name.as_str(), "Calendar" | "CalendarRange" | "CalendarValue"))
+                    if let Ok(rhs) = rhs
+                        && !constraints::binary_branches(
+                            &Constraints::default(),
+                            op,
+                            false,
+                            &Term::from(&lhs),
+                            &Term::from(&rhs),
+                            &Term::from(&named("Bool")),
+                        )
+                        .is_empty()
                     {
                         return Ok(named("Bool"));
                     }
                 }
                 let kind = if matches!(right.as_ref(), List(..))
+                    || matches!(infer_with(right, None, env, program, knowledge), Ok(Type::Generic(ref kind, _)) if kind == "List")
                     || lhs == named("String") && !matches!(right.as_ref(), Range(..))
                 {
                     "List"
@@ -1527,7 +2234,16 @@ pub(crate) fn infer_with(
                 };
                 let expected = Type::Generic(kind.into(), Box::new(lhs.clone()));
                 let rhs = infer_with(right, Some(&expected), env, program, knowledge)?;
-                if rhs != expected {
+                if constraints::binary_branches(
+                    &Constraints::default(),
+                    op,
+                    false,
+                    &Term::from(&lhs),
+                    &Term::from(&rhs),
+                    &Term::from(&named("Bool")),
+                )
+                .is_empty()
+                {
                     return Err(format!("in requires a {kind} of {lhs}, got {rhs}"));
                 }
                 return Ok(named("Bool"));
@@ -1559,79 +2275,49 @@ pub(crate) fn infer_with(
                 program,
                 knowledge,
             )?;
-            if duration(&lhs) && rhs == named("Number") && matches!(op.as_str(), "*" | "/") {
-                return Ok(lhs);
-            }
-            if lhs == named("Number") && duration(&rhs) && op == "*" {
-                return Ok(rhs);
-            }
-            if lhs == named("Number")
-                && duration(&rhs)
-                && op == "-"
-                && matches!(left.as_ref(), Expr::Number(value) if value == "0")
-            {
-                return Ok(rhs);
-            }
-            let point = |ty: &Type| matches!(ty, Type::Named(name) if matches!(name.as_str(), "Date" | "Time" | "DateTime"));
-            if point(&lhs) && duration(&rhs) && matches!(op.as_str(), "+" | "-") {
-                if lhs == named("Time") && rhs != named("DTDuration") {
-                    return Err("Time only supports DTDuration".into());
+            let result = Term::Var(usize::MAX);
+            let branches = constraints::binary_branches(
+                &Constraints::default(),
+                op,
+                matches!(left.as_ref(), Expr::Number(value) if value == "0"),
+                &Term::from(&lhs),
+                &Term::from(&rhs),
+                &result,
+            );
+            if let Some(ty) = Constraints::unique_type(&branches, &result) {
+                if lhs == named("Number")
+                    && rhs == named("Number")
+                    && matches!(op.as_str(), "+" | "-" | "*" | "/" | "**" | "mod")
+                {
+                    if op == "/"
+                        && constant_number(right).is_some_and(|value| value == Ok(Decimal::ZERO))
+                    {
+                        return Err("division by zero".into());
+                    }
+                    if let Some(Err(error)) = constant_number(expr) {
+                        return Err(format!("invalid constant arithmetic: {error}"));
+                    }
                 }
-                return Ok(lhs);
+                return Ok(ty);
+            }
+            if lhs == named("Time")
+                && rhs == named("YMDuration")
+                && matches!(op.as_str(), "+" | "-")
+            {
+                return Err("Time only supports DTDuration".into());
             }
             if lhs != rhs {
-                if matches!(op.as_str(), "==" | "!=")
-                    && (matches!((&lhs, &rhs), (Type::Named(value), Type::Named(point)) if matches!(value.as_str(), "CalendarValue" | "CalendarPoint") && matches!(point.as_str(), "Date" | "DateTime"))
-                        || matches!((&rhs, &lhs), (Type::Named(value), Type::Named(point)) if matches!(value.as_str(), "CalendarValue" | "CalendarPoint") && matches!(point.as_str(), "Date" | "DateTime"))
-                        || matches!((&lhs, &rhs), (Type::Named(value), Type::Generic(kind, inner)) if value == "CalendarValue" && kind == "Range" && matches!(inner.as_ref(), Type::Named(point) if matches!(point.as_str(), "Date" | "DateTime")))
-                        || matches!((&rhs, &lhs), (Type::Named(value), Type::Generic(kind, inner)) if value == "CalendarValue" && kind == "Range" && matches!(inner.as_ref(), Type::Named(point) if matches!(point.as_str(), "Date" | "DateTime"))))
-                {
-                    return Ok(named("Bool"));
-                }
                 return Err(format!("{op} requires matching types, got {lhs} and {rhs}"));
             }
-            if point(&lhs) && op == "-" {
-                return if lhs == named("Time") {
-                    Err("Time point subtraction is not supported".into())
-                } else {
-                    Ok(named("DTDuration"))
-                };
+            if lhs == named("Time") && op == "-" {
+                return Err("Time point subtraction is not supported".into());
             }
             if duration(&lhs) {
-                return match op.as_str() {
-                    "+" | "-" => Ok(lhs),
-                    "==" | "!=" | "<" | "<=" | ">" | ">=" => Ok(named("Bool")),
-                    _ => Err(format!("{op} does not support {lhs}")),
-                };
+                return Err(format!("{op} does not support {lhs}"));
             }
-            if lhs == named("Number") && matches!(op.as_str(), "+" | "-" | "*" | "/" | "**") {
-                if op == "/"
-                    && constant_number(right).is_some_and(|value| value == Ok(Decimal::ZERO))
-                {
-                    return Err("division by zero".into());
-                }
-                if let Some(Err(error)) = constant_number(expr) {
-                    return Err(format!("invalid constant arithmetic: {error}"));
-                }
-            }
-            match op.as_str() {
-                "and" | "or" if lhs == named("Bool") => Ok(named("Bool")),
-                "+" if lhs == named("String") => Ok(named("String")),
-                "+" | "-" | "*" | "/" | "**" if lhs == named("Number") => Ok(named("Number")),
-                "==" | "!=" => Ok(named("Bool")),
-                ">" | ">=" | "<" | "<="
-                    if lhs == named("Number")
-                        || lhs == named("String")
-                        || lhs == named("DateTime")
-                        || lhs == named("Date")
-                        || lhs == named("Time") =>
-                {
-                    Ok(named("Bool"))
-                }
-                _ => Err(format!(
-                    "{op} does not support {lhs}; expected Bool for boolean operations"
-                )),
-            }
+            Err(format!(
+                "{op} does not support {lhs}; expected Bool for boolean operations"
+            ))
         }
     }
 }
@@ -1642,6 +2328,8 @@ pub(crate) fn builtin(name: &str) -> bool {
             name,
             "__bl_dictionary"
                 | "__bl_index"
+                | "__bl_sequence"
+                | "__bl_some"
                 | "keys"
                 | "values"
                 | "getEntries"
@@ -1685,6 +2373,24 @@ pub(crate) fn builtin(name: &str) -> bool {
                 | "calendarMerge"
                 | "pattern"
                 | "count"
+                | "listContains"
+                | "sublist"
+                | "append"
+                | "prepend"
+                | "concatenate"
+                | "union"
+                | "distinct"
+                | "duplicateValues"
+                | "intersection"
+                | "flatten"
+                | "sort"
+                | "seq"
+                | "all"
+                | "any"
+                | "insertBefore"
+                | "insertAfter"
+                | "remove"
+                | "listReplace"
                 | "entries"
                 | "names"
                 | "find"
@@ -1735,6 +2441,7 @@ pub(crate) fn builtin(name: &str) -> bool {
                 | "isZero"
                 | "string"
                 | "stringJoin"
+                | "zipStringJoin"
                 | "stringLength"
                 | "substring"
                 | "substringBefore"

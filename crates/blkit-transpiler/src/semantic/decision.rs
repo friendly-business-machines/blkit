@@ -20,6 +20,9 @@ pub(super) fn check_decision(
     resolve(&model.output, types)?;
     for knowledge in &model.knowledge {
         check_name(&knowledge.name)?;
+        if knowledge.name == "function" {
+            return Err("reserved knowledge model name: function".into());
+        }
         check_name(&knowledge.output_name)?;
         if !names.insert(&knowledge.name) {
             return Err(format!("duplicate knowledge model: {}", knowledge.name));
@@ -86,7 +89,9 @@ pub(super) fn check_decision(
                     calls(arg, found);
                 }
             }
-            Expr::Field(base, _) | Expr::Not(base) => calls(base, found),
+            Expr::Field(base, _) | Expr::Not(base) | Expr::InlinePredicate { body: base, .. } => {
+                calls(base, found)
+            }
             Expr::Binary(left, _, right) => {
                 calls(left, found);
                 calls(right, found);

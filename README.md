@@ -121,6 +121,82 @@ Dictionary ports accept JSON objects. A named `Order` input is `{"total":"120","
 
 For `scores: Dictionary<Number>`, `sum(values(scores))` computes a total, `every v in values(scores) satisfies v >= 50` checks every score (true for an empty list), and `for e in getEntries(scores) return e.value > 80` builds an ordered `List<Bool>` (empty for an empty list). Iteration variables are scoped to their expression and may shadow outer names; the source must be a list, and errors inside the body propagate.
 
+### List expressions
+
+List literals are ordered `List<T>` values: elements must all have the same type (including the same nesting depth), and `null` is not a list element. An empty `[]` needs a type from its context, such as a `List<Number>` output. Numeric indexes are one-based integers; `-1` is the last element, and zero, fractional, or out-of-bounds indexes fail. A Boolean bracket expression filters in input order; only inside that filter does leading `.item` mean the current element. `mod` is numeric floor remainder (like `modulo`) and fails on a zero divisor.
+
+| Expression | Result |
+| --- | --- |
+| `[1,2,3,4][1]` / `[1,2,3,4][-2]` | `1` / `3` |
+| `[1,2,3,4][.item > 2]` | `[3,4]` |
+| `[1,2,3,4][.item mod 2 == 0]` | `[2,4]` |
+| `[1,2][odd(.item)]` | `[1]` |
+| `[1,2] == [1,2]` / `[1,2] != [2,1]` | `true` / `true` |
+| `2 in [1,2,3]` | `true` |
+| `for x in [1,2], y in [3,4] return x * y` | `[3,4,6,8]` |
+| `some x in [1,2], y in [3,4] satisfies x + y > 5` | `true` |
+| `every x in [1,2], y in [3,4] satisfies x + y >= 4` | `true` |
+| `4:2` | `[4,3,2]` |
+
+`for` and `every` also accept comma-separated bindings in Cartesian order; `some` succeeds if any binding combination satisfies its Boolean body (and is false for an empty source). `start:end` produces an inclusive `List<Number>` in either direction, unlike the existing `[start..end]` range.
+
+For `Order = {name: String, item: Number};`, `orders.name` on a `List<Order>` projects `List<String>` in order (for orders named `"A"` and `"B"`, the result is `["A","B"]`); `order.item` on an `Order` remains a scalar field. Plain `item` is an ordinary decision node, context entry, input, or iteration binding, not the filter element: with `item: Number` equal to `2`, `[4,5][item]` returns `5`. Leading `.item` outside a bracket filter is invalid. List `==` and `!=` compare elements in order; scalar `in` tests membership, not a list ordering comparison.
+
+List inspection and transformations do not change their input lists. The following examples use a `List<Number>` input for `isEmpty(input)` (an empty literal needs a type from context). Unlike string `indexOf`, list `indexOf` returns **all** matching one-based positions, or `[]` if absent. `sublist` accepts a negative-from-end start, defaults to the remainder, and truncates a requested length at the end.
+
+| Expression | Result |
+| --- | --- |
+| `count([1,2,3])` / `isEmpty(input)` with an empty input | `3` / `true` |
+| `listContains([1,2,3], 2)` / `indexOf([1,2,3,2], 2)` | `true` / `[2,4]` |
+| `sublist([1,2,3], -2)` | `[2,3]` |
+| `append([1], 2, 3)` / `prepend([2,3], 1)` | `[1,2,3]` / `[1,2,3]` |
+| `concatenate([1,2], [3])` / `union([2,1], [1,3])` | `[1,2,3]` / `[2,1,3]` |
+| `reverse([1,2,3])` / `flatten([[[1,2]],[[3,4]]])` | `[3,2,1]` / `[1,2,3,4]` |
+
+Positional edits use one-based positions; a negative position counts from the end, so `-1` refers to the **last existing element** for all four operations (not the slot before the list). A list supplied as the third insertion argument is spread at that position; an outer list wraps a nested list to insert it as one element. Predicates use `function(i)` with `i` scoped to each element, return `Bool`, and edit **every** match. `function` is reserved and cannot name a knowledge model.
+
+| Expression | Result |
+| --- | --- |
+| `insertBefore([1,3], 1, 2)` / `insertBefore([10,20,30], -1, 5)` | `[2,1,3]` / `[10,20,5,30]` |
+| `insertAfter([10,20,30], -1, 5)` / `insertAfter([1,5], 1, [2,3,4])` | `[10,20,30,5]` / `[1,2,3,4,5]` |
+| `insertBefore([[1],[4]], 2, [[2,3]])` | `[[1],[2,3],[4]]` (one nested element) |
+| `remove([1,2,3], 2)` / `remove([10,20,30], -1)` | `[1,3]` / `[10,20]` |
+| `listReplace([1,2,3], 2, 9)` / `listReplace([10,20,30], -1, 5)` | `[1,9,3]` / `[10,20,5]` |
+| `remove([1,2,3,2], function(i) i == 2)` | `[1,3]` |
+| `listReplace([2,4,7], function(i) i < 5, 5)` | `[5,5,7]` |
+| `distinct([2,1,2,3,1])` / `duplicateValues([2,1,1,2,2])` | `[2,1,3]` / `[2,1]` |
+| `intersection([3,2,3,1], [2,3])` | `[3,2]` |
+
+`union` retains first occurrences across lists in argument order; `distinct` retains first occurrences, `duplicateValues` returns repeated values once in first-occurrence order, and `intersection` returns shared values once in the **first list's order**. Equality is structural even for nested lists and dictionaries; all list arguments must have compatible element types. A mismatched element in `append([1], "2")`, a String position in `sublist([1,2], "1")`, or a non-Boolean predicate in `remove(input, function(i) i + 1)` (with a `List<Number>` input) fails validation. At runtime, `remove(input, position)` and `sublist(input, position)` with input `[1,2,3]` fail for position `0`, `4`, `-4`, or `1.5`: positions must be integral and within the list. A `sublist` length must be a nonnegative integer. Errors in evaluated predicates propagate instead of silently skipping elements.
+
+Sorting, joining, and sequences also produce new values without changing their input lists. These expressions are typed decision-task examples; `[]` gets its element type from the declared output or function argument. `sort` accepts `List<Number>`, `List<String>`, or a list of one comparable `Date`, `Time`, `DateTime`, `DTDuration`, or `YMDuration` kind. It sorts ascending by default or with `"asc"`, and descending with `"desc"`; a priority list puts its first-listed values first, then unlisted values in ascending order. Sorting is stable for values that compare equal, uses case-sensitive Unicode code-point order for strings, and reports errors for incompatible temporal values. **At most 1024 entries across source and priority lists combined** are accepted, including when the source is empty.
+
+| Expression | Type | Result |
+| --- | --- | --- |
+| `sort([3,1,2])` | `List<Number>` | `[1,2,3]` |
+| `sort([3,1,2], "desc")` | `List<Number>` | `[3,2,1]` |
+| `sort(["m","s","xl"], ["s","m","l"])` | `List<String>` | `["s","m","xl"]` |
+| `stringJoin(["a","b"])` | `String` | `"ab"` |
+| `stringJoin(["a","b"], "-", "[", "]")` | `String` | `"[a-b]"` |
+| `stringJoin([], "-", "[", "]")` | `String` | `"[]"` |
+| `zipStringJoin([["a","b"],["1","2"]], "-", "[", "]")` | `List<String>` | `["[a-1]","[b-2]"]` |
+| `zipStringJoin([["a","b"],["1","2"],["x","y"]], ["-", ":"], ["<","(","{"], [">",")","}"])` | `List<String>` | `["<a>-(1):{x}","<b>-(2):{y}"]` |
+| `zipStringJoin([], [], [], [])` | `List<String>` | `[]` |
+| `seq(5,10)` | `List<Number>` | `[5,6,7,8,9,10]` |
+| `seq(10,5)` | `List<Number>` | `[10,9,8,7,6,5]` |
+| `seq(0,1,0.25)` | `List<Number>` | `[0,0.25,0.5,0.75,1]` |
+| `seq(5,10,-1)` | `List<Number>` | `[5,6,7,8,9,10]` |
+| `seq(0,0.95,0.1)` | `List<Number>` | `[0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]` |
+| `10:5` | `List<Number>` | `[10,9,8,7,6,5]` |
+| `all([true,true,false])` | `Bool` | `false` |
+| `any([false,false,true])` | `Bool` | `true` |
+| `all([])` | `Bool` | `true` |
+| `any([])` | `Bool` | `false` |
+
+`stringJoin` separates elements of a `List<String>` (default separator `""`); optional prefix and suffix wrap the completed string once, even for an empty list. `zipStringJoin` joins corresponding elements of equally long `List<String>` columns, returning one string per position. Its delimiter may be one `String` for every gap or a `List<String>` of exactly **N−1** delimiters for N columns; prefix and suffix may each be one `String` for every result or a `List<String>` of exactly N wrappers, one per column contribution. Omitted formatting uses empty strings. With zero columns it returns `[]`: scalar formatting is allowed, but list-valued delimiter and wrapper arguments must all be empty. Unequal column lengths, wrong types, or invalid formatter lengths fail rather than truncate or coerce.
+
+`seq(start,end[,step])` and `start:end` return inclusive decimal `List<Number>` values. The default step magnitude is 1; even an explicitly negative step follows the endpoints' direction. Fractional steps use decimal precision and stop before an unreached endpoint. Zero or non-progressing steps, overflow, and sequences exceeding one million elements report checked execution errors. `all` and `any` require `List<Bool>`; on an empty list they return `true` and `false`, respectively, and non-Boolean elements fail validation.
+
 A `Calendar` port accepts JSON `{"validFrom":"2025-01-01","validTo":"2025-12-31","entries":[{"value":"2025-04-18","name":"Good Friday"},{"value":{"start":"2025-04-18","end":"2025-04-20","includeStart":true,"includeEnd":false}}]}`. Bounds and values are ISO `Date` or `DateTime` strings (including fixed-offset or IANA suffixes); range endpoints must have the same point type. `name` is optional and range inclusivity defaults to `true`. Entries are returned in chronological order, with point entries before ranges at the same start. Calendar deserialization rejects invalid values, mixed naive/zoned kinds, reversed ranges/bounds, or entries outside validity bounds. Calendars are supplied as inputs; there is no calendar expression literal. Queries include `count`, `isEmpty`, `entries`, `names`, `find`, `contains`, `entriesFor`, `overlaps`, `entriesIn`, `validFrom`, `validTo`, `validRange`, `entryValue`, `entryName`, `next`, and `prev`. `entryName` fails on unnamed entries and `next`/`prev` require positive `n`. `calendarDrop(c, target[, rangeMatch="equality"])`, `calendarKeep(...)`, and `calendarMerge([a, b][, dedupeBy="value"][, tiebreak="first"])` return new calendars. `pattern("^Easter")` matches entry names only in drop/keep targets; rangeMatch accepts `equality`, `entryWithin`, `entryEncloses`, or `overlap`. Options use named call arguments (`=`), not dictionary literals or equality comparisons (`==`).
 
 Date and DateTime values support `isWeekday`, `isWeekend`, `isPublicHoliday`, `isBusinessDay`, month/weekday boundaries, strict `next*`/`prev*` navigation, `addBusinessDays`/`subtractBusinessDays`, and inclusive order-independent `weekdaysBetween`/`businessDaysBetween`. Business days exclude weekends and optionally calendar entries; a zero add/subtract count preserves the input. DateTime navigation preserves time and zone. When iterating outside a supplied calendar's validity range, holidays are ignored by default; set the trailing `strictCalendarRange` argument to `true` (with a calendar) to report `bl.CalendarRangeError` instead. Day-of-week arguments are integers 1–7 (Monday–Sunday). `daysBetween(a,b[,includeTime])` returns signed days; `monthsBetween(a,b[,basis[,includeTime]])` and `yearsBetween(...)` default to calendar whole periods plus a fraction of the following period. Bases `actual/365` and `actual/360` divide actual elapsed days by a fixed year length, `actual/actual` (ISDA) splits days at calendar-year boundaries and uses each year's 365/366-day length, and `30/360` (US/NASD) or `30E/360` (European) use 30-day months; months are twelve times the annual ratio. `includeTime` applies only to DateTime and includes elapsed sub-day fractions. `financialYear(value,basis)` and `financialYearQuarter(value,basis)` accept a start month 1–12 or `AU` (July 1), `UK` (April 6), `US` (October 1), and `IN`/`JP`/`CA`/`NZ` (April 1), and label years by their ending year.
@@ -129,7 +205,41 @@ Number expressions support decimal and scientific literals (`0.1`, `1.5e3`), una
 
 Number helpers include `round(n, scale)` (alias `roundHalfUp`), `roundUp`, `roundDown`, `roundHalfDown`, `roundHalfEven`, and `floor(n[, scale])`/`ceiling(n[, scale])`. Scales are integral decimal places from -28 through 28; negative places round to tens, hundreds, etc. Up/down round away from/toward zero; half-up/half-down break exact ties away from/toward zero; half-even breaks ties to the even neighbor. `floor` and `ceiling` round toward negative and positive infinity, respectively. Invalid scales return execution errors. `abs`, `modulo`, `sqrt`, `exp`, `ln`, `log(n[, base])`, `clamp(n, min, max)`, `odd`, `even`, `isPositive`, `isNegative`, and `isZero` take `Number` arguments; `modulo` has the nonzero divisor's sign, `log` defaults to base 10, and `odd`/`even` require integral values. Invalid domains, bounds, divisors, and overflows return execution errors.
 
-`min`, `max`, `sum`, `mean`, `median`, `product`, `stddev`, and `mode` each take one `List<Number>`. `sum([])` is 0 and `product([])` is 1; other empty aggregates fail. `stddev` is the sample standard deviation (N−1) and requires at least two values. `mode` chooses the smallest Number when frequencies tie; an even-sized `median` averages the two middle values. Unrepresentable intermediate results return execution errors.
+Aggregates each take one homogeneous list. `sum`, `mean`, and `median` accept `List<Number>`, `List<DTDuration>`, or `List<YMDuration>` and return the same element type; even-sized `median` averages the middle pair. `min` and `max` return an element of a comparable `List<Number>`, `List<String>`, `List<Date>`, `List<Time>`, `List<DateTime>`, `List<DTDuration>`, or `List<YMDuration>`, using the type's comparison rules (including code-point order for strings and checked temporal compatibility). `product` and `stddev` accept only `List<Number>` and return `Number`; `stddev` uses the **sample** denominator N−1 and needs at least two values. Mixed types or duration kinds fail validation, and incompatible temporal values or unrepresentable arithmetic report execution errors.
+
+**Breaking change:** `mode(List<T>)` now returns `List<T>`, not a scalar `Number`. It contains **all** highest-frequency values, including a one-element list for a unique winner. Numeric ties are sorted ascending; types without natural ordering retain tied values in first-occurrence order. Migrate a decision task that previously declared `output result: Number` for `mode(values)` to `List<Number>` on both the task and literal expression outputs:
+
+```bl
+decision_task modes {
+  input values: List<Number>;
+  output result: List<Number> = calc;
+  literal_expression calc {
+    output result: List<Number>;
+    expression mode(values);
+  }
+}
+```
+
+If a scalar is required, explicitly select a one-based element (for example `mode([6,1,6,1])[1]`); this selects the smallest tied Number, but an empty input still fails. `mode` rejects more than **1024** input elements with a checked execution error.
+
+| Expression | Type | Result |
+| --- | --- | --- |
+| `mode([6,1,6,1])` | `List<Number>` | `[1,6]` |
+| `mode([3,2,3])` | `List<Number>` | `[3]` |
+| `mode([6,1,6,1])[1]` | `Number` | `1` |
+| `sum([dtDuration("PT1H"),dtDuration("PT2H")])` | `DTDuration` | `dtDuration("PT3H")` |
+| `sum([ymDuration("P1Y"),ymDuration("P6M")])` | `YMDuration` | `ymDuration("P1Y6M")` |
+| `mean([dtDuration("PT1H"),dtDuration("PT2H")])` | `DTDuration` | `dtDuration("PT1H30M")` |
+| `median([ymDuration("P1Y"),ymDuration("P2Y")])` | `YMDuration` | `ymDuration("P1Y6M")` |
+| `min(["banana","Apple"])` | `String` | `"Apple"` |
+| `max([date("2025-01-01"),date("2025-02-01")])` | `Date` | `date("2025-02-01")` |
+| `product([2,3,4])` | `Number` | `24` |
+| `stddev([1,2,3])` | `Number` | `1` |
+| `sum([])` | `Number` | `0` |
+| `product([])` | `Number` | `1` |
+| `sum([])` | `DTDuration` | `dtDuration("PT0S")` |
+
+The `[]` examples obtain their list type from the declared output. Numeric empty `sum`/`product` return 0/1; empty duration `sum` returns its kind's zero duration. Empty `min`, `max`, `mean`, `median`, and `mode` fail evaluation, and `stddev` fails for fewer than two elements.
 
 `number(text)` parses an ungrouped signed decimal `String` with `.` as the decimal separator. `number(text, groupingSeparator, decimalSeparator)` uses distinct single-character ASCII punctuation separators, for example `number("1.500,50", ".", ",")` is `1500.5`; each group after the first must contain exactly three digits. Malformed text, invalid grouping/separators, and unrepresentable values fail validation when constant and return execution errors when dynamic. No locale is guessed.
 

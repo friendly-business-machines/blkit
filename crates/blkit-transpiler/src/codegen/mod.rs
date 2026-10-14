@@ -15,6 +15,20 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
             (matches!(
                 name.as_str(),
                 "__bl_index"
+                    | "__bl_list_index"
+                    | "__bl_list_filter"
+                    | "__bl_list_sublist"
+                    | "__bl_list_insertBefore_scalar"
+                    | "__bl_list_insertBefore_spread"
+                    | "__bl_list_insertAfter_scalar"
+                    | "__bl_list_insertAfter_spread"
+                    | "__bl_list_remove"
+                    | "__bl_list_listReplace"
+                    | "__bl_list_remove_match"
+                    | "__bl_list_listReplace_match"
+                    | "__bl_sequence"
+                    | "seq"
+                    | "sort"
                     | "__bl_dictionary_field"
                     | "keys"
                     | "values"
@@ -26,7 +40,8 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
                     | "dictionaryPut"
                     | "dictionaryMerge"
                     | "dictionaryRemove"
-            ) || name.starts_with("__bl_calendar_")
+            ) || name.starts_with("__bl_sort_")
+                || name.starts_with("__bl_calendar_")
                 || matches!(
                     name.as_str(),
                     "calendarDrop"
@@ -72,6 +87,7 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
                     && matches!(
                         name.as_str(),
                         "string"
+                            | "zipStringJoin"
                             | "round"
                             | "roundUp"
                             | "roundDown"
@@ -109,6 +125,7 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
                             | "isNegative"
                             | "isZero"
                             | "substring"
+                            | "sublist"
                             | "charAt"
                             | "padLeading"
                             | "padTrailing"
@@ -122,9 +139,10 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
                 || args.iter().any(|arg| expr_fallible(arg, knowledge))
         }
         Expr::Field(_, _) => true,
+        Expr::InlinePredicate { body, .. } => expr_fallible(body, knowledge),
         Expr::Not(value) => expr_fallible(value, knowledge),
         Expr::Binary(left, op, right) => {
-            (matches!(op.as_str(), "num+" | "-" | "*" | "/" | "%" | "**")
+            (matches!(op.as_str(), "num+" | "-" | "*" | "/" | "%" | "**" | "mod")
                 || op.starts_with("duration")
                 || op.starts_with("point")
                 || op.starts_with("calendar"))
@@ -157,6 +175,7 @@ fn specialize_expr(
     program: &Program,
     knowledge: &[Knowledge],
     env: &HashMap<String, Type>,
+    expected: Option<&Type>,
 ) -> Expr {
     let mut result = expr.clone();
     fn visit(
@@ -164,9 +183,17 @@ fn specialize_expr(
         program: &Program,
         knowledge: &[Knowledge],
         env: &HashMap<String, Type>,
+        expected: Option<&Type>,
     ) {
         let mixed_dictionary = matches!(semantic::infer_with(expr, None, env, program, knowledge),
             Ok(Type::Named(name)) if name == "Dictionary");
+        let resolved_iteration = if matches!(expr, Expr::Iteration { source, .. } if matches!(source.as_ref(), Expr::List(items) if items.is_empty()))
+        {
+            semantic::empty_iteration_element(expr, expected, env, program, knowledge)
+                .expect("validated empty iteration source")
+        } else {
+            None
+        };
         match expr {
             Expr::Binary(left, op, right) => {
                 let lhs = semantic::infer_with(left, None, env, program, knowledge).ok();
@@ -259,10 +286,44 @@ fn specialize_expr(
                         *op = "num+".into();
                     }
                 }
-                visit(left, program, knowledge, env);
-                visit(right, program, knowledge, env);
+                visit(left, program, knowledge, env, None);
+                visit(right, program, knowledge, env, None);
             }
             Expr::Call(name, args) => {
+                if matches!(name.as_str(), "remove" | "listReplace")
+                    && !knowledge.iter().any(|item| item.name == *name)
+                    && let Some(Expr::InlinePredicate { binding, .. }) = args.get(1)
+                    && let Ok(list @ Type::Generic(_, _)) =
+                        semantic::infer_with(&args[0], expected, env, program, knowledge)
+                {
+                    let Type::Generic(_, element) = &list else {
+                        unreachable!()
+                    };
+                    let mut local = env.clone();
+                    local.insert(binding.clone(), *element.clone());
+                    let empty = matches!(&args[0], Expr::List(items) if items.is_empty());
+                    visit(&mut args[0], program, knowledge, env, Some(&list));
+                    if empty {
+                        args[0] = Expr::Call(
+                            format!("__bl_list_type_{}", rust_type(element)),
+                            vec![args[0].clone()],
+                        );
+                    }
+                    if let Expr::InlinePredicate { body, .. } = &mut args[1] {
+                        visit(
+                            body,
+                            program,
+                            knowledge,
+                            &local,
+                            Some(&Type::Named("Bool".into())),
+                        );
+                    }
+                    if let Some(replacement) = args.get_mut(2) {
+                        visit(replacement, program, knowledge, env, Some(element));
+                    }
+                    *name = format!("__bl_list_{name}_match");
+                    return;
+                }
                 if name.starts_with("__bl_dictionary") {
                     let mixed = name == "__bl_dictionary" && mixed_dictionary;
                     if mixed {
@@ -287,7 +348,7 @@ fn specialize_expr(
                             entry[1] =
                                 dynamic_wrapper(entry[1].clone(), program, knowledge, &scope);
                         }
-                        visit(&mut entry[1], program, knowledge, &scope);
+                        visit(&mut entry[1], program, knowledge, &scope, None);
                         if let (Expr::String(key), Some(ty)) = (&entry[0], ty)
                             && crate::compiler::identifier(key)
                         {
@@ -304,6 +365,275 @@ fn specialize_expr(
                     || matches!(semantic::infer_with(first, None, env, program, knowledge),
                         Ok(Type::Named(ref kind)) if kind == "Dictionary" || program.records.iter().any(|record| &record.name == kind)))
                 { *name = "__bl_dict_isEmpty".into(); }
+                let aggregate_empty =
+                    matches!(args.first(), Some(Expr::List(items)) if items.is_empty());
+                let aggregate_hint = (aggregate_empty
+                    || matches!(args.first(), Some(Expr::Iteration { .. })))
+                .then(|| {
+                    Type::Generic(
+                        "List".into(),
+                        Box::new(if name == "mode" {
+                            match expected {
+                                Some(Type::Generic(_, inner)) => *inner.clone(),
+                                _ => Type::Named("Number".into()),
+                            }
+                        } else {
+                            expected.cloned().unwrap_or(Type::Named("Number".into()))
+                        }),
+                    )
+                });
+                if matches!(
+                    name.as_str(),
+                    "min" | "max" | "sum" | "mean" | "median" | "product" | "stddev" | "mode"
+                ) && !knowledge.iter().any(|item| item.name == *name)
+                    && args.len() == 1
+                    && let Ok(Type::Generic(kind, element)) = semantic::infer_with(
+                        &args[0],
+                        aggregate_hint.as_ref(),
+                        env,
+                        program,
+                        knowledge,
+                    )
+                    && kind == "List"
+                {
+                    let empty = matches!(&args[0], Expr::List(items) if items.is_empty());
+                    let list = Type::Generic(kind, element.clone());
+                    visit(&mut args[0], program, knowledge, env, Some(&list));
+                    if empty {
+                        args[0] = Expr::Call(
+                            format!("__bl_list_type_{}", rust_type(&element)),
+                            vec![args[0].clone()],
+                        );
+                    }
+                    *name = format!(
+                        "__bl_aggregate_{}_{}",
+                        name,
+                        match element.as_ref() {
+                            Type::Named(kind)
+                                if matches!(kind.as_str(), "Date" | "Time" | "DateTime") =>
+                                "point",
+                            Type::Named(kind) if kind == "DTDuration" => "dt",
+                            Type::Named(kind) if kind == "YMDuration" => "ym",
+                            Type::Named(kind) if kind == "Number" => "number",
+                            _ => "other",
+                        }
+                    );
+                    return;
+                }
+                if name == "sort"
+                    && !knowledge.iter().any(|item| item.name == *name)
+                    && let Ok(Type::Generic(kind, element)) = semantic::infer_with(
+                        &Expr::Call(name.clone(), args.clone()),
+                        expected,
+                        env,
+                        program,
+                        knowledge,
+                    )
+                    && kind == "List"
+                {
+                    let list = Type::Generic(kind, element.clone());
+                    let empty = matches!(&args[0], Expr::List(items) if items.is_empty());
+                    visit(&mut args[0], program, knowledge, env, Some(&list));
+                    if empty {
+                        args[0] = Expr::Call(
+                            format!("__bl_list_type_{}", rust_type(&element)),
+                            vec![args[0].clone()],
+                        );
+                    }
+                    let order_kind = if let Some(order) = args.get_mut(1) {
+                        let priority = matches!(semantic::infer_with(order, Some(&list), env, program, knowledge), Ok(ref ty) if *ty == list);
+                        let string = Type::Named("String".into());
+                        visit(
+                            order,
+                            program,
+                            knowledge,
+                            env,
+                            Some(if priority { &list } else { &string }),
+                        );
+                        if priority { "priority" } else { "direction" }
+                    } else {
+                        "natural"
+                    };
+                    *name = format!(
+                        "__bl_sort_{}_{}",
+                        if matches!(element.as_ref(), Type::Named(kind) if matches!(kind.as_str(), "Date" | "Time" | "DateTime"))
+                        {
+                            "point"
+                        } else {
+                            "scalar"
+                        },
+                        order_kind
+                    );
+                    return;
+                }
+                if matches!(
+                    name.as_str(),
+                    "count"
+                        | "isEmpty"
+                        | "listContains"
+                        | "indexOf"
+                        | "sublist"
+                        | "append"
+                        | "prepend"
+                        | "concatenate"
+                        | "union"
+                        | "distinct"
+                        | "duplicateValues"
+                        | "intersection"
+                        | "reverse"
+                        | "flatten"
+                        | "insertBefore"
+                        | "insertAfter"
+                        | "remove"
+                        | "listReplace"
+                ) && !knowledge.iter().any(|item| item.name == *name)
+                    && !matches!(args.get(1), Some(Expr::InlinePredicate { .. }))
+                {
+                    let hint = if matches!(args.first(), Some(Expr::List(items)) if items.is_empty())
+                    {
+                        if matches!(
+                            name.as_str(),
+                            "listContains" | "indexOf" | "append" | "prepend"
+                        ) {
+                            args.get(1)
+                                .and_then(|arg| {
+                                    semantic::infer_with(arg, None, env, program, knowledge).ok()
+                                })
+                                .map(|ty| Type::Generic("List".into(), Box::new(ty)))
+                                .or_else(|| {
+                                    matches!(name.as_str(), "append" | "prepend")
+                                        .then(|| expected.cloned())
+                                        .flatten()
+                                })
+                        } else if matches!(name.as_str(), "concatenate" | "union" | "intersection")
+                        {
+                            args.get(1)
+                                .and_then(|arg| {
+                                    semantic::infer_with(arg, None, env, program, knowledge).ok()
+                                })
+                                .or_else(|| expected.cloned())
+                        } else {
+                            expected.cloned()
+                        }
+                    } else if matches!(
+                        name.as_str(),
+                        "sublist"
+                            | "reverse"
+                            | "insertBefore"
+                            | "insertAfter"
+                            | "remove"
+                            | "listReplace"
+                            | "distinct"
+                            | "duplicateValues"
+                            | "intersection"
+                    ) {
+                        expected.cloned()
+                    } else {
+                        None
+                    };
+                    if let Some(Type::Generic(kind, element)) = args.first().and_then(|arg| {
+                        semantic::infer_with(arg, hint.as_ref(), env, program, knowledge).ok()
+                    }) && kind == "List"
+                    {
+                        let list = Type::Generic(kind, element.clone());
+                        let empty = matches!(&args[0], Expr::List(items) if items.is_empty());
+                        visit(&mut args[0], program, knowledge, env, Some(&list));
+                        if empty {
+                            args[0] = Expr::Call(
+                                format!("__bl_list_type_{}", rust_type(&element)),
+                                vec![args[0].clone()],
+                            );
+                        }
+                        let item_type = Type::Named("Number".into());
+                        let spread = matches!(name.as_str(), "insertBefore" | "insertAfter")
+                            && args.get(2).and_then(|arg| {
+                                semantic::infer_with(arg, Some(&list), env, program, knowledge).ok()
+                            }) == Some(list.clone());
+                        for (index, arg) in args[1..].iter_mut().enumerate() {
+                            let hint = if index == 1 && spread
+                                || matches!(name.as_str(), "concatenate" | "union" | "intersection")
+                            {
+                                &list
+                            } else if index == 1 && name == "listReplace"
+                                || matches!(
+                                    name.as_str(),
+                                    "listContains" | "indexOf" | "append" | "prepend"
+                                )
+                                || index == 1
+                                    && matches!(name.as_str(), "insertBefore" | "insertAfter")
+                            {
+                                &element
+                            } else {
+                                &item_type
+                            };
+                            visit(arg, program, knowledge, env, Some(hint));
+                        }
+                        if matches!(name.as_str(), "insertBefore" | "insertAfter") {
+                            *name = format!(
+                                "__bl_list_{}_{}",
+                                name,
+                                if spread { "spread" } else { "scalar" }
+                            );
+                            return;
+                        }
+                        if name == "flatten" {
+                            let mut depth = 0;
+                            let mut ty = element.as_ref();
+                            while let Type::Generic(kind, inner) = ty {
+                                if kind != "List" {
+                                    break;
+                                }
+                                depth += 1;
+                                ty = inner;
+                            }
+                            *name = format!("__bl_list_flatten_{depth}");
+                        } else {
+                            *name = format!("__bl_list_{name}");
+                        }
+                        return;
+                    }
+                }
+                if name == "__bl_index" && args.len() == 2 {
+                    let empty_base = matches!(&args[0], Expr::List(items) if items.is_empty());
+                    let base_expected = if empty_base
+                        && matches!(expected, Some(Type::Generic(kind, _)) if kind == "List")
+                    {
+                        expected
+                    } else {
+                        None
+                    };
+                    if let Ok(Type::Generic(kind, element)) =
+                        semantic::infer_with(&args[0], base_expected, env, program, knowledge)
+                        && kind == "List"
+                    {
+                        let numeric = semantic::infer_with(&args[1], None, env, program, knowledge)
+                            .ok()
+                            == Some(Type::Named("Number".into()));
+                        let mut local = env.clone();
+                        local.insert(".item".into(), *element.clone());
+                        visit(&mut args[0], program, knowledge, env, None);
+                        if empty_base {
+                            args[0] = Expr::Call(
+                                format!("__bl_list_type_{}", rust_type(&element)),
+                                vec![args[0].clone()],
+                            );
+                        }
+                        visit(
+                            &mut args[1],
+                            program,
+                            knowledge,
+                            if numeric { env } else { &local },
+                            None,
+                        );
+                        *name = if numeric {
+                            "__bl_list_index"
+                        } else {
+                            "__bl_list_filter"
+                        }
+                        .into();
+                        return;
+                    }
+                }
                 if name == "__bl_index"
                     && args.len() == 2
                     && let Ok(Type::Named(shape)) =
@@ -316,7 +646,7 @@ fn specialize_expr(
                         rust_record_field(program, &shape, key),
                     );
                     if let Expr::Field(base, _) = expr {
-                        visit(base, program, knowledge, env);
+                        visit(base, program, knowledge, env, None);
                     }
                     return;
                 }
@@ -439,30 +769,66 @@ fn specialize_expr(
                         *name = format!("__bl_range_{name}");
                     }
                 }
-                for arg in args {
-                    visit(arg, program, knowledge, env);
+                if name == "__bl_some" {
+                    let list = Type::Generic("List".into(), Box::new(Type::Named("Bool".into())));
+                    visit(&mut args[0], program, knowledge, env, Some(&list));
+                    return;
+                }
+                if let Some(definition) = knowledge.iter().find(|item| item.name == *name) {
+                    for (arg, (_, ty)) in args.iter_mut().zip(&definition.params) {
+                        visit(arg, program, knowledge, env, Some(ty));
+                    }
+                } else {
+                    for arg in args {
+                        visit(arg, program, knowledge, env, None);
+                    }
                 }
             }
             Expr::List(args) => {
+                let element_expected = if let Some(Type::Generic(kind, inner)) = expected {
+                    (kind == "List").then_some(inner.as_ref())
+                } else {
+                    None
+                };
                 for arg in args {
-                    visit(arg, program, knowledge, env);
+                    visit(arg, program, knowledge, env, element_expected);
                 }
             }
             Expr::Iteration {
+                every,
+                flatten,
                 binding,
                 source,
                 body,
-                ..
             } => {
+                let boolean = Type::Named("Bool".into());
+                let body_expected = if *every {
+                    Some(&boolean)
+                } else if *flatten {
+                    expected
+                } else if let Some(Type::Generic(kind, inner)) = expected {
+                    (kind == "List").then_some(inner.as_ref())
+                } else {
+                    None
+                };
                 let element = if matches!(source.as_ref(), Expr::List(items) if items.is_empty()) {
-                    Some(Type::Generic(
-                        "List".into(),
-                        Box::new(Type::Named("Value".into())),
-                    ))
+                    let source_element = resolved_iteration.unwrap_or_else(|| {
+                        if !*every {
+                            match expected {
+                                Some(Type::Generic(kind, inner)) if kind == "List" => {
+                                    *inner.clone()
+                                }
+                                _ => Type::Named("Value".into()),
+                            }
+                        } else {
+                            Type::Named("Value".into())
+                        }
+                    });
+                    Some(Type::Generic("List".into(), Box::new(source_element)))
                 } else {
                     semantic::infer_with(source, None, env, program, knowledge).ok()
                 };
-                visit(source, program, knowledge, env);
+                visit(source, program, knowledge, env, None);
                 let mut local = env.clone();
                 if let Some(Type::Generic(_, inner)) = element {
                     **source = Expr::Call(
@@ -471,9 +837,40 @@ fn specialize_expr(
                     );
                     local.insert(binding.clone(), *inner);
                 }
-                visit(body, program, knowledge, &local);
+                visit(body, program, knowledge, &local, body_expected);
             }
             Expr::Field(base, field) => {
+                if let Ok(Type::Generic(kind, element)) =
+                    semantic::infer_with(base, None, env, program, knowledge)
+                    && kind == "List"
+                {
+                    let field_name = if let Type::Named(shape) = element.as_ref() {
+                        if program.records.iter().any(|record| record.name == *shape) {
+                            rust_record_field(program, shape, field)
+                        } else {
+                            field.clone()
+                        }
+                    } else {
+                        field.clone()
+                    };
+                    let projection = if matches!(element.as_ref(), Type::Generic(name, _) if name == "Dictionary")
+                        || *element == Type::Named("Dictionary".into())
+                    {
+                        "__bl_projection_dictionary"
+                    } else if *element == Type::Named("Value".into()) {
+                        "__bl_projection_value"
+                    } else {
+                        "__bl_projection"
+                    };
+                    *expr = Expr::Call(
+                        projection.into(),
+                        vec![*base.clone(), Expr::String(field_name)],
+                    );
+                    if let Expr::Call(_, args) = expr {
+                        visit(&mut args[0], program, knowledge, env, None);
+                    }
+                    return;
+                }
                 if matches!(semantic::infer_with(base, None, env, program, knowledge),
                     Ok(Type::Named(name)) if matches!(name.as_str(), "Dictionary" | "Value"))
                     || matches!(semantic::infer_with(base, None, env, program, knowledge),
@@ -484,7 +881,7 @@ fn specialize_expr(
                         vec![*base.clone(), Expr::String(field.clone())],
                     );
                     if let Expr::Call(_, args) = expr {
-                        visit(&mut args[0], program, knowledge, env);
+                        visit(&mut args[0], program, knowledge, env, None);
                     }
                     return;
                 }
@@ -517,21 +914,21 @@ fn specialize_expr(
                     }
                 }
                 match expr {
-                    Expr::Call(_, args) => visit(&mut args[0], program, knowledge, env),
-                    Expr::Field(base, _) => visit(base, program, knowledge, env),
+                    Expr::Call(_, args) => visit(&mut args[0], program, knowledge, env, None),
+                    Expr::Field(base, _) => visit(base, program, knowledge, env, None),
                     _ => unreachable!(),
                 }
             }
-            Expr::Not(base) => visit(base, program, knowledge, env),
+            Expr::Not(base) => visit(base, program, knowledge, env, None),
             Expr::Range(lower, upper, _, _) => {
                 for bound in lower.iter_mut().chain(upper.iter_mut()) {
-                    visit(bound, program, knowledge, env);
+                    visit(bound, program, knowledge, env, None);
                 }
             }
             _ => {}
         }
     }
-    visit(&mut result, program, knowledge, env);
+    visit(&mut result, program, knowledge, env, expected);
     result
 }
 
@@ -656,7 +1053,7 @@ fn emit_typed_expr(
             }
         }
     }
-    let mut expr = specialize_expr(&expr, program, knowledge, env);
+    let mut expr = specialize_expr(&expr, program, knowledge, env, expected);
     if let Some(target) = cast {
         expr = Expr::Call(format!("__bl_cast_to_{target}"), vec![expr]);
     }
@@ -738,6 +1135,7 @@ fn uses_name(expr: &Expr, name: &str) -> bool {
     match expr {
         Expr::Name(value) => value == name,
         Expr::Field(base, _) | Expr::Not(base) => uses_name(base, name),
+        Expr::InlinePredicate { binding, body } => binding == name || uses_name(body, name),
         Expr::Call(_, args) | Expr::List(args) => args.iter().any(|arg| uses_name(arg, name)),
         Expr::Iteration {
             binding,
@@ -816,6 +1214,73 @@ fn emit_expr(expr: &Expr, program: &Program) -> String {
     emit_expr_with(expr, program, &[])
 }
 
+fn emit_some_iteration(
+    expr: &Expr,
+    program: &Program,
+    knowledge: &[Knowledge],
+    found: &str,
+) -> String {
+    if let Expr::Iteration {
+        binding,
+        source,
+        body,
+        every: false,
+        ..
+    } = expr
+    {
+        format!(
+            "for {binding} in {} {{ {} }}",
+            emit_expr_with(source, program, knowledge),
+            emit_some_iteration(body, program, knowledge, found)
+        )
+    } else {
+        format!(
+            "if {} {{ {found} = true; break '__bl_some; }}",
+            emit_expr_with(expr, program, knowledge)
+        )
+    }
+}
+
+fn fresh_local(expr: &Expr, base: &str) -> String {
+    let mut name = base.to_owned();
+    let mut suffix = 0;
+    while uses_name(expr, &name) {
+        name = format!("{base}_{suffix}");
+        suffix += 1;
+    }
+    name
+}
+
+fn bind_filter_item(expr: &mut Expr, binding: &str) {
+    match expr {
+        Expr::FilterItem => *expr = Expr::Name(binding.into()),
+        Expr::InlinePredicate { body, .. } => bind_filter_item(body, binding),
+        Expr::Field(base, _) | Expr::Not(base) => bind_filter_item(base, binding),
+        Expr::Binary(left, _, right) => {
+            bind_filter_item(left, binding);
+            bind_filter_item(right, binding);
+        }
+        Expr::Call(name, args) if name == "__bl_list_filter" => {
+            bind_filter_item(&mut args[0], binding);
+        }
+        Expr::Call(_, args) | Expr::List(args) => {
+            for arg in args {
+                bind_filter_item(arg, binding);
+            }
+        }
+        Expr::Iteration { source, body, .. } => {
+            bind_filter_item(source, binding);
+            bind_filter_item(body, binding);
+        }
+        Expr::Range(lower, upper, _, _) => {
+            for bound in lower.iter_mut().chain(upper.iter_mut()) {
+                bind_filter_item(bound, binding);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> String {
     match expr {
         Expr::Number(value) => {
@@ -829,6 +1294,10 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
         Expr::String(value) => format!("String::from({value:?})"),
         Expr::Bool(value) => value.to_string(),
         Expr::Name(name) => format!("({name}).clone()"),
+        Expr::FilterItem => unreachable!("filter item must be bound before emission"),
+        Expr::InlinePredicate { binding, body } => {
+            format!("|{binding}| {}", emit_expr_with(body, program, knowledge))
+        }
         Expr::Call(name, args) if name == "__bl_path_list" => {
             emit_expr_with(&args[0], program, knowledge)
         }
@@ -843,6 +1312,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
         }
         Expr::Iteration {
             every,
+            flatten,
             binding,
             source,
             body,
@@ -850,12 +1320,15 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             let source = emit_expr_with(source, program, knowledge);
             let body = emit_expr_with(body, program, knowledge);
             if *every {
+                let all = fresh_local(expr, "__bl_every");
                 format!(
-                    "{{ let mut __bl_every = true; for {binding} in {source} {{ if !({body}) {{ __bl_every = false; break; }} }} __bl_every }}"
+                    "{{ let mut {all} = true; for {binding} in {source} {{ if !({body}) {{ {all} = false; break; }} }} {all} }}"
                 )
             } else {
+                let result = fresh_local(expr, "__bl_iteration");
+                let method = if *flatten { "extend" } else { "push" };
                 format!(
-                    "{{ let mut __bl_iteration = Vec::new(); for {binding} in {source} {{ __bl_iteration.push({body}); }} __bl_iteration }}"
+                    "{{ let mut {result} = Vec::new(); for {binding} in {source} {{ {result}.{method}({body}); }} {result} }}"
                 )
             }
         }
@@ -989,6 +1462,303 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("{{ {statements} std::collections::BTreeMap::from([{pairs}]) }}")
+        }
+        Expr::Call(name, args)
+            if matches!(
+                name.as_str(),
+                "__bl_projection_dictionary" | "__bl_projection_value"
+            ) =>
+        {
+            let Expr::String(field) = &args[1] else {
+                unreachable!()
+            };
+            let source = emit_expr_with(&args[0], program, knowledge);
+            format!(
+                "({source}).iter().map(|item| item.get({field:?}).cloned().ok_or_else(|| format!(\"missing dictionary key: {{}}\", {field:?}))).collect::<Result<Vec<_>, String>>()?"
+            )
+        }
+        Expr::Call(name, args) if name == "__bl_projection" => {
+            let Expr::String(field) = &args[1] else {
+                unreachable!()
+            };
+            format!(
+                "({}).iter().map(|item| item.{field}.clone()).collect::<Vec<_>>()",
+                emit_expr_with(&args[0], program, knowledge)
+            )
+        }
+        Expr::Call(name, args) if name == "__bl_some" => {
+            let found = fresh_local(expr, "__bl_some");
+            format!(
+                "{{ let mut {found} = false; '__bl_some: {{ {} }} {found} }}",
+                emit_some_iteration(&args[0], program, knowledge, &found)
+            )
+        }
+        Expr::Call(name, args)
+            if name == "__bl_sequence"
+                || name == "seq" && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let start = emit_expr_with(&args[0], program, knowledge);
+            let end = emit_expr_with(&args[1], program, knowledge);
+            let step = args.get(2).map_or("Number::ONE".to_owned(), |arg| {
+                emit_expr_with(arg, program, knowledge)
+            });
+            format!("blkit_core::number_ops::sequence({start}, {end}, {step})?")
+        }
+        Expr::Call(name, args)
+            if matches!(name.as_str(), "all" | "any")
+                && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let values = emit_expr_with(&args[0], program, knowledge);
+            format!("({values}).into_iter().{name}(|value| value)")
+        }
+        Expr::Call(name, args) if name.starts_with("__bl_sort_") => {
+            let values = fresh_local(expr, "__bl_sort_values");
+            let source = emit_expr_with(&args[0], program, knowledge);
+            let compare = if name.starts_with("__bl_sort_point_") {
+                "blkit_core::temporal::compare_checked(left, right, __bl_temporal_clock.clone())"
+            } else {
+                "Ok(left.cmp(right))"
+            };
+            let (setup, priorities, descending) = match name.rsplit('_').next().unwrap() {
+                "natural" => (String::new(), "None".to_string(), "false".to_string()),
+                "direction" => (format!("let order = {};", emit_expr_with(&args[1], program, knowledge)),
+                    "None".to_string(),
+                    "match order.as_str() { \"asc\" => false, \"desc\" => true, _ => return Err(\"invalid sort order: expected asc or desc\".into()) }".to_string()),
+                "priority" => (format!("let priority = {};", emit_expr_with(&args[1], program, knowledge)),
+                    "Some(priority.as_slice())".to_string(), "false".to_string()),
+                _ => unreachable!(),
+            };
+            format!(
+                "{{ let {values} = {source}; {setup} blkit_core::list_ops::sort_checked({values}, {priorities}, {descending}, |left, right| {compare})? }}"
+            )
+        }
+        Expr::Call(name, args)
+            if matches!(
+                name.as_str(),
+                "__bl_list_remove_match" | "__bl_list_listReplace_match"
+            ) =>
+        {
+            let items = fresh_local(expr, "__bl_match_items");
+            let result = fresh_local(expr, "__bl_match_result");
+            let Expr::InlinePredicate { binding, body } = &args[1] else {
+                unreachable!()
+            };
+            let source = emit_expr_with(&args[0], program, knowledge);
+            let predicate = emit_expr_with(body, program, knowledge);
+            let edit = if name == "__bl_list_remove_match" {
+                format!("if !({predicate}) {{ {result}.push({binding}); }}")
+            } else {
+                let replacement = fresh_local(expr, "__bl_match_replacement");
+                let value = emit_expr_with(&args[2], program, knowledge);
+                return format!(
+                    "{{ let {items} = {source}; let {replacement} = {value}; let mut {result} = Vec::new(); for {binding} in {items} {{ if {predicate} {{ {result}.push({replacement}.clone()); }} else {{ {result}.push({binding}); }} }} {result} }}"
+                );
+            };
+            format!(
+                "{{ let {items} = {source}; let mut {result} = Vec::new(); for {binding} in {items} {{ {edit} }} {result} }}"
+            )
+        }
+        Expr::Call(name, args)
+            if name.starts_with("__bl_list_")
+                && matches!(
+                    name.as_str(),
+                    "__bl_list_count"
+                        | "__bl_list_isEmpty"
+                        | "__bl_list_listContains"
+                        | "__bl_list_indexOf"
+                        | "__bl_list_sublist"
+                        | "__bl_list_insertBefore_scalar"
+                        | "__bl_list_insertBefore_spread"
+                        | "__bl_list_insertAfter_scalar"
+                        | "__bl_list_insertAfter_spread"
+                        | "__bl_list_remove"
+                        | "__bl_list_listReplace"
+                        | "__bl_list_append"
+                        | "__bl_list_prepend"
+                        | "__bl_list_concatenate"
+                        | "__bl_list_union"
+                        | "__bl_list_distinct"
+                        | "__bl_list_duplicateValues"
+                        | "__bl_list_intersection"
+                        | "__bl_list_reverse"
+                )
+                || name.starts_with("__bl_list_flatten_") =>
+        {
+            let a = emit_expr_with(&args[0], program, knowledge);
+            match name.as_str() {
+                "__bl_list_count" => format!("Number::from(({a}).len())"),
+                "__bl_list_isEmpty" => format!("({a}).is_empty()"),
+                "__bl_list_listContains" => {
+                    let b = emit_expr_with(&args[1], program, knowledge);
+                    format!("({a}).contains(&({b}))")
+                }
+                "__bl_list_indexOf" => {
+                    let needle = fresh_local(expr, "__bl_index_of_needle");
+                    let b = emit_expr_with(&args[1], program, knowledge);
+                    format!(
+                        "{{ let {needle} = {b}; ({a}).iter().enumerate().filter_map(|(i, item)| (item == &{needle}).then(|| Number::from(i + 1))).collect::<Vec<_>>() }}"
+                    )
+                }
+                "__bl_list_append"
+                | "__bl_list_prepend"
+                | "__bl_list_concatenate"
+                | "__bl_list_union" => {
+                    let remaining = args[1..]
+                        .iter()
+                        .map(|arg| emit_expr_with(arg, program, knowledge))
+                        .collect::<Vec<_>>();
+                    let lists = if matches!(name.as_str(), "__bl_list_append" | "__bl_list_prepend")
+                    {
+                        remaining
+                            .iter()
+                            .map(|value| format!("vec![{value}]"))
+                            .collect::<Vec<_>>()
+                    } else {
+                        remaining
+                    };
+                    let sources = if name == "__bl_list_prepend" {
+                        lists
+                            .iter()
+                            .map(|list| format!("({list}).into_iter()"))
+                            .chain(std::iter::once(format!("({a}).into_iter()")))
+                            .collect::<Vec<_>>()
+                    } else {
+                        std::iter::once(format!("({a}).into_iter()"))
+                            .chain(lists.iter().map(|list| format!("({list}).into_iter()")))
+                            .collect::<Vec<_>>()
+                    };
+                    let combined = format!(
+                        "std::iter::empty(){}",
+                        sources
+                            .iter()
+                            .map(|source| format!(".chain({source})"))
+                            .collect::<String>()
+                    );
+                    if name == "__bl_list_union" {
+                        let result = fresh_local(expr, "__bl_union_result");
+                        let item = fresh_local(expr, "__bl_union_item");
+                        format!(
+                            "{{ let mut {result} = Vec::new(); for {item} in {combined} {{ if !{result}.contains(&{item}) {{ {result}.push({item}); }} }} {result} }}"
+                        )
+                    } else {
+                        format!("({combined}).collect::<Vec<_>>()")
+                    }
+                }
+                "__bl_list_distinct" => {
+                    let result = fresh_local(expr, "__bl_distinct_result");
+                    let item = fresh_local(expr, "__bl_distinct_item");
+                    format!(
+                        "{{ let mut {result} = Vec::new(); for {item} in {a} {{ if !{result}.contains(&{item}) {{ {result}.push({item}); }} }} {result} }}"
+                    )
+                }
+                "__bl_list_duplicateValues" => {
+                    let items = fresh_local(expr, "__bl_duplicate_items");
+                    let result = fresh_local(expr, "__bl_duplicate_result");
+                    let item = fresh_local(expr, "__bl_duplicate_item");
+                    format!(
+                        "{{ let {items} = {a}; let mut {result} = Vec::new(); for {item} in &{items} {{ if !{result}.contains({item}) && {items}.iter().filter(|value| *value == {item}).take(2).count() == 2 {{ {result}.push({item}.clone()); }} }} {result} }}"
+                    )
+                }
+                "__bl_list_intersection" => {
+                    let lists = fresh_local(expr, "__bl_intersection_lists");
+                    let first = fresh_local(expr, "__bl_intersection_first");
+                    let result = fresh_local(expr, "__bl_intersection_result");
+                    let item = fresh_local(expr, "__bl_intersection_item");
+                    let sources = args
+                        .iter()
+                        .map(|arg| emit_expr_with(arg, program, knowledge))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "{{ let mut {lists} = vec![{sources}]; let {first} = {lists}.remove(0); let mut {result} = Vec::new(); for {item} in {first} {{ if !{result}.contains(&{item}) && {lists}.iter().all(|other| other.contains(&{item})) {{ {result}.push({item}); }} }} {result} }}"
+                    )
+                }
+                "__bl_list_reverse" => format!("({a}).into_iter().rev().collect::<Vec<_>>()"),
+                name if name.starts_with("__bl_list_flatten_") => {
+                    let depth: usize = name
+                        .trim_start_matches("__bl_list_flatten_")
+                        .parse()
+                        .expect("specialized flatten depth");
+                    let mut flat = format!("({a}).into_iter()");
+                    for _ in 0..depth {
+                        flat.push_str(".flatten()");
+                    }
+                    format!("({flat}).collect::<Vec<_>>()")
+                }
+                "__bl_list_sublist" => {
+                    let start = emit_expr_with(&args[1], program, knowledge);
+                    let length = args.get(2).map_or("None".into(), |arg| {
+                        format!("Some({})", emit_expr_with(arg, program, knowledge))
+                    });
+                    format!("blkit_core::list_ops::sublist(&({a}), {start}, {length})?")
+                }
+                "__bl_list_insertBefore_scalar"
+                | "__bl_list_insertBefore_spread"
+                | "__bl_list_insertAfter_scalar"
+                | "__bl_list_insertAfter_spread"
+                | "__bl_list_remove"
+                | "__bl_list_listReplace" => {
+                    let items = fresh_local(expr, "__bl_edit_items");
+                    let index = fresh_local(expr, "__bl_edit_index");
+                    let position = emit_expr_with(&args[1], program, knowledge);
+                    let at = if name.starts_with("__bl_list_insertAfter") {
+                        format!("{index} + 1")
+                    } else {
+                        index.clone()
+                    };
+                    let edit = if name == "__bl_list_remove" {
+                        format!(
+                            "{items}.into_iter().enumerate().filter_map(|(i, value)| (i != {index}).then_some(value)).collect::<Vec<_>>()"
+                        )
+                    } else {
+                        let value = emit_expr_with(&args[2], program, knowledge);
+                        if name == "__bl_list_listReplace" {
+                            format!(
+                                "{{ let replacement = {value}; {items}.into_iter().enumerate().map(|(i, value)| if i == {index} {{ replacement.clone() }} else {{ value }}).collect::<Vec<_>>() }}"
+                            )
+                        } else {
+                            let inserted = if name.ends_with("_scalar") {
+                                format!("vec![{value}]")
+                            } else {
+                                value
+                            };
+                            format!("{{ {items}.splice({at}..{at}, {inserted}); {items} }}")
+                        }
+                    };
+                    let mutable = if name.starts_with("__bl_list_insert") {
+                        "mut "
+                    } else {
+                        ""
+                    };
+                    format!(
+                        "{{ let {mutable}{items} = {a}; let {index} = blkit_core::list_ops::position({items}.len(), {position})?; {edit} }}"
+                    )
+                }
+                _ => unreachable!(),
+            }
+        }
+        Expr::Call(name, args) if name == "__bl_list_index" => {
+            let items = fresh_local(expr, "__bl_index_items");
+            let position = fresh_local(expr, "__bl_index_position");
+            let length = fresh_local(expr, "__bl_index_length");
+            let offset = fresh_local(expr, "__bl_index_offset");
+            let index = fresh_local(expr, "__bl_index_offset_usize");
+            let base = emit_expr_with(&args[0], program, knowledge);
+            let key = emit_expr_with(&args[1], program, knowledge);
+            format!(
+                "{{ let {items} = {base}; let {position} = {key}; if {position}.fract() != Number::ZERO || {position} == Number::ZERO {{ return Err(String::from(\"invalid list position\")); }} let {length} = Number::from({items}.len()); let {offset} = if {position} > Number::ZERO {{ {position} - Number::ONE }} else {{ {length} + {position} }}; let {index} = rust_decimal::prelude::ToPrimitive::to_usize(&{offset}).ok_or_else(|| String::from(\"list position out of bounds\"))?; {items}.get({index}).cloned().ok_or_else(|| String::from(\"list position out of bounds\"))? }}"
+            )
+        }
+        Expr::Call(name, args) if name == "__bl_list_filter" => {
+            let result = fresh_local(expr, "__bl_filter_result");
+            let item = fresh_local(expr, "__bl_filter_item");
+            let base = emit_expr_with(&args[0], program, knowledge);
+            let mut key = args[1].clone();
+            bind_filter_item(&mut key, &item);
+            let predicate = emit_expr_with(&key, program, knowledge);
+            format!(
+                "{{ let mut {result} = Vec::new(); for {item} in {base} {{ if {predicate} {{ {result}.push({item}); }} }} {result} }}"
+            )
         }
         Expr::Call(name, args) if name == "__bl_index_named" => {
             format!(
@@ -1510,16 +2280,39 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             });
             format!("blkit_core::number_ops::round({value}, {scale}, {name:?})?")
         }
-        Expr::Call(name, args)
-            if matches!(
-                name.as_str(),
-                "min" | "max" | "sum" | "mean" | "median" | "product" | "stddev" | "mode"
-            ) && !knowledge.iter().any(|item| item.name == *name) =>
-        {
-            format!(
-                "blkit_core::number_ops::aggregate({name:?}, &({}))?",
-                emit_expr_with(&args[0], program, knowledge)
-            )
+        Expr::Call(name, args) if name.starts_with("__bl_aggregate_") => {
+            let operation = name.strip_prefix("__bl_aggregate_").unwrap();
+            let (operation, kind) = operation.rsplit_once('_').unwrap();
+            let values = emit_expr_with(&args[0], program, knowledge);
+            match (operation, kind) {
+                ("mode", "number") => format!(
+                    "{{ let mut modes = blkit_core::list_ops::modes(&({values}))?; modes.sort(); modes }}"
+                ),
+                ("mode", "point") => format!(
+                    "blkit_core::list_ops::modes_checked(&({values}), |left, right| blkit_core::temporal::compare_checked(left, right, __bl_temporal_clock.clone()).map(|order| order.is_eq()))?"
+                ),
+                ("mode", _) => format!("blkit_core::list_ops::modes(&({values}))?"),
+                ("min" | "max", _) => {
+                    let compare = if kind == "point" {
+                        "blkit_core::temporal::compare_checked(left, right, __bl_temporal_clock.clone())"
+                    } else {
+                        "Ok(left.cmp(right))"
+                    };
+                    format!(
+                        "blkit_core::list_ops::extreme(&({values}), {}, |left, right| {compare})?",
+                        operation == "max"
+                    )
+                }
+                ("sum" | "mean" | "median", "dt" | "ym") => format!(
+                    "blkit_core::temporal::{}({operation:?}, &({values}))?",
+                    if kind == "dt" {
+                        "aggregate_dt"
+                    } else {
+                        "aggregate_ym"
+                    }
+                ),
+                _ => format!("blkit_core::number_ops::aggregate({operation:?}, &({values}))?"),
+            }
         }
         Expr::Call(name, args)
             if name == "number" && !knowledge.iter().any(|item| item.name == *name) =>
@@ -1587,7 +2380,18 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             };
             match name.as_str() {
                 "string" => format!("blkit_core::string_ops::scalar(&({a}))?"),
-                "stringJoin" => format!("blkit_core::string_ops::join(&({a}), &({b}))"),
+                "stringJoin" => format!(
+                    "blkit_core::string_ops::join_wrapped(&({a}), &({}), &({}), &({}))",
+                    values.get(1).map_or("String::new()", String::as_str),
+                    values.get(2).map_or("String::new()", String::as_str),
+                    values.get(3).map_or("String::new()", String::as_str),
+                ),
+                "zipStringJoin" => format!(
+                    "blkit_core::string_ops::zip_join(&({a}), &({}), &({}), &({}))?",
+                    values.get(1).map_or("String::new()", String::as_str),
+                    values.get(2).map_or("String::new()", String::as_str),
+                    values.get(3).map_or("String::new()", String::as_str),
+                ),
                 "stringLength" => format!("blkit_core::string_ops::string_length(&({a}))"),
                 "indexOf" => format!("blkit_core::string_ops::index_of(&({a}), &({b}))"),
                 "substring" => format!(
@@ -1834,6 +2638,13 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             if op == "+" {
                 return format!(
                     "format!(\"{{}}{{}}\", {}, {})",
+                    emit_expr_with(left, program, knowledge),
+                    emit_expr_with(right, program, knowledge)
+                );
+            }
+            if op == "mod" {
+                return format!(
+                    "blkit_core::number_ops::math(\"modulo\", &[{}, {}])?",
                     emit_expr_with(left, program, knowledge),
                     emit_expr_with(right, program, knowledge)
                 );

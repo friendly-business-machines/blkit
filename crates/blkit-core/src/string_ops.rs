@@ -128,6 +128,86 @@ pub fn join(values: &[String], separator: &str) -> String {
     values.join(separator)
 }
 
+pub fn join_wrapped(values: &[String], separator: &str, prefix: &str, suffix: &str) -> String {
+    format!("{prefix}{}{suffix}", join(values, separator))
+}
+
+pub trait JoinFormat {
+    fn validate(&self, count: usize) -> Result<(), String>;
+    fn at(&self, index: usize) -> &str;
+    fn scalar(&self) -> Option<&str>;
+}
+
+impl JoinFormat for String {
+    fn validate(&self, _: usize) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn at(&self, _: usize) -> &str {
+        self
+    }
+
+    fn scalar(&self) -> Option<&str> {
+        Some(self)
+    }
+}
+
+impl JoinFormat for Vec<String> {
+    fn validate(&self, count: usize) -> Result<(), String> {
+        if self.len() != count {
+            return Err(format!(
+                "zipStringJoin expected {count} formatting strings, got {}",
+                self.len()
+            ));
+        }
+        Ok(())
+    }
+
+    fn at(&self, index: usize) -> &str {
+        &self[index]
+    }
+
+    fn scalar(&self) -> Option<&str> {
+        None
+    }
+}
+
+pub fn zip_join<D: JoinFormat, P: JoinFormat, S: JoinFormat>(
+    columns: &[Vec<String>],
+    delimiter: &D,
+    prefix: &P,
+    suffix: &S,
+) -> Result<Vec<String>, String> {
+    let count = columns.len();
+    delimiter.validate(count.saturating_sub(1))?;
+    prefix.validate(count)?;
+    suffix.validate(count)?;
+    let len = columns.first().map_or(0, Vec::len);
+    if columns.iter().any(|column| column.len() != len) {
+        return Err("zipStringJoin requires equally long columns".into());
+    }
+    let mut result = Vec::with_capacity(len);
+    for row in 0..len {
+        let mut joined = String::new();
+        joined.push_str(prefix.scalar().unwrap_or(""));
+        for (index, column) in columns.iter().enumerate() {
+            if index > 0 {
+                joined.push_str(delimiter.at(index - 1));
+            }
+            if prefix.scalar().is_none() {
+                joined.push_str(prefix.at(index));
+            }
+            joined.push_str(&column[row]);
+            if suffix.scalar().is_none() {
+                joined.push_str(suffix.at(index));
+            }
+        }
+        joined.push_str(suffix.scalar().unwrap_or(""));
+        result.push(joined);
+    }
+    Ok(result)
+}
+
 pub fn before<'a>(text: &'a str, needle: &str) -> &'a str {
     text.split_once(needle).map_or("", |(left, _)| left)
 }

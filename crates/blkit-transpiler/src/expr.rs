@@ -4,11 +4,17 @@ pub enum Expr {
     String(String),
     Bool(bool),
     Name(String),
+    FilterItem,
+    InlinePredicate {
+        binding: String,
+        body: Box<Expr>,
+    },
     Field(Box<Expr>, String),
     Call(String, Vec<Expr>),
     List(Vec<Expr>),
     Iteration {
         every: bool,
+        flatten: bool,
         binding: String,
         source: Box<Expr>,
         body: Box<Expr>,
@@ -168,26 +174,41 @@ impl Parser {
         let mut left = match first.as_str() {
             "true" => Expr::Bool(true),
             "false" => Expr::Bool(false),
-            "every" | "for" => {
-                let binding = self.take().ok_or("missing iteration variable")?;
-                if !super::identifier(&binding)
-                    || matches!(binding.as_str(), "in" | "return" | "satisfies")
-                {
-                    return Err("invalid iteration variable".into());
+            "every" | "some" | "for" => {
+                let mut bindings = Vec::new();
+                loop {
+                    let binding = self.take().ok_or("missing iteration variable")?;
+                    if !super::identifier(&binding)
+                        || matches!(binding.as_str(), "in" | "return" | "satisfies")
+                    {
+                        return Err("invalid iteration variable".into());
+                    }
+                    self.expect("in")?;
+                    bindings.push((binding, self.parse(0)?));
+                    if self.peek() != Some(",") {
+                        break;
+                    }
+                    self.take();
                 }
-                self.expect("in")?;
-                let source = self.parse(0)?;
-                self.expect(if first == "every" {
-                    "satisfies"
-                } else {
+                self.expect(if first == "for" {
                     "return"
+                } else {
+                    "satisfies"
                 })?;
-                let body = self.parse(0)?;
-                Expr::Iteration {
-                    every: first == "every",
-                    binding,
-                    source: Box::new(source),
-                    body: Box::new(body),
+                let mut body = self.parse(0)?;
+                for (index, (binding, source)) in bindings.into_iter().rev().enumerate() {
+                    body = Expr::Iteration {
+                        every: first == "every",
+                        flatten: first != "every" && index > 0,
+                        binding,
+                        source: Box::new(source),
+                        body: Box::new(body),
+                    };
+                }
+                if first == "some" {
+                    Expr::Call("__bl_some".into(), vec![body])
+                } else {
+                    body
                 }
             }
             "not" => Expr::Not(Box::new(self.parse(4)?)),
@@ -276,6 +297,10 @@ impl Parser {
                 Expr::String(first[1..first.len() - 1].into())
             }
             _ if first.starts_with(|c: char| c.is_ascii_digit()) => Expr::Number(first),
+            "." => {
+                self.expect("item")?;
+                Expr::FilterItem
+            }
             _ if super::identifier(&first) => Expr::Name(first),
             _ => return Err(format!("invalid expression token: {first}")),
         };
@@ -319,7 +344,44 @@ impl Parser {
                             if !named.is_empty() {
                                 return Err("positional argument after named argument".into());
                             }
-                            args.push(self.parse(0)?);
+                            if self.peek() == Some("function")
+                                && self
+                                    .tokens
+                                    .get(self.index + 1)
+                                    .is_some_and(|token| token == "(")
+                                && self
+                                    .tokens
+                                    .get(self.index + 2)
+                                    .is_some_and(|token| super::identifier(token))
+                                && self
+                                    .tokens
+                                    .get(self.index + 3)
+                                    .is_some_and(|token| token == ")")
+                            {
+                                if !matches!(name.as_str(), "remove" | "listReplace")
+                                    || args.len() != 1
+                                {
+                                    return Err("inline predicate requires remove or listReplace match argument".into());
+                                }
+                                self.take();
+                                self.expect("(")?;
+                                let binding = self.take().ok_or("missing predicate variable")?;
+                                if !super::identifier(&binding)
+                                    || matches!(
+                                        binding.as_str(),
+                                        "in" | "return" | "satisfies" | "function"
+                                    )
+                                {
+                                    return Err("invalid predicate variable".into());
+                                }
+                                self.expect(")")?;
+                                args.push(Expr::InlinePredicate {
+                                    binding,
+                                    body: Box::new(self.parse(0)?),
+                                });
+                            } else {
+                                args.push(self.parse(0)?);
+                            }
                         }
                         if self.peek() != Some(",") {
                             break;
@@ -353,7 +415,8 @@ impl Parser {
                 Some("==" | "!=" | ">" | ">=" | "<" | "<=" | "in" | "between") => 3,
                 Some("matches") if !self.columns.is_empty() => 3,
                 Some("+" | "-") => 4,
-                Some("*" | "/") => 5,
+                Some("*" | "/" | "mod") => 5,
+                Some(":") => 1,
                 Some("**") => 7,
                 _ => break,
             };
@@ -400,7 +463,9 @@ impl Parser {
                 continue;
             }
             let right = self.parse(priority + u8::from(op != "**"))?;
-            left = if op == "between" {
+            left = if op == ":" {
+                Expr::Call("__bl_sequence".into(), vec![left, right])
+            } else if op == "between" {
                 self.expect("and")?;
                 let upper = self.parse(priority + 1)?;
                 Expr::Binary(

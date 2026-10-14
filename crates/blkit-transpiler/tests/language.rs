@@ -148,6 +148,611 @@ fn decision_expression(input_type: &str, output_type: &str, expression: &str) ->
     )
 }
 
+fn assert_valid_expression(input_type: &str, output_type: &str, expression: &str) {
+    let source = decision_expression(input_type, output_type, expression);
+    let program = parse(&source).unwrap_or_else(|error| panic!("{expression}: {error}"));
+    validate(&program).unwrap_or_else(|error| panic!("{expression}: {error}"));
+}
+
+#[test]
+fn lists_accept_one_based_numeric_indexing() {
+    assert_valid_expression("List<Number>", "Number", "input[1]");
+}
+
+#[test]
+fn lists_accept_negative_indexing() {
+    assert_valid_expression("List<Number>", "Number", "input[-1]");
+}
+
+#[test]
+fn list_filters_bind_explicit_item() {
+    assert_valid_expression("List<Number>", "List<Number>", "input[.item > 2]");
+}
+
+#[test]
+fn empty_list_filter_uses_contextual_element_type() {
+    assert_valid_expression("Number", "List<Number>", "[][.item > 0]");
+}
+
+#[test]
+fn empty_iteration_source_infers_element_from_body_not_result() {
+    assert_valid_expression("Number", "List<Bool>", "for x in [] return x > 0");
+}
+
+#[test]
+fn empty_iteration_source_combines_binding_with_independent_min_call() {
+    assert_valid_expression(
+        "Number",
+        "List<Number>",
+        "for x in [] return x + min([1, 2])",
+    );
+}
+
+#[test]
+fn empty_iteration_source_combines_binding_with_independent_before_call() {
+    assert_valid_expression(
+        "Number",
+        "List<Bool>",
+        "for x in [] return x > 0 and before(0, [1..5])",
+    );
+}
+
+#[test]
+fn empty_iteration_source_uses_all_existing_numeric_aggregates() {
+    for name in ["min", "max", "sum", "mean", "median", "product", "stddev"] {
+        assert_valid_expression(
+            "Number",
+            "List<Number>",
+            &format!("for x in [] return x + {name}([1, 2])"),
+        );
+    }
+    assert!(
+        transpile(&decision_expression(
+            "Number",
+            "List<Number>",
+            "for x in [] return x + mode([1, 2])",
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn empty_iteration_source_constrains_binding_through_min_call() {
+    assert_valid_expression("Number", "List<Number>", "for x in [] return min([x, 2])");
+}
+
+#[test]
+fn empty_iteration_source_constrains_binding_through_before_call() {
+    assert_valid_expression(
+        "Number",
+        "List<Bool>",
+        "for x in [] return before(0, [x..5])",
+    );
+}
+
+#[test]
+fn empty_iteration_source_preserves_overloaded_range_ambiguity() {
+    let source = decision_expression(
+        "Number",
+        "List<Bool>",
+        "for x in [] return before(x, [1..5])",
+    );
+    let error = validate(&parse(&source).unwrap()).unwrap_err();
+    assert!(error.contains("ambiguous"), "{error}");
+}
+
+#[test]
+fn empty_iteration_source_supports_existing_range_relation_shapes() {
+    for relation in [
+        "before",
+        "after",
+        "meets",
+        "metBy",
+        "overlaps",
+        "overlapsBefore",
+        "overlapsAfter",
+        "coincides",
+    ] {
+        assert_valid_expression(
+            "Number",
+            "List<Bool>",
+            &format!("for x in [] return {relation}([x..5], [1..5])"),
+        );
+    }
+    for relation in ["includes", "startedBy", "finishedBy"] {
+        assert_valid_expression(
+            "Number",
+            "List<Bool>",
+            &format!("for x in [] return {relation}([1..5], x)"),
+        );
+    }
+    for relation in ["during", "starts", "finishes"] {
+        assert_valid_expression(
+            "Number",
+            "List<Bool>",
+            &format!("for x in [] return {relation}(x, [1..5])"),
+        );
+    }
+}
+
+#[test]
+fn empty_iteration_source_constrains_calendar_target() {
+    assert_valid_expression(
+        "Calendar",
+        "List<Calendar>",
+        "for x in [] return calendarKeep(input, [date(\"2025-04-18\"), [x..date(\"2025-04-19\")]], rangeMatch=\"overlap\")",
+    );
+}
+
+#[test]
+fn empty_iteration_source_constrains_calendar_option() {
+    assert_valid_expression(
+        "Calendar",
+        "List<Calendar>",
+        "for x in [] return calendarMerge([input], dedupeBy=x)",
+    );
+}
+
+#[test]
+fn empty_iteration_source_constrains_calendar_pattern() {
+    assert_valid_expression(
+        "Calendar",
+        "List<Calendar>",
+        "for x in [] return calendarDrop(input, pattern(x))",
+    );
+}
+
+#[test]
+fn empty_iteration_source_rejects_overloaded_calendar_target() {
+    let source = decision_expression(
+        "Calendar",
+        "List<Calendar>",
+        "for x in [] return calendarKeep(input, x)",
+    );
+    let error = validate(&parse(&source).unwrap()).unwrap_err();
+    assert!(error.contains("ambiguous"), "{error}");
+}
+
+#[test]
+fn empty_iteration_source_rejects_invalid_calendar_option() {
+    let source = decision_expression(
+        "Calendar",
+        "List<Calendar>",
+        "for x in [] return calendarMerge([input], unknown=x)",
+    );
+    assert!(validate(&parse(&source).unwrap()).is_err());
+}
+
+#[test]
+fn empty_iteration_source_uses_result_type_to_disambiguate_zero_minus_duration() {
+    assert_valid_expression("Number", "List<DTDuration>", "for x in [] return 0 - x");
+}
+
+#[test]
+fn empty_iteration_source_uses_nested_numeric_result_constraint() {
+    assert_valid_expression("Number", "List<Bool>", "for x in [] return x * 2 > 0");
+}
+
+#[test]
+fn empty_iteration_source_uses_knowledge_parameter_type() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input input: Number; output result: List<Bool> = value; knowledge positive {{ input n: Number; output result: Bool; expression n > 0; }} literal_expression value {{ output result: List<Bool>; expression for x in [] return positive(x); }} }}"
+    );
+    validate(&parse(&source).unwrap()).unwrap();
+}
+
+#[test]
+fn empty_iteration_source_record_field_is_ambiguous_with_dictionary() {
+    let source = format!(
+        "{HEADER}Order = {{active: Bool}}; decision_task check {{ input input: Number; output result: List<Bool> = value; literal_expression value {{ output result: List<Bool>; expression for x in [] return x.active; }} }}"
+    );
+    let error = validate(&parse(&source).unwrap()).unwrap_err();
+    assert!(error.contains("ambiguous"), "{error}");
+}
+
+#[test]
+fn empty_quantifiers_infer_binding_from_boolean_body() {
+    assert_valid_expression("Number", "Bool", "every x in [] satisfies x > 0");
+    assert_valid_expression("Number", "Bool", "some x in [] satisfies odd(x)");
+}
+
+#[test]
+fn empty_iteration_source_uses_expected_type_for_identity_body() {
+    assert_valid_expression("Number", "List<Number>", "for x in [] return x");
+}
+
+#[test]
+fn empty_iteration_source_rejects_multiple_record_matches() {
+    let source = format!(
+        "{HEADER}Order = {{active: Bool}}; Account = {{active: Bool}}; decision_task check {{ input input: Number; output result: List<Bool> = value; literal_expression value {{ output result: List<Bool>; expression for x in [] return x.active; }} }}"
+    );
+    let error = validate(&parse(&source).unwrap()).unwrap_err();
+    assert!(error.contains("ambiguous"), "{error}");
+}
+
+#[test]
+fn empty_cartesian_binding_is_constrained_by_later_source() {
+    assert_valid_expression(
+        "Number",
+        "List<Number>",
+        "for x in [], y in [x, x + 1] return 1",
+    );
+}
+
+#[test]
+fn empty_nested_binding_shadows_outer_binding_without_losing_its_type() {
+    assert_valid_expression(
+        "Number",
+        "List<List<Bool>>",
+        "for x in [] return [x > 0, (for x in [true] return x)[1]]",
+    );
+}
+
+#[test]
+fn empty_iteration_source_unused_when_dictionary_key_shadows_binding() {
+    assert_valid_expression(
+        "Number",
+        "List<Number>",
+        "for x in [] return {x: 1, y: x}.y",
+    );
+}
+
+#[test]
+fn empty_iteration_source_rejects_overloaded_string_argument() {
+    let source = decision_expression("Number", "List<String>", "for x in [] return string(x)");
+    let error = validate(&parse(&source).unwrap()).unwrap_err();
+    assert!(error.contains("ambiguous"), "{error}");
+}
+
+#[test]
+fn empty_iteration_source_rejects_open_dictionary_element_type() {
+    let source = decision_expression("Number", "List<Number>", "for x in [] return size(x)");
+    let error = validate(&parse(&source).unwrap()).unwrap_err();
+    assert!(error.contains("ambiguous"), "{error}");
+}
+
+#[test]
+fn empty_iteration_source_rejects_ambiguous_binding() {
+    let source = decision_expression("Number", "List<Bool>", "for x in [] return x == x");
+    let error = validate(&parse(&source).unwrap()).unwrap_err();
+    assert!(error.contains("ambiguous"), "{error}");
+}
+
+#[test]
+fn list_filters_parse_mod_at_multiplication_precedence() {
+    use blkit::expr::Expr;
+
+    let expression = "input[.item + 1 mod 2 == 0]";
+    assert_valid_expression("List<Number>", "List<Number>", expression);
+
+    let Expr::Binary(left, equality, _) = blkit::expr::expression(".item + 1 mod 2 == 0").unwrap()
+    else {
+        panic!("expected equality");
+    };
+    assert_eq!(equality, "==");
+    let Expr::Binary(_, addition, right) = *left else {
+        panic!("expected addition");
+    };
+    assert_eq!(addition, "+");
+    assert!(matches!(*right, Expr::Binary(_, ref operator, _) if operator == "mod"));
+}
+
+#[test]
+fn lists_of_dictionaries_project_typed_fields() {
+    let decision = decision_expression("List<Order>", "List<String>", "input.name");
+    let source = format!(
+        "{HEADER}Order = {{name: String, amount: Number}};{}",
+        decision.strip_prefix(HEADER).unwrap()
+    );
+    let program = parse(&source).unwrap();
+    validate(&program).unwrap();
+}
+
+#[test]
+fn lists_support_structural_equality_and_scalar_membership() {
+    assert_valid_expression("List<Number>", "Bool", "input == [1, 2]");
+    assert_valid_expression("List<Number>", "Bool", "2 in input");
+}
+
+#[test]
+fn some_accepts_multiple_list_bindings() {
+    assert_valid_expression(
+        "Number",
+        "Bool",
+        "some x in [1, 2], y in [3, 4] satisfies x + y > 5",
+    );
+}
+
+#[test]
+fn iteration_enum_variants_and_bound_names_have_distinct_scopes() {
+    let header = format!("{HEADER}enum Status:\n  ready;\n");
+    for (expression, output, valid) in [
+        ("for x in [Status.ready] return x", "List<Status>", true),
+        (
+            "for Status in [{ready: true}] return Status.ready",
+            "List<Bool>",
+            true,
+        ),
+        ("for x in [Status.missing] return x", "List<Status>", false),
+        ("for Status in [1] return Status.ready", "List<Bool>", false),
+    ] {
+        let source = format!(
+            "{header}decision_task check {{ input input: Number; output result: {output} = value; literal_expression value {{ output result: {output}; expression {expression}; }} }}"
+        );
+        let result = validate(&parse(&source).unwrap());
+        assert_eq!(result.is_ok(), valid, "{expression}: {result:?}");
+    }
+    let missing = format!(
+        "{header}decision_task check {{ input input: Number; output result: Status = value; literal_expression value {{ output result: Status; expression Status.missing; }} }}"
+    );
+    let error = validate(&parse(&missing).unwrap()).unwrap_err();
+    assert!(error.contains("unknown enum variant"), "{error}");
+}
+
+#[test]
+fn later_iteration_sources_can_use_earlier_bindings() {
+    assert_valid_expression(
+        "Number",
+        "List<Number>",
+        "for x in [1, 2], y in [x, x + 1] return y",
+    );
+}
+
+#[test]
+fn every_accepts_multiple_list_bindings() {
+    assert_valid_expression(
+        "Number",
+        "Bool",
+        "every x in [1, 2], y in [3, 4] satisfies x + y >= 4",
+    );
+}
+
+#[test]
+fn colon_expressions_produce_numeric_lists() {
+    assert_valid_expression("Number", "List<Number>", "1:3");
+}
+
+#[test]
+fn leading_filter_item_is_rejected_outside_filter_predicates() {
+    let source = decision_expression("Number", "Number", ".item");
+    assert!(
+        parse(&source)
+            .and_then(|program| validate(&program))
+            .is_err()
+    );
+}
+
+#[test]
+fn list_predicates_and_projected_fields_are_checked() {
+    for expression in [
+        "input[.item.name]",
+        "input[.item + 1 > 0 and .item.missing]",
+    ] {
+        let source = decision_expression("List<Number>", "List<Number>", expression);
+        assert!(
+            parse(&source)
+                .and_then(|program| validate(&program))
+                .is_err(),
+            "{expression}"
+        );
+    }
+    let source = format!(
+        "{HEADER}Order = {{name: String}};{}",
+        decision_expression("List<Order>", "List<Number>", "input.missing")
+            .strip_prefix(HEADER)
+            .unwrap()
+    );
+    assert!(
+        parse(&source)
+            .and_then(|program| validate(&program))
+            .is_err()
+    );
+}
+
+#[test]
+fn unbound_plain_item_is_not_the_filter_element() {
+    let source = decision_expression("List<Number>", "List<Number>", "input[item > 1]");
+    assert!(
+        parse(&source)
+            .and_then(|program| validate(&program))
+            .is_err()
+    );
+}
+
+#[test]
+fn plain_item_in_filter_uses_ordinary_input() {
+    let source = decision_expression("Bool", "List<Number>", "[1,2][item]")
+        .replace("input input: Bool", "input item: Bool");
+    let program = parse(&source).unwrap();
+    validate(&program).unwrap();
+}
+
+#[test]
+fn literal_dictionary_projection_rejects_known_missing_fields() {
+    let source = decision_expression("Number", "List<Number>", "[{a: 1}, {b: 2}].a");
+    let error = parse(&source)
+        .and_then(|program| validate(&program))
+        .unwrap_err();
+    assert!(error.contains("a"), "{error}");
+}
+
+#[test]
+fn unsupported_list_date_field_fails_validation() {
+    let source = decision_expression("List<Date>", "List<Number>", "input.year");
+    assert!(
+        parse(&source)
+            .and_then(|program| validate(&program))
+            .is_err()
+    );
+}
+
+#[test]
+fn unsupported_nested_list_field_fails_validation() {
+    let source = decision_expression(
+        "List<List<Dictionary<Number>>>",
+        "List<List<Number>>",
+        "input.score",
+    );
+    assert!(
+        parse(&source)
+            .and_then(|program| validate(&program))
+            .is_err()
+    );
+}
+
+#[test]
+fn decision_nodes_can_be_named_item() {
+    let literal = format!(
+        "{HEADER}decision_task check {{ input input: Number; output result: Number = item; literal_expression item {{ output result: Number; expression input; }} }}"
+    );
+    let context = literal.replace(
+        "literal_expression item { output result: Number; expression input; }",
+        "context item { output result: Number; result input; }",
+    );
+    let table = format!(
+        "{HEADER}decision_task check {{ input input: Number; output result: Number = item; decision_table item {{ output result: Number; policy FIRST; input value: Number = input; output result: Number; rule value > 0 -> 1; default 0; }} }}"
+    );
+    for source in [literal, context, table] {
+        blkit::transpile(&source).unwrap();
+    }
+}
+
+#[test]
+fn decision_field_filter_accepts_explicit_item_and_forward_declared_record() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input orders: List<Order>; output result: List<Order> = selected; literal_expression selected {{ output result: List<Order>; expression orders[.item.active];}}}}\nOrder = {{active: Bool}};"
+    );
+    blkit::transpile(&source).unwrap();
+}
+
+#[test]
+fn decision_boolean_call_filter_accepts_explicit_item() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input input: List<Number>; output result: List<Number> = selected; knowledge positive {{ input value: Number; output result: Bool; expression value > 0; }} literal_expression selected {{ output result: List<Number>; expression input[positive(.item)]; }} }}"
+    );
+    blkit::transpile(&source).unwrap();
+}
+
+#[test]
+fn decision_numeric_input_named_item_indexes_lists() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input item: Number; output result: Number = selected; literal_expression selected {{ output result: Number; expression [4,5][item]; }} }}"
+    );
+    blkit::transpile(&source).unwrap();
+}
+
+#[test]
+fn iteration_binding_named_item_remains_valid() {
+    assert_valid_expression(
+        "Number",
+        "List<Number>",
+        "for item in [1,2] return item + 1",
+    );
+}
+
+#[test]
+fn context_entry_named_item_can_hold_an_explicit_item_filter() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input input: Number; output result: List<Number> = value; context value {{ output result: List<Number>; entry item: List<Number> = [1,2][.item > 1]; result item; }} }}"
+    );
+    blkit::transpile(&source).unwrap();
+}
+
+#[test]
+fn context_entry_named_item_allows_boolean_call_filters() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input input: Number; output result: List<Number> = value; context value {{ output result: List<Number>; entry item: List<Number> = [1,2][odd(.item)]; result item; }} }}"
+    );
+    blkit::transpile(&source).unwrap();
+}
+
+#[test]
+fn explicit_filter_item_is_not_a_forward_context_dependency() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input input: Number; output result: Number = value; context value {{ output result: Number; entry item: Number = sum(selected); entry selected: List<Number> = [1,2][odd(.item)]; result item; }} }}"
+    );
+    blkit::transpile(&source).unwrap();
+}
+
+#[test]
+fn explicit_filter_item_field_is_not_a_forward_context_dependency() {
+    let source = format!(
+        "{HEADER}Order = {{active: Bool}}; decision_task check {{ input orders: List<Order>; output result: List<Order> = value; context value {{ output result: List<Order>; entry item: List<Order> = selected; entry selected: List<Order> = orders[.item.active]; result item; }} }}"
+    );
+    blkit::transpile(&source).unwrap();
+}
+
+#[test]
+fn explicit_filter_item_preserves_plain_item_numeric_dependency() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input input: Number; output result: Number = value; context value {{ output result: Number; entry selected: Number = [4,5][item]; entry subtotal: Number = sum(values); entry item: Number = subtotal; entry values: List<Number> = [1,2][odd(.item)]; result selected; }} }}"
+    );
+    blkit::transpile(&source).unwrap();
+}
+
+#[test]
+fn context_numeric_item_position_cycle_is_rejected() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input input: Number; output result: Number = value; context value {{ output result: Number; entry item: Number = selected; entry selected: Number = [4,5][item]; result selected; }} }}"
+    );
+    assert!(blkit::transpile(&source).is_err());
+}
+
+#[test]
+fn context_numeric_item_position_keeps_forward_entry_dependency() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input input: Number; output result: Number = value; context value {{ output result: Number; entry selected: Number = [4,5][item]; entry item: Number = input; result selected; }} }}"
+    );
+    blkit::transpile(&source).unwrap();
+}
+
+#[test]
+fn decision_numeric_list_position_keeps_its_dependency() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input input: List<Number>; output result: Number = selected; literal_expression position {{ output result: Number; expression 1; }} literal_expression selected {{ output result: Number; expression input[position]; }} }}"
+    );
+    blkit::transpile(&source).unwrap();
+}
+
+#[test]
+fn list_literals_reject_mixed_and_null_elements() {
+    for expression in ["[1, \"two\"]", "[1, null]"] {
+        let source = decision_expression("Number", "List<Number>", expression);
+        assert!(
+            parse(&source)
+                .and_then(|program| validate(&program))
+                .is_err(),
+            "accepted: {expression}"
+        );
+    }
+}
+
+#[test]
+fn mixed_list_literals_are_rejected_from_inferred_element_type() {
+    let expression = "[1, \"two\"] == [1, 2]";
+    let source = decision_expression("Number", "Bool", expression);
+    let error = parse(&source)
+        .and_then(|program| validate(&program))
+        .expect_err("accepted a mixed list literal");
+    assert!(
+        error.contains("List<Number> element has type String"),
+        "{expression}: {error}"
+    );
+}
+
+#[test]
+fn dictionary_lookup_ranges_and_record_item_fields_remain_typed() {
+    let source = format!(
+        "{HEADER}Order = {{total: Number, item: Number, \"my key\": String}};
+         decision_task lookup {{ input input: Order; output result: String = value; literal_expression value {{ output result: String; expression input[\"my key\"]; }} }}
+         decision_task field {{ input input: Order; output result: Number = value; literal_expression value {{ output result: Number; expression input.total; }} }}
+         decision_task item_field {{ input order: Order; output result: Number = value; literal_expression value {{ output result: Number; expression order.item; }} }}
+         decision_task range {{ input input: Number; output result: Bool = value; literal_expression value {{ output result: Bool; expression input in [1..5]; }} }}"
+    );
+    let program = parse(&source).unwrap();
+    validate(&program).unwrap();
+}
+
 #[test]
 fn declarations_and_typed_process_parse() {
     let source = format!(
@@ -355,6 +960,90 @@ fn financial_dates_reject_invalid_basis_types_and_date_only_include_time() {
 }
 
 #[test]
+fn temporal_calendar_calls_keep_argument_errors_after_shared_typing() {
+    for (input, output, expression, message) in [
+        (
+            "Date",
+            "Number",
+            "daysBetween(input, input, true)",
+            "includeTime requires DateTime and Bool",
+        ),
+        (
+            "Date",
+            "String",
+            "financialYear(input, true)",
+            "invalid financial year basis type",
+        ),
+        (
+            "Date",
+            "Number",
+            "daysBetween(input, date(2025, 1, 1), missing)",
+            "unknown name: missing",
+        ),
+        (
+            "Calendar",
+            "CalendarEntry",
+            "next(input, date(2025, 1, 1), true)",
+            "numeric n",
+        ),
+    ] {
+        let error = transpile(&decision_expression(input, output, expression)).unwrap_err();
+        assert!(error.contains(message), "{expression}: {error}");
+    }
+}
+
+#[test]
+fn calendar_date_calls_preserve_specific_argument_diagnostics() {
+    for (input, output, expression, message) in [
+        (
+            "Date",
+            "Bool",
+            "isPublicHoliday(input, 7)",
+            "isPublicHoliday requires Calendar",
+        ),
+        (
+            "Date",
+            "Number",
+            "weekdaysBetween(input, datetime(\"2025-04-18T12:00:00\"))",
+            "weekdaysBetween requires two matching points",
+        ),
+        (
+            "Date",
+            "Date",
+            "firstDayOfWeekInMonth(input, true)",
+            "firstDayOfWeekInMonth requires Number",
+        ),
+        (
+            "Date",
+            "Date",
+            "firstDayOfWeekInMonth(input)",
+            "firstDayOfWeekInMonth requires 1 Number arguments",
+        ),
+        (
+            "Calendar",
+            "Date",
+            "nextBusinessDay(date(\"2025-04-18\"), input, 7)",
+            "strictCalendarRange requires Bool",
+        ),
+        (
+            "Calendar",
+            "Date",
+            "nextBusinessDay(date(\"2025-04-18\"), input, input, true)",
+            "strictCalendarRange requires Bool",
+        ),
+        (
+            "Date",
+            "Bool",
+            "isWeekend(input, 1)",
+            "invalid isWeekend argument count",
+        ),
+    ] {
+        let error = transpile(&decision_expression(input, output, expression)).unwrap_err();
+        assert!(error.contains(message), "{expression}: {error}");
+    }
+}
+
+#[test]
 fn calendar_named_arguments_reject_unknown_duplicate_and_misplaced_options() {
     for expression in [
         "calendarDrop(input, date(\"2025-04-18\"), unknown=\"overlap\")",
@@ -371,6 +1060,20 @@ fn calendar_named_arguments_reject_unknown_duplicate_and_misplaced_options() {
     ] {
         let source = decision_expression("Calendar", "Calendar", expression);
         assert!(transpile(&source).is_err(), "accepted: {expression}");
+    }
+}
+
+#[test]
+fn calendar_target_rejects_typed_list_variables() {
+    for name in ["calendarDrop", "calendarKeep"] {
+        let source = format!(
+            "{HEADER}decision_task check {{ input c: Calendar; input targets: List<Date>; output result: Calendar = out; literal_expression out {{ output result: Calendar; expression {name}(c, targets); }} }}"
+        );
+        let error = transpile(&source).unwrap_err();
+        assert!(
+            error.contains("invalid calendar target: List<Date>"),
+            "{name}: {error}"
+        );
     }
 }
 
@@ -931,9 +1634,7 @@ fn numeric_point_interval_relations_validate_overloads() {
 
 #[test]
 fn numeric_aggregates_require_one_list_and_infer_empty_lists() {
-    for name in [
-        "min", "max", "sum", "mean", "median", "product", "stddev", "mode",
-    ] {
+    for name in ["min", "max", "sum", "mean", "median", "product", "stddev"] {
         for argument in ["[1, 2, 3]", "[]"] {
             let expression = format!("{name}({argument})");
             assert!(
@@ -948,6 +1649,88 @@ fn numeric_aggregates_require_one_list_and_infer_empty_lists() {
                 "accepted: {expression}"
             );
         }
+    }
+}
+
+#[test]
+fn aggregate_overloads_validate_result_and_element_types() {
+    for (input, output, expression) in [
+        ("List<Number>", "List<Number>", "mode(input)"),
+        ("List<Number>", "List<Number>", "mode([])"),
+        ("List<String>", "List<String>", "mode(input)"),
+        ("List<Bool>", "List<Bool>", "mode(input)"),
+        ("List<Calendar>", "List<Calendar>", "mode(input)"),
+        ("List<List<Number>>", "List<List<Number>>", "mode(input)"),
+        ("List<Value>", "List<Value>", "mode(input)"),
+        ("List<DTDuration>", "DTDuration", "sum(input)"),
+        ("List<DTDuration>", "DTDuration", "sum([])"),
+        ("List<DTDuration>", "DTDuration", "mean(input)"),
+        ("List<DTDuration>", "DTDuration", "median(input)"),
+        ("List<YMDuration>", "YMDuration", "sum(input)"),
+        ("List<YMDuration>", "YMDuration", "sum([])"),
+        ("List<YMDuration>", "YMDuration", "mean(input)"),
+        ("List<YMDuration>", "YMDuration", "median(input)"),
+        ("List<Number>", "Number", "min(input)"),
+        ("List<String>", "String", "max(input)"),
+        ("List<Date>", "Date", "min(input)"),
+        ("List<Time>", "Time", "max(input)"),
+        ("List<DateTime>", "DateTime", "min(input)"),
+        ("List<DTDuration>", "DTDuration", "max(input)"),
+        ("List<YMDuration>", "YMDuration", "min(input)"),
+        ("List<Number>", "Number", "product(input)"),
+        ("List<Number>", "Number", "stddev(input)"),
+    ] {
+        assert_valid_expression(input, output, expression);
+    }
+}
+
+#[test]
+fn aggregates_preserve_empty_iteration_result_constraints() {
+    assert_valid_expression("Number", "Number", "sum(for x in [] return x)");
+    assert_valid_expression("Number", "List<Number>", "mode(for x in [] return x)");
+    assert_valid_expression(
+        "Number",
+        "DTDuration",
+        "sum(for x in [] return x + dtDuration(\"PT1H\"))",
+    );
+}
+
+#[test]
+fn scalar_mode_outputs_are_rejected() {
+    assert!(
+        transpile(&decision_expression(
+            "List<Number>",
+            "Number",
+            "mode(input)"
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn aggregate_invalid_inputs_are_rejected() {
+    for (input, output, expression) in [
+        ("Number", "Number", "product(input)"),
+        ("Number", "Number", "stddev(input, [1])"),
+        ("List<String>", "Number", "product(input)"),
+        ("List<DTDuration>", "Number", "stddev(input)"),
+        ("List<Bool>", "Bool", "min(input)"),
+        ("List<Number>", "Number", "sum([1, \"x\"])"),
+        (
+            "List<DTDuration>",
+            "DTDuration",
+            "sum([dtDuration(\"PT1H\"), ymDuration(\"P1M\")])",
+        ),
+        (
+            "List<YMDuration>",
+            "YMDuration",
+            "median([ymDuration(\"P1M\"), dtDuration(\"PT1H\")])",
+        ),
+    ] {
+        assert!(
+            transpile(&decision_expression(input, output, expression)).is_err(),
+            "accepted: {expression}"
+        );
     }
 }
 
@@ -1146,5 +1929,842 @@ fn string_builtin_signatures_and_literal_regexes_are_validated() {
         let source = decision_expression("String", "String", expr);
         let error = validate(&parse(&source).unwrap()).unwrap_err();
         assert!(error.contains(diagnostic), "{expr}: {error}");
+    }
+}
+
+// Each signature is a separate test so a missing overload does not hide the next one.
+macro_rules! list_signature {
+    ($name:ident, $output:literal, $expression:literal) => {
+        #[test]
+        fn $name() {
+            assert_valid_expression("List<Number>", $output, $expression);
+        }
+    };
+}
+
+list_signature!(list_count_accepts_typed_list, "Number", "count(input)");
+list_signature!(list_is_empty_accepts_typed_list, "Bool", "isEmpty(input)");
+list_signature!(
+    list_contains_accepts_element,
+    "Bool",
+    "listContains(input, 2)"
+);
+list_signature!(
+    list_index_of_returns_all_positions,
+    "List<Number>",
+    "indexOf(input, 2)"
+);
+#[test]
+fn list_index_of_infers_empty_source_from_match() {
+    assert_valid_expression("List<Number>", "List<Number>", "indexOf([], 2)");
+    assert_valid_expression("List<Number>", "List<Number>", "indexOf([], input)");
+    let source = decision_expression("Number", "List<Number>", "indexOf([], [])");
+    assert!(validate(&parse(&source).unwrap()).is_err());
+}
+list_signature!(
+    sublist_accepts_negative_start_and_length,
+    "List<Number>",
+    "sublist(input, -2, 1)"
+);
+#[test]
+fn list_inspection_rejects_invalid_element_and_position_types() {
+    for (expression, diagnostic) in [
+        ("listContains([1,2], \"2\")", "Number"),
+        ("indexOf([1,2], \"2\")", "Number"),
+        ("sublist([1,2], \"1\")", "Number"),
+        ("sublist([1,2], 1, \"2\")", "Number"),
+        ("listContains([1], 1, 1)", "count"),
+        ("sublist([1,2])", "count"),
+    ] {
+        let source = decision_expression("List<Number>", "List<Number>", expression);
+        let error = validate(&parse(&source).unwrap()).unwrap_err();
+        assert!(error.contains(diagnostic), "{expression}: {error}");
+    }
+}
+
+list_signature!(
+    append_accepts_multiple_elements,
+    "List<Number>",
+    "append(input, 2, 3)"
+);
+list_signature!(
+    prepend_accepts_multiple_elements,
+    "List<Number>",
+    "prepend(input, 2, 3)"
+);
+list_signature!(
+    concatenate_accepts_multiple_lists,
+    "List<Number>",
+    "concatenate(input, [3])"
+);
+list_signature!(
+    union_accepts_multiple_lists,
+    "List<Number>",
+    "union(input, [3])"
+);
+list_signature!(
+    list_reverse_retains_string_overload,
+    "List<Number>",
+    "reverse(input)"
+);
+list_signature!(
+    flatten_recurses_over_uniform_nested_lists,
+    "List<Number>",
+    "flatten([[[1,2]],[[3,4]]])"
+);
+#[test]
+fn list_transformations_infer_empty_sources_and_reject_mixed_depths() {
+    for (input, output, expression) in [
+        ("List<Number>", "List<Number>", "append([], input[1])"),
+        ("List<Number>", "List<Number>", "prepend([], input[1])"),
+        ("List<Number>", "List<Number>", "concatenate([], input)"),
+        ("List<Number>", "List<Number>", "union([], input)"),
+        ("List<Number>", "List<Number>", "reverse([])"),
+        ("List<List<Number>>", "List<Number>", "flatten(input)"),
+        (
+            "List<Number>",
+            "List<List<Number>>",
+            "for x in [] return append([1], x)",
+        ),
+    ] {
+        assert_valid_expression(input, output, expression);
+    }
+    for expression in [
+        "flatten([[1,2],[[3]]])",
+        "flatten([1,2], [3])",
+        "append([1], [2])",
+        "concatenate([1], [[2]])",
+        "union([1], [[2]])",
+    ] {
+        let source = decision_expression("List<Number>", "List<Number>", expression);
+        assert!(validate(&parse(&source).unwrap()).is_err(), "{expression}");
+    }
+    let source = decision_expression(
+        "List<Number>",
+        "List<List<Number>>",
+        "for x in [] return flatten([x])",
+    );
+    assert!(
+        validate(&parse(&source).unwrap()).is_err(),
+        "flatten must not guess the type of a used empty binding"
+    );
+}
+
+list_signature!(
+    insert_before_accepts_one_based_position,
+    "List<Number>",
+    "insertBefore(input, 1, 9)"
+);
+list_signature!(
+    insert_after_spreads_list_argument,
+    "List<Number>",
+    "insertAfter(input, 1, [2,3])"
+);
+list_signature!(
+    remove_accepts_one_based_position,
+    "List<Number>",
+    "remove(input, 1)"
+);
+list_signature!(
+    list_replace_accepts_one_based_position,
+    "List<Number>",
+    "listReplace(input, 1, 9)"
+);
+#[test]
+fn positional_list_insertion_infers_nested_empty_binding_as_spread() {
+    for name in ["insertBefore", "insertAfter"] {
+        assert_valid_expression(
+            "List<List<Number>>",
+            "List<List<List<Number>>>",
+            &format!("for x in [] return {name}(input, 1, x)"),
+        );
+    }
+}
+
+#[test]
+fn positional_list_editing_checks_types_and_arity() {
+    for expression in [
+        "insertBefore(input, -1, 9)",
+        "insertAfter(input, -1, [2,3])",
+        "remove(input, -1)",
+        "listReplace(input, -1, 9)",
+        "insertBefore([], 1, input[1])",
+    ] {
+        assert_valid_expression("List<Number>", "List<Number>", expression);
+    }
+    assert_valid_expression(
+        "List<List<Number>>",
+        "List<List<Number>>",
+        "insertBefore(input, 1, [[2,3]])",
+    );
+    for expression in [
+        "for p in [] return insertBefore(input, p, 5)",
+        "for p in [] return insertAfter(input, p, [5])",
+        "for p in [] return remove(input, p)",
+        "for p in [] return listReplace(input, p, 5)",
+    ] {
+        assert_valid_expression("List<Number>", "List<List<Number>>", expression);
+    }
+    for expression in [
+        "insertBefore(input, 1, [2,3])",
+        "insertAfter(input, 1, [2,3])",
+        "insertBefore(input, 1, input[1])",
+        "insertAfter(input, 1, input[1])",
+    ] {
+        let source = decision_expression("List<List<Number>>", "List<List<Number>>", expression);
+        let error = validate(&parse(&source).unwrap()).unwrap_err();
+        assert!(error.contains("List"), "{expression}: {error}");
+    }
+    for (expression, diagnostic) in [
+        ("remove(input, \"1\")", "Number"),
+        ("insertBefore(input, \"1\", 2)", "Number"),
+        ("insertAfter(input, 1, [\"2\"])", "List<Number>"),
+        ("listReplace(input, 1, [2])", "Number"),
+        ("insertBefore(1, 1, 2)", "List"),
+        ("insertAfter(1, 1, 2)", "List"),
+        ("remove(1, 1)", "List"),
+        ("listReplace(1, 1, 2)", "List"),
+        ("insertBefore(input, 1)", "argument count"),
+        ("insertAfter(input, 1, 2, 3)", "argument count"),
+        ("remove(input)", "argument count"),
+        ("remove(input, 1, 2)", "argument count"),
+        ("listReplace(input, 1)", "argument count"),
+        ("listReplace(input, 1, 2, 3)", "argument count"),
+    ] {
+        let source = decision_expression("List<Number>", "List<Number>", expression);
+        let error = validate(&parse(&source).unwrap()).unwrap_err();
+        assert!(error.contains(diagnostic), "{expression}: {error}");
+    }
+}
+
+#[test]
+fn inline_predicate_parses_only_as_edit_match_argument() {
+    for text in [
+        "remove(input, function(i) i == 2)",
+        "listReplace(input, function(i) i < 3, 9)",
+    ] {
+        assert!(blkit::expr::expression(text).is_ok(), "{text}");
+    }
+    for text in [
+        "function(i) i == 2",
+        "append(input, function(i) i == 2)",
+        "remove(function(i) i == 2, 1)",
+        "remove(input, function() true)",
+        "remove(input, function(i,j) true)",
+        "remove(input, function(1) true)",
+    ] {
+        assert!(blkit::expr::expression(text).is_err(), "accepted {text}");
+    }
+}
+
+#[test]
+fn inline_predicate_accepts_unary_minus_body() {
+    let text = "remove(input, function(i) -i < 0)";
+    let expr = blkit::expr::expression(text).unwrap();
+    assert!(
+        matches!(expr, blkit::expr::Expr::Call(_, args) if matches!(&args[1], blkit::expr::Expr::InlinePredicate { .. })),
+        "{text}"
+    );
+    assert_valid_expression("List<Number>", "List<Number>", text);
+}
+
+#[test]
+fn inline_predicate_accepts_list_literal_body() {
+    let text = "listReplace(input, function(i) [i] == [i], 9)";
+    let expr = blkit::expr::expression(text).unwrap();
+    assert!(
+        matches!(expr, blkit::expr::Expr::Call(_, args) if matches!(&args[1], blkit::expr::Expr::InlinePredicate { .. })),
+        "{text}"
+    );
+    assert_valid_expression("List<Number>", "List<Number>", text);
+}
+
+#[test]
+fn inline_predicate_rejects_reserved_rust_bindings() {
+    for binding in ["type", "match", "fn", "_"] {
+        let text = format!("remove(input, function({binding}) {binding} > 0)");
+        let source = decision_expression("List<Number>", "List<Number>", &text);
+        let error = validate(&parse(&source).unwrap()).unwrap_err();
+        assert!(
+            error.contains("reserved Rust identifier"),
+            "{text}: {error}"
+        );
+    }
+}
+
+#[test]
+fn function_header_requires_predicate_body_in_edit_match_argument() {
+    for text in [
+        "remove(input, function(i))",
+        "listReplace(input, function(i), 9)",
+    ] {
+        assert!(blkit::expr::expression(text).is_err(), "accepted {text}");
+    }
+    let text = "remove(input, function(i) - 1)";
+    let expr = blkit::expr::expression(text).unwrap();
+    assert!(
+        matches!(expr, blkit::expr::Expr::Call(_, args) if matches!(&args[1], blkit::expr::Expr::InlinePredicate { .. })),
+        "{text}"
+    );
+    let source = decision_expression("List<Number>", "List<Number>", text);
+    assert!(validate(&parse(&source).unwrap()).is_err());
+    for text in ["function(i)", "remove(input, function(i + 1))"] {
+        let source = decision_expression("List<Number>", "List<Number>", text);
+        assert!(
+            validate(&parse(&source).unwrap()).is_err(),
+            "accepted {text}"
+        );
+    }
+    for text in [
+        "remove(input, function(i) i > 0)",
+        "listReplace(input, function(i) i > 0, 5)",
+    ] {
+        assert!(
+            matches!(blkit::expr::expression(text).unwrap(), blkit::expr::Expr::Call(_, args) if matches!(&args[1], blkit::expr::Expr::InlinePredicate { .. })),
+            "{text}"
+        );
+    }
+    for text in [
+        "remove(input, function(i) >)",
+        "remove(input, function(i,j) i > 0)",
+        "remove(input, function() true)",
+    ] {
+        assert!(blkit::expr::expression(text).is_err(), "accepted {text}");
+    }
+}
+
+#[test]
+fn function_is_not_a_valid_knowledge_declaration_name() {
+    let braced = format!(
+        "{HEADER}decision_task check {{ input input: Number; output result: Number = value; knowledge function {{ input item: Number; output result: Number; expression item; }} literal_expression value {{ output result: Number; expression input; }} }}"
+    );
+    assert!(
+        validate(&parse(&braced).unwrap())
+            .unwrap_err()
+            .contains("function"),
+        "braced knowledge function accepted"
+    );
+}
+
+#[test]
+fn inline_predicate_type_and_local_shadowing() {
+    let source = decision_expression("List<Number>", "List<Number>", "function(1)");
+    assert!(validate(&parse(&source).unwrap()).is_err());
+    for text in [
+        "remove(input, function(i) i > threshold)",
+        "listReplace(input, function(i) i > threshold, threshold)",
+        "remove(input, function(item) item > threshold)",
+    ] {
+        let source = format!(
+            "{HEADER}decision_task check {{ input input: List<Number>; input threshold: Number; output result: List<Number> = value; literal_expression value {{ output result: List<Number>; expression {text}; }} }}"
+        );
+        validate(&parse(&source).unwrap()).unwrap_or_else(|e| panic!("{text}: {e}"));
+    }
+    let outer = format!(
+        "{HEADER}decision_task check {{ input input: List<Number>; input i: Number; output result: List<Number> = value; literal_expression value {{ output result: List<Number>; expression listReplace(input, function(i) i > 0, i); }} }}"
+    );
+    validate(&parse(&outer).unwrap()).unwrap();
+    for text in [
+        "remove(input, function(i) i + 1)",
+        "listReplace(input, function(i) i > 0, i)",
+        "remove(input, function(i) missing > i)",
+        "listReplace(input, function(i) i > 0, \"bad\")",
+    ] {
+        let source = decision_expression("List<Number>", "List<Number>", text);
+        assert!(
+            validate(&parse(&source).unwrap()).is_err(),
+            "accepted {text}"
+        );
+    }
+}
+
+#[test]
+fn inline_predicate_preserves_context_dependencies_and_scope() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input input: List<Number>; output result: List<Number> = value; context value {{ output result: List<Number>; entry selected: List<Number> = remove(input, function(item) item > threshold); entry threshold: Number = 1; entry item: Number = count(selected); result selected; }} }}"
+    );
+    validate(&parse(&source).unwrap()).unwrap();
+    let cycle = source.replace(
+        "entry threshold: Number = 1",
+        "entry threshold: Number = count(selected)",
+    );
+    assert!(
+        parse(&cycle)
+            .and_then(|program| validate(&program))
+            .is_err()
+    );
+}
+
+list_signature!(
+    remove_accepts_scoped_predicate,
+    "List<Number>",
+    "remove(input, function(i) i == 2)"
+);
+list_signature!(
+    list_replace_accepts_scoped_predicate,
+    "List<Number>",
+    "listReplace(input, function(i) i < 3, 9)"
+);
+#[test]
+fn predicate_list_edits_require_bool_and_matching_replacement_type() {
+    for (expression, diagnostic) in [
+        ("remove(input, function(i) i + 1)", "Bool"),
+        ("listReplace(input, function(i) i + 1, 9)", "Bool"),
+        ("listReplace(input, function(i) i == 2, \"bad\")", "Number"),
+    ] {
+        let source = decision_expression("List<Number>", "List<Number>", expression);
+        let error = validate(&parse(&source).unwrap()).unwrap_err();
+        assert!(error.contains(diagnostic), "{expression}: {error}");
+    }
+}
+
+list_signature!(
+    distinct_accepts_typed_list,
+    "List<Number>",
+    "distinct(input)"
+);
+list_signature!(
+    duplicate_values_accepts_typed_list,
+    "List<Number>",
+    "duplicateValues(input)"
+);
+list_signature!(
+    intersection_accepts_multiple_lists,
+    "List<Number>",
+    "intersection(input, [2,3])"
+);
+
+#[test]
+fn list_set_functions_reject_wrong_shapes_and_arity() {
+    for (valid, invalid, output, diagnostic) in [
+        (
+            "distinct([1])",
+            "distinct([1], [2])",
+            "List<Number>",
+            "argument count",
+        ),
+        (
+            "duplicateValues([1])",
+            "duplicateValues(1)",
+            "List<Number>",
+            "List",
+        ),
+        (
+            "intersection([1], [2])",
+            "intersection([1], [\"2\"])",
+            "List<Number>",
+            "String",
+        ),
+        (
+            "intersection([1])",
+            "intersection()",
+            "List<Number>",
+            "argument count",
+        ),
+        (
+            "distinct([[1], [1]])",
+            "distinct([[1], [\"1\"]])",
+            "List<List<Number>>",
+            "String",
+        ),
+    ] {
+        assert_valid_expression("Number", output, valid);
+        let source = decision_expression("Number", output, invalid);
+        let error = validate(&parse(&source).unwrap()).unwrap_err();
+        assert!(error.contains(diagnostic), "{invalid}: {error}");
+    }
+}
+
+#[test]
+fn list_functions_reject_incompatible_elements_and_invalid_predicates() {
+    for (valid, invalid, output, expected_diagnostic) in [
+        (
+            "listContains([1,2], 2)",
+            "listContains([1,2], \"2\")",
+            "Bool",
+            "String",
+        ),
+        (
+            "indexOf([1,2], 2)",
+            "indexOf([1,2], \"2\")",
+            "List<Number>",
+            "String",
+        ),
+        (
+            "append([1], 2)",
+            "append([1], \"2\")",
+            "List<Number>",
+            "String",
+        ),
+        (
+            "prepend([1], 2)",
+            "prepend([1], \"2\")",
+            "List<Number>",
+            "String",
+        ),
+        (
+            "concatenate([1], [2])",
+            "concatenate([1], [\"2\"])",
+            "List<Number>",
+            "String",
+        ),
+        (
+            "union([1], [2])",
+            "union([1], [\"2\"])",
+            "List<Number>",
+            "String",
+        ),
+        (
+            "intersection([1], [2])",
+            "intersection([1], [\"2\"])",
+            "List<Number>",
+            "String",
+        ),
+        (
+            "sublist([1,2], 1)",
+            "sublist([1,2], \"1\")",
+            "List<Number>",
+            "Number",
+        ),
+        (
+            "sublist([1,2], 1, 2)",
+            "sublist([1,2], 1, \"2\")",
+            "List<Number>",
+            "Number",
+        ),
+        (
+            "insertBefore([1], 1, 2)",
+            "insertBefore([1], 1, \"2\")",
+            "List<Number>",
+            "String",
+        ),
+        (
+            "insertAfter([1], 1, 2)",
+            "insertAfter([1], 1, \"2\")",
+            "List<Number>",
+            "String",
+        ),
+        (
+            "listReplace([1], 1, 2)",
+            "listReplace([1], 1, \"2\")",
+            "List<Number>",
+            "String",
+        ),
+        (
+            "remove([1], function(i) i == 1)",
+            "remove([1], function(i) i + 1)",
+            "List<Number>",
+            "Bool",
+        ),
+        (
+            "listReplace([1], function(i) i == 1, 9)",
+            "listReplace([1], function(i) i + 1, 9)",
+            "List<Number>",
+            "Bool",
+        ),
+    ] {
+        assert_valid_expression("Number", output, valid);
+        let source = decision_expression("Number", output, invalid);
+        let program = parse(&source).unwrap_or_else(|e| panic!("{invalid} failed to parse: {e}"));
+        let error = validate(&program).unwrap_err();
+        assert!(
+            !error.contains("unknown knowledge model") && error.contains(expected_diagnostic),
+            "{invalid}: expected {expected_diagnostic} diagnostic, got {error}"
+        );
+    }
+}
+
+#[test]
+fn list_set_functions_typecheck_structural_dictionary_elements() {
+    for expression in [
+        "distinct([{x: 2}, {x: 2}])",
+        "duplicateValues([{x: 2}, {x: 2}])",
+        "intersection([{x: 2}, {x: 1}], [{x: 2}])",
+    ] {
+        assert_valid_expression("Number", "List<Dictionary<Number>>", expression);
+    }
+}
+
+#[test]
+fn list_dictionary_fixture_has_a_homogeneous_element_type() {
+    assert_valid_expression("Number", "List<Dictionary<Number>>", "[{x: 2}, {x: 2}]");
+}
+
+#[test]
+fn sort_accepts_natural_ascending_for_numbers_and_code_point_strings() {
+    for (expression, output) in [
+        ("sort([3,1,2])", "List<Number>"),
+        ("sort([3,1,2], \"asc\")", "List<Number>"),
+        ("sort([\"banana\",\"Apple\",\"café\"])", "List<String>"),
+        ("sort([])", "List<Number>"),
+    ] {
+        assert_valid_expression("Number", output, expression);
+    }
+}
+
+#[test]
+fn sort_accepts_descending_order() {
+    assert_valid_expression("Number", "List<Number>", "sort([3,1,2], \"desc\")");
+}
+
+#[test]
+fn sort_accepts_explicit_priority_order() {
+    assert_valid_expression(
+        "Number",
+        "List<String>",
+        "sort([\"m\",\"s\",\"xl\"], [\"s\",\"m\",\"l\"])",
+    );
+}
+
+#[test]
+fn sort_accepts_comparable_temporal_kinds() {
+    for (expression, output) in [
+        (
+            "sort([date(\"2026-01-02\"),date(\"2026-01-01\")])",
+            "List<Date>",
+        ),
+        (
+            "sort([time(\"12:00:00\"),time(\"11:00:00\")])",
+            "List<Time>",
+        ),
+        (
+            "sort([datetime(\"2026-01-02T00:00:00Z\"),datetime(\"2026-01-01T00:00:00Z\")])",
+            "List<DateTime>",
+        ),
+        (
+            "sort([dtDuration(\"PT2H\"),dtDuration(\"PT1H\")])",
+            "List<DTDuration>",
+        ),
+        (
+            "sort([ymDuration(\"P2M\"),ymDuration(\"P1M\")])",
+            "List<YMDuration>",
+        ),
+    ] {
+        assert_valid_expression("Number", output, expression);
+    }
+}
+
+#[test]
+fn sort_constrains_empty_source_bindings_without_accepting_bool() {
+    assert_valid_expression(
+        "Number",
+        "List<List<Number>>",
+        "for x in [] return sort([x])",
+    );
+    let source = decision_expression("Number", "List<List<Bool>>", "for x in [] return sort([x])");
+    assert!(parse(&source).and_then(|p| validate(&p)).is_err());
+}
+
+#[test]
+fn sort_rejects_unsupported_elements_and_invalid_order_shapes() {
+    for (expression, output, diagnostic) in [
+        ("sort([true,false])", "List<Bool>", Some("Bool")),
+        (
+            "sort([[1],[2]])",
+            "List<List<Number>>",
+            Some("List<Number>"),
+        ),
+        ("sort([1,2], true)", "List<Number>", None),
+        ("sort([1,2], [\"2\"])", "List<Number>", None),
+        ("sort([1,2], 1)", "List<Number>", None),
+        ("sort([1,2], \"asc\", \"desc\")", "List<Number>", None),
+        (
+            "sort([date(\"2026-01-01\"),datetime(\"2026-01-01T00:00:00Z\")])",
+            "List<Number>",
+            None,
+        ),
+    ] {
+        let source = decision_expression("Number", output, expression);
+        let error = parse(&source)
+            .and_then(|p| validate(&p))
+            .expect_err("invalid expression accepted");
+        assert!(
+            !error.contains("unknown knowledge model"),
+            "{expression}: {error}"
+        );
+        if let Some(diagnostic) = diagnostic {
+            assert!(
+                !error.contains("decision result type mismatch"),
+                "{expression}: {error}"
+            );
+            assert!(error.contains(diagnostic), "{expression}: {error}");
+        }
+    }
+}
+
+#[test]
+fn string_join_accepts_omitted_separator() {
+    assert_valid_expression("String", "String", "stringJoin([\"a\",\"b\"])");
+}
+
+#[test]
+fn string_join_accepts_completed_string_wrappers() {
+    for expression in [
+        "stringJoin([\"a\",\"b\"], \"\", \"[\", \"]\")",
+        "stringJoin([], \"-\", \"[\", \"]\")",
+    ] {
+        assert_valid_expression("String", "String", expression);
+    }
+}
+
+#[test]
+fn string_join_rejects_non_string_parts_and_invalid_wrapper_arity() {
+    for expression in [
+        "stringJoin([1], \"-\", \"[\", \"]\")",
+        "stringJoin([\"a\"], 1, \"[\", \"]\")",
+        "stringJoin([\"a\"], \"-\", [\"[\"], \"]\")",
+        "stringJoin([\"a\"], \"-\", \"[\")",
+        "stringJoin([\"a\"], \"-\", \"[\", \"]\", \"!\")",
+    ] {
+        let source = decision_expression("String", "String", expression);
+        let error = parse(&source)
+            .and_then(|p| validate(&p))
+            .expect_err("invalid expression accepted");
+        assert!(
+            !error.contains("unknown knowledge model"),
+            "{expression}: {error}"
+        );
+    }
+}
+
+#[test]
+fn zip_string_join_accepts_scalar_and_per_column_formatting() {
+    for expression in [
+        "zipStringJoin([[\"a\",\"b\"],[\"1\",\"2\"]])",
+        "zipStringJoin([[\"a\",\"b\"],[\"1\",\"2\"]], \"-\", \"[\", \"]\")",
+        "zipStringJoin([[\"a\"],[\"1\"],[\"x\"]], [\"-\",\":\"], [\"<\",\"(\",\"{\"], [\">\",\")\",\"}\"])",
+        "zipStringJoin([[],[]], \"-\")",
+        "zipStringJoin([], [], [], [])",
+        "zipStringJoin([], \"-\", \"[\", \"]\")",
+    ] {
+        assert_valid_expression("Number", "List<String>", expression);
+    }
+}
+
+#[test]
+fn zip_string_join_accepts_per_gap_delimiters_and_per_column_wrappers() {
+    assert_valid_expression(
+        "Number",
+        "List<String>",
+        "zipStringJoin([[\"a\"],[\"1\"],[\"x\"]], [\"-\",\":\"], [\"<\",\"(\",\"{\"], [\">\",\")\",\"}\"])",
+    );
+}
+
+#[test]
+fn zip_string_join_rejects_wrong_column_and_format_types() {
+    for expression in [
+        "zipStringJoin([\"a\",\"b\"])",
+        "zipStringJoin([[1],[2]])",
+        "zipStringJoin([[\"a\"]], 1)",
+        "zipStringJoin([[\"a\"]], [1])",
+        "zipStringJoin([[\"a\"]], \"-\", [1])",
+        "zipStringJoin([[\"a\"]], \"-\", \"[\", [1])",
+        "zipStringJoin([[\"a\"]], \"-\", \"[\", \"]\", \"!\")",
+    ] {
+        let source = decision_expression("Number", "List<String>", expression);
+        let error = parse(&source)
+            .and_then(|p| validate(&p))
+            .expect_err("invalid expression accepted");
+        assert!(
+            !error.contains("unknown knowledge model"),
+            "{expression}: {error}"
+        );
+    }
+}
+
+#[test]
+fn seq_accepts_fractional_and_opposite_sign_steps() {
+    for expression in ["seq(0,1,0.25)", "seq(5,10,-1)"] {
+        assert_valid_expression("Number", "List<Number>", expression);
+    }
+}
+
+#[test]
+fn seq_and_colon_typecheck_numeric_endpoints_and_steps() {
+    for expression in [
+        "seq(5,10)",
+        "seq(10,5)",
+        "seq(0,1,0.25)",
+        "seq(5,10,-1)",
+        "10:5",
+        "0.5:2.5",
+    ] {
+        assert_valid_expression("Number", "List<Number>", expression);
+    }
+    for expression in [
+        "seq(1)",
+        "seq(1,2,3,4)",
+        "seq(\"1\",2)",
+        "seq(1,2,true)",
+        "\"1\":2",
+    ] {
+        let source = decision_expression("Number", "List<Number>", expression);
+        let error = parse(&source)
+            .and_then(|p| validate(&p))
+            .expect_err("invalid expression accepted");
+        assert!(
+            !error.contains("unknown knowledge model"),
+            "{expression}: {error}"
+        );
+    }
+}
+
+#[test]
+fn any_accepts_typed_boolean_list_and_empty_list() {
+    for expression in ["any([false,false,true])", "any([])"] {
+        assert_valid_expression("Bool", "Bool", expression);
+    }
+}
+
+#[test]
+fn boolean_aggregates_constrain_empty_iteration_bindings() {
+    for expression in ["for x in [] return all(x)", "for x in [] return any(x)"] {
+        assert_valid_expression("Bool", "List<Bool>", expression);
+    }
+}
+
+#[test]
+fn boolean_aggregates_allow_knowledge_shadowing() {
+    for name in ["all", "any"] {
+        let source = format!(
+            "{HEADER}decision_task check {{ input input: Number; output result: Number = value; knowledge {name} {{ input number: Number; output result: Number; expression number; }} literal_expression value {{ output result: Number; expression {name}(input); }} }}"
+        );
+        validate(&parse(&source).unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn all_and_any_require_typed_boolean_lists() {
+    for expression in [
+        "all([true,true,false])",
+        "any([false,false,true])",
+        "all([true,true])",
+        "any([false,false])",
+        "all([])",
+        "any([])",
+    ] {
+        assert_valid_expression("Bool", "Bool", expression);
+    }
+    for expression in ["all(input)", "any(input)"] {
+        assert_valid_expression("List<Bool>", "Bool", expression);
+    }
+    for expression in [
+        "all([1])",
+        "any([1])",
+        "all([true, 1])",
+        "any([false, 1])",
+        "all(true)",
+        "any(1)",
+        "all([true], [false])",
+        "any([true], [false])",
+    ] {
+        let source = decision_expression("Bool", "Bool", expression);
+        let error = parse(&source)
+            .and_then(|p| validate(&p))
+            .expect_err("invalid expression accepted");
+        assert!(
+            !error.contains("unknown knowledge model"),
+            "{expression}: {error}"
+        );
     }
 }

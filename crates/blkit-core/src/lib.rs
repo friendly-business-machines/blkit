@@ -5,6 +5,7 @@ pub mod dictionary;
 #[cfg(feature = "remote-persistence")]
 pub mod distributed;
 pub mod evaluation;
+pub mod list_ops;
 #[cfg(feature = "logging")]
 pub mod logging;
 pub mod number_ops;

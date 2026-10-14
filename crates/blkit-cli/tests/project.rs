@@ -100,6 +100,77 @@ fn numeric_project_builds_checked_arithmetic() {
 }
 
 #[test]
+fn project_list_decision_compiles_and_propagates_checked_errors() {
+    let declarations = r#"namespace orders; version "1";
+start_event start { output values: List<Number>; output position: Number; }
+end_event done { input result: Number; }
+decision_task calculate {
+  input values: List<Number>;
+  input position: Number;
+  output result: Number = total;
+  knowledge positives {
+    input items: List<Number>;
+    output result: List<Number>;
+    expression items[.item > 0];
+  }
+  context total {
+    output result: Number;
+    entry selected: List<Number> = positives(values);
+    result sum(distinct(selected)) + values[position];
+  }
+}"#;
+    let route = r#"namespace orders; version "1";
+process route {
+  flow start -> calculate;
+  flow calculate -> done;
+  bind start.values -> calculate.values;
+  bind start.position -> calculate.position;
+  bind calculate.result -> done.result;
+}"#;
+    let root = project(MANIFEST, &[("a.bl", route), ("z.bl", declarations)]);
+    blkit::project::Project::load(&root)
+        .unwrap()
+        .transpile()
+        .unwrap();
+    let manifest = root.join(".blkit/Cargo.toml");
+    let lib = root.join(".blkit/src/lib.rs");
+    let mut source = fs::read_to_string(&lib).unwrap();
+    source.push_str(r#"
+#[cfg(test)] mod list_checks {
+    use super::*;
+    #[test] fn generated_project_list_behavior() {
+        let n = |value: &str| value.parse::<scope_0::Number>().unwrap();
+        assert_eq!(scope_0::calculate(vec![n("3"), n("-1"), n("3")], n("2")).unwrap(), n("2"));
+        for position in ["0", "4"] {
+            let error = scope_0::calculate(vec![n("3")], n(position)).unwrap_err();
+            assert!(error.to_string().contains("list position"), "{error}");
+        }
+        let graph = named_graph_definitions().remove(0);
+        let input = serde_json::json!({"values":["3","-1","3"], "position":"2"});
+        let mut state = graph.checkpoint(&input).unwrap();
+        assert_eq!(graph.run(&input, &mut state).unwrap(), serde_json::json!("2"));
+        let invalid = serde_json::json!({"values":[], "position":"1"});
+        let error = graph.checkpoint(&invalid).and_then(|mut state| graph.run(&invalid, &mut state)).unwrap_err();
+        assert!(error.contains("list position"), "{error}");
+    }
+}
+"#);
+    fs::write(lib, source).unwrap();
+    let result = std::process::Command::new("cargo")
+        .args(["test", "--offline", "--manifest-path"])
+        .arg(&manifest)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn named_dictionary_resolves_across_project_files() {
     let root = project(
         MANIFEST,
