@@ -59,7 +59,7 @@ pub(crate) enum Token {
     Slash,
     #[regex(r"\r\n|\n|\r")]
     Newline,
-    #[regex(r"[ \t]+")]
+    #[regex(r"[^\S\r\n]+")]
     Space,
     #[regex(r"#[^\r\n]*", allow_greedy = true)]
     Comment,
@@ -144,6 +144,20 @@ mod tests {
             ]
         );
         assert_eq!(lexed.eof, 48);
+    }
+
+    #[test]
+    fn lex_skips_nbsp_prefixed_full_line_comments_without_losing_byte_offsets() {
+        let source = " \u{a0}# comment\nx\u{a0}y";
+        assert!(crate::parse("namespace demo; version \"1.0\";\n\u{a0}# comment\n").is_ok());
+        assert_eq!(
+            lex(source).tokens,
+            vec![
+                (Token::Newline, 12..13),
+                (Token::Identifier, 13..14),
+                (Token::Identifier, 16..17),
+            ]
+        );
     }
 
     #[test]
