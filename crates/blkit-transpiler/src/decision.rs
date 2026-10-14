@@ -856,6 +856,7 @@ pub fn parse(header: &str, lines: &[String]) -> Result<DecisionModel, String> {
 #[derive(Debug)]
 enum DecisionStatement {
     Input(String, Type),
+    TableInput(String, Type, Expr),
     Output(String, Type, Option<(String, Option<String>)>),
     Expression(Expr),
     Entry(String, Type, Expr),
@@ -882,7 +883,8 @@ fn decision_statement<'a>(
     use chumsky::prelude::*;
     let name = name(source);
     let typed = typed_port(source);
-    let expression = expr::expression_parser(source, columns).boxed();
+    let expression = expr::expression_parser(source, &[]).boxed();
+    let condition = expr::expression_parser(source, columns).boxed();
     let values = expression
         .clone()
         .separated_by(just(Token::Comma))
@@ -890,7 +892,7 @@ fn decision_statement<'a>(
         .collect::<Vec<_>>();
     let input = word(source, "input").ignore_then(choice((
         assignment(source, typed.clone(), expression.clone())
-            .map(|(port, expr)| DecisionStatement::Entry(port.0, port.1, expr)),
+            .map(|(port, expr)| DecisionStatement::TableInput(port.0, port.1, expr)),
         typed
             .clone()
             .map(|(port, ty)| DecisionStatement::Input(port, ty)),
@@ -938,7 +940,7 @@ fn decision_statement<'a>(
         .then(name.or_not())
         .map(|(policy, aggregation)| DecisionStatement::Policy(policy, aggregation));
     let rule = word(source, "rule")
-        .ignore_then(crate::graph::edge(source, expression, values.clone()))
+        .ignore_then(crate::graph::edge(source, condition, values.clone()))
         .map(|(condition, values)| DecisionStatement::Rule(condition, values));
     let priority = word(source, "priority")
         .ignore_then(values.clone())
@@ -1038,7 +1040,7 @@ fn node_tokens(
             ("context", DecisionStatement::Result(expr)) if result.is_none() => {
                 result = Some(expr);
             }
-            ("decision_table", DecisionStatement::Entry(port, ty, expr)) => {
+            ("decision_table", DecisionStatement::TableInput(port, ty, expr)) => {
                 table.inputs.push((port, ty, expr))
             }
             ("decision_table", DecisionStatement::Policy(policy, aggregation))

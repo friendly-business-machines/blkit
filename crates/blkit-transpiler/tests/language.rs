@@ -3145,6 +3145,55 @@ fn decision_table_ast_preserves_rule_priority_and_default_order() {
 }
 
 #[test]
+fn context_rejects_input_keyword_for_entries() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input amount: Number; output result: Number = value; context value {{ output result: Number; entry total: Number = amount; result total; }} }}"
+    );
+    parse(&source).unwrap();
+    let invalid = source.replace(
+        "entry total: Number = amount;",
+        "input total: Number = amount;",
+    );
+    assert!(parse(&invalid).is_err(), "accepted: {invalid}");
+}
+
+#[test]
+fn decision_table_rejects_entry_keyword_for_inputs() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input amount: Number; output result: Number = table; decision_table table {{ output result: Number; policy FIRST; input value: Number = amount; output score: Number; rule value > 0 -> 1; default 0; }} }}"
+    );
+    parse(&source).unwrap();
+    let invalid = source.replace(
+        "input value: Number = amount;",
+        "entry value: Number = amount;",
+    );
+    assert!(parse(&invalid).is_err(), "accepted: {invalid}");
+}
+
+#[test]
+fn table_rule_values_reject_condition_only_matches_syntax() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input amount: Number; output result: Number = table; decision_table table {{ output result: Number; policy FIRST; input value: Number = amount; output score: Number; rule value matches (< 10) -> 1; default 0; }} }}"
+    );
+    parse(&source).unwrap();
+    let invalid = source.replace("-> 1;", "-> value matches (< 10);");
+    assert!(parse(&invalid).is_err(), "accepted: {invalid}");
+}
+
+#[test]
+fn table_input_values_reject_condition_only_matches_syntax() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input amount: Number; output result: Number = table; decision_table table {{ output result: Number; policy FIRST; input value: Number = amount; input selected: Bool = value > 0; output score: Number; rule value > 0 -> 1; default 0; }} }}"
+    );
+    parse(&source).unwrap();
+    let invalid = source.replace(
+        "input selected: Bool = value > 0;",
+        "input selected: Bool = value matches (< 10);",
+    );
+    assert!(parse(&invalid).is_err(), "accepted: {invalid}");
+}
+
+#[test]
 fn context_ast_orders_dependencies_without_reordering_authored_nodes() {
     use blkit::{decision::DecisionKind, expr::Expr};
 
