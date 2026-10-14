@@ -660,7 +660,7 @@ pub(crate) fn duration(value: &str) -> Result<std::time::Duration, String> {
 enum GraphStatement {
     Port(String, String, Type),
     Reference(String, String),
-    Duration(String),
+    Duration(String, chumsky::span::SimpleSpan),
     Retry(u32, String, String),
     Deadline(String, String),
     Repeat(String, bool, Expr, Option<Expr>, Vec<(String, String)>),
@@ -720,9 +720,9 @@ fn graph_statement<'a>(
     ))
     .then(name.clone())
     .map(|(kind, name)| GraphStatement::Reference(kind.into(), name));
-    let duration = word(source, "duration")
-        .ignore_then(quoted(source))
-        .map(GraphStatement::Duration);
+    let duration = word(source, "duration").ignore_then(
+        quoted(source).map_with(|value, extra| GraphStatement::Duration(value, extra.span())),
+    );
     let retry = word(source, "retry")
         .ignore_then(word(source, "max_retries"))
         .ignore_then(number(source).map(|value| value.parse::<u32>().ok()))
@@ -825,7 +825,7 @@ fn graph_statement<'a>(
 fn statements(
     source: &str,
     body: &[crate::compiler::BodyItem],
-) -> Result<Option<Vec<GraphStatement>>, crate::compiler::CompilerError> {
+) -> Result<(Vec<GraphStatement>, bool), crate::compiler::CompilerError> {
     let mut parsed = Vec::new();
     let mut damaged = false;
     let mut errors: Option<crate::compiler::CompilerError> = None;
@@ -876,7 +876,7 @@ fn statements(
             }
         }
     }
-    errors.map_or(Ok((!damaged).then_some(parsed)), Err)
+    errors.map_or(Ok((parsed, damaged)), Err)
 }
 
 pub(crate) fn parse_peer_tokens(
@@ -885,9 +885,7 @@ pub(crate) fn parse_peer_tokens(
     name: &str,
     body: &[crate::compiler::BodyItem],
 ) -> Result<Option<Peer>, crate::compiler::CompilerError> {
-    let Some(items) = statements(source, body)? else {
-        return Ok(None);
-    };
+    let (items, damaged) = statements(source, body)?;
     let mut inputs = Vec::new();
     let mut outputs = Vec::new();
     let mut split = None;
@@ -932,14 +930,19 @@ pub(crate) fn parse_peer_tokens(
             {
                 process = Some(value);
             }
-            GraphStatement::Duration(value) if kind == "pause_for" && pause.is_none() => {
-                pause = Some(duration(&value)?)
+            GraphStatement::Duration(value, span) if kind == "pause_for" && pause.is_none() => {
+                pause = Some(duration(&value).map_err(|error| {
+                    crate::compiler::CompilerError::located(error, span.into_range())
+                })?)
             }
             _ if matches!(kind, "error_event" | "cancel_event" | "terminate_event") => {
                 return Err(format!("terminal {name} does not accept statements").into());
             }
             _ => return Err(format!("invalid {kind} statement").into()),
         }
+    }
+    if damaged {
+        return Ok(None);
     }
     let kind = match kind {
         "start_event" => PeerKind::Start { outputs },
@@ -1026,11 +1029,8 @@ pub(crate) fn parse_source_tokens(
         repetitions: vec![],
         multi_instances: vec![],
     };
-    let Some(items) =
-        statements(source, body).map_err(|error| error.context("invalid process statement"))?
-    else {
-        return Ok(None);
-    };
+    let (items, damaged) =
+        statements(source, body).map_err(|error| error.context("invalid process statement"))?;
     for item in items {
         match item {
             GraphStatement::Retry(max_retries, retry_for, retry_delay) => {
@@ -1161,5 +1161,5 @@ pub(crate) fn parse_source_tokens(
             _ => return Err("invalid process statement".into()),
         }
     }
-    Ok(Some((graph, retry, deadline)))
+    Ok((!damaged).then_some((graph, retry, deadline)))
 }

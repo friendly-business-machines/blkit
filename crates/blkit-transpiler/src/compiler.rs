@@ -936,6 +936,32 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn invalid_graph_duration_after_lexical_error_reports_both_without_missing_duration() {
+        let source = "namespace demo; version \"1.0\";\n# café\npause_for wait { duration ☃; duration \"bogus\"; }";
+        let error = parse_source(source, "graph.bl").err().unwrap();
+        let invalid = source.find('☃').unwrap();
+        let duration = source.find("\"bogus\"").unwrap();
+        assert_eq!(error.span, Some(invalid..invalid + '☃'.len_utf8()));
+        let lines: Vec<_> = error.to_string().lines().map(str::to_owned).collect();
+        assert_eq!(lines.len(), 2, "{error}");
+        assert!(
+            lines[0].ends_with(&format!("invalid character at byte {invalid}")),
+            "{error}"
+        );
+        assert!(lines[1].contains("invalid retry duration"), "{error}");
+        assert!(
+            lines[1].ends_with(&format!("at byte {duration}")),
+            "{error}"
+        );
+        assert_eq!(
+            error.related[0].span,
+            Some(duration..duration + "\"bogus\"".len())
+        );
+        assert_eq!(error.related[0].source_name, "graph.bl");
+        assert!(super::transpile(source).is_err());
+    }
+
+    #[test]
     fn invalid_token_before_brace_has_no_second_syntax_diagnostic() {
         let source = "namespace demo; version \"1.0\"; start_event start { output first: ☃ }";
         let error = parse_source(source, "single.bl").err().unwrap();
