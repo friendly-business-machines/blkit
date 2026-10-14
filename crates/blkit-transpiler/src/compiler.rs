@@ -108,10 +108,14 @@ pub(crate) fn validation_error<'a>(
                     matches.push((name, tokens[index].1.clone()));
                 }
             }
-        } else if let Some(port) = message
-            .strip_prefix("unknown binding output: ")
-            .or_else(|| message.strip_prefix("unknown binding input: "))
-        {
+        } else {
+            let nodes = message.strip_prefix("binding node outside process: ");
+            let port = message
+                .strip_prefix("unknown binding output: ")
+                .or_else(|| message.strip_prefix("unknown binding input: "));
+            if nodes.is_none() && port.is_none() {
+                continue;
+            }
             for index in 0..tokens.len().saturating_sub(8) {
                 if part(index) == "bind"
                     && tokens[index + 2].0 == Token::Dot
@@ -119,13 +123,19 @@ pub(crate) fn validation_error<'a>(
                     && tokens[index + 6].0 == Token::Dot
                     && tokens[index + 8].0 == Token::Semicolon
                 {
-                    let (start, end) = if message.starts_with("unknown binding output:") {
-                        (index + 1, index + 3)
-                    } else {
-                        (index + 5, index + 7)
-                    };
-                    if format!("{}.{}", part(start), part(end)) == port {
-                        matches.push((name, tokens[start].1.start..tokens[end].1.end));
+                    if let Some(nodes) = nodes {
+                        if format!("{} -> {}", part(index + 1), part(index + 5)) == nodes {
+                            matches.push((name, tokens[index + 5].1.clone()));
+                        }
+                    } else if let Some(port) = port {
+                        let (start, end) = if message.starts_with("unknown binding output:") {
+                            (index + 1, index + 3)
+                        } else {
+                            (index + 5, index + 7)
+                        };
+                        if format!("{}.{}", part(start), part(end)) == port {
+                            matches.push((name, tokens[start].1.start..tokens[end].1.end));
+                        }
                     }
                 }
             }
@@ -1099,6 +1109,29 @@ mod diagnostic_tests {
             "{error}"
         );
         assert!(error.ends_with(&format!("at byte {byte}")), "{error}");
+    }
+
+    #[test]
+    fn direct_binding_outside_process_locates_original_node_reference_without_rust() {
+        let source = "namespace demo; version \"1\";\n# café\nstart_event start { output amount: Number; } end_event done { input result: Number; } end_event spare { input result: Number; } process route { flow start -> done; bind start.amount -> spare.result; }";
+        let error = super::transpile(source).unwrap_err();
+        let byte = source.find("spare.result").unwrap();
+        assert!(
+            error.contains("binding node outside process: start -> spare"),
+            "{error}"
+        );
+        assert!(error.ends_with(&format!("at byte {byte}")), "{error}");
+    }
+
+    #[test]
+    fn repeated_binding_node_pair_does_not_guess_a_byte() {
+        let source = "namespace demo; version \"1\"; start_event start { output amount: Number; } end_event done { input result: Number; } end_event spare { input result: Number; } process route { flow start -> done; bind start.amount -> spare.result; bind start.other -> spare.result; }";
+        let error = super::transpile(source).unwrap_err();
+        assert!(
+            error.contains("binding node outside process: start -> spare"),
+            "{error}"
+        );
+        assert!(!error.contains("at byte"), "{error}");
     }
 
     #[test]

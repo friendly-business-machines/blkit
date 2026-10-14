@@ -216,6 +216,28 @@ fn second_project_file_invalid_binding_uses_its_own_byte_and_emits_no_rust() {
 }
 
 #[test]
+fn second_project_file_binding_outside_process_locates_its_node_without_rust() {
+    let first = "namespace orders; version \"1\"; start_event start { output amount: Number; } end_event done { input result: Number; } end_event spare { input result: Number; }";
+    let second = "namespace orders; version \"1\";\n# café\nprocess route { flow start -> done; bind start.amount -> spare.result; }";
+    let root = project(MANIFEST, &[("a.bl", first), ("z.bl", second)]);
+    let error = blkit::project::Project::load(&root)
+        .unwrap()
+        .transpile()
+        .unwrap_err();
+    assert!(
+        error.contains("z.bl: binding node outside process: start -> spare"),
+        "{error}"
+    );
+    assert!(
+        error.contains(&format!("at byte {}", second.find("spare.result").unwrap())),
+        "{error}"
+    );
+    assert!(!error.contains("a.bl: binding"), "{error}");
+    assert!(!root.join(".blkit/src/lib.rs").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn unlocatable_project_error_keeps_both_paths_without_a_fake_byte() {
     let first = "namespace orders; version \"1\"; start_event start { output amount: Number; }";
     let second = "namespace orders; version \"1\"; process route { }";
