@@ -74,8 +74,11 @@ pub(crate) struct Lexed {
 }
 
 pub(crate) fn lex(source: &str) -> Lexed {
+    lex_with_line_start(source, true)
+}
+
+fn lex_with_line_start(source: &str, mut at_line_start: bool) -> Lexed {
     let mut tokens = Vec::new();
-    let mut at_line_start = true;
     let mut indent = None;
     let mut has_full_line_comment = false;
     let mut lexer = Token::lexer(source);
@@ -126,7 +129,8 @@ pub(crate) fn lex_legacy_quotes(source: &str) -> Lexed {
     let mut offset = 0;
     let mut has_full_line_comment = false;
     loop {
-        let lexed = lex(&source[offset..]);
+        // A split follows a quote on the same line; only a later newline restarts a comment line.
+        let lexed = lex_with_line_start(&source[offset..], offset == 0);
         has_full_line_comment |= lexed.has_full_line_comment;
         let mut split = false;
         for (token, span) in lexed.tokens {

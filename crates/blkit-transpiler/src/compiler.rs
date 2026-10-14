@@ -313,6 +313,9 @@ fn program_parser<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, Program, P
             value[1..value.len() - 1].into()
         }),
     ));
+    let field_layout = choice((just(Token::Newline), just(Token::Indent)))
+        .repeated()
+        .ignored();
     let record = just(Token::Identifier)
         .map_with(move |_, extra| (text(source, extra.span()).to_owned(), extra.span()))
         .then(just(Token::Equal).map_with(|_, extra| extra.span()))
@@ -328,6 +331,7 @@ fn program_parser<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, Program, P
                                 Err(Rich::custom(extra.span(), "invalid type argument"))
                             }
                         }))
+                        .padded_by(field_layout)
                         .separated_by(just(Token::Comma))
                         .allow_trailing()
                         .collect::<Vec<_>>(),

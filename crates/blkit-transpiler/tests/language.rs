@@ -2818,6 +2818,16 @@ enum Result:
 }
 
 #[test]
+fn multiline_record_fields_preserve_original_layout() {
+    let source = format!("{HEADER}Order = {{\n  value: Number\n}};");
+    let program = parse(&source).unwrap();
+    assert_eq!(
+        program.records[0].fields,
+        [("value".into(), blkit::Type::Named("Number".into()))]
+    );
+}
+
+#[test]
 fn record_spacing_rejections_remain_rejected() {
     for declaration in [
         "Order={value: Number};",
@@ -2887,6 +2897,12 @@ fn standalone_expression_rejects_full_line_comments() {
 #[test]
 fn expression_rejects_escaped_quotes_as_before() {
     assert!(blkit::expr::expression(r#""a\"b""#).is_err());
+}
+
+#[test]
+fn escaped_quote_does_not_turn_inline_hash_into_full_line_comment() {
+    let source = decision_expression("Number", "String", "\"a\\\" # hidden \"x\"\n");
+    assert!(parse(&source).is_err(), "accepted inline comment: {source}");
 }
 
 #[test]
