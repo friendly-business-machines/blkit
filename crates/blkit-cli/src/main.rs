@@ -73,8 +73,13 @@ impl From<blkit_transpiler::CompilerError> for CompilerDiagnostic {
                     && source.is_char_boundary(span.end)
             })
         });
+        let message = if error.source_name.is_empty() {
+            error.message.clone()
+        } else {
+            format!("{}: {}", error.source_name, error.message)
+        };
         Self {
-            message: format!("{}: {}", error.source_name, error.message),
+            message,
             source_code: span.as_ref().and_then(|_| {
                 error
                     .source

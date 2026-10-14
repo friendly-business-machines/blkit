@@ -343,6 +343,34 @@ fn cli_project_transpile_labels_second_file_and_keeps_global_error_unlocated() {
 }
 
 #[test]
+fn cli_project_source_read_error_has_no_empty_source_prefix() {
+    let root = project(
+        MANIFEST,
+        &[("broken.bl", "namespace orders; version \"1\";")],
+    );
+    fs::write(root.join("broken.bl"), [0xff]).unwrap();
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_blkit"))
+        .arg("transpile")
+        .arg(&root)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let stderr = String::from_utf8(result.stderr).unwrap();
+    assert!(stderr.contains("broken.bl"), "{stderr}");
+    assert!(stderr.contains("UTF-8"), "{stderr}");
+    assert!(!stderr.contains(": : "), "{stderr}");
+    assert!(
+        !stderr
+            .lines()
+            .any(|line| line.trim_start().starts_with(": ")),
+        "{stderr}"
+    );
+    assert!(!root.join(".blkit/src/lib.rs").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn named_dictionary_resolves_across_project_files() {
     let root = project(
         MANIFEST,
