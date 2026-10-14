@@ -157,14 +157,18 @@ fn expression_parser<'a>(
             .clone()
             .separated_by(just(Token::Comma))
             .collect::<Vec<_>>()
-            .filter(|values| !matches!(values.first(), Some(Expr::Name(name)) if name == "null"))
-            .delimited_by(just(Token::OpenBracket), just(Token::CloseBracket))
+            .delimited_by(
+                just(Token::OpenBracket).then_ignore(word(source, "null").not()),
+                just(Token::CloseBracket),
+            )
             .map(Expr::List)
             .boxed();
         let grouped = expr
             .clone()
-            .filter(|value| !matches!(value, Expr::Name(name) if name == "null"))
-            .delimited_by(just(Token::OpenParen), just(Token::CloseParen))
+            .delimited_by(
+                just(Token::OpenParen).then_ignore(word(source, "null").not()),
+                just(Token::CloseParen),
+            )
             .boxed();
         let key = choice((quoted_text(source), ident.clone()));
         let dictionary =
@@ -471,23 +475,48 @@ pub fn table_condition(text: &str, columns: &[String]) -> Result<Expr, String> {
     parse_expression(text, columns)
 }
 
-fn parse_expression(text: &str, columns: &[String]) -> Result<Expr, String> {
-    let lexed = lexer::lex(text);
-    if lexed.has_full_line_comment {
-        return Err("invalid character in expression: #".into());
+fn expression_tokens(text: &str) -> Result<Vec<(Token, SimpleSpan)>, String> {
+    let mut tokens = Vec::new();
+    let mut offset = 0;
+    loop {
+        let lexed = lexer::lex(&text[offset..]);
+        if lexed.has_full_line_comment {
+            return Err("invalid character in expression: #".into());
+        }
+        let mut split = false;
+        for (token, span) in lexed.tokens {
+            let span = offset + span.start..offset + span.end;
+            // Logos escapes quotes; legacy expressions close at the first quote even after '\\'.
+            if token == Token::Invalid && text[span.clone()].starts_with('"') {
+                if let Some(close) = text[span.start + 1..span.end]
+                    .find('"')
+                    .map(|index| span.start + 1 + index)
+                    .filter(|&close| text.as_bytes()[close - 1] == b'\\')
+                {
+                    tokens.push((Token::String, (span.start..close + 1).into()));
+                    offset = close + 1;
+                    split = true;
+                    break;
+                }
+            }
+            if !matches!(token, Token::Newline | Token::Indent) {
+                tokens.push((token, span.into()));
+            }
+        }
+        if !split {
+            return Ok(tokens);
+        }
     }
-    let tokens: Vec<_> = lexed
-        .tokens
-        .into_iter()
-        .filter(|(token, _)| !matches!(token, Token::Newline | Token::Indent))
-        .map(|(token, span)| (token, span.into()))
-        .collect();
+}
+
+fn parse_expression(text: &str, columns: &[String]) -> Result<Expr, String> {
+    let tokens = expression_tokens(text)?;
     expression_parser(text, columns)
         .then_ignore(end())
         .parse(
             tokens
                 .as_slice()
-                .split_token_span((lexed.eof..lexed.eof).into()),
+                .split_token_span((text.len()..text.len()).into()),
         )
         .into_result()
         .map_err(|errors| format!("expression: {:?}", errors[0]))

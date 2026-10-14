@@ -2871,6 +2871,61 @@ fn expression_rejects_escaped_quotes_as_before() {
 }
 
 #[test]
+fn expression_keeps_literal_backslash_before_closing_quote() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression(r#""a\""#).unwrap(),
+        Expr::String("a\\".into())
+    );
+}
+
+#[test]
+fn expression_keeps_literal_backslash_before_closing_quote_in_call() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression(r#"string("a\")"#).unwrap(),
+        Expr::Call("string".into(), vec![Expr::String("a\\".into())])
+    );
+}
+
+#[test]
+fn expression_keeps_literal_backslash_quote_after_unicode_prefix() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression(r#""é" + "a\""#).unwrap(),
+        Expr::Binary(
+            Box::new(Expr::String("é".into())),
+            "+".into(),
+            Box::new(Expr::String("a\\".into()))
+        )
+    );
+}
+
+#[test]
+fn expression_error_after_recovered_quote_uses_original_byte_offset() {
+    let error = blkit::expr::expression(r#""é" + "a\" @"#).unwrap_err();
+    assert!(error.contains("12..13"), "{error}");
+}
+
+#[test]
+fn expression_rejects_unterminated_quote_with_backslash() {
+    assert!(blkit::expr::expression(r#""a\"#).is_err());
+}
+
+#[test]
+fn leading_null_cannot_be_used_in_list_expression() {
+    assert!(blkit::expr::expression("[null + 1]").is_err());
+}
+
+#[test]
+fn leading_null_cannot_be_used_in_grouped_expression() {
+    assert!(blkit::expr::expression("(null + 1)").is_err());
+}
+
+#[test]
 fn expression_colon_and_or_share_left_associative_precedence() {
     use blkit::expr::{self, Expr};
 
