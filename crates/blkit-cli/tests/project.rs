@@ -171,6 +171,66 @@ process route {
 }
 
 #[test]
+fn second_project_file_unknown_type_uses_its_own_utf8_byte_and_emits_no_rust() {
+    let first = "namespace orders; version \"1\"; start_event start { output amount: Number; }";
+    let second =
+        "namespace orders; version \"1\";\n# café\nend_event done { input amount: Missing; }";
+    let root = project(MANIFEST, &[("a.bl", first), ("z.bl", second)]);
+    let error = blkit::project::Project::load(&root)
+        .unwrap()
+        .transpile()
+        .unwrap_err();
+    assert!(error.contains("z.bl: unknown type: Missing"), "{error}");
+    assert!(
+        error.contains(&format!("at byte {}", second.find("Missing").unwrap())),
+        "{error}"
+    );
+    assert!(!error.contains("a.bl: unknown"), "{error}");
+    assert!(!root.join(".blkit/src/lib.rs").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn second_project_file_invalid_binding_uses_its_own_byte_and_emits_no_rust() {
+    let first = "namespace orders; version \"1\"; start_event start { output amount: Number; } end_event done { input result: Number; }";
+    let second = "namespace orders; version \"1\"; process route { flow start -> done; bind start.missing -> done.result; }";
+    let root = project(MANIFEST, &[("a.bl", first), ("z.bl", second)]);
+    let error = blkit::project::Project::load(&root)
+        .unwrap()
+        .transpile()
+        .unwrap_err();
+    assert!(
+        error.contains("z.bl: unknown binding output: start.missing"),
+        "{error}"
+    );
+    assert!(
+        error.contains(&format!(
+            "at byte {}",
+            second.find("start.missing").unwrap()
+        )),
+        "{error}"
+    );
+    assert!(!error.contains("a.bl: unknown"), "{error}");
+    assert!(!root.join(".blkit/src/lib.rs").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unlocatable_project_error_keeps_both_paths_without_a_fake_byte() {
+    let first = "namespace orders; version \"1\"; start_event start { output amount: Number; }";
+    let second = "namespace orders; version \"1\"; process route { }";
+    let root = project(MANIFEST, &[("a.bl", first), ("z.bl", second)]);
+    let error = blkit::project::Project::load(&root)
+        .unwrap()
+        .programs()
+        .unwrap_err();
+    assert!(error.contains("a.bl") && error.contains("z.bl"), "{error}");
+    assert!(error.contains("start"), "{error}");
+    assert!(!error.contains("at byte"), "{error}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn named_dictionary_resolves_across_project_files() {
     let root = project(
         MANIFEST,

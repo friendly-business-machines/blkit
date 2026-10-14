@@ -70,7 +70,6 @@ impl std::fmt::Display for CompilerError {
 }
 
 // Original input stays alongside the AST for later file-aware validation.
-#[allow(dead_code)]
 pub(crate) struct ParsedSource<'a> {
     pub(crate) program: Program,
     pub(crate) source_name: &'a str,
@@ -80,9 +79,74 @@ pub(crate) struct ParsedSource<'a> {
 pub use blkit_core::{DeadlinePolicy, RetryPolicy};
 
 pub fn transpile(source: &str) -> Result<String, String> {
-    let program = parse(source)?;
-    semantic::validate(&program)?;
-    codegen::generate(&program)
+    let parsed = parse_source(source, "<input>").map_err(|error| error.to_string())?;
+    semantic::validate(&parsed.program).map_err(|error| {
+        validation_error(error, [(parsed.source_name, parsed.source)]).to_string()
+    })?;
+    codegen::generate(&parsed.program)
+}
+
+pub(crate) fn validation_error<'a>(
+    message: String,
+    sources: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> CompilerError {
+    let sources: Vec<_> = sources.into_iter().collect();
+    let mut matches = Vec::new();
+    for &(name, source) in &sources {
+        let tokens = lexer::lex_legacy_quotes(source).tokens;
+        let tokens: Vec<_> = tokens
+            .iter()
+            .filter(|(token, _)| !matches!(token, Token::Newline | Token::Indent))
+            .collect();
+        let part = |index: usize| -> &str { &source[tokens[index].1.clone()] };
+        if let Some(unknown) = message.strip_prefix("unknown type: ") {
+            for index in 1..tokens.len() {
+                if tokens[index].0 == Token::Identifier
+                    && part(index) == unknown
+                    && matches!(tokens[index - 1].0, Token::Colon | Token::Less)
+                {
+                    matches.push((name, tokens[index].1.clone()));
+                }
+            }
+        } else if let Some(port) = message
+            .strip_prefix("unknown binding output: ")
+            .or_else(|| message.strip_prefix("unknown binding input: "))
+        {
+            for index in 0..tokens.len().saturating_sub(8) {
+                if part(index) == "bind"
+                    && tokens[index + 2].0 == Token::Dot
+                    && tokens[index + 4].0 == Token::Arrow
+                    && tokens[index + 6].0 == Token::Dot
+                    && tokens[index + 8].0 == Token::Semicolon
+                {
+                    let (start, end) = if message.starts_with("unknown binding output:") {
+                        (index + 1, index + 3)
+                    } else {
+                        (index + 5, index + 7)
+                    };
+                    if format!("{}.{}", part(start), part(end)) == port {
+                        matches.push((name, tokens[start].1.start..tokens[end].1.end));
+                    }
+                }
+            }
+        }
+    }
+    // Repeated matching constructs cannot be assigned a source span with certainty.
+    if let [(name, span)] = matches.as_slice() {
+        let mut error = CompilerError::located(message, span.clone());
+        error.set_source_name(name);
+        error
+    } else {
+        let mut error = CompilerError::from(message);
+        error.set_source_name(
+            &sources
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        error
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1014,6 +1078,43 @@ mod diagnostic_tests {
         assert_eq!(error.related.len(), 1);
         assert_eq!(error.related[0].source_name, "pairs.bl");
         assert_eq!(error.related[0].span, Some(second..second));
+    }
+
+    #[test]
+    fn direct_unknown_type_identifies_original_utf8_type_byte_without_rust() {
+        let source = "namespace demo; version \"1\";\n# café\nstart_event start { output amount: List<Missing>; }";
+        let error = super::transpile(source).unwrap_err();
+        let byte = source.find("Missing").unwrap();
+        assert!(error.contains("unknown type: Missing"), "{error}");
+        assert!(error.ends_with(&format!("at byte {byte}")), "{error}");
+    }
+
+    #[test]
+    fn direct_invalid_binding_identifies_original_byte_without_rust() {
+        let source = "namespace demo; version \"1\"; start_event start { output amount: Number; } end_event done { input result: Number; } process route { flow start -> done; bind start.missing -> done.result; }";
+        let error = super::transpile(source).unwrap_err();
+        let byte = source.find("start.missing").unwrap();
+        assert!(
+            error.contains("unknown binding output: start.missing"),
+            "{error}"
+        );
+        assert!(error.ends_with(&format!("at byte {byte}")), "{error}");
+    }
+
+    #[test]
+    fn repeated_unknown_type_does_not_guess_a_byte() {
+        let source = "namespace demo; version \"1\"; start_event start { output one: Missing; output two: Missing; }";
+        let error = super::transpile(source).unwrap_err();
+        assert!(error.contains("unknown type: Missing"), "{error}");
+        assert!(!error.contains("at byte"), "{error}");
+    }
+
+    #[test]
+    fn global_validation_failure_has_no_fabricated_byte() {
+        let source = "namespace demo; version \"1\"; process route { }";
+        let error = super::transpile(source).unwrap_err();
+        assert!(error.contains("start"), "{error}");
+        assert!(!error.contains("at byte"), "{error}");
     }
 
     #[test]

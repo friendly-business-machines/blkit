@@ -5,7 +5,7 @@ use std::{
 };
 use toml_edit::{DocumentMut, Item};
 
-use crate::{Program, codegen, graph::NodeKind, identifier, parse, type_ref, validate};
+use crate::{Program, codegen, compiler, graph::NodeKind, identifier, type_ref, validate};
 
 pub use crate::compiler::ExternalTask;
 
@@ -269,11 +269,13 @@ impl Project {
     }
 
     pub fn programs(&self) -> Result<Vec<Program>, String> {
-        type ProjectGroup = (Program, BTreeMap<String, PathBuf>, Vec<PathBuf>);
+        type ProjectGroup = (Program, BTreeMap<String, PathBuf>, Vec<(PathBuf, String)>);
         let mut groups: BTreeMap<(String, String), ProjectGroup> = BTreeMap::new();
         for path in &self.sources {
             let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let parsed = parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+            let parsed = compiler::parse_source(&text, &path.to_string_lossy())
+                .map_err(|error| error.to_string())?
+                .program;
             let key = (parsed.namespace.clone(), parsed.version.clone());
             let names = parsed
                 .records
@@ -287,7 +289,7 @@ impl Project {
             match groups.entry(key) {
                 std::collections::btree_map::Entry::Vacant(entry) => {
                     let origins = names.map(|name| (name.clone(), path.clone())).collect();
-                    entry.insert((parsed, origins, vec![path.clone()]));
+                    entry.insert((parsed, origins, vec![(path.clone(), text)]));
                 }
                 std::collections::btree_map::Entry::Occupied(mut entry) => {
                     let (merged, origins, paths) = entry.get_mut();
@@ -300,7 +302,7 @@ impl Project {
                             ));
                         }
                     }
-                    paths.push(path.clone());
+                    paths.push((path.clone(), text));
                     merged.records.extend(parsed.records);
                     merged.enums.extend(parsed.enums);
                     merged.tasks.extend(parsed.tasks);
@@ -353,15 +355,16 @@ impl Project {
                         .insert(task.clone(), definition.clone());
                 }
             }
-            validate(&program).map_err(|e| {
-                format!(
-                    "{}: {e}",
-                    paths
-                        .iter()
-                        .map(|p| p.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+            validate(&program).map_err(|error| {
+                let sources: Vec<_> = paths
+                    .iter()
+                    .map(|(path, text)| (path.to_string_lossy().into_owned(), text.as_str()))
+                    .collect();
+                compiler::validation_error(
+                    error,
+                    sources.iter().map(|(name, text)| (name.as_str(), *text)),
                 )
+                .to_string()
             })?;
             programs.push(program);
         }
