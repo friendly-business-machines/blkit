@@ -2871,6 +2871,30 @@ fn expression_rejects_escaped_quotes_as_before() {
 }
 
 #[test]
+fn expression_splits_legacy_quoted_binary_operands() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression(r#""a\" + "b""#).unwrap(),
+        Expr::Binary(
+            Box::new(Expr::String("a\\".into())),
+            "+".into(),
+            Box::new(Expr::String("b".into()))
+        )
+    );
+}
+
+#[test]
+fn expression_splits_legacy_quoted_list_elements_after_unicode() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression(r#"["é\", "b"]"#).unwrap(),
+        Expr::List(vec![Expr::String("é\\".into()), Expr::String("b".into())])
+    );
+}
+
+#[test]
 fn expression_keeps_literal_backslash_before_closing_quote() {
     use blkit::expr::{self, Expr};
 

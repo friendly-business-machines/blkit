@@ -487,11 +487,16 @@ fn expression_tokens(text: &str) -> Result<Vec<(Token, SimpleSpan)>, String> {
         for (token, span) in lexed.tokens {
             let span = offset + span.start..offset + span.end;
             // Logos escapes quotes; legacy expressions close at the first quote even after '\\'.
-            if token == Token::Invalid && text[span.clone()].starts_with('"') {
+            if matches!(token, Token::Invalid | Token::String)
+                && text[span.clone()].starts_with('"')
+            {
                 if let Some(close) = text[span.start + 1..span.end]
                     .find('"')
                     .map(|index| span.start + 1 + index)
-                    .filter(|&close| text.as_bytes()[close - 1] == b'\\')
+                    .filter(|&close| {
+                        text.as_bytes()[close - 1] == b'\\'
+                            && (token == Token::Invalid || close + 1 < span.end)
+                    })
                 {
                     tokens.push((Token::String, (span.start..close + 1).into()));
                     offset = close + 1;
