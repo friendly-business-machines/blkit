@@ -96,6 +96,36 @@ process example {
 }
 
 #[test]
+fn malformed_nested_expression_reports_original_byte_and_emits_no_rust() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input amount: Number; output result: Number = value; literal_expression value {{ output result: Number; expression amount + ; }} }}"
+    );
+    let error = transpile(&source).unwrap_err();
+    let unexpected = source.find("+ ;").unwrap() + 2;
+    assert!(error.contains("expression"), "{error}");
+    assert!(error.contains(&format!("byte {unexpected}")), "{error}");
+}
+
+#[test]
+fn invalid_unicode_token_reports_original_bytes_and_emits_no_rust() {
+    let source = format!("{HEADER}enum Café:\n  ready;\n");
+    let error = transpile(&source).unwrap_err();
+    assert!(error.contains("invalid character"), "{error}");
+    assert!(
+        error.contains(&format!("byte {}", source.find('é').unwrap())),
+        "{error}"
+    );
+}
+
+#[test]
+fn unclosed_declaration_reports_original_unicode_eof_and_emits_no_rust() {
+    let source = format!("{HEADER}# café\nstart_event start {{ output amount: Number; ");
+    let error = transpile(&source).unwrap_err();
+    assert!(error.contains("unclosed brace"), "{error}");
+    assert!(error.contains(&format!("byte {}", source.len())), "{error}");
+}
+
+#[test]
 fn missing_braces_and_semicolons_fail_parsing() {
     let source = r#"namespace demo;
 version "1.0";

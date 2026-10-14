@@ -746,17 +746,17 @@ fn parse_item(
     source: &str,
     item: &crate::compiler::BodyItem,
     columns: &[String],
-) -> Result<DecisionStatement, String> {
-    let crate::compiler::BodyItem::Statement(tokens) = item else {
+) -> Result<DecisionStatement, crate::compiler::CompilerError> {
+    let crate::compiler::BodyItem::Statement(tokens, terminator) = item else {
         return Err("unexpected nested decision block".into());
     };
-    crate::compiler::statement(source, tokens, decision_statement(source, columns)).map_err(
+    crate::compiler::statement(tokens, *terminator, decision_statement(source, columns)).map_err(
         |error| {
             if tokens
                 .first()
                 .is_some_and(|(_, span)| &source[span.into_range()] == "expression")
             {
-                format!("expression: {error}")
+                error.context("expression")
             } else {
                 error
             }
@@ -769,7 +769,7 @@ fn node_tokens(
     kind: &str,
     name: &str,
     body: &[crate::compiler::BodyItem],
-) -> Result<Result<DecisionNode, Knowledge>, String> {
+) -> Result<Result<DecisionNode, Knowledge>, crate::compiler::CompilerError> {
     let mut output = None;
     let mut expression = None;
     let mut entries = Vec::new();
@@ -849,7 +849,7 @@ fn node_tokens(
             ("decision_table", DecisionStatement::Default(values)) if table.default.is_none() => {
                 table.default = Some(values);
             }
-            _ => return Err(format!("invalid {kind} statement")),
+            _ => return Err(format!("invalid {kind} statement").into()),
         }
     }
     let (output_name, output) = output.ok_or_else(|| format!("missing {kind} output"))?;
@@ -884,7 +884,7 @@ fn node_tokens(
             kind: DecisionKind::Table(table),
         })),
         "decision_table" => Err("missing table policy".into()),
-        _ => Err(format!("invalid decision block: {kind}")),
+        _ => Err(format!("invalid decision block: {kind}").into()),
     }
 }
 
@@ -892,11 +892,11 @@ pub(crate) fn parse_tokens(
     source: &str,
     name: &str,
     items: &[crate::compiler::BodyItem],
-) -> Result<DecisionModel, String> {
+) -> Result<DecisionModel, crate::compiler::CompilerError> {
     let (mut inputs, mut outputs, mut nodes, mut knowledge) = (vec![], vec![], vec![], vec![]);
     for item in items {
         match item {
-            crate::compiler::BodyItem::Statement(_) => match parse_item(source, item, &[])? {
+            crate::compiler::BodyItem::Statement(..) => match parse_item(source, item, &[])? {
                 DecisionStatement::Input(port, ty) => inputs.push((port, ty)),
                 DecisionStatement::Output(port, ty, Some((node, field))) => outputs.push((
                     port,
@@ -913,5 +913,5 @@ pub(crate) fn parse_tokens(
             }
         }
     }
-    finish_braced(name, inputs, outputs, nodes, knowledge)
+    finish_braced(name, inputs, outputs, nodes, knowledge).map_err(Into::into)
 }

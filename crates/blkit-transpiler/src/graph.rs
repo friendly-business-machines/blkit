@@ -825,13 +825,13 @@ fn graph_statement<'a>(
 fn statements(
     source: &str,
     body: &[crate::compiler::BodyItem],
-) -> Result<Vec<GraphStatement>, String> {
+) -> Result<Vec<GraphStatement>, crate::compiler::CompilerError> {
     body.iter()
         .map(|item| match item {
-            crate::compiler::BodyItem::Statement(tokens) => {
-                crate::compiler::statement(source, tokens, graph_statement(source)).map_err(
+            crate::compiler::BodyItem::Statement(tokens, terminator) => {
+                crate::compiler::statement(tokens, *terminator, graph_statement(source)).map_err(
                     |error| {
-                        if error.contains("end of input") {
+                        if error.message.contains("end of input") {
                             let label = if tokens
                                 .first()
                                 .is_some_and(|(_, span)| &source[span.into_range()] == "flow")
@@ -844,7 +844,7 @@ fn statements(
                             } else {
                                 "missing semicolon"
                             };
-                            format!("{label}: {error}")
+                            error.context(label)
                         } else {
                             error
                         }
@@ -861,7 +861,7 @@ pub(crate) fn parse_peer_tokens(
     kind: &str,
     name: &str,
     body: &[crate::compiler::BodyItem],
-) -> Result<Peer, String> {
+) -> Result<Peer, crate::compiler::CompilerError> {
     let items = statements(source, body)?;
     let mut inputs = Vec::new();
     let mut outputs = Vec::new();
@@ -893,7 +893,7 @@ pub(crate) fn parse_peer_tokens(
                         .iter()
                         .any(|(used, _): &(String, Type)| used == &port)
                 {
-                    return Err(format!("invalid or duplicate {kind} port: {port}"));
+                    return Err(format!("invalid or duplicate {kind} port: {port}").into());
                 }
                 target.push((port, ty));
             }
@@ -911,9 +911,9 @@ pub(crate) fn parse_peer_tokens(
                 pause = Some(duration(&value)?)
             }
             _ if matches!(kind, "error_event" | "cancel_event" | "terminate_event") => {
-                return Err(format!("terminal {name} does not accept statements"));
+                return Err(format!("terminal {name} does not accept statements").into());
             }
-            _ => return Err(format!("invalid {kind} statement")),
+            _ => return Err(format!("invalid {kind} statement").into()),
         }
     }
     let kind = match kind {
@@ -974,7 +974,7 @@ pub(crate) fn parse_peer_tokens(
                 _ => "Terminate",
             },
         },
-        _ => return Err(format!("invalid peer: {kind}")),
+        _ => return Err(format!("invalid peer: {kind}").into()),
     };
     Ok(Peer {
         name: name.into(),
@@ -991,7 +991,7 @@ pub(crate) fn parse_source_tokens(
         Option<crate::compiler::RetryPolicy>,
         Option<crate::compiler::DeadlinePolicy>,
     ),
-    String,
+    crate::compiler::CompilerError,
 > {
     let mut retry = None;
     let mut deadline = None;
@@ -1003,7 +1003,7 @@ pub(crate) fn parse_source_tokens(
         multi_instances: vec![],
     };
     for item in
-        statements(source, body).map_err(|error| format!("invalid process statement: {error}"))?
+        statements(source, body).map_err(|error| error.context("invalid process statement"))?
     {
         match item {
             GraphStatement::Retry(max_retries, retry_for, retry_delay) => {
@@ -1044,7 +1044,7 @@ pub(crate) fn parse_source_tokens(
                     .iter()
                     .any(|item: &Repetition| item.node == node)
                 {
-                    return Err(format!("duplicate repeat node: {node}"));
+                    return Err(format!("duplicate repeat node: {node}").into());
                 }
                 if before != initial.is_some() {
                     return Err("repeat_pre requires initial; repeat_post forbids initial".into());
@@ -1098,7 +1098,7 @@ pub(crate) fn parse_source_tokens(
             }
             GraphStatement::Flow(from, to, condition, tail) => {
                 if graph.flows.iter().any(|(a, b)| a == &from && b == &to) {
-                    return Err(format!("duplicate flow: {from} -> {to}"));
+                    return Err(format!("duplicate flow: {from} -> {to}").into());
                 }
                 let (fallback, label, outcome) = match tail {
                     None => (false, None, None),
@@ -1110,7 +1110,7 @@ pub(crate) fn parse_source_tokens(
                         (false, None, Some(outcome))
                     }
                     Some(FlowModifier::Outcome(outcome)) => {
-                        return Err(format!("invalid subprocess outcome: {outcome}"));
+                        return Err(format!("invalid subprocess outcome: {outcome}").into());
                     }
                 };
                 if condition.is_some() || fallback || label.is_some() || outcome.is_some() {

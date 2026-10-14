@@ -1,5 +1,64 @@
 use crate::{codegen, decision, expr, graph, semantic};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::Range};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompilerError {
+    pub(crate) message: String,
+    pub(crate) source_name: String,
+    pub(crate) span: Option<Range<usize>>,
+}
+
+impl CompilerError {
+    fn located(message: impl Into<String>, span: Range<usize>) -> Self {
+        Self {
+            message: message.into(),
+            source_name: String::new(),
+            span: Some(span),
+        }
+    }
+
+    pub(crate) fn context(mut self, context: &str) -> Self {
+        self.message = format!("{context}: {}", self.message);
+        self
+    }
+}
+
+impl From<String> for CompilerError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            source_name: String::new(),
+            span: None,
+        }
+    }
+}
+
+impl From<&str> for CompilerError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
+impl std::fmt::Display for CompilerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if !self.source_name.is_empty() {
+            write!(f, "{}: ", self.source_name)?;
+        }
+        write!(f, "{}", self.message)?;
+        if let Some(span) = &self.span {
+            write!(f, " at byte {}", span.start)?;
+        }
+        Ok(())
+    }
+}
+
+// Original input stays alongside the AST for later file-aware validation.
+#[allow(dead_code)]
+pub(crate) struct ParsedSource<'a> {
+    pub(crate) program: Program,
+    pub(crate) source_name: &'a str,
+    pub(crate) source: &'a str,
+}
 
 pub use blkit_core::{DeadlinePolicy, RetryPolicy};
 
@@ -169,7 +228,7 @@ pub(crate) fn type_parser<'a>(
 
 #[derive(Debug)]
 pub(crate) enum BodyItem {
-    Statement(Vec<(Token, SimpleSpan)>),
+    Statement(Vec<(Token, SimpleSpan)>, SimpleSpan),
     Block(String, String, Vec<BodyItem>),
 }
 
@@ -226,23 +285,22 @@ pub(crate) fn quoted<'a>(
 }
 
 pub(crate) fn statement<'a, O, P>(
-    source: &'a str,
     tokens: &'a [(Token, SimpleSpan)],
+    terminator: SimpleSpan,
     parser: P,
-) -> Result<O, String>
+) -> Result<O, CompilerError>
 where
     P: Parser<'a, Tokens<'a>, O, ParseError<'a>>,
 {
-    let eof = tokens.last().map_or(source.len(), |(_, span)| span.end);
+    let eof = terminator.start;
     parser
         .then_ignore(end())
         .parse(tokens.split_token_span((eof..eof).into()))
         .into_result()
         .map_err(|errors| {
-            format!(
-                "statement at byte {}: {:?}",
-                errors[0].span().start,
-                errors[0]
+            CompilerError::located(
+                format!("statement: {:?}", errors[0]),
+                errors[0].span().into_range(),
             )
         })
 }
@@ -284,14 +342,15 @@ fn body_parser<'a>(
             .repeated()
             .at_least(1)
             .collect::<Vec<_>>()
-            .then_ignore(just(Token::Semicolon))
-            .map(|parts| {
+            .then(just(Token::Semicolon).map_with(|_, extra| extra.span()))
+            .map(|(parts, terminator)| {
                 BodyItem::Statement(
                     parts
                         .into_iter()
                         .flatten()
                         .filter(|(token, _)| !matches!(token, Token::Newline | Token::Indent))
                         .collect(),
+                    terminator,
                 )
             });
         let nested_kind = choice((
@@ -315,7 +374,9 @@ fn body_parser<'a>(
     })
 }
 
-fn program_parser<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, Program, ParseError<'a>> {
+fn program_parser<'a>(
+    source: &'a str,
+) -> impl Parser<'a, Tokens<'a>, Result<Program, CompilerError>, ParseError<'a>> {
     let newlines = just(Token::Newline).repeated().ignored();
     let outer_layout = choice((just(Token::Newline), just(Token::Indent)))
         .repeated()
@@ -439,7 +500,7 @@ fn program_parser<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, Program, P
             ),
         )
         .then_ignore(end())
-        .try_map_with(|((namespace, version), declarations), extra| {
+        .map(|((namespace, version), declarations)| {
             let mut program = Program {
                 namespace,
                 version,
@@ -456,14 +517,12 @@ fn program_parser<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, Program, P
                     Declaration::Record(record) => program.records.push(record),
                     Declaration::Enum(item) => program.enums.push(item),
                     Declaration::Body(kind, name, body) => match kind.as_str() {
-                        "decision_task" => program.decisions.push(
-                            decision::parse_tokens(source, &name, &body)
-                                .map_err(|message| Rich::custom(extra.span(), message))?,
-                        ),
+                        "decision_task" => program
+                            .decisions
+                            .push(decision::parse_tokens(source, &name, &body)?),
                         "process" => {
                             let (graph, retry, deadline) =
-                                graph::parse_source_tokens(source, &body)
-                                    .map_err(|message| Rich::custom(extra.span(), message))?;
+                                graph::parse_source_tokens(source, &body)?;
                             program.processes.push(Process {
                                 name,
                                 input: String::new(),
@@ -476,10 +535,9 @@ fn program_parser<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, Program, P
                                 deadline,
                             });
                         }
-                        _ => program.peer_nodes.push(
-                            graph::parse_peer_tokens(source, &kind, &name, &body)
-                                .map_err(|message| Rich::custom(extra.span(), message))?,
-                        ),
+                        _ => program
+                            .peer_nodes
+                            .push(graph::parse_peer_tokens(source, &kind, &name, &body)?),
                     },
                 }
             }
@@ -488,13 +546,35 @@ fn program_parser<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, Program, P
 }
 
 pub fn parse(source: &str) -> Result<Program, String> {
+    parse_source(source, "<input>")
+        .map(|parsed| parsed.program)
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn parse_source<'a>(
+    source: &'a str,
+    source_name: &'a str,
+) -> Result<ParsedSource<'a>, CompilerError> {
+    parse_source_inner(source)
+        .map(|program| ParsedSource {
+            program,
+            source_name,
+            source,
+        })
+        .map_err(|mut error| {
+            error.source_name = source_name.to_owned();
+            error
+        })
+}
+
+fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
     let lexed = lexer::lex_legacy_quotes(source);
     if let Some((_, span)) = lexed
         .tokens
         .iter()
         .find(|(token, _)| *token == Token::Invalid)
     {
-        return Err(format!("invalid character at byte {}", span.start));
+        return Err(CompilerError::located("invalid character", span.clone()));
     }
     let tokens: Vec<_> = lexed
         .tokens
@@ -516,7 +596,10 @@ pub fn parse(source: &str) -> Result<Program, String> {
                 && text(source, *kind_span) == "type"
             {
                 let name = text(source, *name_span);
-                return format!("type {name}: is unsupported; use {name} = {{field: Type, ...}};");
+                return CompilerError::located(
+                    format!("type {name}: is unsupported; use {name} = {{field: Type, ...}};"),
+                    span,
+                );
             }
             let prefix = if !source.contains("namespace ") {
                 "expected namespace declaration"
@@ -536,6 +619,42 @@ pub fn parse(source: &str) -> Result<Program, String> {
             } else {
                 "invalid declaration or statement"
             };
-            format!("{prefix} at byte {}: {error:?}", span.start)
-        })
+            CompilerError::located(format!("{prefix}: {error:?}"), span)
+        })?
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::parse_source;
+
+    #[test]
+    fn nested_expression_error_preserves_source_identity_and_terminator_byte() {
+        let source = "namespace demo; version \"1.0\"; decision_task check { input amount: Number; output result: Number = value; literal_expression value { output result: Number; expression amount + ; } }";
+        let error = parse_source(source, "test.bl").err().unwrap();
+        assert_eq!(error.source_name, "test.bl");
+        let semicolon = source.find("+ ;").unwrap() + 2;
+        assert_eq!(error.span, Some(semicolon..semicolon));
+        assert!(error.message.contains("expression"), "{error}");
+    }
+
+    #[test]
+    fn lex_error_and_unicode_eof_use_original_source_bytes() {
+        let source = "namespace demo; version \"1.0\";\n# café\nstart_event start { ☃ }";
+        let error = parse_source(source, "unicode.bl").err().unwrap();
+        let snowman = source.find('☃').unwrap();
+        assert_eq!(error.span, Some(snowman..snowman + '☃'.len_utf8()));
+        assert_eq!(error.source_name, "unicode.bl");
+        let source = "namespace demo; version \"1.0\";\n# café\nstart_event start {";
+        let error = parse_source(source, "unicode.bl").err().unwrap();
+        assert_eq!(error.span, Some(source.len()..source.len()));
+    }
+
+    #[test]
+    fn parsed_source_keeps_original_text_and_identity_without_changing_program() {
+        let source = "namespace demo; version \"1.0\";";
+        let parsed = parse_source(source, "demo.bl").unwrap();
+        assert_eq!(parsed.program.namespace, "demo");
+        assert_eq!(parsed.source_name, "demo.bl");
+        assert_eq!(parsed.source, source);
+    }
 }
