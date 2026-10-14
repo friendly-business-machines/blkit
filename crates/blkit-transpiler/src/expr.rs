@@ -476,42 +476,16 @@ pub fn table_condition(text: &str, columns: &[String]) -> Result<Expr, String> {
 }
 
 fn expression_tokens(text: &str) -> Result<Vec<(Token, SimpleSpan)>, String> {
-    let mut tokens = Vec::new();
-    let mut offset = 0;
-    loop {
-        let lexed = lexer::lex(&text[offset..]);
-        if lexed.has_full_line_comment {
-            return Err("invalid character in expression: #".into());
-        }
-        let mut split = false;
-        for (token, span) in lexed.tokens {
-            let span = offset + span.start..offset + span.end;
-            // Logos escapes quotes; legacy expressions close at the first quote even after '\\'.
-            if matches!(token, Token::Invalid | Token::String)
-                && text[span.clone()].starts_with('"')
-            {
-                if let Some(close) = text[span.start + 1..span.end]
-                    .find('"')
-                    .map(|index| span.start + 1 + index)
-                    .filter(|&close| {
-                        text.as_bytes()[close - 1] == b'\\'
-                            && (token == Token::Invalid || close + 1 < span.end)
-                    })
-                {
-                    tokens.push((Token::String, (span.start..close + 1).into()));
-                    offset = close + 1;
-                    split = true;
-                    break;
-                }
-            }
-            if !matches!(token, Token::Newline | Token::Indent) {
-                tokens.push((token, span.into()));
-            }
-        }
-        if !split {
-            return Ok(tokens);
-        }
+    let lexed = lexer::lex_legacy_quotes(text);
+    if lexed.has_full_line_comment {
+        return Err("invalid character in expression: #".into());
     }
+    Ok(lexed
+        .tokens
+        .into_iter()
+        .filter(|(token, _)| !matches!(token, Token::Newline | Token::Indent))
+        .map(|(token, span)| (token, span.into()))
+        .collect())
 }
 
 fn parse_expression(text: &str, columns: &[String]) -> Result<Expr, String> {

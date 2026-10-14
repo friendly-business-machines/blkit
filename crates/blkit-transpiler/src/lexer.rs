@@ -119,6 +119,45 @@ pub(crate) fn lex(source: &str) -> Lexed {
     }
 }
 
+// Match the pre-existing source grammar: a backslash does not escape its next quote.
+// Relex the remaining original source so both file and expression parsers see the same spans.
+pub(crate) fn lex_legacy_quotes(source: &str) -> Lexed {
+    let mut tokens = Vec::new();
+    let mut offset = 0;
+    let mut has_full_line_comment = false;
+    loop {
+        let lexed = lex(&source[offset..]);
+        has_full_line_comment |= lexed.has_full_line_comment;
+        let mut split = false;
+        for (token, span) in lexed.tokens {
+            let span = offset + span.start..offset + span.end;
+            if matches!(token, Token::Invalid | Token::String)
+                && source[span.clone()].starts_with('"')
+                && let Some(close) = source[span.start + 1..span.end]
+                    .find('"')
+                    .map(|index| span.start + 1 + index)
+                    .filter(|&close| {
+                        source.as_bytes()[close - 1] == b'\\'
+                            && (token == Token::Invalid || close + 1 < span.end)
+                    })
+            {
+                tokens.push((Token::String, span.start..close + 1));
+                offset = close + 1;
+                split = true;
+                break;
+            }
+            tokens.push((token, span));
+        }
+        if !split {
+            return Lexed {
+                tokens,
+                eof: source.len(),
+                has_full_line_comment,
+            };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Token, lex};

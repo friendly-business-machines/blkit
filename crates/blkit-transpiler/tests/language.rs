@@ -15,7 +15,8 @@ fn named_dictionary_declarations_replace_colon_records() {
     assert_eq!(program.enums[0].variants, ["ready"]);
     validate(&program).unwrap();
     let old = format!("{HEADER}type Order:\n  total: Number;");
-    assert!(parse(&old).unwrap_err().contains("Order ="));
+    let error = parse(&old).unwrap_err();
+    assert!(error.contains("Order ="), "{error}");
     assert!(parse(&source.replace("};", "}")).is_err());
 }
 
@@ -2817,6 +2818,24 @@ enum Result:
 }
 
 #[test]
+fn record_spacing_rejections_remain_rejected() {
+    for declaration in [
+        "Order={value: Number};",
+        "Order = {value: List <Number>};",
+        "Order = {value: List< Number>};",
+    ] {
+        let source = format!("{HEADER}{declaration}");
+        assert!(parse(&source).is_err(), "accepted: {declaration}");
+    }
+}
+
+#[test]
+fn record_field_separators_do_not_hide_empty_fields() {
+    let source = format!("{HEADER}Order = {{first: Number,, second: Bool}};");
+    assert!(parse(&source).is_err(), "accepted an empty record field");
+}
+
+#[test]
 fn enum_layout_and_record_delimiters_reject_malformed_sources() {
     for source in [
         format!("{HEADER}enum State:\n waiting;"),
@@ -2868,6 +2887,16 @@ fn standalone_expression_rejects_full_line_comments() {
 #[test]
 fn expression_rejects_escaped_quotes_as_before() {
     assert!(blkit::expr::expression(r#""a\"b""#).is_err());
+}
+
+#[test]
+fn declaration_body_preserves_legacy_quoted_expression_operands() {
+    let source = decision_expression("Number", "String", r#""a\" + "b""#);
+    let program = parse(&source).unwrap();
+    assert!(matches!(
+        &program.decisions[0].nodes[0].kind,
+        blkit::decision::DecisionKind::Literal(blkit::expr::Expr::Binary(_, op, _)) if op == "+"
+    ));
 }
 
 #[test]

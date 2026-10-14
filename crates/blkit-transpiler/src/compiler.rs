@@ -122,102 +122,6 @@ pub(crate) fn identifier(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-fn source_items(source: &str) -> Result<Vec<String>, String> {
-    let mut items = Vec::new();
-    let mut pending = String::new();
-    let mut quoted = false;
-    let mut depth = 0usize;
-    let mut literal_depth = 0usize;
-    for line in source
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-    {
-        for ch in line.chars() {
-            match ch {
-                '"' => {
-                    quoted = !quoted;
-                    pending.push(ch);
-                }
-                ';' if !quoted => {
-                    let text = pending.trim_end();
-                    if text.trim().is_empty() {
-                        return Err("empty statement".into());
-                    }
-                    items.push(if text.starts_with("  ") && depth == 0 {
-                        text.to_owned()
-                    } else {
-                        text.trim_start().to_owned()
-                    });
-                    pending.clear();
-                }
-                '{' if !quoted => {
-                    let first = pending.split_whitespace().next().unwrap_or("");
-                    let declaration = matches!(
-                        first,
-                        "start_event"
-                            | "end_event"
-                            | "decision_task"
-                            | "process"
-                            | "xor_split"
-                            | "xor_join"
-                            | "and_split"
-                            | "and_join"
-                            | "or_split"
-                            | "or_join"
-                            | "error_event"
-                            | "cancel_event"
-                            | "terminate_event"
-                            | "pause_for"
-                            | "pause_until"
-                            | "subprocess"
-                            | "literal_expression"
-                            | "decision_table"
-                            | "context"
-                            | "knowledge"
-                    );
-                    if literal_depth > 0 || !declaration {
-                        pending.push(ch);
-                        literal_depth += 1;
-                    } else {
-                        items.push(pending.trim().to_owned());
-                        items.push("{".into());
-                        pending.clear();
-                        depth += 1;
-                    }
-                }
-                '}' if !quoted && literal_depth > 0 => {
-                    pending.push(ch);
-                    literal_depth -= 1;
-                }
-                '}' if !quoted => {
-                    if !pending.trim().is_empty() || depth == 0 {
-                        return Err("missing semicolon or unexpected '}'".into());
-                    }
-                    depth -= 1;
-                    items.push("}".into());
-                }
-                _ => pending.push(ch),
-            }
-        }
-        if quoted {
-            return Err("unterminated string".into());
-        }
-        if pending.trim_end().ends_with(':') && depth == 0 {
-            items.push(pending.trim().to_owned());
-            pending.clear();
-        } else if !pending.is_empty() {
-            pending.push(' ');
-        }
-    }
-    if !pending.trim().is_empty() {
-        return Err("missing semicolon".into());
-    }
-    if depth != 0 || literal_depth != 0 {
-        return Err("unclosed brace".into());
-    }
-    Ok(items)
-}
-
 pub(crate) fn block_items(items: &[String], index: &mut usize) -> Result<Vec<String>, String> {
     if items.get(*index).map(String::as_str) != Some("{") {
         return Err("expected '{' after declaration".into());
@@ -243,179 +147,366 @@ pub(crate) fn block_items(items: &[String], index: &mut usize) -> Result<Vec<Str
     Err("unclosed declaration brace".into())
 }
 
-pub fn parse(source: &str) -> Result<Program, String> {
-    let lines = source_items(source)?;
-    let namespace = lines
-        .first()
-        .and_then(|line| line.strip_prefix("namespace "))
-        .filter(|name| identifier(name))
-        .ok_or("expected namespace declaration")?
-        .to_owned();
-    let version = lines
-        .get(1)
-        .and_then(|line| line.strip_prefix("version \""))
-        .and_then(|text| text.strip_suffix('"'))
-        .filter(|value| !value.is_empty())
-        .ok_or("expected version declaration")?
-        .to_owned();
-    let mut program = Program {
-        namespace,
-        version,
-        records: Vec::new(),
-        enums: Vec::new(),
-        processes: Vec::new(),
-        tasks: Vec::new(),
-        decisions: Vec::new(),
-        peer_nodes: Vec::new(),
-        external_tasks: BTreeMap::new(),
-    };
-    let mut i = 2;
-    while i < lines.len() {
-        let header = lines[i].as_str();
-        if let Some((name, value)) = header.split_once(" = ")
-            && identifier(name)
-            && let Some(fields) = value
-                .trim()
-                .strip_prefix('{')
-                .and_then(|v| v.strip_suffix('}'))
-        {
-            let mut record = Record {
-                name: name.into(),
-                fields: Vec::new(),
-            };
-            for member in split_top_level(fields, ',')?
-                .into_iter()
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-            {
-                let parts = split_top_level(member, ':')?;
-                let [key, ty] = parts.as_slice() else {
-                    return Err("invalid dictionary field".into());
-                };
-                let raw_key = key.trim();
-                let quoted =
-                    raw_key.starts_with('"') && raw_key.ends_with('"') && raw_key.len() >= 2;
-                let key = if quoted {
-                    &raw_key[1..raw_key.len() - 1]
+use crate::lexer::{self, Token};
+use chumsky::{
+    input::{Input as _, MappedInput},
+    prelude::*,
+};
+
+type Tokens<'a> = MappedInput<'a, Token, SimpleSpan, &'a [(Token, SimpleSpan)]>;
+type ParseError<'a> = extra::Err<Rich<'a, Token>>;
+
+enum Declaration {
+    Record(Record),
+    Enum(Enum),
+    Body(String, String, Vec<String>),
+}
+
+fn text(source: &str, span: SimpleSpan) -> &str {
+    &source[span.into_range()]
+}
+
+fn name<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, String, ParseError<'a>> + Clone {
+    just(Token::Identifier).map_with(move |_, extra| text(source, extra.span()).into())
+}
+
+fn word<'a>(
+    source: &'a str,
+    expected: &'static str,
+) -> impl Parser<'a, Tokens<'a>, (), ParseError<'a>> + Clone {
+    just(Token::Identifier)
+        .map_with(move |_, extra| text(source, extra.span()))
+        .filter(move |value| *value == expected)
+        .ignored()
+}
+
+fn type_parser<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, Type, ParseError<'a>> + Clone {
+    recursive(|ty| {
+        name(source)
+            .then(
+                ty.delimited_by(just(Token::Less), just(Token::Greater))
+                    .or_not(),
+            )
+            .map(|(name, inner)| match inner {
+                Some(inner) => Type::Generic(name, Box::new(inner)),
+                None => Type::Named(name),
+            })
+    })
+}
+
+// The not-yet-migrated graph/decision parsers accept statement strings. Preserve
+// their delimiters and quoted text while dropping layout and full-line comments.
+fn statement_text(source: &str, tokens: &[(Token, SimpleSpan)]) -> String {
+    let mut result = String::new();
+    let mut end = None;
+    for (token, span) in tokens {
+        if matches!(token, Token::Newline | Token::Indent) {
+            continue;
+        }
+        let span = span.into_range();
+        if let Some(previous) = end {
+            let gap = &source[previous..span.start];
+            if !gap.is_empty() {
+                if gap.contains('#') || gap.contains('\n') || gap.contains('\r') {
+                    result.push(' ');
                 } else {
-                    raw_key
-                };
-                if !identifier(key) && !quoted {
-                    return Err(format!("invalid dictionary field: {member}"));
+                    result.push_str(gap);
                 }
-                if record.fields.iter().any(|(field, _)| field == key) {
-                    return Err(format!("duplicate dictionary field: {key}"));
-                }
-                record.fields.push((key.into(), type_ref(ty.trim())?));
-            }
-            program.records.push(record);
-            i += 1;
-            continue;
-        }
-        if let Some(name) = header
-            .strip_prefix("type ")
-            .and_then(|value| value.strip_suffix(':'))
-        {
-            return Err(format!(
-                "type {name}: is unsupported; use {name} = {{field: Type, ...}};"
-            ));
-        }
-        let (kind, name) = header
-            .split_once(' ')
-            .ok_or_else(|| format!("invalid declaration: {header}"))?;
-        if matches!(
-            kind,
-            "start_event"
-                | "end_event"
-                | "decision_task"
-                | "process"
-                | "xor_split"
-                | "xor_join"
-                | "and_split"
-                | "and_join"
-                | "or_split"
-                | "or_join"
-                | "error_event"
-                | "cancel_event"
-                | "terminate_event"
-                | "pause_for"
-                | "pause_until"
-                | "subprocess"
-        ) {
-            if !identifier(name) {
-                return Err(format!("invalid declaration name: {header}"));
-            }
-            i += 1;
-            let body = block_items(&lines, &mut i)?;
-            match kind {
-                "start_event" | "end_event" | "xor_split" | "xor_join" | "and_split"
-                | "and_join" | "or_split" | "or_join" | "error_event" | "cancel_event"
-                | "terminate_event" | "pause_for" | "pause_until" | "subprocess" => {
-                    program
-                        .peer_nodes
-                        .push(graph::parse_peer(kind, name, &body)?);
-                }
-                "decision_task" => program.decisions.push(decision::parse_braced(name, &body)?),
-                "process" => {
-                    let (graph, retry, deadline) = graph::parse_source(&body)?;
-                    program.processes.push(Process {
-                        name: name.into(),
-                        input: String::new(),
-                        input_type: Type::Named("Number".into()),
-                        output: Type::Named("Number".into()),
-                        body: Vec::new(),
-                        named_graph: None,
-                        source_graph: Some(graph),
-                        retry,
-                        deadline,
-                    });
-                }
-                _ => unreachable!(),
-            }
-            continue;
-        }
-        if matches!(kind, "task" | "decision") {
-            return Err(format!("unsupported legacy declaration: {header}"));
-        }
-        let name = name
-            .strip_suffix(':')
-            .filter(|name| identifier(name))
-            .ok_or_else(|| format!("invalid declaration: {header}"))?;
-        match kind {
-            "enum" => program.enums.push(Enum {
-                name: name.into(),
-                variants: Vec::new(),
-            }),
-            _ => return Err(format!("unknown declaration: {header}")),
-        }
-        i += 1;
-        let start = i;
-        while i < lines.len() && lines[i].starts_with(' ') {
-            i += 1;
-        }
-        if start == i {
-            return Err(format!("missing body for declaration: {header}"));
-        }
-        for line in &lines[start..i] {
-            if !line.starts_with("  ") {
-                return Err(format!("expected indentation: {line}"));
-            }
-            match kind {
-                "enum" => {
-                    let variant = &line[2..];
-                    if !identifier(variant) {
-                        return Err(format!("invalid variant: {line}"));
-                    }
-                    program
-                        .enums
-                        .last_mut()
-                        .unwrap()
-                        .variants
-                        .push(variant.into());
-                }
-                _ => unreachable!(),
             }
         }
+        result.push_str(&source[span.clone()]);
+        end = Some(span.end);
     }
-    Ok(program)
+    result
+}
+
+fn body_parser<'a>(
+    source: &'a str,
+) -> impl Parser<'a, Tokens<'a>, Vec<String>, ParseError<'a>> + Clone {
+    recursive(|body| {
+        let layout = choice((just(Token::Newline), just(Token::Indent)))
+            .repeated()
+            .ignored();
+        let token = any().map_with(|token, extra| (token, extra.span()));
+        let fragment =
+            recursive::<Tokens<'a>, Vec<(Token, SimpleSpan)>, ParseError<'a>, _, _>(|fragment| {
+                choice((
+                    just(Token::OpenBrace)
+                        .map_with(|token, extra| (token, extra.span()))
+                        .then(fragment.repeated().collect::<Vec<_>>())
+                        .then(
+                            just(Token::CloseBrace).map_with(|token, extra| (token, extra.span())),
+                        )
+                        .map(|((open, middle), close)| {
+                            let mut tokens = vec![open];
+                            tokens.extend(middle.into_iter().flatten());
+                            tokens.push(close);
+                            tokens
+                        }),
+                    token
+                        .filter(|(token, _)| {
+                            !matches!(
+                                token,
+                                Token::OpenBrace | Token::CloseBrace | Token::Semicolon
+                            )
+                        })
+                        .map(|token| vec![token]),
+                ))
+            });
+        let statement = fragment
+            .repeated()
+            .at_least(1)
+            .collect::<Vec<_>>()
+            .then_ignore(just(Token::Semicolon))
+            .map(move |parts| {
+                statement_text(source, &parts.into_iter().flatten().collect::<Vec<_>>())
+            })
+            .filter(|value| !value.is_empty())
+            .map(|value| vec![value]);
+        let nested_kind = choice((
+            word(source, "literal_expression").to("literal_expression"),
+            word(source, "decision_table").to("decision_table"),
+            word(source, "context").to("context"),
+            word(source, "knowledge").to("knowledge"),
+        ));
+        let nested = nested_kind
+            .then(name(source))
+            .then_ignore(just(Token::OpenBrace))
+            .then(body)
+            .then_ignore(just(Token::CloseBrace))
+            .map(|((kind, name), body)| {
+                let mut items = vec![format!("{kind} {name}"), "{".into()];
+                items.extend(body);
+                items.push("}".into());
+                items
+            });
+        layout
+            .ignore_then(
+                choice((nested, statement))
+                    .padded_by(layout)
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map(|items| items.into_iter().flatten().collect())
+    })
+}
+
+fn program_parser<'a>(source: &'a str) -> impl Parser<'a, Tokens<'a>, Program, ParseError<'a>> {
+    let newlines = just(Token::Newline).repeated().ignored();
+    let outer_layout = choice((just(Token::Newline), just(Token::Indent)))
+        .repeated()
+        .ignored();
+    let namespace = word(source, "namespace")
+        .ignore_then(name(source))
+        .then_ignore(just(Token::Semicolon));
+    let version = word(source, "version")
+        .ignore_then(just(Token::String).map_with(move |_, extra| {
+            let value = text(source, extra.span());
+            value[1..value.len() - 1].to_owned()
+        }))
+        .filter(|value| !value.is_empty())
+        .then_ignore(just(Token::Semicolon));
+    let key = choice((
+        name(source),
+        just(Token::String).map_with(move |_, extra| {
+            let value = text(source, extra.span());
+            value[1..value.len() - 1].into()
+        }),
+    ));
+    let record = just(Token::Identifier)
+        .map_with(move |_, extra| (text(source, extra.span()).to_owned(), extra.span()))
+        .then(just(Token::Equal).map_with(|_, extra| extra.span()))
+        .then(
+            just(Token::OpenBrace)
+                .map_with(|_, extra| extra.span())
+                .then(
+                    key.then_ignore(just(Token::Colon))
+                        .then(type_parser(source).try_map_with(move |ty, extra| {
+                            if text(source, extra.span()) == ty.to_string() {
+                                Ok(ty)
+                            } else {
+                                Err(Rich::custom(extra.span(), "invalid type argument"))
+                            }
+                        }))
+                        .separated_by(just(Token::Comma))
+                        .allow_trailing()
+                        .collect::<Vec<_>>(),
+                )
+                .then_ignore(just(Token::CloseBrace)),
+        )
+        .then_ignore(just(Token::Semicolon))
+        .try_map_with(
+            |(((name, name_span), equal_span), (brace_span, fields)), extra| {
+                let before = &source[name_span.end..equal_span.start];
+                let after = &source[equal_span.end..brace_span.start];
+                if !matches!(before, " " | "\n" | "\r\n")
+                    || !(after.starts_with(' ')
+                        || after.starts_with('\n')
+                        || after.starts_with('\r'))
+                {
+                    return Err(Rich::custom(extra.span(), "invalid record declaration"));
+                }
+                let mut used = std::collections::HashSet::new();
+                for (key, _) in &fields {
+                    if !used.insert(key) {
+                        return Err(Rich::custom(
+                            extra.span(),
+                            format!("duplicate dictionary field: {key}"),
+                        ));
+                    }
+                }
+                Ok(Declaration::Record(Record { name, fields }))
+            },
+        );
+    let variant = just(Token::Indent)
+        .map_with(move |_, extra| text(source, extra.span()))
+        .filter(|indent| *indent == "  ")
+        .ignore_then(name(source))
+        .then_ignore(just(Token::Semicolon));
+    let enum_decl = word(source, "enum")
+        .ignore_then(name(source))
+        .then_ignore(just(Token::Colon))
+        .then(
+            newlines
+                .ignore_then(variant)
+                .repeated()
+                .at_least(1)
+                .collect::<Vec<_>>(),
+        )
+        .map(|(name, variants)| Declaration::Enum(Enum { name, variants }));
+    let kind = choice((
+        word(source, "start_event").to("start_event"),
+        word(source, "end_event").to("end_event"),
+        word(source, "decision_task").to("decision_task"),
+        word(source, "process").to("process"),
+        word(source, "xor_split").to("xor_split"),
+        word(source, "xor_join").to("xor_join"),
+        word(source, "and_split").to("and_split"),
+        word(source, "and_join").to("and_join"),
+        word(source, "or_split").to("or_split"),
+        word(source, "or_join").to("or_join"),
+        word(source, "error_event").to("error_event"),
+        word(source, "cancel_event").to("cancel_event"),
+        word(source, "terminate_event").to("terminate_event"),
+        word(source, "pause_for").to("pause_for"),
+        word(source, "pause_until").to("pause_until"),
+        word(source, "subprocess").to("subprocess"),
+    ));
+    let braced = kind
+        .then(name(source))
+        .then_ignore(just(Token::OpenBrace))
+        .then(body_parser(source))
+        .then_ignore(just(Token::CloseBrace))
+        .map(|((kind, name), body)| Declaration::Body(kind.into(), name, body));
+    outer_layout
+        .ignore_then(namespace)
+        .then_ignore(outer_layout)
+        .then(version)
+        .then(
+            outer_layout.ignore_then(
+                choice((record, enum_decl, braced))
+                    .padded_by(outer_layout)
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            ),
+        )
+        .then_ignore(end())
+        .try_map_with(|((namespace, version), declarations), extra| {
+            let mut program = Program {
+                namespace,
+                version,
+                records: Vec::new(),
+                enums: Vec::new(),
+                processes: Vec::new(),
+                tasks: Vec::new(),
+                decisions: Vec::new(),
+                peer_nodes: Vec::new(),
+                external_tasks: BTreeMap::new(),
+            };
+            for declaration in declarations {
+                match declaration {
+                    Declaration::Record(record) => program.records.push(record),
+                    Declaration::Enum(item) => program.enums.push(item),
+                    Declaration::Body(kind, name, body) => match kind.as_str() {
+                        "decision_task" => program.decisions.push(
+                            decision::parse_braced(&name, &body)
+                                .map_err(|message| Rich::custom(extra.span(), message))?,
+                        ),
+                        "process" => {
+                            let (graph, retry, deadline) = graph::parse_source(&body)
+                                .map_err(|message| Rich::custom(extra.span(), message))?;
+                            program.processes.push(Process {
+                                name,
+                                input: String::new(),
+                                input_type: Type::Named("Number".into()),
+                                output: Type::Named("Number".into()),
+                                body: Vec::new(),
+                                named_graph: None,
+                                source_graph: Some(graph),
+                                retry,
+                                deadline,
+                            });
+                        }
+                        _ => program.peer_nodes.push(
+                            graph::parse_peer(&kind, &name, &body)
+                                .map_err(|message| Rich::custom(extra.span(), message))?,
+                        ),
+                    },
+                }
+            }
+            Ok(program)
+        })
+}
+
+pub fn parse(source: &str) -> Result<Program, String> {
+    let lexed = lexer::lex_legacy_quotes(source);
+    if let Some((_, span)) = lexed
+        .tokens
+        .iter()
+        .find(|(token, _)| *token == Token::Invalid)
+    {
+        return Err(format!("invalid character at byte {}", span.start));
+    }
+    let tokens: Vec<_> = lexed
+        .tokens
+        .into_iter()
+        .map(|(token, span)| (token, span.into()))
+        .collect();
+    program_parser(source)
+        .parse(
+            tokens
+                .as_slice()
+                .split_token_span((lexed.eof..lexed.eof).into()),
+        )
+        .into_result()
+        .map_err(|errors| {
+            let error = &errors[0];
+            let span = error.span().into_range();
+            if let Some([(_, kind_span), (_, name_span)]) =
+                tokens.windows(2).find(|pair| pair[1].1.start == span.start)
+                && text(source, *kind_span) == "type"
+            {
+                let name = text(source, *name_span);
+                return format!("type {name}: is unsupported; use {name} = {{field: Type, ...}};");
+            }
+            let prefix = if !source.contains("namespace ") {
+                "expected namespace declaration"
+            } else if !source.contains("version ") {
+                "expected version declaration"
+            } else if span.start == source.len() {
+                "unclosed brace or missing semicolon"
+            } else if tokens.iter().any(|(token, location)| {
+                *token == Token::CloseBrace && location.start == span.start
+            }) {
+                "missing semicolon"
+            } else if tokens
+                .iter()
+                .any(|(token, location)| *token == Token::OpenParen && location.start == span.start)
+            {
+                "invalid declaration name"
+            } else {
+                "invalid declaration or statement"
+            };
+            format!("{prefix} at byte {}: {error:?}", span.start)
+        })
 }
