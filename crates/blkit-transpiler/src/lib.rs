@@ -3,6 +3,9 @@ mod compiler;
 pub mod decision;
 pub mod expr;
 pub mod graph;
+// The lexer is exercised in isolation until the parser is migrated to its tokens.
+#[allow(dead_code)]
+mod lexer;
 pub mod project;
 mod semantic;
 
