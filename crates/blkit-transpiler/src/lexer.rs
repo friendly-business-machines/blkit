@@ -70,12 +70,14 @@ pub(crate) enum Token {
 pub(crate) struct Lexed {
     pub(crate) tokens: Vec<(Token, Range<usize>)>,
     pub(crate) eof: usize,
+    pub(crate) has_full_line_comment: bool,
 }
 
 pub(crate) fn lex(source: &str) -> Lexed {
     let mut tokens = Vec::new();
     let mut at_line_start = true;
     let mut indent = None;
+    let mut has_full_line_comment = false;
     let mut lexer = Token::lexer(source);
     while let Some(token) = lexer.next() {
         let span = lexer.span();
@@ -91,6 +93,7 @@ pub(crate) fn lex(source: &str) -> Lexed {
                 }
             }
             Token::Comment if at_line_start => {
+                has_full_line_comment = true;
                 indent = None;
             }
             token => {
@@ -112,6 +115,7 @@ pub(crate) fn lex(source: &str) -> Lexed {
     Lexed {
         tokens,
         eof: source.len(),
+        has_full_line_comment,
     }
 }
 

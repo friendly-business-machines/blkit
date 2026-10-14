@@ -2861,6 +2861,54 @@ fn quotes_preserve_backslashes_and_punctuation_but_not_inline_comments() {
 }
 
 #[test]
+fn standalone_expression_rejects_full_line_comments() {
+    assert!(blkit::expr::expression("# comment\n1").is_err());
+}
+
+#[test]
+fn expression_rejects_escaped_quotes_as_before() {
+    assert!(blkit::expr::expression(r#""a\"b""#).is_err());
+}
+
+#[test]
+fn expression_colon_and_or_share_left_associative_precedence() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression("1:2 or 3").unwrap(),
+        Expr::Binary(
+            Box::new(Expr::Call(
+                "__bl_sequence".into(),
+                vec![Expr::Number("1".into()), Expr::Number("2".into())]
+            )),
+            "or".into(),
+            Box::new(Expr::Number("3".into()))
+        )
+    );
+}
+
+#[test]
+fn null_as_sole_list_element_keeps_empty_list_lowering() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(expr::expression("[null]").unwrap(), Expr::List(vec![]));
+    assert!(expr::expression("[null, 1]").is_err());
+}
+
+#[test]
+fn iteration_keyword_requires_matching_body_keyword() {
+    use blkit::expr;
+
+    for text in [
+        "for x in [1] satisfies x",
+        "some x in [1] return true",
+        "every x in [1] return true",
+    ] {
+        assert!(expr::expression(text).is_err(), "accepted {text}");
+    }
+}
+
+#[test]
 fn expression_ast_preserves_precedence_and_lowerings() {
     use blkit::expr::{self, Expr};
 
