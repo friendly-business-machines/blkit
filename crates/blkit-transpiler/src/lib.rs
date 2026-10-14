@@ -10,7 +10,8 @@ mod semantic;
 pub use blkit_core::{number_ops, temporal};
 
 pub use compiler::{
-    DeadlinePolicy, Enum, Process, Program, Record, RetryPolicy, Type, parse, transpile,
+    CompilerError, DeadlinePolicy, Enum, Process, Program, Record, RetryPolicy, Type, parse,
+    transpile, transpile_diagnostic,
 };
 pub(crate) use compiler::{identifier, type_ref};
 pub use semantic::validate;

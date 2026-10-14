@@ -47,6 +47,43 @@ struct CliError {
     operation: &'static str,
     path: PathBuf,
     details: String,
+    #[related]
+    related: Vec<CompilerDiagnostic>,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("{message}")]
+struct CompilerDiagnostic {
+    message: String,
+    #[source_code]
+    source_code: Option<miette::NamedSource<String>>,
+    #[label("here")]
+    span: Option<miette::SourceSpan>,
+    #[related]
+    related: Vec<Self>,
+}
+
+impl From<blkit_transpiler::CompilerError> for CompilerDiagnostic {
+    fn from(error: blkit_transpiler::CompilerError) -> Self {
+        let span = error.span.filter(|span| {
+            error.source.as_ref().is_some_and(|source| {
+                span.start <= span.end
+                    && span.end <= source.len()
+                    && source.is_char_boundary(span.start)
+                    && source.is_char_boundary(span.end)
+            })
+        });
+        Self {
+            message: format!("{}: {}", error.source_name, error.message),
+            source_code: span.as_ref().and_then(|_| {
+                error
+                    .source
+                    .map(|source| miette::NamedSource::new(error.source_name, source))
+            }),
+            span: span.map(|span| (span.start, span.len()).into()),
+            related: error.related.into_iter().map(Self::from).collect(),
+        }
+    }
 }
 
 fn main() {
@@ -87,16 +124,21 @@ fn transpile(source: &Path, output: &Path) -> Result<(), CliError> {
         operation: "read",
         path: source.to_path_buf(),
         details: error.to_string(),
+        related: Vec::new(),
     })?;
-    let rust = blkit_transpiler::transpile(&text).map_err(|details| CliError {
-        operation: "compile",
-        path: source.to_path_buf(),
-        details,
-    })?;
+    let rust = blkit_transpiler::transpile_diagnostic(&text, &source.to_string_lossy()).map_err(
+        |error| CliError {
+            operation: "compile",
+            path: source.to_path_buf(),
+            details: error.to_string(),
+            related: vec![error.into()],
+        },
+    )?;
     fs::write(output, rust).map_err(|error| CliError {
         operation: "write",
         path: output.to_path_buf(),
         details: error.to_string(),
+        related: Vec::new(),
     })
 }
 
@@ -116,9 +158,19 @@ fn project(operation: &'static str, directory: Option<&Path>) -> Result<(), CliE
         progress
     });
     let result =
-        blkit_transpiler::project::Project::load(directory).and_then(|project| match operation {
-            "transpile" => project.transpile(),
-            _ => project.update(),
+        blkit_transpiler::project::Project::load(directory).map(|project| match operation {
+            "transpile" => project.transpile_diagnostic().map_err(|error| CliError {
+                operation,
+                path: directory.to_path_buf(),
+                details: error.to_string(),
+                related: vec![error.into()],
+            }),
+            _ => project.update().map_err(|details| CliError {
+                operation,
+                path: directory.to_path_buf(),
+                details,
+                related: Vec::new(),
+            }),
         });
     if let Some(progress) = progress {
         progress.finish_and_clear();
@@ -127,5 +179,6 @@ fn project(operation: &'static str, directory: Option<&Path>) -> Result<(), CliE
         operation,
         path: directory.to_path_buf(),
         details,
-    })
+        related: Vec::new(),
+    })?
 }

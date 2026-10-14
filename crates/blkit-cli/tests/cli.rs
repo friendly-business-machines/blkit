@@ -270,6 +270,100 @@ fn invalid_source_produces_diagnostic_without_output() {
 }
 
 #[test]
+fn direct_transpile_reports_original_utf8_source_and_global_error_without_fake_label() {
+    let directory = std::env::temp_dir().join(format!("blkit-cli-miette-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let input = directory.join("input.bl");
+    let output = directory.join("output.rs");
+    for (source, explanation, excerpt, located) in [
+        (
+            "namespace orders; version \"1\";\n# café\nstart_event start { output amount: Missing; }",
+            "unknown type: Missing",
+            "start_event start { output amount: Missing; }",
+            Some("label at line 3, columns 36 to 42"),
+        ),
+        (
+            "namespace orders; version \"1\";\n# café\n@",
+            "invalid character",
+            "snippet line 3: @",
+            Some("label at line 3, column 1"),
+        ),
+        (
+            "namespace orders; version \"1\";\nprocess route {",
+            "unclosed brace",
+            "snippet line 2: process route {",
+            Some("label at line 2"),
+        ),
+        (
+            "namespace orders; version \"1\";\nstart_event start { output amount: Number; } process route { }",
+            "start",
+            "snippet line",
+            None,
+        ),
+    ] {
+        std::fs::write(&input, source).unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
+            .args([&input, &output])
+            .env("NO_COLOR", "1")
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        let stderr = String::from_utf8(result.stderr).unwrap();
+        assert!(
+            stderr.contains(&*input.to_string_lossy()) && stderr.contains(explanation),
+            "{stderr}"
+        );
+        if let Some(label) = located {
+            assert!(
+                stderr.contains(excerpt) && stderr.contains(label),
+                "{stderr}"
+            );
+        } else {
+            assert!(
+                !stderr.contains(excerpt)
+                    && !stderr.contains("Begin snippet")
+                    && !stderr.contains("label at"),
+                "{stderr}"
+            );
+        }
+        assert!(
+            !stderr.contains('\u{1b}') && !stderr.contains('\r'),
+            "{stderr:?}"
+        );
+        assert!(!output.exists());
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn direct_transpile_reports_both_recovered_source_errors() {
+    let directory = std::env::temp_dir().join(format!("blkit-cli-recovery-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let input = directory.join("input.bl");
+    let output = directory.join("output.rs");
+    std::fs::write(&input, "namespace demo; version \"1.0\";\n# café\nstart_event start { output first: ; output second: ; }").unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
+        .args([&input, &output])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let stderr = String::from_utf8(result.stderr).unwrap();
+    assert!(stderr.contains(&*input.to_string_lossy()), "{stderr}");
+    assert!(
+        stderr.contains("label at line 3, column 35")
+            && stderr.contains("label at line 3, column 52"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains('\u{1b}') && !stderr.contains('\r'),
+        "{stderr:?}"
+    );
+    assert!(!output.exists());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn errors_include_source_and_project_context_without_terminal_controls() {
     let directory =
         std::env::temp_dir().join(format!("blkit-cli-diagnostics-{}", std::process::id()));

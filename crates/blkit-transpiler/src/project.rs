@@ -269,13 +269,16 @@ impl Project {
     }
 
     pub fn programs(&self) -> Result<Vec<Program>, String> {
+        self.programs_diagnostic()
+            .map_err(|error| error.to_string())
+    }
+
+    fn programs_diagnostic(&self) -> Result<Vec<Program>, compiler::CompilerError> {
         type ProjectGroup = (Program, BTreeMap<String, PathBuf>, Vec<(PathBuf, String)>);
         let mut groups: BTreeMap<(String, String), ProjectGroup> = BTreeMap::new();
         for path in &self.sources {
             let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let parsed = compiler::parse_source(&text, &path.to_string_lossy())
-                .map_err(|error| error.to_string())?
-                .program;
+            let parsed = compiler::parse_source(&text, &path.to_string_lossy())?.program;
             let key = (parsed.namespace.clone(), parsed.version.clone());
             let names = parsed
                 .records
@@ -299,7 +302,8 @@ impl Project {
                                 "duplicate declaration {name}: {} and {}",
                                 previous.display(),
                                 path.display()
-                            ));
+                            )
+                            .into());
                         }
                     }
                     paths.push((path.clone(), text));
@@ -365,7 +369,6 @@ impl Project {
                     &program,
                     sources.iter().map(|(name, text)| (name.as_str(), *text)),
                 )
-                .to_string()
             })?;
             programs.push(program);
         }
@@ -373,6 +376,11 @@ impl Project {
     }
 
     pub fn transpile(&self) -> Result<(), String> {
+        self.transpile_diagnostic()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn transpile_diagnostic(&self) -> Result<(), compiler::CompilerError> {
         self.generate().map(|_| ())
     }
 
@@ -394,9 +402,9 @@ impl Project {
         Ok(())
     }
 
-    fn generate(&self) -> Result<PathBuf, String> {
+    fn generate(&self) -> Result<PathBuf, compiler::CompilerError> {
         if self.build_target == "api-only" {
-            self.programs()?;
+            self.programs_diagnostic()?;
             let package = self.prepare_manifest()?;
             let source = package.join("src");
             let bin = source.join("bin");
@@ -422,7 +430,7 @@ impl Project {
                 .map_err(|e| e.to_string())?;
             return Ok(package);
         }
-        let programs = self.programs()?;
+        let programs = self.programs_diagnostic()?;
         let generated: Vec<_> = programs
             .iter()
             .map(codegen::generate)

@@ -275,6 +275,74 @@ fn unlocatable_project_error_keeps_both_paths_without_a_fake_byte() {
 }
 
 #[test]
+fn cli_project_transpile_labels_second_file_and_keeps_global_error_unlocated() {
+    let first = "namespace orders; version \"1\"; start_event start { output amount: Number; } end_event done { input result: Number; }";
+    for (second, detail, excerpt, located) in [
+        (
+            "namespace orders; version \"1\";\n# café\nprocess route { flow start -> done; bind start.missing -> done.result; }",
+            "unknown binding output: start.missing",
+            "bind start.missing -> done.result;",
+            Some("label at line 3, columns 42 to 54"),
+        ),
+        (
+            "namespace orders; version \"1\";\n# café\n@",
+            "invalid character",
+            "snippet line 3: @",
+            Some("label at line 3, column 1"),
+        ),
+        (
+            "namespace orders; version \"1\"; process route { }",
+            "start",
+            "snippet line",
+            None,
+        ),
+    ] {
+        let root = project(MANIFEST, &[("a.bl", first), ("z.bl", second)]);
+        let result = std::process::Command::new(env!("CARGO_BIN_EXE_blkit"))
+            .arg("transpile")
+            .arg(&root)
+            .env("NO_COLOR", "1")
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        let stderr = String::from_utf8(result.stderr).unwrap();
+        assert!(
+            stderr.contains(detail) && stderr.contains(&*root.join("z.bl").to_string_lossy()),
+            "{stderr}"
+        );
+        if let Some(label) = located {
+            assert!(
+                stderr.contains(excerpt) && stderr.contains(label),
+                "{stderr}"
+            );
+            assert!(
+                !stderr.contains(&format!(
+                    "Begin snippet for {}",
+                    root.join("a.bl").display()
+                )),
+                "{stderr}"
+            );
+        } else {
+            assert!(
+                stderr.contains(&*root.join("a.bl").to_string_lossy()),
+                "{stderr}"
+            );
+            assert!(
+                !stderr.contains("Begin snippet") && !stderr.contains("label at"),
+                "{stderr}"
+            );
+        }
+        assert!(
+            !stderr.contains('\u{1b}') && !stderr.contains('\r'),
+            "{stderr:?}"
+        );
+        assert!(!root.join(".blkit/src/lib.rs").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn named_dictionary_resolves_across_project_files() {
     let root = project(
         MANIFEST,

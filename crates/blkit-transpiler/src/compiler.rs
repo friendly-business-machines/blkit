@@ -2,11 +2,12 @@ use crate::{codegen, decision, expr, graph, semantic};
 use std::{collections::BTreeMap, ops::Range};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CompilerError {
-    pub(crate) message: String,
-    pub(crate) source_name: String,
-    pub(crate) span: Option<Range<usize>>,
-    related: Vec<Self>,
+pub struct CompilerError {
+    pub message: String,
+    pub source_name: String,
+    pub span: Option<Range<usize>>,
+    pub source: Option<String>,
+    pub related: Vec<Self>,
 }
 
 impl CompilerError {
@@ -15,6 +16,7 @@ impl CompilerError {
             message: message.into(),
             source_name: String::new(),
             span: Some(span),
+            source: None,
             related: Vec::new(),
         }
     }
@@ -28,10 +30,11 @@ impl CompilerError {
         self.related.push(other);
     }
 
-    fn set_source_name(&mut self, source_name: &str) {
+    fn set_source(&mut self, source_name: &str, source: &str) {
         self.source_name = source_name.to_owned();
+        self.source = Some(source.to_owned());
         for error in &mut self.related {
-            error.set_source_name(source_name);
+            error.set_source(source_name, source);
         }
     }
 }
@@ -42,6 +45,7 @@ impl From<String> for CompilerError {
             message,
             source_name: String::new(),
             span: None,
+            source: None,
             related: Vec::new(),
         }
     }
@@ -79,16 +83,19 @@ pub(crate) struct ParsedSource<'a> {
 pub use blkit_core::{DeadlinePolicy, RetryPolicy};
 
 pub fn transpile(source: &str) -> Result<String, String> {
-    let parsed = parse_source(source, "<input>").map_err(|error| error.to_string())?;
+    transpile_diagnostic(source, "<input>").map_err(|error| error.to_string())
+}
+
+pub fn transpile_diagnostic(source: &str, source_name: &str) -> Result<String, CompilerError> {
+    let parsed = parse_source(source, source_name)?;
     semantic::validate(&parsed.program).map_err(|error| {
         validation_error(
             error,
             &parsed.program,
             [(parsed.source_name, parsed.source)],
         )
-        .to_string()
     })?;
-    codegen::generate(&parsed.program)
+    codegen::generate(&parsed.program).map_err(CompilerError::from)
 }
 
 pub(crate) fn validation_error<'a>(
@@ -176,17 +183,18 @@ pub(crate) fn validation_error<'a>(
     // Repeated matching constructs cannot be assigned a source span with certainty.
     if let [(name, span)] = matches.as_slice() {
         let mut error = CompilerError::located(message, span.clone());
-        error.set_source_name(name);
+        error.set_source(
+            name,
+            sources.iter().find(|(path, _)| path == name).unwrap().1,
+        );
         error
     } else {
         let mut error = CompilerError::from(message);
-        error.set_source_name(
-            &sources
-                .iter()
-                .map(|(name, _)| *name)
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
+        error.source_name = sources
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(", ");
         error
     }
 }
@@ -742,7 +750,7 @@ pub(crate) fn parse_source<'a>(
             source,
         })
         .map_err(|mut error| {
-            error.set_source_name(source_name);
+            error.set_source(source_name, source);
             error
         })
 }
