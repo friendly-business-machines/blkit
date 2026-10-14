@@ -851,7 +851,12 @@ fn statements(
                     },
                 )
             }
-            crate::compiler::BodyItem::Block(..) => Err("invalid graph block".into()),
+            crate::compiler::BodyItem::Block(.., kind_span) => {
+                Err(crate::compiler::CompilerError::located(
+                    "invalid graph block",
+                    kind_span.into_range(),
+                ))
+            }
         })
         .collect()
 }

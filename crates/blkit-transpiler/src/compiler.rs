@@ -9,7 +9,7 @@ pub(crate) struct CompilerError {
 }
 
 impl CompilerError {
-    fn located(message: impl Into<String>, span: Range<usize>) -> Self {
+    pub(crate) fn located(message: impl Into<String>, span: Range<usize>) -> Self {
         Self {
             message: message.into(),
             source_name: String::new(),
@@ -229,7 +229,7 @@ pub(crate) fn type_parser<'a>(
 #[derive(Debug)]
 pub(crate) enum BodyItem {
     Statement(Vec<(Token, SimpleSpan)>, SimpleSpan),
-    Block(String, String, Vec<BodyItem>),
+    Block(String, String, Vec<BodyItem>, SimpleSpan),
 }
 
 pub(crate) fn assignment<'a, O, P, A, B>(
@@ -360,11 +360,14 @@ fn body_parser<'a>(
             word(source, "knowledge").to("knowledge"),
         ));
         let nested = nested_kind
+            .map_with(|kind, extra| (kind, extra.span()))
             .then(name(source))
             .then_ignore(just(Token::OpenBrace))
             .then(body)
             .then_ignore(just(Token::CloseBrace))
-            .map(|((kind, name), body)| BodyItem::Block(kind.into(), name, body));
+            .map(|(((kind, kind_span), name), body)| {
+                BodyItem::Block(kind.into(), name, body, kind_span)
+            });
         layout.ignore_then(
             choice((nested, statement))
                 .padded_by(layout)
@@ -647,6 +650,31 @@ mod diagnostic_tests {
         let source = "namespace demo; version \"1.0\";\n# café\nstart_event start {";
         let error = parse_source(source, "unicode.bl").err().unwrap();
         assert_eq!(error.span, Some(source.len()..source.len()));
+    }
+
+    #[test]
+    fn graph_rejects_nested_block_at_original_kind_span_without_emitting_rust() {
+        let source = "namespace demo; version \"1.0\";\n# café\nprocess example { literal_expression wrong {} }";
+        let kind = source.find("literal_expression").unwrap();
+        let error = parse_source(source, "graph.bl").err().unwrap();
+        assert_eq!(error.source_name, "graph.bl");
+        assert_eq!(error.span, Some(kind..kind + "literal_expression".len()));
+        assert!(error.message.contains("invalid graph block"), "{error}");
+        assert!(super::transpile(source).is_err());
+    }
+
+    #[test]
+    fn decision_rejects_nested_block_at_original_kind_span_without_emitting_rust() {
+        let source = "namespace demo; version \"1.0\";\n# café\ndecision_task check { literal_expression value { context nested {} } }";
+        let kind = source.find("context nested").unwrap();
+        let error = parse_source(source, "decision.bl").err().unwrap();
+        assert_eq!(error.source_name, "decision.bl");
+        assert_eq!(error.span, Some(kind..kind + "context".len()));
+        assert!(
+            error.message.contains("unexpected nested decision block"),
+            "{error}"
+        );
+        assert!(super::transpile(source).is_err());
     }
 
     #[test]

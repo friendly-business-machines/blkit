@@ -747,8 +747,14 @@ fn parse_item(
     item: &crate::compiler::BodyItem,
     columns: &[String],
 ) -> Result<DecisionStatement, crate::compiler::CompilerError> {
-    let crate::compiler::BodyItem::Statement(tokens, terminator) = item else {
-        return Err("unexpected nested decision block".into());
+    let (tokens, terminator) = match item {
+        crate::compiler::BodyItem::Statement(tokens, terminator) => (tokens, terminator),
+        crate::compiler::BodyItem::Block(.., kind_span) => {
+            return Err(crate::compiler::CompilerError::located(
+                "unexpected nested decision block",
+                kind_span.into_range(),
+            ));
+        }
     };
     crate::compiler::statement(tokens, *terminator, decision_statement(source, columns)).map_err(
         |error| {
@@ -905,7 +911,7 @@ pub(crate) fn parse_tokens(
                 )),
                 _ => return Err("invalid decision task statement".into()),
             },
-            crate::compiler::BodyItem::Block(kind, name, body) => {
+            crate::compiler::BodyItem::Block(kind, name, body, _) => {
                 match node_tokens(source, kind, name, body)? {
                     Ok(node) => nodes.push(node),
                     Err(model) => knowledge.push(model),
