@@ -884,6 +884,33 @@ decision_task quote {{ input amount: Number; output result: Quote = table; decis
 }
 
 #[test]
+fn public_braced_decision_parser_preserves_nested_rule_values() {
+    use blkit::{decision::DecisionKind, expr::Expr};
+
+    let items = [
+        "input amount: Number",
+        "output result: Number = table",
+        "decision_table table",
+        "{",
+        "output result: Number",
+        "policy FIRST",
+        "input value: Number = amount",
+        "rule value > 0 -> sum([1, 2]), {\"a,b\": 3}.a",
+        "}",
+    ]
+    .map(str::to_owned);
+    let model = blkit::decision::parse_braced("quote", &items).unwrap();
+    let DecisionKind::Table(table) = &model.nodes[0].kind else {
+        panic!("expected decision table");
+    };
+    assert_eq!(table.rules[0].1.len(), 2);
+    assert!(matches!(&table.rules[0].1[0], Expr::Call(name, _) if name == "sum"));
+    assert!(matches!(&table.rules[0].1[1], Expr::Field(_, name) if name == "a"));
+    let broken = items.map(|item| item.replace("sum([1, 2])", "sum([1, 2]"));
+    assert!(blkit::decision::parse_braced("quote", &broken).is_err());
+}
+
+#[test]
 fn pause_until_requires_a_bound_datetime_port() {
     let source = r#"namespace timing; version "1";
 start_event start { output until: DateTime; output number: Number; }

@@ -83,37 +83,6 @@ pub(crate) fn type_ref(text: &str) -> Result<Type, String> {
     }
 }
 
-pub(crate) fn split_top_level(text: &str, separator: char) -> Result<Vec<&str>, String> {
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let mut depth = 0_i32;
-    let mut quoted = false;
-    for (index, ch) in text.char_indices() {
-        if ch == '"' {
-            quoted = !quoted;
-        }
-        if !quoted {
-            match ch {
-                '{' | '[' | '(' => depth += 1,
-                '}' | ']' | ')' => depth -= 1,
-                _ => {}
-            }
-            if depth < 0 {
-                return Err("unbalanced dictionary expression".into());
-            }
-            if ch == separator && depth == 0 {
-                parts.push(&text[start..index]);
-                start = index + ch.len_utf8();
-            }
-        }
-    }
-    if quoted || depth != 0 {
-        return Err("unbalanced dictionary expression".into());
-    }
-    parts.push(&text[start..]);
-    Ok(parts)
-}
-
 pub(crate) fn identifier(name: &str) -> bool {
     let mut chars = name.chars();
     chars

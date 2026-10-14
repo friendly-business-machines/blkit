@@ -37,53 +37,6 @@ pub enum Stmt {
     If(Expr, Vec<Stmt>, Vec<Stmt>),
 }
 
-pub fn body(lines: &[String]) -> Result<Vec<Stmt>, String> {
-    let mut index = 0;
-    let result = block(lines, &mut index, 2)?;
-    if index != lines.len() {
-        return Err(format!("unexpected indentation: {}", lines[index]));
-    }
-    Ok(result)
-}
-
-fn block(lines: &[String], index: &mut usize, indent: usize) -> Result<Vec<Stmt>, String> {
-    let mut result = Vec::new();
-    while *index < lines.len() {
-        let line = &lines[*index];
-        let spaces = line.len() - line.trim_start_matches(' ').len();
-        if spaces < indent {
-            break;
-        }
-        if spaces != indent {
-            return Err(format!("unexpected indentation: {line}"));
-        }
-        let statement = &line[indent..];
-        if let Some(text) = statement.strip_prefix("return ") {
-            result.push(Stmt::Return(expression(text)?));
-            *index += 1;
-        } else if let Some(text) = statement.strip_prefix("if ") {
-            let condition = expression(text.strip_suffix(':').ok_or("missing colon after if")?)?;
-            *index += 1;
-            let yes = block(lines, index, indent + 2)?;
-            if yes.is_empty() {
-                return Err("empty if body".into());
-            }
-            let mut no = Vec::new();
-            if *index < lines.len() && lines[*index] == format!("{}else:", " ".repeat(indent)) {
-                *index += 1;
-                no = block(lines, index, indent + 2)?;
-                if no.is_empty() {
-                    return Err("empty else body".into());
-                }
-            }
-            result.push(Stmt::If(condition, yes, no));
-        } else {
-            return Err(format!("invalid statement: {statement}"));
-        }
-    }
-    Ok(result)
-}
-
 type Tokens<'a> = MappedInput<'a, Token, SimpleSpan, &'a [(Token, SimpleSpan)]>;
 type ParseError<'a> = extra::Err<Rich<'a, Token>>;
 
@@ -473,6 +426,22 @@ pub fn expression(text: &str) -> Result<Expr, String> {
 
 pub fn table_condition(text: &str, columns: &[String]) -> Result<Expr, String> {
     parse_expression(text, columns)
+}
+
+pub(crate) fn expression_list(text: &str) -> Result<Vec<Expr>, String> {
+    let tokens = expression_tokens(text)?;
+    expression_parser(text, &[])
+        .separated_by(just(Token::Comma))
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .then_ignore(end())
+        .parse(
+            tokens
+                .as_slice()
+                .split_token_span((text.len()..text.len()).into()),
+        )
+        .into_result()
+        .map_err(|errors| format!("expression: {:?}", errors[0]))
 }
 
 fn expression_tokens(text: &str) -> Result<Vec<(Token, SimpleSpan)>, String> {

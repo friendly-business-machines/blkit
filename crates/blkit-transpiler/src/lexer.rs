@@ -73,6 +73,7 @@ pub(crate) struct Lexed {
     pub(crate) has_full_line_comment: bool,
 }
 
+#[cfg(test)]
 pub(crate) fn lex(source: &str) -> Lexed {
     lex_with_line_start(source, true)
 }
