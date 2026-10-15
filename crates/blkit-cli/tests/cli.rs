@@ -337,6 +337,36 @@ fn direct_transpile_reports_original_utf8_source_and_global_error_without_fake_l
 }
 
 #[test]
+fn direct_transpile_labels_invalid_retry_delay_without_output() {
+    let directory = std::env::temp_dir().join(format!("blkit-cli-retry-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let input = directory.join("input.bl");
+    let output = directory.join("output.rs");
+    std::fs::write(&input, "namespace demo; version \"1\";\n# café\nprocess route { retry max_retries 1 retry_for \"1s\" retry_delay \"bogus\" backoff exponential; }").unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
+        .args([&input, &output])
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let stderr = String::from_utf8(result.stderr).unwrap();
+    assert!(stderr.contains(&*input.to_string_lossy()), "{stderr}");
+    assert!(stderr.contains("invalid retry duration: bogus"), "{stderr}");
+    assert!(stderr.contains("retry_delay \"bogus\""), "{stderr}");
+    assert!(
+        stderr.contains("label at line 3, columns 64 to 70"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains('\u{1b}') && !stderr.contains('\r'),
+        "{stderr:?}"
+    );
+    assert!(result.stdout.is_empty());
+    assert!(!output.exists());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn direct_transpile_reports_both_recovered_source_errors() {
     let directory = std::env::temp_dir().join(format!("blkit-cli-recovery-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();

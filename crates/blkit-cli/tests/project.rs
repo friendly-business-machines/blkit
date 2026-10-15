@@ -279,6 +279,12 @@ fn cli_project_transpile_labels_second_file_and_keeps_global_error_unlocated() {
     let first = "namespace orders; version \"1\"; start_event start { output amount: Number; } end_event done { input result: Number; }";
     for (second, detail, excerpt, located) in [
         (
+            "namespace orders; version \"1\";\n# café\nprocess route { retry max_retries 1 retry_for \"bogus\" retry_delay \"1s\" backoff exponential; }",
+            "invalid retry duration: bogus",
+            "retry_for \"bogus\"",
+            Some("label at line 3, columns 47 to 53"),
+        ),
+        (
             "namespace orders; version \"1\";\n# café\nprocess route { flow start -> done; bind start.missing -> done.result; }",
             "unknown binding output: start.missing",
             "bind start.missing -> done.result;",

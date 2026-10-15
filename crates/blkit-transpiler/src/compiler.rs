@@ -656,13 +656,32 @@ fn program_parser<'a>(
         .repeated()
         .ignored();
     let namespace = word(source, "namespace")
-        .ignore_then(name(source))
+        .map_with(|_, extra| extra.span())
+        .then(name(source).map_with(|value, extra| (value, extra.span())))
+        .try_map_with(move |(keyword, (value, span)), extra| {
+            let gap = &source[keyword.end..span.start];
+            if gap == " " {
+                Ok(value)
+            } else {
+                Err(Rich::custom(extra.span(), "invalid namespace spacing"))
+            }
+        })
         .then_ignore(just(Token::Semicolon));
     let version = word(source, "version")
-        .ignore_then(just(Token::String).map_with(move |_, extra| {
-            let value = text(source, extra.span());
-            value[1..value.len() - 1].to_owned()
+        .map_with(|_, extra| extra.span())
+        .then(just(Token::String).map_with(move |_, extra| {
+            let span = extra.span();
+            let value = text(source, span);
+            (value[1..value.len() - 1].to_owned(), span)
         }))
+        .try_map_with(move |(keyword, (value, span)), extra| {
+            let gap = &source[keyword.end..span.start];
+            if gap == " " {
+                Ok(value)
+            } else {
+                Err(Rich::custom(extra.span(), "invalid version spacing"))
+            }
+        })
         .filter(|value| !value.is_empty())
         .then_ignore(just(Token::Semicolon));
     let key = choice((

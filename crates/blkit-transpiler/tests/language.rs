@@ -59,6 +59,18 @@ fn headers_and_domain_members_require_semicolons_outside_quotes() {
 }
 
 #[test]
+fn headers_require_exactly_one_space_after_keyword() {
+    let source = "namespace demo; version \"1\";";
+    parse(source).unwrap();
+    for invalid in [
+        "namespace  demo; version \"1\";",
+        "namespace demo; version  \"1\";",
+    ] {
+        assert!(parse(invalid).is_err(), "accepted: {invalid}");
+    }
+}
+
+#[test]
 fn braced_peers_and_semicolon_statements_parse() {
     let source = r#"namespace demo; version "1;0";
 start_event start { output amount: Number; }

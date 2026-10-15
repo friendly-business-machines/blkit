@@ -1,4 +1,4 @@
-use blkit::{graph::PeerKind, parse, validate};
+use blkit::{graph::PeerKind, parse, transpile_diagnostic, validate};
 use blkit_transpiler as blkit;
 
 #[test]
@@ -22,6 +22,55 @@ fn parses_peer_flows_bindings_and_retry_policy() {
     assert_eq!(retry.retry_for.as_secs(), 600);
     assert_eq!(retry.retry_delay.as_secs(), 1);
     validate(&program).unwrap();
+}
+
+#[test]
+fn retry_duration_errors_locate_each_original_quoted_token() {
+    for (field, invalid) in [("retry_for", "\"bogus\""), ("retry_delay", "\"bogus\"")] {
+        let source = format!(
+            "namespace demo; version \"1\";\n# café\nprocess route {{ retry max_retries 1 retry_for {} retry_delay {} backoff exponential; }}",
+            if field == "retry_for" {
+                invalid
+            } else {
+                "\"1s\""
+            },
+            if field == "retry_delay" {
+                invalid
+            } else {
+                "\"1s\""
+            }
+        );
+        let error = transpile_diagnostic(&source, "route.bl").unwrap_err();
+        let start = source.find(invalid).unwrap();
+        assert!(error.message.contains("invalid retry duration"), "{error}");
+        assert_eq!(error.source_name, "route.bl");
+        assert_eq!(
+            error.span,
+            Some(start..start + invalid.len()),
+            "{field}: {error}"
+        );
+    }
+}
+
+#[test]
+fn repeat_max_duration_errors_locate_original_quoted_token() {
+    for invalid in ["\"bogus\"", "\"0s\"", "\"9223372036854776s\""] {
+        let source = format!(
+            "namespace demo; version \"1\";\n# café\nprocess route {{ repeat_post work while true max_duration {invalid}; }}"
+        );
+        let error = transpile_diagnostic(&source, "route.bl").unwrap_err();
+        let start = source.find(invalid).unwrap();
+        assert_eq!(error.source_name, "route.bl");
+        assert_eq!(error.span, Some(start..start + invalid.len()), "{error}");
+        assert!(
+            error.message.contains(if invalid == "\"bogus\"" {
+                "invalid retry duration"
+            } else {
+                "max_duration must be positive and fit milliseconds"
+            }),
+            "{error}"
+        );
+    }
 }
 
 #[test]

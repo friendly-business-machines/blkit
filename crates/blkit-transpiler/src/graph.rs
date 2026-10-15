@@ -661,9 +661,19 @@ enum GraphStatement {
     Port(String, String, Type),
     Reference(String, String),
     Duration(String, chumsky::span::SimpleSpan),
-    Retry(u32, String, String),
+    Retry(
+        u32,
+        (String, chumsky::span::SimpleSpan),
+        (String, chumsky::span::SimpleSpan),
+    ),
     Deadline(String, String, chumsky::span::SimpleSpan),
-    Repeat(String, bool, Expr, Option<Expr>, Vec<(String, String)>),
+    Repeat(
+        String,
+        bool,
+        Expr,
+        Option<Expr>,
+        Vec<(String, (String, chumsky::span::SimpleSpan))>,
+    ),
     Multi(String, Expr, String),
     Flow(String, String, Option<Expr>, Option<FlowModifier>),
     Bind(String, String, String, String),
@@ -727,9 +737,9 @@ fn graph_statement<'a>(
         .ignore_then(word(source, "max_retries"))
         .ignore_then(number(source).map(|value| value.parse::<u32>().ok()))
         .then_ignore(word(source, "retry_for"))
-        .then(quoted(source))
+        .then(quoted(source).map_with(|value, extra| (value, extra.span())))
         .then_ignore(word(source, "retry_delay"))
-        .then(quoted(source))
+        .then(quoted(source).map_with(|value, extra| (value, extra.span())))
         .then_ignore(word(source, "backoff"))
         .then_ignore(word(source, "exponential"))
         .try_map_with(|((max, window), delay), extra| {
@@ -745,7 +755,7 @@ fn graph_statement<'a>(
         word(source, "max_iterations").to("max_iterations"),
         word(source, "max_duration").to("max_duration"),
     ))
-    .then(choice((quoted(source), number(source))));
+    .then(choice((quoted(source), number(source))).map_with(|value, extra| (value, extra.span())));
     let repeat = choice((
         word(source, "repeat_pre").to(true),
         word(source, "repeat_post").to(false),
@@ -1047,14 +1057,22 @@ pub(crate) fn parse_source_tokens(
         statements(source, body).map_err(|error| error.context("invalid process statement"))?;
     for item in items {
         match item {
-            GraphStatement::Retry(max_retries, retry_for, retry_delay) => {
+            GraphStatement::Retry(
+                max_retries,
+                (retry_for, for_span),
+                (retry_delay, delay_span),
+            ) => {
                 if retry.is_some() || !graph.flows.is_empty() || !graph.bindings.is_empty() {
                     return Err("retry declaration must appear once before flows".into());
                 }
                 retry = Some(crate::compiler::RetryPolicy {
                     max_retries,
-                    retry_for: duration(&retry_for)?,
-                    retry_delay: duration(&retry_delay)?,
+                    retry_for: duration(&retry_for).map_err(|error| {
+                        crate::compiler::CompilerError::located(error, for_span.into_range())
+                    })?,
+                    retry_delay: duration(&retry_delay).map_err(|error| {
+                        crate::compiler::CompilerError::located(error, delay_span.into_range())
+                    })?,
                     backoff: "exponential",
                 });
             }
@@ -1093,7 +1111,7 @@ pub(crate) fn parse_source_tokens(
                     return Err("repeat_pre requires initial; repeat_post forbids initial".into());
                 }
                 let (mut max_iterations, mut max_duration) = (None, None);
-                for (key, value) in bounds {
+                for (key, (value, value_span)) in bounds {
                     match key.as_str() {
                         "max_iterations" if max_iterations.is_none() => {
                             let count =
@@ -1104,13 +1122,19 @@ pub(crate) fn parse_source_tokens(
                             max_iterations = Some(count);
                         }
                         "max_duration" if max_duration.is_none() => {
-                            let span = duration(&value)?;
-                            if span.is_zero() || i64::try_from(span.as_millis()).is_err() {
-                                return Err(
-                                    "max_duration must be positive and fit milliseconds".into()
-                                );
+                            let duration = duration(&value).map_err(|error| {
+                                crate::compiler::CompilerError::located(
+                                    error,
+                                    value_span.into_range(),
+                                )
+                            })?;
+                            if duration.is_zero() || i64::try_from(duration.as_millis()).is_err() {
+                                return Err(crate::compiler::CompilerError::located(
+                                    "max_duration must be positive and fit milliseconds",
+                                    value_span.into_range(),
+                                ));
                             }
-                            max_duration = Some(span);
+                            max_duration = Some(duration);
                         }
                         _ => return Err("invalid repeat bounds".into()),
                     }
