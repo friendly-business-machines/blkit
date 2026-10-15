@@ -788,32 +788,57 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
         .take(MAX_PARSE_DIAGNOSTICS)
         .map(|(_, span)| CompilerError::located("invalid character", span.clone()))
         .collect();
-    if errors.len() == MAX_PARSE_DIAGNOSTICS {
-        let mut first = errors.remove(0);
-        first.related = errors;
-        return Err(first);
-    }
+    // Parse only through the 32nd invalid token; an earlier syntax error may precede it.
+    let eof = if errors.len() == MAX_PARSE_DIAGNOSTICS {
+        errors
+            .last()
+            .and_then(|error| error.span.as_ref())
+            .expect("lexical errors have spans")
+            .end
+    } else {
+        lexed.eof
+    };
     let tokens: Vec<_> = lexed
         .tokens
         .into_iter()
+        .take_while(|(_, span)| span.start < eof)
         .map(|(token, span)| (token, span.into()))
         .collect();
     let (output, syntax_errors) = program_parser(source)
-        .parse(
-            tokens
-                .as_slice()
-                .split_token_span((lexed.eof..lexed.eof).into()),
-        )
+        .parse(tokens.as_slice().split_token_span((eof..eof).into()))
         .into_output_errors();
     let lexical_spans: Vec<_> = errors
         .iter()
         .filter_map(|error| error.span.clone())
         .collect();
+    // A top-level invalid token can discard already-parsed declaration errors.
+    if errors.len() == MAX_PARSE_DIAGNOSTICS && output.is_none() {
+        let first_invalid = errors[0]
+            .span
+            .as_ref()
+            .expect("lexical errors have spans")
+            .start;
+        let before = tokens.partition_point(|(_, span)| span.end <= first_invalid);
+        let (prefix_output, _) = program_parser(source)
+            .parse(tokens[..before].split_token_span((first_invalid..first_invalid).into()))
+            .into_output_errors();
+        if let Some(Err(error)) = prefix_output
+            && error
+                .span
+                .as_ref()
+                .is_some_and(|span| span.start < first_invalid)
+        {
+            errors.push(error);
+        }
+    }
     errors.extend(
         syntax_errors
             .iter()
             .filter(|error| {
                 let at = error.span().start;
+                if eof != source.len() && at >= eof {
+                    return false; // A truncated prefix has no genuine EOF diagnostic.
+                }
                 // A boundary error after invalid text is a cascade until a previous boundary intervenes.
                 let boundary = tokens.iter().any(|(token, span)| {
                     span.start == at
@@ -833,7 +858,7 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
                             }))
                 })
             })
-            .take(MAX_PARSE_DIAGNOSTICS - errors.len())
+            .take(MAX_PARSE_DIAGNOSTICS)
             .map(|error| {
                 let span = error.span().into_range();
                 if let Some([(_, kind_span), (_, name_span)]) =
@@ -866,13 +891,17 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
                 CompilerError::located(format!("{prefix}: {error:?}"), span)
             }),
     );
-    if errors.len() < MAX_PARSE_DIAGNOSTICS
-        && let Some(Err(error)) = output.as_ref()
+    if let Some(Err(error)) = output.as_ref()
+        && error
+            .span
+            .as_ref()
+            .is_none_or(|span| span.start < eof || eof == source.len())
     {
         errors.push(error.clone());
     }
     if !errors.is_empty() {
         errors.sort_by_key(|error| error.span.as_ref().map_or(usize::MAX, |span| span.start));
+        errors.truncate(MAX_PARSE_DIAGNOSTICS);
         let mut first = errors.remove(0);
         for error in errors {
             first.append(error);
@@ -885,6 +914,46 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
 #[cfg(test)]
 mod diagnostic_tests {
     use super::parse_source;
+
+    #[test]
+    fn early_syntax_error_precedes_32_later_invalid_tokens_without_emitting_rust() {
+        let source = format!(
+            "namespace demo; version \"1.0\"; start_event start {{ output first: ; }}{}",
+            "☃;".repeat(32)
+        );
+        let error = parse_source(&source, "mixed.bl").err().unwrap();
+        let first = source.find("first: ;").unwrap() + "first: ".len();
+        let snowman = source.find('☃').unwrap();
+        let diagnostics: Vec<_> = std::iter::once(&error).chain(&error.related).collect();
+        assert_eq!(diagnostics.len(), 32, "{error}");
+        assert_eq!(error.span, Some(first..first), "{error}");
+        assert!(error.message.contains("semicolon"), "{error}");
+        assert_eq!(diagnostics[1].span, Some(snowman..snowman + '☃'.len_utf8()));
+        assert!(
+            diagnostics
+                .iter()
+                .all(|error| error.source_name == "mixed.bl")
+        );
+        assert!(super::transpile(&source).is_err());
+    }
+
+    #[test]
+    fn truncated_lexical_prefix_does_not_invent_an_eof_error() {
+        let source = format!(
+            "namespace demo; version \"1\"; start_event start {{ output amount: {} ; }}",
+            "☃".repeat(10_000)
+        );
+        let error = parse_source(&source, "prefix.bl").err().unwrap();
+        let diagnostics: Vec<_> = std::iter::once(&error).chain(&error.related).collect();
+        assert_eq!(diagnostics.len(), 32, "{error}");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|error| error.message == "invalid character"),
+            "{error}"
+        );
+        assert!(super::transpile(&source).is_err());
+    }
 
     #[test]
     fn many_invalid_graph_statements_keep_at_most_32_diagnostics() {
