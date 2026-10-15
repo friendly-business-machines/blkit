@@ -29,20 +29,35 @@ impl CompilerError {
         self
     }
 
-    pub(crate) fn append(&mut self, mut other: Self) {
-        let mut remaining = MAX_PARSE_DIAGNOSTICS.saturating_sub(self.diagnostic_count());
-        if remaining > 0 {
-            other.limit_diagnostics(&mut remaining);
-            self.related.push(other);
+    pub(crate) fn append(&mut self, other: Self) {
+        let (located, unlocated) = self.diagnostic_counts();
+        let mut remaining = (
+            MAX_PARSE_DIAGNOSTICS.saturating_sub(located),
+            MAX_PARSE_DIAGNOSTICS.saturating_sub(unlocated),
+        );
+        let mut pending = vec![other];
+        while let Some(mut error) = pending.pop() {
+            pending.extend(std::mem::take(&mut error.related).into_iter().rev());
+            let budget = if error.span.is_some() {
+                &mut remaining.0
+            } else {
+                &mut remaining.1
+            };
+            if *budget > 0 {
+                *budget -= 1;
+                self.related.push(error);
+            }
         }
     }
 
-    fn diagnostic_count(&self) -> usize {
-        1 + self
-            .related
-            .iter()
-            .map(Self::diagnostic_count)
-            .sum::<usize>()
+    fn diagnostic_counts(&self) -> (usize, usize) {
+        let mut counts = if self.span.is_some() { (1, 0) } else { (0, 1) };
+        for error in &self.related {
+            let (located, unlocated) = error.diagnostic_counts();
+            counts.0 += located;
+            counts.1 += unlocated;
+        }
+        counts
     }
 
     fn limit_diagnostics(&mut self, remaining: &mut usize) {
@@ -792,12 +807,12 @@ fn program_parser<'a>(
                 external_tasks: BTreeMap::new(),
             };
             let mut errors: Option<CompilerError> = None;
-            // Mapping runs after parsing; keep a prefix from each producer so sorting can
-            // still choose the earliest errors even when body errors were emitted later.
+            // Mapping runs after parsing; keep located and unlocated prefixes separately
+            // so later source spans can still outrank earlier unlocated failures.
             for declaration in declarations {
                 if errors
                     .as_ref()
-                    .is_some_and(|error| error.diagnostic_count() >= MAX_PARSE_DIAGNOSTICS)
+                    .is_some_and(|error| error.diagnostic_counts().0 >= MAX_PARSE_DIAGNOSTICS)
                 {
                     break;
                 }
@@ -971,13 +986,24 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
                 CompilerError::located(format!("{prefix}: {error:?}"), span)
             }),
     );
-    if let Some(Err(error)) = output.as_ref()
-        && error
+    if let Some(Err(error)) = output.as_ref() {
+        let mut mapped = error.clone();
+        for related in mapped.related.drain(..) {
+            if related
+                .span
+                .as_ref()
+                .is_none_or(|span| span.start < eof || eof == source.len())
+            {
+                errors.push(related);
+            }
+        }
+        if mapped
             .span
             .as_ref()
             .is_none_or(|span| span.start < eof || eof == source.len())
-    {
-        errors.push(error.clone());
+        {
+            errors.push(mapped);
+        }
     }
     if !errors.is_empty() {
         errors.sort_by_key(|error| error.span.as_ref().map_or(usize::MAX, |span| span.start));
@@ -1113,6 +1139,58 @@ mod diagnostic_tests {
             1 + error.related.iter().map(count).sum::<usize>()
         }
         assert_eq!(count(&error), 32, "{error}");
+        assert!(super::transpile(&source).is_err());
+    }
+
+    #[test]
+    fn later_located_declaration_error_survives_many_unlocated_errors() {
+        let source = format!(
+            "namespace demo; version \"1\"; {}pause_for late {{ duration \"bogus\"; }}",
+            (0..1000)
+                .map(|index| format!("pause_for wait{index} {{ }} "))
+                .collect::<String>()
+        );
+        let quoted = source.find("\"bogus\"").unwrap();
+        let lexed = crate::lexer::lex_legacy_quotes(&source);
+        let tokens: Vec<_> = lexed
+            .tokens
+            .into_iter()
+            .map(|(token, span)| (token, span.into()))
+            .collect();
+        let (output, _) = super::program_parser(&source, false)
+            .parse(
+                tokens
+                    .as_slice()
+                    .split_token_span((lexed.eof..lexed.eof).into()),
+            )
+            .into_output_errors();
+        let mapped = output.unwrap().err().unwrap();
+        assert_eq!(mapped.diagnostic_counts(), (1, 32));
+        let error = parse_source(&source, "late.bl").err().unwrap();
+        let diagnostics: Vec<_> = std::iter::once(&error).chain(&error.related).collect();
+        assert_eq!(diagnostics.len(), 32);
+        assert_eq!(error.span, Some(quoted..quoted + "\"bogus\"".len()));
+        assert!(error.message.contains("invalid retry duration"), "{error}");
+        assert!(diagnostics.iter().all(|item| item.source_name == "late.bl"));
+        assert!(diagnostics[1..].iter().all(|item| item.span.is_none()));
+        assert!(super::transpile(&source).is_err());
+    }
+
+    #[test]
+    fn located_error_in_one_declaration_survives_unlocated_inner_mapping_errors() {
+        let source = format!(
+            "namespace demo; version \"1\"; decision_task check {{ {} literal_expression node {{ context nested {{ }} }} }}",
+            "output result: Number;".repeat(40)
+        );
+        let nested = source.find("context nested").unwrap();
+        let error = parse_source(&source, "decision.bl").err().unwrap();
+        assert_eq!(
+            error.span,
+            Some(nested..nested + "context".len()),
+            "{error}"
+        );
+        assert_eq!(error.related.len(), 31);
+        assert!(error.related.iter().all(|item| item.span.is_none()));
         assert!(super::transpile(&source).is_err());
     }
 
