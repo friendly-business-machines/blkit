@@ -75,13 +75,18 @@ pub(crate) struct Lexed {
 
 #[cfg(test)]
 pub(crate) fn lex(source: &str) -> Lexed {
-    lex_with_line_start(source, true)
+    lex_with_line_start(source, true, false).0
 }
 
-fn lex_with_line_start(source: &str, mut at_line_start: bool) -> Lexed {
+fn lex_with_line_start(
+    source: &str,
+    mut at_line_start: bool,
+    legacy_quotes: bool,
+) -> (Lexed, Option<usize>) {
     let mut tokens = Vec::new();
     let mut indent = None;
     let mut has_full_line_comment = false;
+    let mut split = None;
     let mut lexer = Token::lexer(source);
     while let Some(token) = lexer.next() {
         let span = lexer.span();
@@ -104,6 +109,24 @@ fn lex_with_line_start(source: &str, mut at_line_start: bool) -> Lexed {
                 if let Some(indent) = indent.take() {
                     tokens.push((Token::Indent, indent));
                 }
+                let close = legacy_quotes
+                    .then_some(token)
+                    .filter(|token| matches!(token, Token::Invalid | Token::String))
+                    .filter(|_| source[span.clone()].starts_with('"'))
+                    .and_then(|_| {
+                        source[span.start + 1..span.end]
+                            .find('"')
+                            .map(|index| span.start + 1 + index)
+                            .filter(|&close| {
+                                source.as_bytes()[close - 1] == b'\\'
+                                    && (token == Token::Invalid || close + 1 < span.end)
+                            })
+                    });
+                if let Some(close) = close {
+                    tokens.push((Token::String, span.start..close + 1));
+                    split = Some(close + 1);
+                    break;
+                }
                 tokens.push((
                     if token == Token::Comment {
                         Token::Invalid
@@ -116,44 +139,35 @@ fn lex_with_line_start(source: &str, mut at_line_start: bool) -> Lexed {
             }
         }
     }
-    Lexed {
-        tokens,
-        eof: source.len(),
-        has_full_line_comment,
-    }
+    (
+        Lexed {
+            tokens,
+            eof: source.len(),
+            has_full_line_comment,
+        },
+        split,
+    )
 }
 
 // Match the pre-existing source grammar: a backslash does not escape its next quote.
-// Relex the remaining original source so both file and expression parsers see the same spans.
+// Relex only the unconsumed suffix so both file and expression parsers see the same spans.
 pub(crate) fn lex_legacy_quotes(source: &str) -> Lexed {
     let mut tokens = Vec::new();
     let mut offset = 0;
     let mut has_full_line_comment = false;
     loop {
         // A split follows a quote on the same line; only a later newline restarts a comment line.
-        let lexed = lex_with_line_start(&source[offset..], offset == 0);
+        let (lexed, split) = lex_with_line_start(&source[offset..], offset == 0, true);
         has_full_line_comment |= lexed.has_full_line_comment;
-        let mut split = false;
-        for (token, span) in lexed.tokens {
-            let span = offset + span.start..offset + span.end;
-            if matches!(token, Token::Invalid | Token::String)
-                && source[span.clone()].starts_with('"')
-                && let Some(close) = source[span.start + 1..span.end]
-                    .find('"')
-                    .map(|index| span.start + 1 + index)
-                    .filter(|&close| {
-                        source.as_bytes()[close - 1] == b'\\'
-                            && (token == Token::Invalid || close + 1 < span.end)
-                    })
-            {
-                tokens.push((Token::String, span.start..close + 1));
-                offset = close + 1;
-                split = true;
-                break;
-            }
-            tokens.push((token, span));
-        }
-        if !split {
+        tokens.extend(
+            lexed
+                .tokens
+                .into_iter()
+                .map(|(token, span)| (token, offset + span.start..offset + span.end)),
+        );
+        if let Some(split) = split {
+            offset += split;
+        } else {
             return Lexed {
                 tokens,
                 eof: source.len(),
@@ -165,7 +179,46 @@ pub(crate) fn lex_legacy_quotes(source: &str) -> Lexed {
 
 #[cfg(test)]
 mod tests {
-    use super::{Token, lex};
+    use super::{Token, lex, lex_legacy_quotes};
+
+    #[test]
+    fn legacy_quote_splits_preserve_comments_indent_and_eof() {
+        let source = "  \"a\\\"x # inline\r\n  # full\r\n  \"b\\\"y";
+        let lexed = lex_legacy_quotes(source);
+        assert_eq!(
+            lexed.tokens,
+            vec![
+                (Token::Indent, 0..2),
+                (Token::String, 2..6),
+                (Token::Identifier, 6..7),
+                (Token::Invalid, 8..16),
+                (Token::Newline, 16..18),
+                (Token::Newline, 26..28),
+                (Token::Indent, 28..30),
+                (Token::String, 30..34),
+                (Token::Identifier, 34..35),
+            ]
+        );
+        assert!(lexed.has_full_line_comment);
+        assert_eq!(lexed.eof, source.len());
+    }
+
+    #[test]
+    fn many_legacy_quote_splits_finish_without_relexing_full_suffix() {
+        let source = "\"a\\\"x ".repeat(6000);
+        let start = std::time::Instant::now();
+        let lexed = lex_legacy_quotes(&source);
+        assert_eq!(lexed.tokens.len(), 12000);
+        assert_eq!(lexed.tokens[0], (Token::String, 0..4));
+        assert_eq!(lexed.tokens[1], (Token::Identifier, 4..5));
+        assert_eq!(lexed.tokens[11998], (Token::String, 5999 * 6..5999 * 6 + 4));
+        assert_eq!(lexed.eof, source.len());
+        assert!(
+            start.elapsed().as_secs() < 3,
+            "re-lexed full suffix in {:?}",
+            start.elapsed()
+        );
+    }
 
     #[test]
     fn lex_preserves_enum_indent_newlines_and_skips_full_line_comments() {

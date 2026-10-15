@@ -56,7 +56,7 @@ struct CliError {
 struct CompilerDiagnostic {
     message: String,
     #[source_code]
-    source_code: Option<miette::NamedSource<String>>,
+    source_code: Option<miette::NamedSource<std::sync::Arc<str>>>,
     #[label("here")]
     span: Option<miette::SourceSpan>,
     #[related]
@@ -88,6 +88,44 @@ impl From<blkit_transpiler::CompilerError> for CompilerDiagnostic {
             span: span.map(|span| (span.start, span.len()).into()),
             related: error.related.into_iter().map(Self::from).collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::CompilerDiagnostic;
+
+    #[test]
+    fn related_labels_reuse_compiler_source_and_render_both_utf8_locations() {
+        let source = "namespace demo; version \"1\";\n# café\nstart_event start { output first: ☃; output second: ; }";
+        let error = blkit_transpiler::transpile_diagnostic(source, "shared.bl").unwrap_err();
+        let pointer = error.source.as_ref().unwrap().as_ptr();
+        let diagnostic = CompilerDiagnostic::from(error);
+        assert_eq!(
+            diagnostic.source_code.as_ref().unwrap().inner().as_ptr(),
+            pointer
+        );
+        assert_eq!(diagnostic.related.len(), 1);
+        assert_eq!(
+            diagnostic.related[0]
+                .source_code
+                .as_ref()
+                .unwrap()
+                .inner()
+                .as_ptr(),
+            pointer
+        );
+        let mut rendered = String::new();
+        miette::NarratableReportHandler::new()
+            .render_report(&mut rendered, &diagnostic)
+            .unwrap();
+        assert!(
+            rendered.contains("snippet line 3: start_event start"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("invalid character"), "{rendered}");
+        assert!(rendered.contains("missing semicolon"), "{rendered}");
+        assert!(rendered.contains("shared.bl"), "{rendered}");
     }
 }
 

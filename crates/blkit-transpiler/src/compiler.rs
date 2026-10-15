@@ -1,12 +1,15 @@
 use crate::{codegen, decision, expr, graph, semantic};
-use std::{collections::BTreeMap, ops::Range};
+use std::{collections::BTreeMap, ops::Range, sync::Arc};
+
+// Keep a useful prefix of malformed-input diagnostics without retaining an unbounded error list.
+const MAX_PARSE_DIAGNOSTICS: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompilerError {
     pub message: String,
     pub source_name: String,
     pub span: Option<Range<usize>>,
-    pub source: Option<String>,
+    pub source: Option<Arc<str>>,
     pub related: Vec<Self>,
 }
 
@@ -30,11 +33,28 @@ impl CompilerError {
         self.related.push(other);
     }
 
-    fn set_source(&mut self, source_name: &str, source: &str) {
-        self.source_name = source_name.to_owned();
-        self.source = Some(source.to_owned());
+    fn limit_diagnostics(&mut self, remaining: &mut usize) {
+        *remaining -= 1;
+        let mut retained = 0;
         for error in &mut self.related {
-            error.set_source(source_name, source);
+            if *remaining == 0 {
+                break;
+            }
+            error.limit_diagnostics(remaining);
+            retained += 1;
+        }
+        self.related.truncate(retained);
+    }
+
+    fn set_source(&mut self, source_name: &str, source: &str) {
+        self.set_shared_source(source_name, Arc::from(source));
+    }
+
+    fn set_shared_source(&mut self, source_name: &str, source: Arc<str>) {
+        self.source_name = source_name.to_owned();
+        self.source = Some(Arc::clone(&source));
+        for error in &mut self.related {
+            error.set_shared_source(source_name, Arc::clone(&source));
         }
     }
 }
@@ -72,6 +92,8 @@ impl std::fmt::Display for CompilerError {
         Ok(())
     }
 }
+
+impl std::error::Error for CompilerError {}
 
 // Original input stays alongside the AST for later file-aware validation.
 pub(crate) struct ParsedSource<'a> {
@@ -750,6 +772,8 @@ pub(crate) fn parse_source<'a>(
             source,
         })
         .map_err(|mut error| {
+            let mut remaining = MAX_PARSE_DIAGNOSTICS;
+            error.limit_diagnostics(&mut remaining);
             error.set_source(source_name, source);
             error
         })
@@ -761,8 +785,14 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
         .tokens
         .iter()
         .filter(|(token, _)| *token == Token::Invalid)
+        .take(MAX_PARSE_DIAGNOSTICS)
         .map(|(_, span)| CompilerError::located("invalid character", span.clone()))
         .collect();
+    if errors.len() == MAX_PARSE_DIAGNOSTICS {
+        let mut first = errors.remove(0);
+        first.related = errors;
+        return Err(first);
+    }
     let tokens: Vec<_> = lexed
         .tokens
         .into_iter()
@@ -803,6 +833,7 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
                             }))
                 })
             })
+            .take(MAX_PARSE_DIAGNOSTICS - errors.len())
             .map(|error| {
                 let span = error.span().into_range();
                 if let Some([(_, kind_span), (_, name_span)]) =
@@ -835,7 +866,9 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
                 CompilerError::located(format!("{prefix}: {error:?}"), span)
             }),
     );
-    if let Some(Err(error)) = output.as_ref() {
+    if errors.len() < MAX_PARSE_DIAGNOSTICS
+        && let Some(Err(error)) = output.as_ref()
+    {
         errors.push(error.clone());
     }
     if !errors.is_empty() {
@@ -852,6 +885,51 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
 #[cfg(test)]
 mod diagnostic_tests {
     use super::parse_source;
+
+    #[test]
+    fn many_invalid_graph_statements_keep_at_most_32_diagnostics() {
+        let source = format!(
+            "namespace demo; version \"1\"; {}",
+            (0..80)
+                .map(|index| format!("pause_for wait{index} {{ duration \"bogus\"; }}"))
+                .collect::<String>()
+        );
+        let error = parse_source(&source, "graph.bl").err().unwrap();
+        fn count(error: &super::CompilerError) -> usize {
+            1 + error.related.iter().map(count).sum::<usize>()
+        }
+        assert_eq!(count(&error), 32, "{error}");
+        assert!(super::transpile(&source).is_err());
+    }
+
+    #[test]
+    fn structured_compiler_error_propagates_as_standard_error() {
+        fn boxed() -> Result<(), Box<dyn std::error::Error>> {
+            super::transpile_diagnostic("☃", "invalid.bl")?;
+            Ok(())
+        }
+        assert!(boxed().is_err());
+    }
+
+    #[test]
+    fn many_invalid_tokens_keep_first_32_bytes_and_share_source_without_emitting_rust() {
+        let source = format!(
+            "namespace demo; version \"1\";\n# café\n{}",
+            "☃;".repeat(300)
+        );
+        let error = parse_source(&source, "many.bl").err().unwrap();
+        let errors = std::iter::once(&error).chain(error.related.iter());
+        let first = source.find('☃').unwrap();
+        let source_ptr = error.source.as_ref().unwrap().as_ptr();
+        assert_eq!(error.related.len(), 31);
+        for (index, error) in errors.enumerate() {
+            let start = first + index * "☃;".len();
+            assert_eq!(error.span, Some(start..start + '☃'.len_utf8()));
+            assert_eq!(error.source_name, "many.bl");
+            assert_eq!(error.source.as_ref().unwrap().as_ptr(), source_ptr);
+        }
+        assert!(super::transpile(&source).is_err());
+    }
 
     #[test]
     fn nested_expression_error_preserves_source_identity_and_terminator_byte() {
