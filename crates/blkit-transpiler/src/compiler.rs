@@ -29,8 +29,20 @@ impl CompilerError {
         self
     }
 
-    pub(crate) fn append(&mut self, other: Self) {
-        self.related.push(other);
+    pub(crate) fn append(&mut self, mut other: Self) {
+        let mut remaining = MAX_PARSE_DIAGNOSTICS.saturating_sub(self.diagnostic_count());
+        if remaining > 0 {
+            other.limit_diagnostics(&mut remaining);
+            self.related.push(other);
+        }
+    }
+
+    fn diagnostic_count(&self) -> usize {
+        1 + self
+            .related
+            .iter()
+            .map(Self::diagnostic_count)
+            .sum::<usize>()
     }
 
     fn limit_diagnostics(&mut self, remaining: &mut usize) {
@@ -336,6 +348,8 @@ use chumsky::{
 
 pub(crate) type Tokens<'a> = MappedInput<'a, Token, SimpleSpan, &'a [(Token, SimpleSpan)]>;
 pub(crate) type ParseError<'a> = extra::Err<Rich<'a, Token>>;
+type ProgramParseError<'a> =
+    extra::Full<Rich<'a, Token>, chumsky::inspector::RollbackState<usize>, ()>;
 
 enum Declaration {
     Record(Record),
@@ -347,25 +361,25 @@ fn text(source: &str, span: SimpleSpan) -> &str {
     &source[span.into_range()]
 }
 
-pub(crate) fn name<'a>(
+pub(crate) fn name<'a, S: chumsky::inspector::Inspector<'a, Tokens<'a>>>(
     source: &'a str,
-) -> impl Parser<'a, Tokens<'a>, String, ParseError<'a>> + Clone {
+) -> impl Parser<'a, Tokens<'a>, String, extra::Full<Rich<'a, Token>, S, ()>> + Clone {
     just(Token::Identifier).map_with(move |_, extra| text(source, extra.span()).into())
 }
 
-pub(crate) fn word<'a>(
+pub(crate) fn word<'a, S: chumsky::inspector::Inspector<'a, Tokens<'a>>>(
     source: &'a str,
     expected: &'static str,
-) -> impl Parser<'a, Tokens<'a>, (), ParseError<'a>> + Clone {
+) -> impl Parser<'a, Tokens<'a>, (), extra::Full<Rich<'a, Token>, S, ()>> + Clone {
     just(Token::Identifier)
         .map_with(move |_, extra| text(source, extra.span()))
         .filter(move |value| *value == expected)
         .ignored()
 }
 
-pub(crate) fn type_parser<'a>(
+pub(crate) fn type_parser<'a, S: chumsky::inspector::Inspector<'a, Tokens<'a>> + 'a>(
     source: &'a str,
-) -> impl Parser<'a, Tokens<'a>, Type, ParseError<'a>> + Clone {
+) -> impl Parser<'a, Tokens<'a>, Type, extra::Full<Rich<'a, Token>, S, ()>> + Clone {
     recursive(|ty| {
         name(source)
             .then(
@@ -460,7 +474,8 @@ where
 }
 
 type BodyContext = (String, String, SimpleSpan);
-type BodyParseError<'a> = extra::Full<Rich<'a, Token>, (), BodyContext>;
+type BodyParseError<'a> =
+    extra::Full<Rich<'a, Token>, chumsky::inspector::RollbackState<usize>, BodyContext>;
 
 fn body_parser<'a>(
     source: &'a str,
@@ -555,6 +570,10 @@ fn body_parser<'a>(
                     choice((nested, statement)).padded_by(layout).repeated(),
                     move |(mut items, mut columns): (Vec<BodyItem>, Vec<String>), item, extra| {
                         if let Some(item) = item {
+                            if extra.state().0 >= MAX_PARSE_DIAGNOSTICS {
+                                items.push(BodyItem::Invalid);
+                                return (items, columns);
+                            }
                             let kind = &extra.ctx().0;
                             let checked = match &item {
                                 BodyItem::Statement(tokens, terminator)
@@ -600,6 +619,7 @@ fn body_parser<'a>(
                                         error.span.clone().unwrap().into(),
                                         error.message,
                                     ));
+                                    extra.state().0 += 1;
                                     items.push(BodyItem::Invalid);
                                 }
                             }
@@ -615,7 +635,7 @@ fn body_parser<'a>(
 fn program_parser<'a>(
     source: &'a str,
     truncated: bool,
-) -> impl Parser<'a, Tokens<'a>, Result<Program, CompilerError>, ParseError<'a>> {
+) -> impl Parser<'a, Tokens<'a>, Result<Program, CompilerError>, ProgramParseError<'a>> {
     let newlines = just(Token::Newline).repeated().ignored();
     let outer_layout = choice((just(Token::Newline), just(Token::Indent)))
         .repeated()
@@ -772,7 +792,15 @@ fn program_parser<'a>(
                 external_tasks: BTreeMap::new(),
             };
             let mut errors: Option<CompilerError> = None;
+            // Mapping runs after parsing; keep a prefix from each producer so sorting can
+            // still choose the earliest errors even when body errors were emitted later.
             for declaration in declarations {
+                if errors
+                    .as_ref()
+                    .is_some_and(|error| error.diagnostic_count() >= MAX_PARSE_DIAGNOSTICS)
+                {
+                    break;
+                }
                 match declaration {
                     Declaration::Record(record) => program.records.push(record),
                     Declaration::Enum(item) => program.enums.push(item),
@@ -966,6 +994,7 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
 #[cfg(test)]
 mod diagnostic_tests {
     use super::parse_source;
+    use chumsky::{Parser as _, input::Input as _};
 
     #[test]
     fn early_syntax_error_precedes_32_later_invalid_tokens_without_emitting_rust() {
@@ -1084,6 +1113,171 @@ mod diagnostic_tests {
             1 + error.related.iter().map(count).sum::<usize>()
         }
         assert_eq!(count(&error), 32, "{error}");
+        assert!(super::transpile(&source).is_err());
+    }
+
+    #[test]
+    fn many_invalid_declarations_bound_chumsky_errors_before_mapping() {
+        let source = format!(
+            "namespace demo; version \"1\"; {}",
+            (0..100_000)
+                .map(|index| format!("pause_for wait{index} {{ duration \"bogus\"; }}"))
+                .collect::<String>()
+        );
+        let lexed = crate::lexer::lex_legacy_quotes(&source);
+        assert!(
+            !lexed
+                .tokens
+                .iter()
+                .any(|(token, _)| *token == crate::lexer::Token::Invalid)
+        );
+        let tokens: Vec<_> = lexed
+            .tokens
+            .into_iter()
+            .map(|(token, span)| (token, span.into()))
+            .collect();
+        let (output, emitted) = super::program_parser(&source, false)
+            .parse(
+                tokens
+                    .as_slice()
+                    .split_token_span((lexed.eof..lexed.eof).into()),
+            )
+            .into_output_errors();
+        assert!(
+            emitted.len() <= 32,
+            "emitted {} diagnostics before mapping",
+            emitted.len()
+        );
+        let mapped = output.unwrap().err().unwrap();
+        assert_eq!(
+            mapped.related.len(),
+            31,
+            "mapped diagnostics before truncation"
+        );
+        let error = parse_source(&source, "graph.bl").err().unwrap();
+        let diagnostics: Vec<_> = std::iter::once(&error).chain(&error.related).collect();
+        assert_eq!(diagnostics.len(), 32);
+        for (index, diagnostic) in diagnostics.iter().enumerate() {
+            let byte = source.find(&format!("wait{index}")).unwrap()
+                + format!("wait{index} {{ duration ").len();
+            assert_eq!(diagnostic.span.as_ref().map(|span| span.start), Some(byte));
+        }
+        assert!(super::transpile(&source).is_err());
+    }
+
+    #[test]
+    fn many_invalid_body_statements_bound_chumsky_emission() {
+        let source = format!(
+            "namespace demo; version \"1\"; start_event start {{ {} }}",
+            "output bad: ;".repeat(1000)
+        );
+        let lexed = crate::lexer::lex_legacy_quotes(&source);
+        let tokens: Vec<_> = lexed
+            .tokens
+            .into_iter()
+            .map(|(token, span)| (token, span.into()))
+            .collect();
+        let (_, emitted) = super::program_parser(&source, false)
+            .parse(
+                tokens
+                    .as_slice()
+                    .split_token_span((lexed.eof..lexed.eof).into()),
+            )
+            .into_output_errors();
+        assert_eq!(emitted.len(), 32, "emitted {} diagnostics", emitted.len());
+        let error = parse_source(&source, "body.bl").err().unwrap();
+        assert_eq!(error.related.len(), 31);
+        assert_eq!(
+            error.span.as_ref().map(|span| span.start),
+            source.find("bad: ;").map(|at| at + 5)
+        );
+        assert!(super::transpile(&source).is_err());
+    }
+
+    #[test]
+    fn earlier_declaration_errors_survive_later_full_body_budget() {
+        let source = format!(
+            "namespace demo; version \"1\"; {} start_event start {{ {} }}",
+            (0..20)
+                .map(|index| format!("pause_for wait{index} {{ duration \"bogus\"; }}"))
+                .collect::<String>(),
+            "output bad: ;".repeat(40)
+        );
+        let error = parse_source(&source, "ordered.bl").err().unwrap();
+        let diagnostics: Vec<_> = std::iter::once(&error).chain(&error.related).collect();
+        assert_eq!(diagnostics.len(), 32);
+        for (index, diagnostic) in diagnostics.iter().enumerate().take(20) {
+            let byte = source.find(&format!("wait{index}")).unwrap()
+                + format!("wait{index} {{ duration ").len();
+            assert_eq!(diagnostic.span.as_ref().map(|span| span.start), Some(byte));
+        }
+        let first_body = source.find("bad: ;").unwrap() + "bad: ".len();
+        assert_eq!(
+            diagnostics[20].span.as_ref().map(|span| span.start),
+            Some(first_body)
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|item| item.source_name == "ordered.bl")
+        );
+        assert!(super::transpile(&source).is_err());
+    }
+
+    #[test]
+    fn many_nested_blocks_bound_declaration_mapping_errors() {
+        let source = format!(
+            "namespace demo; version \"1\"; start_event start {{ {} }}",
+            (0..1000)
+                .map(|index| format!("literal_expression block{index} {{ }}"))
+                .collect::<String>()
+        );
+        let lexed = crate::lexer::lex_legacy_quotes(&source);
+        let tokens: Vec<_> = lexed
+            .tokens
+            .into_iter()
+            .map(|(token, span)| (token, span.into()))
+            .collect();
+        let (output, emitted) = super::program_parser(&source, false)
+            .parse(
+                tokens
+                    .as_slice()
+                    .split_token_span((lexed.eof..lexed.eof).into()),
+            )
+            .into_output_errors();
+        assert!(emitted.is_empty());
+        let mapped = output.unwrap().err().unwrap();
+        assert_eq!(mapped.related.len(), 31);
+        let error = parse_source(&source, "blocks.bl").err().unwrap();
+        assert_eq!(error.related.len(), 31);
+        assert_eq!(
+            error.span.as_ref().map(|span| span.start),
+            source.find("literal_expression")
+        );
+        assert!(super::transpile(&source).is_err());
+    }
+
+    #[test]
+    fn mixed_lexical_body_and_declaration_errors_keep_earliest_original_bytes() {
+        let source = "namespace demo; version \"1\"; start_event start { output bad: ; } pause_for wait { duration ☃; duration \"bogus\"; } start_event end { output other: ; }";
+        let error = parse_source(&source, "mixed.bl").err().unwrap();
+        let diagnostics: Vec<_> = std::iter::once(&error).chain(&error.related).collect();
+        let bad = source.find("bad: ;").unwrap() + "bad: ".len();
+        let invalid = source.find('☃').unwrap();
+        let duration = source.find("\"bogus\"").unwrap();
+        let other = source.find("other: ;").unwrap() + "other: ".len();
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|item| item.span.as_ref().unwrap().start)
+                .collect::<Vec<_>>(),
+            vec![bad, invalid, duration, other]
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|item| item.source_name == "mixed.bl")
+        );
         assert!(super::transpile(&source).is_err());
     }
 
