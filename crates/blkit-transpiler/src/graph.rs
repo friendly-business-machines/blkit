@@ -822,6 +822,40 @@ fn graph_statement<'a>(
     ))
 }
 
+pub(crate) fn check_statement(
+    source: &str,
+    tokens: &[(crate::lexer::Token, chumsky::span::SimpleSpan)],
+    terminator: chumsky::span::SimpleSpan,
+) -> Result<(), crate::compiler::CompilerError> {
+    parse_graph_statement(source, tokens, terminator).map(|_| ())
+}
+
+fn parse_graph_statement(
+    source: &str,
+    tokens: &[(crate::lexer::Token, chumsky::span::SimpleSpan)],
+    terminator: chumsky::span::SimpleSpan,
+) -> Result<GraphStatement, crate::compiler::CompilerError> {
+    crate::compiler::statement(tokens, terminator, graph_statement(source)).map_err(|error| {
+        if error.message.contains("end of input") {
+            let label = if tokens
+                .first()
+                .is_some_and(|(_, span)| &source[span.into_range()] == "flow")
+                && tokens
+                    .iter()
+                    .skip(1)
+                    .any(|(_, span)| &source[span.into_range()] == "bind")
+            {
+                "invalid flow"
+            } else {
+                "missing semicolon"
+            };
+            error.context(label)
+        } else {
+            error
+        }
+    })
+}
+
 fn statements(
     source: &str,
     body: &[crate::compiler::BodyItem],
@@ -836,27 +870,7 @@ fn statements(
                 continue;
             }
             crate::compiler::BodyItem::Statement(tokens, terminator) => {
-                crate::compiler::statement(tokens, *terminator, graph_statement(source)).map_err(
-                    |error| {
-                        if error.message.contains("end of input") {
-                            let label = if tokens
-                                .first()
-                                .is_some_and(|(_, span)| &source[span.into_range()] == "flow")
-                                && tokens
-                                    .iter()
-                                    .skip(1)
-                                    .any(|(_, span)| &source[span.into_range()] == "bind")
-                            {
-                                "invalid flow"
-                            } else {
-                                "missing semicolon"
-                            };
-                            error.context(label)
-                        } else {
-                            error
-                        }
-                    },
-                )
+                parse_graph_statement(source, tokens, *terminator)
             }
             crate::compiler::BodyItem::Block(.., kind_span) => {
                 Err(crate::compiler::CompilerError::located(

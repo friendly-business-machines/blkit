@@ -459,16 +459,20 @@ where
         })
 }
 
+type BodyContext = (String, String, SimpleSpan);
+type BodyParseError<'a> = extra::Full<Rich<'a, Token>, (), BodyContext>;
+
 fn body_parser<'a>(
     source: &'a str,
-) -> impl Parser<'a, Tokens<'a>, Vec<BodyItem>, ParseError<'a>> + Clone {
+    truncated: bool,
+) -> impl Parser<'a, Tokens<'a>, Vec<BodyItem>, BodyParseError<'a>> + Clone {
     recursive(|body| {
         let layout = choice((just(Token::Newline), just(Token::Indent)))
             .repeated()
             .ignored();
         let token = any().map_with(|token, extra| (token, extra.span()));
-        let fragment =
-            recursive::<Tokens<'a>, Vec<(Token, SimpleSpan)>, ParseError<'a>, _, _>(|fragment| {
+        let fragment = recursive::<Tokens<'a>, Vec<(Token, SimpleSpan)>, BodyParseError<'a>, _, _>(
+            |fragment| {
                 choice((
                     just(Token::OpenBrace)
                         .map_with(|token, extra| (token, extra.span()))
@@ -491,7 +495,8 @@ fn body_parser<'a>(
                         })
                         .map(|token| vec![token]),
                 ))
-            });
+            },
+        );
         let statement = fragment
             .repeated()
             .at_least(1)
@@ -521,33 +526,95 @@ fn body_parser<'a>(
                     )))
                     .map(|_| None),
             ));
-        let nested_kind = choice((
-            word(source, "literal_expression").to("literal_expression"),
-            word(source, "decision_table").to("decision_table"),
-            word(source, "context").to("context"),
-            word(source, "knowledge").to("knowledge"),
-        ));
-        let nested = nested_kind
-            .map_with(|kind, extra| (kind, extra.span()))
-            .then(name(source))
-            .then_ignore(just(Token::OpenBrace))
-            .then(body)
-            .then_ignore(just(Token::CloseBrace))
-            .map(|(((kind, kind_span), name), body)| {
-                Some(BodyItem::Block(kind.into(), name, body, kind_span))
+        let nested_kind = just(Token::Identifier)
+            .map_with(move |_, extra| (text(source, extra.span()).to_owned(), extra.span()))
+            .filter(|(kind, _)| {
+                matches!(
+                    kind.as_str(),
+                    "literal_expression" | "decision_table" | "context" | "knowledge"
+                )
             });
+        let nested = nested_kind
+            .then(
+                just(Token::Identifier)
+                    .map_with(move |_, extra| text(source, extra.span()).to_owned()),
+            )
+            .then_ignore(just(Token::OpenBrace))
+            .map(|((kind, span), name)| (kind, name, span))
+            .then_with_ctx(body)
+            .then_ignore(
+                just(Token::CloseBrace)
+                    .ignored()
+                    .or(end().filter(move |_| truncated)),
+            )
+            .map(|((kind, name, span), body)| Some(BodyItem::Block(kind, name, body, span)));
         layout.ignore_then(
-            choice((nested, statement))
-                .padded_by(layout)
-                .repeated()
-                .collect::<Vec<_>>()
-                .map(|items| items.into_iter().flatten().collect()),
+            empty()
+                .map(|()| (Vec::new(), Vec::new()))
+                .foldl_with(
+                    choice((nested, statement)).padded_by(layout).repeated(),
+                    move |(mut items, mut columns): (Vec<BodyItem>, Vec<String>), item, extra| {
+                        if let Some(item) = item {
+                            let kind = &extra.ctx().0;
+                            let checked = match &item {
+                                BodyItem::Statement(tokens, terminator)
+                                    if matches!(
+                                        kind.as_str(),
+                                        "decision_task"
+                                            | "literal_expression"
+                                            | "decision_table"
+                                            | "context"
+                                            | "knowledge"
+                                    ) =>
+                                {
+                                    decision::check_statement(
+                                        source,
+                                        kind,
+                                        tokens,
+                                        *terminator,
+                                        &columns,
+                                    )
+                                }
+                                BodyItem::Statement(tokens, terminator) => {
+                                    graph::check_statement(source, tokens, *terminator)
+                                        .map_err(|error| {
+                                            if kind == "process" {
+                                                error.context("invalid process statement")
+                                            } else {
+                                                error
+                                            }
+                                        })
+                                        .map(|()| None)
+                                }
+                                _ => Ok(None),
+                            };
+                            match checked {
+                                Ok(column) => {
+                                    if let Some(column) = column {
+                                        columns.push(column);
+                                    }
+                                    items.push(item);
+                                }
+                                Err(error) => {
+                                    extra.emit(Rich::custom(
+                                        error.span.clone().unwrap().into(),
+                                        error.message,
+                                    ));
+                                    items.push(BodyItem::Invalid);
+                                }
+                            }
+                        }
+                        (items, columns)
+                    },
+                )
+                .map(|(items, _)| items),
         )
     })
 }
 
 fn program_parser<'a>(
     source: &'a str,
+    truncated: bool,
 ) -> impl Parser<'a, Tokens<'a>, Result<Program, CompilerError>, ParseError<'a>> {
     let newlines = just(Token::Newline).repeated().ignored();
     let outer_layout = choice((just(Token::Newline), just(Token::Indent)))
@@ -671,9 +738,14 @@ fn program_parser<'a>(
     let braced = kind
         .then(name(source))
         .then_ignore(just(Token::OpenBrace))
-        .then(body_parser(source))
-        .then_ignore(just(Token::CloseBrace))
-        .map(|((kind, name), body)| Declaration::Body(kind.into(), name, body));
+        .map_with(|(kind, name), extra| (kind.to_owned(), name, extra.span()))
+        .then_with_ctx(body_parser(source, truncated))
+        .then_ignore(
+            just(Token::CloseBrace)
+                .ignored()
+                .or(end().filter(move |_| truncated)),
+        )
+        .map(|((kind, name, _), body)| Declaration::Body(kind, name, body));
     outer_layout
         .ignore_then(namespace)
         .then_ignore(outer_layout)
@@ -788,13 +860,13 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
         .take(MAX_PARSE_DIAGNOSTICS)
         .map(|(_, span)| CompilerError::located("invalid character", span.clone()))
         .collect();
-    // Parse only through the 32nd invalid token; an earlier syntax error may precede it.
+    // The 32nd lexical error is retained, but its token cannot complete a statement.
     let eof = if errors.len() == MAX_PARSE_DIAGNOSTICS {
         errors
             .last()
             .and_then(|error| error.span.as_ref())
             .expect("lexical errors have spans")
-            .end
+            .start
     } else {
         lexed.eof
     };
@@ -804,33 +876,13 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
         .take_while(|(_, span)| span.start < eof)
         .map(|(token, span)| (token, span.into()))
         .collect();
-    let (output, syntax_errors) = program_parser(source)
+    let (output, syntax_errors) = program_parser(source, eof != source.len())
         .parse(tokens.as_slice().split_token_span((eof..eof).into()))
         .into_output_errors();
     let lexical_spans: Vec<_> = errors
         .iter()
         .filter_map(|error| error.span.clone())
         .collect();
-    // A top-level invalid token can discard already-parsed declaration errors.
-    if errors.len() == MAX_PARSE_DIAGNOSTICS && output.is_none() {
-        let first_invalid = errors[0]
-            .span
-            .as_ref()
-            .expect("lexical errors have spans")
-            .start;
-        let before = tokens.partition_point(|(_, span)| span.end <= first_invalid);
-        let (prefix_output, _) = program_parser(source)
-            .parse(tokens[..before].split_token_span((first_invalid..first_invalid).into()))
-            .into_output_errors();
-        if let Some(Err(error)) = prefix_output
-            && error
-                .span
-                .as_ref()
-                .is_some_and(|span| span.start < first_invalid)
-        {
-            errors.push(error);
-        }
-    }
     errors.extend(
         syntax_errors
             .iter()
@@ -934,6 +986,70 @@ mod diagnostic_tests {
                 .iter()
                 .all(|error| error.source_name == "mixed.bl")
         );
+        assert!(super::transpile(&source).is_err());
+    }
+
+    #[test]
+    fn malformed_statement_before_first_invalid_in_same_declaration_survives_lexical_cap() {
+        let source = format!(
+            "namespace demo; version \"1.0\"; start_event start {{ output first: ; output broken: ☃; }}{}",
+            "☃;".repeat(31)
+        );
+        let error = parse_source(&source, "mixed.bl").err().unwrap();
+        let first = source.find("first: ;").unwrap() + "first: ".len();
+        let snowman = source.find('☃').unwrap();
+        let diagnostics: Vec<_> = std::iter::once(&error).chain(&error.related).collect();
+        assert_eq!(diagnostics.len(), 32, "{error}");
+        assert_eq!(error.span, Some(first..first), "{error}");
+        assert!(error.message.contains("semicolon"), "{error}");
+        assert_eq!(diagnostics[1].span, Some(snowman..snowman + '☃'.len_utf8()));
+        assert!(
+            diagnostics
+                .iter()
+                .all(|error| error.source_name == "mixed.bl")
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|error| error.message.contains("unclosed brace"))
+        );
+        assert!(super::transpile(&source).is_err());
+    }
+
+    #[test]
+    fn malformed_statement_survives_32nd_invalid_inside_declaration() {
+        let source = format!(
+            "namespace demo; version \"1\"; start_event start {{ output first: ; {} }}",
+            "☃;".repeat(32)
+        );
+        let error = parse_source(&source, "mixed.bl").err().unwrap();
+        let diagnostics: Vec<_> = std::iter::once(&error).chain(&error.related).collect();
+        let first = source.find("first: ;").unwrap() + "first: ".len();
+        assert_eq!(diagnostics.len(), 32, "{error}");
+        assert_eq!(error.span, Some(first..first), "{error}");
+        assert!(error.message.contains("semicolon"), "{error}");
+        assert_eq!(diagnostics[1].span, source.find('☃').map(|at| at..at + 3));
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|item| item.message.contains("unclosed brace"))
+        );
+        assert!(super::transpile(&source).is_err());
+    }
+
+    #[test]
+    fn malformed_decision_table_rule_survives_32nd_invalid_inside_block() {
+        let source = format!(
+            "namespace demo; version \"1\"; decision_task check {{ input amount: Number; output result: Number = table; decision_table table {{ output value: Number; policy FIRST; input amount: Number = amount; rule amount -> ; {} }} }}",
+            "☃;".repeat(32)
+        );
+        let error = parse_source(&source, "decision.bl").err().unwrap();
+        let diagnostics: Vec<_> = std::iter::once(&error).chain(&error.related).collect();
+        let first = source.find("rule amount -> ;").unwrap() + "rule amount -> ".len();
+        assert_eq!(diagnostics.len(), 32, "{error}");
+        assert_eq!(error.span, Some(first..first), "{error}");
+        assert!(error.message.contains("statement"), "{error}");
+        assert_eq!(diagnostics[1].span, source.find('☃').map(|at| at..at + 3));
         assert!(super::transpile(&source).is_err());
     }
 

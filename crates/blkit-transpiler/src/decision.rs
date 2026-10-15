@@ -757,7 +757,16 @@ fn parse_item(
         }
         crate::compiler::BodyItem::Invalid => return Err("invalid decision statement".into()),
     };
-    crate::compiler::statement(tokens, *terminator, decision_statement(source, columns)).map_err(
+    parse_statement(source, tokens, *terminator, columns)
+}
+
+fn parse_statement(
+    source: &str,
+    tokens: &[(crate::lexer::Token, chumsky::span::SimpleSpan)],
+    terminator: chumsky::span::SimpleSpan,
+    columns: &[String],
+) -> Result<DecisionStatement, crate::compiler::CompilerError> {
+    crate::compiler::statement(tokens, terminator, decision_statement(source, columns)).map_err(
         |error| {
             if tokens
                 .first()
@@ -769,6 +778,20 @@ fn parse_item(
             }
         },
     )
+}
+
+pub(crate) fn check_statement(
+    source: &str,
+    kind: &str,
+    tokens: &[(crate::lexer::Token, chumsky::span::SimpleSpan)],
+    terminator: chumsky::span::SimpleSpan,
+    columns: &[String],
+) -> Result<Option<String>, crate::compiler::CompilerError> {
+    let statement = parse_statement(source, tokens, terminator, columns)?;
+    Ok(match (kind, statement) {
+        ("decision_table", DecisionStatement::TableInput(name, _, _)) => Some(name),
+        _ => None,
+    })
 }
 
 fn node_tokens(
