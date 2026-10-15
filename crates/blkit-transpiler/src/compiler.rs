@@ -988,21 +988,22 @@ fn parse_source_inner(source: &str) -> Result<Program, CompilerError> {
     );
     if let Some(Err(error)) = output.as_ref() {
         let mut mapped = error.clone();
-        for related in mapped.related.drain(..) {
-            if related
-                .span
-                .as_ref()
-                .is_none_or(|span| span.start < eof || eof == source.len())
-            {
-                errors.push(related);
-            }
-        }
+        let related = std::mem::take(&mut mapped.related);
         if mapped
             .span
             .as_ref()
             .is_none_or(|span| span.start < eof || eof == source.len())
         {
             errors.push(mapped);
+        }
+        for error in related {
+            if error
+                .span
+                .as_ref()
+                .is_none_or(|span| span.start < eof || eof == source.len())
+            {
+                errors.push(error);
+            }
         }
     }
     if !errors.is_empty() {
@@ -1140,6 +1141,24 @@ mod diagnostic_tests {
         }
         assert_eq!(count(&error), 32, "{error}");
         assert!(super::transpile(&source).is_err());
+    }
+
+    #[test]
+    fn unlocated_declarations_keep_authored_order_and_source_without_rust() {
+        let source = "namespace demo; version \"1\"; pause_for wait { } pause_until later { }";
+        let error = parse_source(source, "ordered.bl").err().unwrap();
+        assert_eq!(error.message, "pause_for requires duration");
+        assert_eq!(error.related.len(), 1);
+        assert_eq!(
+            error.related[0].message,
+            "pause_until requires one DateTime input"
+        );
+        for diagnostic in std::iter::once(&error).chain(&error.related) {
+            assert_eq!(diagnostic.source_name, "ordered.bl");
+            assert_eq!(diagnostic.span, None);
+            assert_eq!(diagnostic.source.as_deref(), Some(source));
+        }
+        assert!(super::transpile(source).is_err());
     }
 
     #[test]
