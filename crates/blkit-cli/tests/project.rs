@@ -891,15 +891,21 @@ async fn generated_remote_workers_drain_active_claims_without_claiming_backlog()
             fast.instance.status, "running",
             "{target}: fast task blocked"
         );
-        let initial_lease = slow.lease_until.unwrap();
         assert!(
             store.drain(&worker_id).await.unwrap(),
             "{target}: worker not registered"
         );
+        let drained_lease = store
+            .get("slow")
+            .await
+            .unwrap()
+            .unwrap()
+            .lease_until
+            .unwrap();
         tokio::time::timeout(Duration::from_secs(12), async {
             loop {
                 let slow = store.get("slow").await.unwrap().unwrap();
-                if slow.lease_until.unwrap() > initial_lease {
+                if slow.lease_until.unwrap() > drained_lease {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
