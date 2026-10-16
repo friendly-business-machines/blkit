@@ -749,6 +749,192 @@ async fn generated_role_executables_smoke() {
     }
 }
 
+#[tokio::test]
+async fn generated_remote_workers_drain_active_claims_without_claiming_backlog() {
+    use blkit_core::{postgres_store::PostgresStore, runtime::Instance};
+    use std::{process::Stdio, time::Duration};
+
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let source = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } decision_task echo { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression input; } } process route { flow start -> echo; flow echo -> done; bind start.input -> echo.input; bind echo.result -> done.result; }";
+    for (target, persistence, binary) in [
+        ("worker-only", "", "orders-worker"),
+        (
+            "api-worker",
+            "persistence = \"remote\"\n",
+            "orders-api-worker",
+        ),
+    ] {
+        let root = project(
+            &MANIFEST.replace(
+                "build_target = \"crate\"\n",
+                &format!("build_target = {target:?}\n{persistence}"),
+            ),
+            &[("route.bl", source)],
+        );
+        blkit::project::Project::load(&root)
+            .unwrap()
+            .transpile()
+            .unwrap();
+        let lib = root.join(".blkit/src/lib.rs");
+        let generated = fs::read_to_string(&lib).unwrap();
+        assert!(generated.contains("pub fn named_graph_definitions()"));
+        // Instrument only the generated fixture's task so the real binary can be drained mid-claim.
+        fs::write(
+            &lib,
+            format!(
+                "{}\n{}",
+                generated.replacen("pub fn named_graph_definitions()", "fn compiled_graph_definitions()", 1),
+                r#"pub fn named_graph_definitions() -> Vec<blkit_core::compiled_graph::GraphDefinition> {
+    let mut graphs = compiled_graph_definitions();
+    let task = graphs[0].nodes.iter_mut().find(|node| node.name == "echo").unwrap();
+    task.kind = blkit_core::compiled_graph::GraphNodeKind::Task(std::sync::Arc::new(|input, _| {
+        std::thread::sleep(std::time::Duration::from_millis(if input["input"] == "1" { 3000 } else { 1400 }));
+        Ok(input["input"].clone())
+    }));
+    graphs
+}"#
+            ),
+        )
+        .unwrap();
+        cargo_build(&root).unwrap();
+        let postgres = Postgres::default()
+            .with_tag("17.6-alpine")
+            .start()
+            .await
+            .unwrap();
+        let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+            .unwrap_or(postgres.get_host().await.unwrap().to_string());
+        let url = format!(
+            "postgres://postgres:postgres@{host}:{}/postgres",
+            postgres.get_host_port_ipv4(5432).await.unwrap()
+        );
+        let store = PostgresStore::connect(&url).await.unwrap();
+        for (id, input) in [("slow", "1"), ("fast", "2"), ("backlog", "3")] {
+            let mut item = Instance::new(
+                id,
+                "orders",
+                "1",
+                "route",
+                serde_json::json!({"input": input}),
+            );
+            item.created_at = match id {
+                "slow" => 1,
+                "fast" => 2,
+                _ => 3,
+            };
+            store.create(&item).await.unwrap();
+        }
+        let path = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or(root.join(".blkit/target"))
+            .join("debug")
+            .join(binary);
+        let mut command = std::process::Command::new(path);
+        command.args([&url, "2", "600"]);
+        if target == "api-worker" {
+            let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = socket.local_addr().unwrap().to_string();
+            drop(socket);
+            command.arg(address);
+        }
+        let mut child = Child(
+            command
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let worker_id = format!("worker-{}", child.0.id());
+        let initial_lease = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let slow = store.get("slow").await.unwrap().unwrap();
+                let fast = store.get("fast").await.unwrap().unwrap();
+                if slow.instance.status == "running" && fast.instance.status == "running" {
+                    break slow.lease_until.unwrap();
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("generated worker must start both claims");
+        assert!(
+            store.drain(&worker_id).await.unwrap(),
+            "{target}: worker not registered"
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let slow = store.get("slow").await.unwrap().unwrap();
+                if slow.lease_until.unwrap() > initial_lease {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("active claim must renew its lease while draining");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if store.get("fast").await.unwrap().unwrap().instance.status == "completed" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("fast claim must finish while draining");
+        assert_eq!(
+            store.get("slow").await.unwrap().unwrap().instance.status,
+            "running",
+            "{target}"
+        );
+        let backlog = store.get("backlog").await.unwrap().unwrap();
+        assert_eq!(
+            backlog.instance.status, "pending",
+            "{target}: no refill after drain"
+        );
+        assert!(
+            backlog.owner_id.is_none(),
+            "{target}: backlog must remain unclaimed"
+        );
+        let exit = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(exit) = child.0.try_wait().unwrap() {
+                    break exit;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("generated worker must exit after its slow claim finishes");
+        assert!(exit.success(), "{target}: {exit}");
+        assert_eq!(
+            store.get("slow").await.unwrap().unwrap().instance.status,
+            "completed",
+            "{target}"
+        );
+        assert!(
+            store.get_worker(&worker_id).await.unwrap().is_none(),
+            "{target}: must unregister"
+        );
+        assert_eq!(
+            store.get("backlog").await.unwrap().unwrap().instance.status,
+            "pending",
+            "{target}"
+        );
+        drop(child);
+        drop(store);
+        drop(postgres);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 #[test]
 fn combined_and_split_targets_build_their_role_binaries() {
     for (target, persistence, bin) in [
