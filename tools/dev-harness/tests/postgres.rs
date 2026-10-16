@@ -1920,7 +1920,7 @@ async fn worker_advertises_linked_identity_and_runs_multiple_instances_under_bou
     .expect("two instances should run together");
     assert_eq!(entered.load(Ordering::SeqCst), 2);
     release.store(true, Ordering::SeqCst);
-    execution.await.unwrap();
+    assert_eq!(execution.await.unwrap(), 3);
     assert!(
         store
             .get_worker("worker-1")
@@ -1941,7 +1941,7 @@ async fn worker_advertises_linked_identity_and_runs_multiple_instances_under_bou
     );
     assert_eq!(
         store.get("job-2").await.unwrap().unwrap().instance.status,
-        "pending"
+        "completed"
     );
     drop(node);
 }

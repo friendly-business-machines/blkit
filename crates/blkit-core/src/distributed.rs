@@ -162,40 +162,58 @@ impl DistributedWorker {
         }
         self.store.expire_due().await?;
         self.store.resume_due_waits().await?;
-        let claimed = self
-            .store
-            .claim(&self.id, self.limit, self.lease_ms)
-            .await?;
-        let count = claimed.len();
+        let mut count = 0;
         let mut active = HashMap::new();
         let mut tasks = JoinSet::new();
-        for instance in claimed {
-            let key = (
-                instance.instance.namespace.clone(),
-                instance.instance.version.clone(),
-                instance.instance.process.clone(),
-            );
-            let graph = self
-                .definitions
-                .get(&key)
-                .ok_or("claimed process is not linked into worker")?
-                .clone();
-            let id = instance.instance.id.clone();
-            active.insert(id.clone(), instance.generation);
-            let store = self.store.clone();
-            let worker_id = self.id.clone();
-            let permits = self.permits.clone();
-            let definitions = self.definitions.clone();
-            tasks.spawn(async move {
-                (
-                    id,
-                    execute_claimed(graph, instance, store, worker_id, permits, definitions).await,
-                )
-            });
-        }
         let mut heartbeat =
             tokio::time::interval(Duration::from_millis((self.lease_ms / 3).max(1) as u64));
-        while !active.is_empty() {
+        let mut poll = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_millis(100),
+            Duration::from_millis(100),
+        );
+        loop {
+            if active.len() < self.limit {
+                let claimed = self
+                    .store
+                    .claim(&self.id, self.limit - active.len(), self.lease_ms)
+                    .await?;
+                count += claimed.len();
+                for instance in claimed {
+                    let key = (
+                        instance.instance.namespace.clone(),
+                        instance.instance.version.clone(),
+                        instance.instance.process.clone(),
+                    );
+                    let graph = self
+                        .definitions
+                        .get(&key)
+                        .ok_or("claimed process is not linked into worker")?
+                        .clone();
+                    let id = instance.instance.id.clone();
+                    active.insert(id.clone(), instance.generation);
+                    let store = self.store.clone();
+                    let worker_id = self.id.clone();
+                    let permits = self.permits.clone();
+                    let definitions = self.definitions.clone();
+                    tasks.spawn(async move {
+                        (
+                            id,
+                            execute_claimed(
+                                graph,
+                                instance,
+                                store,
+                                worker_id,
+                                permits,
+                                definitions,
+                            )
+                            .await,
+                        )
+                    });
+                }
+                if active.is_empty() {
+                    return Ok(count);
+                }
+            }
             tokio::select! {
                 _ = heartbeat.tick() => {
                     if !self.store.heartbeat(&self.id).await? { return Err("worker registration lost".into()); }
@@ -217,8 +235,8 @@ impl DistributedWorker {
                         tracing::error!(worker_id = %self.id, instance_id = %id, reason, "instance execution stopped");
                     }
                 }
+                _ = poll.tick(), if active.len() < self.limit => {}
             }
         }
-        Ok(count)
     }
 }
