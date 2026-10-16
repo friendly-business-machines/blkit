@@ -79,15 +79,13 @@ index fc75ae5..e6b25b9 100644
              "SELECT id, checkpoint FROM instances WHERE status IN ('pending', 'running', 'retry-waiting', 'waiting') AND checkpoint IS NOT NULL",
              &[],
          ).await.map_err(|e| e.to_string())?;
-@@ -259,7 +267,7 @@ impl PostgresStore {
+@@ -259,5 +267,5 @@ impl PostgresStore {
              return Err("lease must be positive".into());
          }
          let limit = i64::try_from(limit).map_err(|e| e.to_string())?;
 -        let mut client = self.0.lock().await;
 +        let mut client = self.lock_timed().await;
          let tx = client.transaction().await.map_err(|e| e.to_string())?;
-         let eligible = tx.query(
-             "SELECT i.id, i.checkpoint FROM instances i
 @@ -309,10 +317,7 @@ impl PostgresStore {
          worker_id: &str,
          generation: i64,
