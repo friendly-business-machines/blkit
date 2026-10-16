@@ -7,7 +7,7 @@ Defines PostgreSQL-backed distributed execution of compiled, versioned process i
 ## Requirements
 
 ### Requirement: Workers advertise compiled capabilities and remain independently live
-Each running worker-binary process SHALL register a unique worker identity, advertise the namespace/version/process identities linked into that binary, and renew a heartbeat while live. A worker SHALL execute multiple instances concurrently up to a configurable local task limit; it SHALL claim only instances whose exact process identity it advertises. The system SHALL NOT require `.bl` compilation by a running worker.
+Each running worker-binary process SHALL register a unique worker identity, advertise the namespace/version/process identities linked into that binary, and renew a heartbeat while live. A worker SHALL execute multiple instances concurrently up to a configurable local task limit; while eligible matching instances remain queued and the worker is not draining, it SHALL claim replacement work when capacity becomes available without waiting for unrelated running instances to finish. It SHALL NOT exceed its configured local task limit or claim instances whose exact process identity it does not advertise. The system SHALL NOT require `.bl` compilation by a running worker.
 
 #### Scenario: Matching version is claimable
 - **WHEN** a worker advertises `orders/1.0/decide` and an instance of that exact identity is queued
@@ -20,6 +20,10 @@ Each running worker-binary process SHALL register a unique worker identity, adve
 #### Scenario: One worker runs several instances
 - **WHEN** several eligible instances are queued and a worker has spare capacity
 - **THEN** it can run more than one concurrently without assigning any instance to two current owners
+
+#### Scenario: Freed capacity is reused during a long-running instance
+- **WHEN** a worker is executing a long-running instance, another claimed instance finishes, and eligible matching work is queued
+- **THEN** the worker claims replacement work while the long-running instance is still active, without exceeding its configured task limit
 
 ### Requirement: PostgreSQL holds durable queued and claimed instance records
 The distributed mode SHALL use a shared PostgreSQL store for instances, queued work, attempt/retry metadata, process checkpoints, and worker claims. Claiming SHALL retain the instance record and atomically record an owner, claim generation, and expiring lease; it SHALL NOT remove the instance from the durable queue. At most one current owner SHALL advance an instance at a time. A separate message broker SHALL NOT be required.
@@ -78,7 +82,7 @@ Execution errors from tasks or process execution and loss of an owning worker SH
 - **THEN** the instance records that business-error outcome without consuming or scheduling a retry
 
 ### Requirement: Workers drain without abandoning old versions
-A worker asked to drain SHALL stop claiming new instances, continue heartbeating and executing its current claims until each finishes or is released for a scheduled retry, and then unregister/exit. Removing an older process version SHALL NOT route its instances to a worker containing only a newer version; instances without a capable worker SHALL remain queued and inspectable.
+A worker asked to drain SHALL stop claiming new instances, including replacement work as capacity becomes available, continue heartbeating and executing its current claims until each finishes or is released for a scheduled retry, and then unregister/exit. Removing an older process version SHALL NOT route its instances to a worker containing only a newer version; instances without a capable worker SHALL remain queued and inspectable.
 
 #### Scenario: Version rollout
 - **WHEN** old-version workers drain while new-version workers start
@@ -87,6 +91,10 @@ A worker asked to drain SHALL stop claiming new instances, continue heartbeating
 #### Scenario: Pending old-version work
 - **WHEN** an old-version instance remains queued after the last capable worker exits
 - **THEN** it remains queued for an old-version worker and is not silently executed as a new version
+
+#### Scenario: Drain during active work
+- **WHEN** a worker receives a drain request while it owns instances and one completes with eligible backlog still queued
+- **THEN** it does not claim replacement work, renews and finishes or releases its remaining claims, and unregisters after the last claim is released
 
 ### Requirement: Distributed waits and deadlines are persisted and claim-safe
 PostgreSQL SHALL persist each waiting instance's wake instant, process deadline origin and deadline instant when known, and first-claim instant. Waiting instances SHALL release their worker claim and SHALL NOT be claimable until wake eligibility; eligible instances SHALL be claimable only by workers advertising their exact compiled process identity. The control and worker reconciliation paths SHALL enforce queue-origin deadlines even when no capable worker is present and SHALL enforce first-claim deadlines after the first successful claim. A timeout or cancellation SHALL fence a former owner from advancing the graph, and its terminal outcome SHALL NOT become a retryable execution failure.
