@@ -9,7 +9,7 @@
 ## 2. Keep worker capacity filled
 
 - [x] 2.1 Change `DistributedWorker::run_once` to refill only free slots, poll for eligible work while active slots are free, renew every active claim, and return after all active claims are released and no work is available; verify the new tests and existing PostgreSQL claim/recovery tests pass.
-- [ ] 2.2 Preserve claim/drain serialization at the PostgreSQL boundary under refill races if the targeted test exposes a gap; verify the committed-drain test and exact-identity/lease-fencing tests pass without double claims.
+- [x] 2.2 Preserve claim/drain serialization at the PostgreSQL boundary under refill races if the targeted test exposes a gap; verify the committed-drain test and exact-identity/lease-fencing tests pass without double claims.
 - [ ] 2.3 Verify generated remote worker and combined API/worker entrypoints still drain and exit with in-flight work, and update README only if their documented behavior needs clarification; run targeted generated-project and harness tests.
 
 ## 3. Decide connection management with evidence
