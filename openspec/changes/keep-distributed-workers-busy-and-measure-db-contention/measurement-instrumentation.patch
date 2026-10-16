@@ -1,0 +1,232 @@
+diff --git a/crates/blkit-core/src/postgres_store.rs b/crates/blkit-core/src/postgres_store.rs
+index fc75ae5..e6b25b9 100644
+--- a/crates/blkit-core/src/postgres_store.rs
++++ b/crates/blkit-core/src/postgres_store.rs
+@@ -54,6 +54,14 @@ fn read_retry_policy(text: Option<String>) -> Result<Option<RetryPolicy>, String
+ }
+ 
+ impl PostgresStore {
++    // Temporary benchmark diagnostic: record acquisition wait, not SQL execution time.
++    async fn lock_timed(&self) -> tokio::sync::MutexGuard<'_, Client> {
++        let started = std::time::Instant::now();
++        let guard = self.0.lock().await;
++        eprintln!("LOCK_WAIT_US {}", started.elapsed().as_micros());
++        guard
++    }
++
+     pub async fn connect(url: &str) -> Result<Self, String> {
+         let (client, connection) = tokio_postgres::connect(url, NoTls)
+             .await
+@@ -134,7 +142,7 @@ impl PostgresStore {
+             .transpose()
+             .map_err(|e| e.to_string())?;
+         let attempt = i64::from(instance.attempt);
+-        self.0.lock().await.execute(
++        self.lock_timed().await.execute(
+             "INSERT INTO instances (id, namespace, version, process, input, status, result, error, created_at, updated_at, checkpoint, attempt, first_failure_at, next_eligible_at, terminal_name, retry_policy, queued_at_ms, first_claim_at_ms, wake_at_ms, deadline_origin, deadline_duration_ms, deadline_at_ms)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)",
+             &[&instance.id, &instance.namespace, &instance.version, &instance.process,
+@@ -156,7 +164,7 @@ impl PostgresStore {
+         input: &serde_json::Value,
+     ) -> Result<(), String> {
+         let json = input.to_string();
+-        let inserted = self.0.lock().await.query_opt(
++        let inserted = self.lock_timed().await.query_opt(
+             "WITH stamp AS (SELECT (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AS now_ms)
+              INSERT INTO instances (id, namespace, version, process, input, status, created_at, updated_at, retry_policy,
+                                     queued_at_ms, deadline_origin, deadline_duration_ms, deadline_at_ms)
+@@ -185,7 +193,7 @@ impl PostgresStore {
+         wake_at_ms: i64,
+     ) -> Result<bool, String> {
+         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
+-        let changed = self.0.lock().await.execute(
++        let changed = self.lock_timed().await.execute(
+             "UPDATE instances SET status='waiting', checkpoint=$4, wake_at_ms=$5, owner_id=NULL, lease_until=NULL, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running' AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
+             &[&id, &worker_id, &generation, &value, &wake_at_ms]
+         ).await.map_err(|e| e.to_string())?;
+@@ -193,7 +201,7 @@ impl PostgresStore {
+     }
+ 
+     pub async fn expire_due(&self) -> Result<Vec<String>, String> {
+-        let rows = self.0.lock().await.query(
++        let rows = self.lock_timed().await.query(
+             "UPDATE instances SET status='business-error', terminal_name='timeout', wake_at_ms=NULL, owner_id=NULL, lease_until=NULL, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT WHERE deadline_at_ms IS NOT NULL AND deadline_at_ms<=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND status IN ('pending','running','retry-waiting','waiting') RETURNING id",
+             &[]
+         ).await.map_err(|e| e.to_string())?;
+@@ -201,14 +209,14 @@ impl PostgresStore {
+     }
+ 
+     pub async fn resume_due_waits(&self) -> Result<u64, String> {
+-        self.0.lock().await.execute(
++        self.lock_timed().await.execute(
+             "UPDATE instances SET status='pending' WHERE status='waiting' AND owner_id IS NULL AND wake_at_ms<=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT",
+             &[]
+         ).await.map_err(|e| e.to_string())
+     }
+ 
+     pub async fn cancel(&self, id: &str) -> Result<(), String> {
+-        let client = self.0.lock().await;
++        let client = self.lock_timed().await;
+         let changed = client
+             .execute(
+                 "UPDATE instances SET status='cancelled', owner_id=NULL, lease_until=NULL,
+@@ -233,7 +241,7 @@ impl PostgresStore {
+     }
+ 
+     pub(crate) async fn ensure_supported_incomplete(&self) -> Result<(), String> {
+-        let rows = self.0.lock().await.query(
++        let rows = self.lock_timed().await.query(
+             "SELECT id, checkpoint FROM instances WHERE status IN ('pending', 'running', 'retry-waiting', 'waiting') AND checkpoint IS NOT NULL",
+             &[],
+         ).await.map_err(|e| e.to_string())?;
+@@ -259,7 +267,7 @@ impl PostgresStore {
+             return Err("lease must be positive".into());
+         }
+         let limit = i64::try_from(limit).map_err(|e| e.to_string())?;
+-        let mut client = self.0.lock().await;
++        let mut client = self.lock_timed().await;
+         let tx = client.transaction().await.map_err(|e| e.to_string())?;
+         let eligible = tx.query(
+             "SELECT i.id, i.checkpoint FROM instances i
+@@ -309,10 +317,7 @@ impl PostgresStore {
+         worker_id: &str,
+         generation: i64,
+     ) -> Result<ClaimActivity, String> {
+-        let row = self
+-            .0
+-            .lock()
+-            .await
++        let row = self.lock_timed().await
+             .query_opt(
+                 "SELECT status, COALESCE(owner_id=$2 AND generation=$3 AND
+                 lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT), FALSE)
+@@ -340,7 +345,7 @@ impl PostgresStore {
+         if lease_ms <= 0 {
+             return Err("lease must be positive".into());
+         }
+-        let changed = self.0.lock().await.execute(
++        let changed = self.lock_timed().await.execute(
+             "UPDATE instances SET lease_until=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT+$4
+              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running'
+                 AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
+@@ -358,7 +363,7 @@ impl PostgresStore {
+         checkpoint: &GraphCheckpoint,
+     ) -> Result<bool, String> {
+         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
+-        let changed = self.0.lock().await.execute(
++        let changed = self.lock_timed().await.execute(
+             "UPDATE instances SET input=$4, checkpoint=$5, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running' AND checkpoint IS NULL
+                AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT
+@@ -376,7 +381,7 @@ impl PostgresStore {
+         checkpoint: &GraphCheckpoint,
+     ) -> Result<bool, String> {
+         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
+-        let changed = self.0.lock().await.execute(
++        let changed = self.lock_timed().await.execute(
+             "UPDATE instances SET checkpoint=$4, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running'
+                AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
+@@ -393,7 +398,7 @@ impl PostgresStore {
+         policy: Option<&RetryPolicy>,
+         error: &str,
+     ) -> Result<Option<&'static str>, String> {
+-        let mut client = self.0.lock().await;
++        let mut client = self.lock_timed().await;
+         let tx = client.transaction().await.map_err(|e| e.to_string())?;
+         let row = tx
+             .query_opt(
+@@ -462,7 +467,7 @@ impl PostgresStore {
+             .map(|value| serde_json::to_string(&value))
+             .transpose()
+             .map_err(|e| e.to_string())?;
+-        let changed = self.0.lock().await.execute(
++        let changed = self.lock_timed().await.execute(
+             "UPDATE instances SET status=$4, result=$5, terminal_name=$6, error=$7,
+                 owner_id=NULL, lease_until=NULL, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running'
+@@ -474,8 +479,7 @@ impl PostgresStore {
+ 
+     pub async fn expired_claims(&self) -> Result<Vec<DistributedInstance>, String> {
+         let rows = self
+-            .0
+-            .lock()
++            .lock_timed()
+             .await
+             .query(
+                 "SELECT id FROM instances WHERE status='running' AND owner_id IS NOT NULL
+@@ -499,7 +503,7 @@ impl PostgresStore {
+         id: &str,
+         policy: Option<&RetryPolicy>,
+     ) -> Result<Option<&'static str>, String> {
+-        let mut client = self.0.lock().await;
++        let mut client = self.lock_timed().await;
+         let tx = client.transaction().await.map_err(|e| e.to_string())?;
+         let row = tx
+             .query_opt(
+@@ -550,7 +554,7 @@ impl PostgresStore {
+     }
+ 
+     pub async fn due_waits(&self, at_ms: i64) -> Result<Vec<DistributedInstance>, String> {
+-        let rows = self.0.lock().await.query("SELECT id FROM instances WHERE status='waiting' AND wake_at_ms<=$1 ORDER BY wake_at_ms", &[&at_ms]).await.map_err(|e| e.to_string())?;
++        let rows = self.lock_timed().await.query("SELECT id FROM instances WHERE status='waiting' AND wake_at_ms<=$1 ORDER BY wake_at_ms", &[&at_ms]).await.map_err(|e| e.to_string())?;
+         let mut due = Vec::new();
+         for row in rows {
+             if let Some(item) = self.get(row.get::<_, String>(0).as_str()).await? {
+@@ -561,10 +565,7 @@ impl PostgresStore {
+     }
+ 
+     pub async fn get(&self, id: &str) -> Result<Option<DistributedInstance>, String> {
+-        let row = self
+-            .0
+-            .lock()
+-            .await
++        let row = self.lock_timed().await
+             .query_opt(
+                 "SELECT id, namespace, version, process, input, status, result, error,
+                     created_at, updated_at, checkpoint, attempt, first_failure_at,
+@@ -640,7 +641,7 @@ impl PostgresStore {
+             Option<&DeadlinePolicy>,
+         )],
+     ) -> Result<(), String> {
+-        let mut client = self.0.lock().await;
++        let mut client = self.lock_timed().await;
+         let tx = client.transaction().await.map_err(|e| e.to_string())?;
+         tx.execute("INSERT INTO workers (id, heartbeat_at) VALUES ($1, (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)", &[&id])
+             .await.map_err(|e| e.to_string())?;
+@@ -701,8 +702,7 @@ impl PostgresStore {
+ 
+     pub async fn drain(&self, id: &str) -> Result<bool, String> {
+         let changed = self
+-            .0
+-            .lock()
++            .lock_timed()
+             .await
+             .execute("UPDATE workers SET draining=TRUE WHERE id=$1", &[&id])
+             .await
+@@ -711,7 +711,7 @@ impl PostgresStore {
+     }
+ 
+     pub async fn unregister_drained(&self, id: &str) -> Result<bool, String> {
+-        let changed = self.0.lock().await.execute(
++        let changed = self.lock_timed().await.execute(
+             "DELETE FROM workers w WHERE id=$1 AND draining
+                 AND NOT EXISTS (SELECT 1 FROM instances i WHERE i.owner_id=w.id AND i.status='running')", &[&id]
+         ).await.map_err(|e| e.to_string())?;
+@@ -719,14 +719,14 @@ impl PostgresStore {
+     }
+ 
+     pub async fn heartbeat(&self, id: &str) -> Result<bool, String> {
+-        let changed = self.0.lock().await.execute(
++        let changed = self.lock_timed().await.execute(
+             "UPDATE workers SET heartbeat_at=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT WHERE id=$1", &[&id]
+         ).await.map_err(|e| e.to_string())?;
+         Ok(changed == 1)
+     }
+ 
+     pub async fn get_worker(&self, id: &str) -> Result<Option<Worker>, String> {
+-        let client = self.0.lock().await;
++        let client = self.lock_timed().await;
+         let Some(row) = client
+             .query_opt(
+                 "SELECT id, heartbeat_at, draining FROM workers WHERE id=$1",
