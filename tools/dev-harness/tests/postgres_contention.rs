@@ -199,6 +199,17 @@ async fn measure_single_connection_api_and_worker() {
             }
         }
         let api_elapsed = started.elapsed();
+        let mode = if with_worker { "combined" } else { "api" };
+        println!("mode={mode} phase=api-end");
+        let db_sql = "SELECT count(*), coalesce(sum(total_exec_time),0)::float8 FROM pg_stat_statements WHERE dbid=(SELECT oid FROM pg_database WHERE datname=current_database())";
+        let snapshot_started = Instant::now();
+        let api_db = db.query_one(db_sql, &[]).await.unwrap();
+        println!(
+            "mode={mode} db_api_exec_ms={:.3} db_api_statements={} db_snapshot_lag_us={}",
+            api_db.get::<_, f64>(1),
+            api_db.get::<_, i64>(0),
+            snapshot_started.elapsed().as_micros()
+        );
         for (name, samples) in ["start", "status", "cancel"].into_iter().zip(&mut all) {
             samples.sort_unstable();
             println!(
@@ -239,12 +250,17 @@ async fn measure_single_connection_api_and_worker() {
                 row.get::<_, i64>(2)
             );
             assert_eq!(row.get::<_, i64>(0), 72, "all prequeued tasks must finish");
+            assert_eq!(
+                row.get::<_, i64>(1),
+                72,
+                "all prequeued tasks must checkpoint"
+            );
             assert_eq!(row.get::<_, i64>(2), 0, "no claim may expire");
         }
         reconcile.abort();
-        let row = db.query_one("SELECT count(*), coalesce(sum(total_exec_time),0)::float8 FROM pg_stat_statements WHERE dbid=(SELECT oid FROM pg_database WHERE datname=current_database())", &[]).await.unwrap();
+        let row = db.query_one(db_sql, &[]).await.unwrap();
         println!(
-            "mode={} db_statements={} db_exec_ms={:.3}",
+            "mode={} db_full_statements={} db_full_exec_ms={:.3}",
             if with_worker { "combined" } else { "api" },
             row.get::<_, i64>(0),
             row.get::<_, f64>(1)
