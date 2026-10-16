@@ -795,7 +795,12 @@ async fn generated_remote_workers_drain_active_claims_without_claiming_backlog()
     let mut graphs = compiled_graph_definitions();
     let task = graphs[0].nodes.iter_mut().find(|node| node.name == "echo").unwrap();
     task.kind = blkit_core::compiled_graph::GraphNodeKind::Task(std::sync::Arc::new(|input, _| {
-        std::thread::sleep(std::time::Duration::from_millis(if input["input"] == "1" { 3000 } else { 1400 }));
+        let gate = std::path::PathBuf::from(std::env::var("BLKIT_TEST_GATE_DIR").unwrap());
+        let name = if input["input"] == "1" { "slow" } else { "fast" };
+        std::fs::write(gate.join(format!("{name}-entered")), "").unwrap();
+        while !gate.join(format!("{name}-release")).exists() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         Ok(input["input"].clone())
     }));
     graphs
@@ -837,38 +842,61 @@ async fn generated_remote_workers_drain_active_claims_without_claiming_backlog()
             .join("debug")
             .join(binary);
         let mut command = std::process::Command::new(path);
-        command.args([&url, "2", "600"]);
+        command.args([&url, "2", "5000"]);
+        command.env("BLKIT_TEST_GATE_DIR", &root);
         if target == "api-worker" {
             let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let address = socket.local_addr().unwrap().to_string();
             drop(socket);
             command.arg(address);
         }
+        let stderr = root.join("worker-stderr.log");
         let mut child = Child(
             command
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::from(fs::File::create(&stderr).unwrap()))
                 .spawn()
                 .unwrap(),
         );
         let worker_id = format!("worker-{}", child.0.id());
-        let initial_lease = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let slow = store.get("slow").await.unwrap().unwrap();
-                let fast = store.get("fast").await.unwrap().unwrap();
-                if slow.instance.status == "running" && fast.instance.status == "running" {
-                    break slow.lease_until.unwrap();
+                if let Some(exit) = child.0.try_wait().unwrap() {
+                    panic!(
+                        "{target}: generated worker exited early ({exit}): {}",
+                        fs::read_to_string(&stderr).unwrap()
+                    );
+                }
+                if root.join("slow-entered").exists() && root.join("fast-entered").exists() {
+                    break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
-        .expect("generated worker must start both claims");
+        .unwrap_or_else(|_| {
+            panic!(
+                "{target}: task bodies did not enter: {}",
+                fs::read_to_string(&stderr).unwrap()
+            )
+        });
+        assert!(!root.join("slow-release").exists() && !root.join("fast-release").exists());
+        let slow = store.get("slow").await.unwrap().unwrap();
+        let fast = store.get("fast").await.unwrap().unwrap();
+        assert_eq!(
+            slow.instance.status, "running",
+            "{target}: slow task blocked"
+        );
+        assert_eq!(
+            fast.instance.status, "running",
+            "{target}: fast task blocked"
+        );
+        let initial_lease = slow.lease_until.unwrap();
         assert!(
             store.drain(&worker_id).await.unwrap(),
             "{target}: worker not registered"
         );
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(12), async {
             loop {
                 let slow = store.get("slow").await.unwrap().unwrap();
                 if slow.lease_until.unwrap() > initial_lease {
@@ -879,6 +907,12 @@ async fn generated_remote_workers_drain_active_claims_without_claiming_backlog()
         })
         .await
         .expect("active claim must renew its lease while draining");
+        assert_eq!(
+            store.get("fast").await.unwrap().unwrap().instance.status,
+            "running",
+            "{target}: fast task still blocked after drain"
+        );
+        fs::write(root.join("fast-release"), "").unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if store.get("fast").await.unwrap().unwrap().instance.status == "completed" {
@@ -903,6 +937,7 @@ async fn generated_remote_workers_drain_active_claims_without_claiming_backlog()
             backlog.owner_id.is_none(),
             "{target}: backlog must remain unclaimed"
         );
+        fs::write(root.join("slow-release"), "").unwrap();
         let exit = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if let Some(exit) = child.0.try_wait().unwrap() {
