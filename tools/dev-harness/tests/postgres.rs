@@ -2829,6 +2829,110 @@ async fn draining_worker_finishes_owned_work_but_does_not_claim_old_version_back
 }
 
 #[tokio::test]
+async fn draining_worker_does_not_refill_freed_slot_after_committed_drain() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let release_slow = Arc::new(AtomicBool::new(false));
+    let release_fast = Arc::new(AtomicBool::new(false));
+    let old_graph = refill_graph(
+        &[0, 1],
+        release_slow.clone(),
+        release_fast.clone(),
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let peer_graph = versioned_graph("1.0", Arc::new(|input, _| Ok(input.clone())), None);
+    for id in 0..3 {
+        let mut item = Instance::new(&id.to_string(), "orders", "1.0", "decide", json!(id));
+        item.created_at = id + 1;
+        item.checkpoint = Some(old_graph.checkpoint(&item.input).unwrap());
+        store.create(&item).await.unwrap();
+    }
+    let old = DistributedWorker::new(store.clone(), "draining", vec![old_graph], 2, 900).unwrap();
+    let peer = DistributedWorker::new(store.clone(), "peer", vec![peer_graph], 1, 900).unwrap();
+    old.advertise().await.unwrap();
+    peer.advertise().await.unwrap();
+    let running = tokio::spawn(async move { old.run_once().await.unwrap() });
+    let initial = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let slow = store.get("0").await.unwrap().unwrap();
+            let fast = store.get("1").await.unwrap().unwrap();
+            let backlog = store.get("2").await.unwrap().unwrap();
+            if slow.owner_id.as_deref() == Some("draining")
+                && fast.owner_id.as_deref() == Some("draining")
+                && backlog.instance.status == "pending"
+            {
+                break slow;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let drained = store.drain("draining").await.unwrap();
+    release_fast.store(true, Ordering::SeqCst);
+    let freed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if store.get("1").await.unwrap().unwrap().instance.status == "completed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok();
+    // Allow a refill poll and more than one lease interval before checking the active claim.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let slow_while_draining = store.get("0").await.unwrap().unwrap();
+    let backlog_before_peer = store.get("2").await.unwrap().unwrap();
+    let peer_claimed = tokio::time::timeout(Duration::from_secs(5), peer.run_once()).await;
+    let backlog_after_peer = store.get("2").await.unwrap().unwrap();
+    release_slow.store(true, Ordering::SeqCst);
+    let old_claimed = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("draining worker should finish after slow claim is released")
+        .unwrap();
+    assert!(
+        initial.is_ok(),
+        "both initial slots must be occupied with backlog queued"
+    );
+    assert!(drained, "drain request must commit before capacity frees");
+    assert!(
+        freed,
+        "fast claim must complete while slow claim remains active"
+    );
+    assert_eq!(slow_while_draining.owner_id.as_deref(), Some("draining"));
+    assert_eq!(slow_while_draining.instance.status, "running");
+    assert!(
+        slow_while_draining.lease_until > initial.unwrap().lease_until,
+        "draining worker must renew its existing claim"
+    );
+    assert_eq!(backlog_before_peer.instance.status, "pending");
+    assert!(backlog_before_peer.owner_id.is_none());
+    assert_eq!(
+        peer_claimed.expect("peer should finish promptly").unwrap(),
+        1
+    );
+    assert_eq!(backlog_after_peer.instance.result, Some(json!(2)));
+    assert_eq!(backlog_after_peer.generation, 1);
+    assert_eq!(old_claimed, 2, "draining worker must not claim backlog");
+    assert_eq!(
+        store.get("0").await.unwrap().unwrap().instance.result,
+        Some(json!(0))
+    );
+    drop(node);
+}
+
+#[tokio::test]
 async fn retry_released_while_draining_goes_to_another_capable_worker() {
     let node = Postgres::default()
         .with_tag("17.6-alpine")
