@@ -148,3 +148,88 @@ API-only full-window wait count and p50/p95 equal its API window because the mod
 Medians across **all five runs**, comparing identical API windows: API-only throughput 188.3 → 189.8 ops/s (+0.8%), wait p50/p95 16.891/39.466 → 16.867/38.944ms, SQL execution 10.878 → 10.890ms. Combined throughput 129.4 → 130.5 ops/s (+0.9%), wait p50/p95 28.739/193.277 → 28.746/182.704ms, SQL execution 17.359 → 17.704ms. These small shifts do **not** demonstrate a consistent API performance improvement from refill. The baseline combined run 4 was a pronounced outlier (106.9 ops/s and 540.790ms API-window wait p95), absent in the post-refill combined runs (129.2–135.2 ops/s, 173.927–194.085ms wait p95). Conversely post-refill API-only run 3 is an outlier (174.5 ops/s and start p95 177.602ms, versus 186.5–193.0 ops/s and start p95 44.398–46.412ms in the other four); its API wait p99 was 165.841ms, but p95 39.514ms. Preserve both, not an outlier-excluded universal speedup claim. Combined full-work elapsed was 5.3–8.1s post-refill versus 6.4–14.1s baseline, with variable lock sample counts and task scheduling; this is not the API window or controlled evidence of a universal completion-time speedup.
 
 **Lock waiting remains material versus SQL execution time** in this diagnostic: post-refill combined API-window p95 acquisition wait is 174–194ms, close to start p95 182–204ms, with only 17–18.5ms summed server SQL execution across the entire API window. Even API-only wait p95 is ~38–40ms with ~10.6–11.1ms total SQL time. The per-lock wait and per-request latency distributions are not one-to-one, and summed SQL CPU/server time is not an operation percentile; nevertheless the relative magnitude indicates serialized client acquisition, not PostgreSQL SQL execution, dominates observed latency under this workload. As in baseline, `eprintln!` under the lock biases absolute wait upward, observer lag blurs SQL window boundaries, WSL2 is shared, and in-process router measurements exclude network/TLS costs. Task 3.1 makes **no connection/pool change or trial**; the bounded prototype/correctness decision belongs to task 3.2.
+
+# Bounded split-connection trial (task 3.2; diagnostic only)
+
+Measured on 2026-10-16 UTC at `db1b06c`, **without a production connection change**. Five fresh, paired API-only then combined runs used the unchanged workload/harness from task 3.1, its exact reversible 23-site lock instrumentation, the same 100ms reconciler and worker outer cadence, 32-task limit, 5000ms lease, eight 4200ms and 64 15ms prequeued checkpointing tasks, eight API clients × twelve start/status/cancel cycles (288 API requests/mode), and 30s worker completion ceiling. Each mode freshly truncated the *disposable* database and reset `pg_stat_statements` after setup, with no discarded warmups. API-only retained the original shared store; combined API and reconciler shared that store while **only** `DistributedWorker` used one additional `PostgresStore::connect(&url)`. The statistics observer remained separate. A server-side `pg_stat_activity` count on the current database was asserted before each measured window: **2 process connections API-only, 3 combined** (one shared API/reconciler, one worker, one observer); there was no pool, dynamic connection creation, or other database client in this disposable container. Each combined run asserted 72 completed, 72 checkpointed, zero failed.
+
+## Reproduction and bounds
+
+Same shared WSL2 Linux 6.18.54.1 x86_64 Ryzen 9 5900X (24 logical CPUs), 31 GiB RAM, Rust/cargo 1.96.1 and Docker server 28.5.1 as task 3.1. A **new** `postgres:17.6-alpine` disposable container on mapped host `127.0.0.1:15439`, test URL at `host.docker.internal:15439/postgres`, `NoTls`, default `max_connections=100`, `shared_buffers=128MB`, `track_activities=on`, `track_io_timing=off`, only nondefault option `shared_preload_libraries=pg_stat_statements`, no CPU/memory cgroup quota. Password generated privately, never printed. All Cargo commands (including any nested builds) inherited `CARGO_TARGET_DIR=/tmp/blkit-db-refill-target.LmFOuM`; target stayed ~17 GiB, `/tmp` overlay ~893 GiB free and worktree mount ~93 GiB free. No full suite was run.
+
+To reproduce on a **disposable database only**, use the baseline's `docker run` and private-password/URL setup, exporting `BLKIT_MEASURE_DISPOSABLE=yes` and `CARGO_TARGET_DIR=/tmp/blkit-db-refill-target.LmFOuM` before any Cargo invocation; wait until `docker exec blkit-db-refill-measure pg_isready -h 127.0.0.1 -U postgres` succeeds (TCP readiness avoids the short-lived initialization server). Temporarily replace *only* the harness worker constructor:
+
+```rust
+let worker_store = if with_worker {
+    PostgresStore::connect(&url).await.unwrap()
+} else {
+    store.clone()
+};
+let worker = DistributedWorker::new(worker_store, "measure-worker", vec![graph()], 32, 5000).unwrap();
+```
+
+Immediately before the existing `pg_stat_statements_reset()` call, use the observer to verify the server-side bound **outside the measured windows**:
+
+```rust
+let connections: i64 = db.query_one("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database()", &[]).await.unwrap().get(0);
+assert_eq!(connections, if with_worker { 3 } else { 2 });
+println!("mode={} process_connections={connections}", if with_worker { "combined" } else { "api" });
+```
+
+With a cleanup trap that reverses instrumentation, restores the original harness, disposes the container and unsets the URL/opt-in/password even on failure, run:
+
+```sh
+git apply openspec/changes/keep-distributed-workers-busy-and-measure-db-contention/measurement-instrumentation.patch
+for i in 1 2 3 4 5; do
+  cargo test -q -p blkit-dev-harness --test postgres_contention -- --nocapture >"/tmp/blkit-contention-split-$i.log" 2>&1 || break
+  grep '^mode=' "/tmp/blkit-contention-split-$i.log"
+  df -h /tmp .; du -sh "$CARGO_TARGET_DIR"
+done
+# In the exit trap: git apply -R .../measurement-instrumentation.patch;
+# restore the backed-up unchanged harness; docker rm -f blkit-db-refill-measure;
+# unset BLKIT_MEASURE_DATABASE_URL BLKIT_MEASURE_DISPOSABLE PG_PASSWORD.
+```
+
+All five invocations passed. Wait samples were extracted by the baseline Python marker parser with path `/tmp/blkit-contention-split-{run}.log`, sorted and divided by 1000 for milliseconds. Each run had exactly one begin/API-end/full-end per mode, 96 samples per operation, 512 API-only lock samples, nonempty combined API/full windows and a `72/72/0` marker. The baseline percentile index rule (`floor(n*p/100)`) was retained. The patch and harness modification were reversed after the runs; no trial code was committed.
+
+## Raw API-window observations
+
+All durations and SQL execution totals below are **ms**. Each API row has 96 operations of each kind (288 total). `wait n, p50/p95` counts *all acquired store locks* (API/worker/reconciler), not API calls. `DB API` is server-side summed SQL execution at the near-immediate API-end snapshot; unlike throughput, its boundary can include work finishing during the observer lag (1.824–2.702ms in this trial).
+
+| run | mode | API ops/s | start p50/p95 | status p50/p95 | cancel p50/p95 | API wait n, p50/p95 | DB API ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | API | 190.3 | 42.779/47.455 | 28.260/41.055 | 55.083/67.967 | 512, 16.558/39.055 | 10.988 |
+| 1 | combined | 163.4 | 51.798/56.447 | 32.057/47.761 | 64.815/82.823 | 984, 16.056/156.116 | 29.901 |
+| 2 | API | 188.7 | 43.243/45.402 | 28.386/41.614 | 56.327/69.599 | 512, 17.027/39.230 | 10.910 |
+| 2 | combined | 161.8 | 52.257/55.748 | 31.014/48.734 | 64.983/83.131 | 1035, 17.223/152.317 | 29.462 |
+| 3 | API | 188.0 | 43.878/46.305 | 28.672/42.116 | 55.656/69.185 | 512, 16.861/39.804 | 10.950 |
+| 3 | combined | 159.1 | 53.486/59.095 | 32.856/50.224 | 65.359/84.918 | 982, 14.848/171.666 | 29.244 |
+| 4 | API | 186.2 | 44.310/46.990 | 28.839/42.463 | 55.871/69.795 | 512, 16.763/40.504 | 10.922 |
+| 4 | combined | 160.1 | 53.370/55.795 | 31.956/49.650 | 64.684/84.804 | 991, 16.655/170.420 | 29.308 |
+| 5 | API | 185.5 | 44.540/46.932 | 28.347/42.466 | 56.790/70.336 | 512, 17.022/40.520 | 11.560 |
+| 5 | combined | 156.7 | 53.058/57.457 | 31.578/50.552 | 65.923/115.356 | 992, 14.344/172.360 | 29.700 |
+
+## Full-window observations (not API throughput)
+
+API-only full wait equals its API window (512 acquisitions); its full SQL snapshot follows the API snapshot. Combined work elapsed is measured from mode begin until all prequeued tasks finish. All combined rows verified 72/72/0.
+
+| run | mode | full wait n, p50/p95 (ms) | DB full ms | work elapsed ms | completed/checkpointed/failed |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 | API | 512, 16.558/39.055 | 11.047 | — | — |
+| 1 | combined | 2396, 4.656/46.299 | 65.758 | 6512 | 72/72/0 |
+| 2 | API | 512, 17.027/39.230 | 10.970 | — | — |
+| 2 | combined | 2301, 6.278/47.995 | 62.495 | 6685 | 72/72/0 |
+| 3 | API | 512, 16.861/39.804 | 11.004 | — | — |
+| 3 | combined | 2415, 3.017/48.546 | 64.719 | 6341 | 72/72/0 |
+| 4 | API | 512, 16.763/40.504 | 10.980 | — | — |
+| 4 | combined | 2380, 4.781/48.100 | 64.112 | 6335 | 72/72/0 |
+| 5 | API | 512, 17.022/40.520 | 11.622 | — | — |
+| 5 | combined | 2420, 3.879/48.901 | 64.692 | 6210 | 72/72/0 |
+
+## Same-window comparison and decision
+
+Against task 3.1 post-refill **medians of all five runs**: API-only throughput 189.8 → 188.0 ops/s, wait p50/p95 16.867/38.944 → 16.861/39.804ms, start p95 45.156 → 46.932ms; effectively a control, not evidence for a change there. Combined throughput 130.5 → 160.1 ops/s (**+22.7%**); combined API-window wait p50/p95 28.746/182.704 → 16.056/170.420ms (**−44.1%/−6.7%**, respectively). Combined start p50/p95 46.050/191.556 → 53.058/56.447ms (**+15.2%/−70.5%**), status p95 50.820 → 49.650ms, cancel p95 363.301 → 84.804ms (**−76.7%**). The p50 start regression is real in this workload; the improvement is primarily tail latency and throughput, not every metric. Combined API SQL execution total rose 17.704 → 29.462ms (+66.4%): with less client-side serialization, more worker SQL completes **during** the API window, so this is not a controlled per-query SQL cost comparison. Combined full-window SQL median 59.722 → 64.692ms (+8.3%), full wait p50/p95 10.425/97.174 → 4.656/48.100ms, work elapsed median 7139 → 6341ms; worker timing and lock sample mix differ.
+
+Across *all five* post-refill combined runs versus *all five* split combined runs: throughput ranges 129.2–135.2 versus 156.7–163.4 ops/s (no overlap); start p95 182.043–204.065 versus 55.748–59.095ms (no overlap); cancel p95 353.828–377.311 versus 82.823–115.356ms (no overlap). API-window wait p95 ranges also do not overlap (173.927–194.085 versus 152.317–172.360ms), but the absolute reduction is only ~12ms at the medians and the high tail remains. API-only throughput ranges 174.5–193.0 versus 185.5–190.3 ops/s, and API-only wait p95 38.471–40.151 versus 39.055–40.520ms. Do not mistake pooled cross-role lock wait for per-request latency; split worker lock acquisitions still populate the combined API wait tail. The shared WSL2 host, shifted work volume during the API window, observer boundary lag, in-process router (no network/TLS), and `eprintln!` **while holding each instrumented mutex guard** bias absolute numbers; equal instrumentation and five repeats support only this diagnostic comparison, not a universal deployment speedup.
+
+**Decision: CONDITIONAL CHANGE, not an implementation in task 3.2.** The already-supported second connection has a repeatable, material combined-mode benefit here (+22.7% median API throughput and −70.5% start p95, with 72/72/0 on all five runs) at a verified process bound of three connections including the observer (two in a combined process without the observer). Keep API-only and API/reconciler sharing unchanged; do **not** add a pool on this evidence. Task 3.3 must first exercise concurrency, lease/fencing and draining across independently connected worker/API transactions before considering the smallest combined-only connection change. In particular a claim transaction begun *before* a drain transaction on another connection can overlap it: the old single-client mutex no longer orders them locally, and the existing SQL drain gate must be tested under this cross-connection pre-drain in-flight claim overlap. Five successful benchmark runs are not such a correctness test, and neither this diagnostic nor the design proves universal drain serialization. If those tests expose a race or deployment connection budget cannot absorb the extra connection, **keep the single connection** until an approved safe change is measured.
