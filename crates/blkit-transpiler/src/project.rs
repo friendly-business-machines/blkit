@@ -642,7 +642,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let lease_ms = args.get(3).map_or(Ok(5000), |n| n.parse::<i64>())?;
     let bind = args.get(4).map_or("127.0.0.1:3000", String::as_str);
     let store = PostgresStore::connect(url).await?;
-    let worker = DistributedWorker::new(store.clone(), &format!("worker-{}", std::process::id()), PROJECT_CRATE::named_graph_definitions(), limit, lease_ms)?;
+    let worker_store = PostgresStore::connect(url).await?;
+    let worker = DistributedWorker::new(worker_store, &format!("worker-{}", std::process::id()), PROJECT_CRATE::named_graph_definitions(), limit, lease_ms)?;
     worker.advertise().await?;
     let control = Arc::new(DistributedControl::new(store));
     let reconciler = control.clone();

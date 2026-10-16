@@ -70,7 +70,7 @@ fn percentile(sorted: &[u64], percent: usize) -> u64 {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn measure_single_connection_api_and_worker() {
+async fn measure_api_and_combined_worker_connections() {
     let Ok(url) = std::env::var("BLKIT_MEASURE_DATABASE_URL") else {
         eprintln!("SKIP: set BLKIT_MEASURE_DATABASE_URL to a disposable PostgreSQL database");
         return;
@@ -94,8 +94,13 @@ async fn measure_single_connection_api_and_worker() {
         db.batch_execute("TRUNCATE instances, workers, process_policies CASCADE")
             .await
             .unwrap();
+        let worker_store = if with_worker {
+            PostgresStore::connect(&url).await.unwrap()
+        } else {
+            store.clone()
+        };
         let worker =
-            DistributedWorker::new(store.clone(), "measure-worker", vec![graph()], 32, 5000)
+            DistributedWorker::new(worker_store, "measure-worker", vec![graph()], 32, 5000)
                 .unwrap();
         worker.advertise().await.unwrap();
         let control = DistributedControl::new(store.clone());
@@ -107,6 +112,19 @@ async fn measure_single_connection_api_and_worker() {
                     .unwrap();
             }
         }
+        let connections: i64 = db
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database()",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(connections, if with_worker { 3 } else { 2 });
+        println!(
+            "mode={} process_connections={connections}",
+            if with_worker { "combined" } else { "api" }
+        );
         db.query_one("SELECT pg_stat_statements_reset()", &[])
             .await
             .unwrap();

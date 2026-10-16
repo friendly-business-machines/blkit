@@ -1552,6 +1552,121 @@ async fn concurrent_claims_match_exact_identity_without_double_assignment() {
 }
 
 #[tokio::test]
+async fn drain_waits_for_in_flight_claim_on_independent_connection() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let worker = PostgresStore::connect(&url).await.unwrap();
+    let control = PostgresStore::connect(&url).await.unwrap();
+    worker
+        .register_worker("w1", &[("orders", "1.0", "decide")])
+        .await
+        .unwrap();
+    for (id, created_at) in [("job", 1), ("backlog", 2), ("after-drain", 3)] {
+        let mut item = Instance::new(id, "orders", "1.0", "decide", json!(null));
+        item.created_at = created_at;
+        worker.create(&item).await.unwrap();
+    }
+    let peer = PostgresStore::connect(&url).await.unwrap();
+    let (mut gate, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    gate.batch_execute(
+        "CREATE FUNCTION pause_claim_update() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN PERFORM pg_advisory_xact_lock(987654321); RETURN NEW; END $$;
+         CREATE TRIGGER pause_claim BEFORE UPDATE ON instances
+         FOR EACH ROW WHEN (NEW.id='job' AND NEW.owner_id IS NOT NULL AND OLD.owner_id IS NULL)
+         EXECUTE FUNCTION pause_claim_update()",
+    )
+    .await
+    .unwrap();
+    let barrier = gate.transaction().await.unwrap();
+    barrier
+        .query_one("SELECT pg_advisory_xact_lock(987654321)", &[])
+        .await
+        .unwrap();
+    let claim = tokio::spawn(async move { worker.claim("w1", 1, 10_000).await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let blocked: i64 = barrier
+                .query_one(
+                    "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND wait_event='advisory'",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if blocked == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("claim must reach instance UPDATE while drain is still unset");
+    let peer_claim = tokio::time::timeout(Duration::from_secs(5), peer.claim("w1", 1, 10_000))
+        .await
+        .expect("a second same-worker claimer must skip the locked instance")
+        .unwrap();
+    assert_eq!(peer_claim.len(), 1);
+    assert_eq!(peer_claim[0].instance.id, "backlog");
+    let drain = tokio::spawn(async move { control.drain("w1").await });
+    let acknowledged_early = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if drain.is_finished() {
+                break true;
+            }
+            let waiting: i64 = barrier
+                .query_one(
+                    "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND wait_event='transactionid'",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if waiting == 1 {
+                break false;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("drain must acknowledge or block on the in-flight claim");
+    barrier.commit().await.unwrap();
+    let claimed = tokio::time::timeout(Duration::from_secs(5), claim)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].instance.id, "job");
+    assert_eq!(claimed[0].owner_id.as_deref(), Some("w1"));
+    assert!(drain.await.unwrap().unwrap());
+    assert!(
+        !acknowledged_early,
+        "drain acknowledged before the already-selected claim was assigned"
+    );
+    assert!(
+        PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .claim("w1", 1, 10_000)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a committed drain must gate later claims"
+    );
+    drop(node);
+}
+
+#[tokio::test]
 async fn claim_lease_renewal_checks_owner_expiry_and_increments_generation_on_reclaim() {
     let node = Postgres::default()
         .with_tag("17.6-alpine")

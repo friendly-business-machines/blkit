@@ -881,6 +881,25 @@ async fn generated_remote_workers_drain_active_claims_without_claiming_backlog()
             )
         });
         assert!(!root.join("slow-release").exists() && !root.join("fast-release").exists());
+        let mut observer = postgres
+            .exec(
+                testcontainers_modules::testcontainers::core::ExecCommand::new([
+                    "psql",
+                    "-U",
+                    "postgres",
+                    "-Atc",
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database()",
+                ]),
+            )
+            .await
+            .unwrap();
+        let output = observer.stdout_to_vec().await.unwrap();
+        let connections: i64 = String::from_utf8(output).unwrap().trim().parse().unwrap();
+        assert_eq!(
+            connections,
+            if target == "api-worker" { 4 } else { 3 },
+            "{target}: bounded role connections plus observer"
+        );
         let slow = store.get("slow").await.unwrap().unwrap();
         let fast = store.get("fast").await.unwrap().unwrap();
         assert_eq!(

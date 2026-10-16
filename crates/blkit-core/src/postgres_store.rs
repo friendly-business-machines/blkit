@@ -261,6 +261,17 @@ impl PostgresStore {
         let limit = i64::try_from(limit).map_err(|e| e.to_string())?;
         let mut client = self.0.lock().await;
         let tx = client.transaction().await.map_err(|e| e.to_string())?;
+        // Lock the worker before instances so drain cannot acknowledge an in-flight claim.
+        let worker = tx
+            .query_opt(
+                "SELECT draining FROM workers WHERE id=$1 FOR SHARE",
+                &[&worker_id],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        if !matches!(worker, Some(row) if !row.get::<_, bool>(0)) {
+            return Ok(Vec::new());
+        }
         let eligible = tx.query(
             "SELECT i.id, i.checkpoint FROM instances i
                 JOIN worker_capabilities c ON (i.namespace, i.version, i.process) = (c.namespace, c.version, c.process)
