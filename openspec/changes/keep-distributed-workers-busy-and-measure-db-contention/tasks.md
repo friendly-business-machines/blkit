@@ -3,7 +3,7 @@
 ## 1. Baseline and regression tests
 
 - [x] 1.1 Measure the current single-connection store under repeated API-only and combined API/worker PostgreSQL workloads described in `design.md` (including mutex wait, operation latency, throughput, and database time); record environment, commands, raw summary, and baseline in `measurement.md`, and verify repeated runs are comparable.
-- [ ] 1.2 Add failing PostgreSQL-backed tests in `tools/dev-harness/tests/postgres.rs` for replacement claims while a slow claim remains active, for work arriving after capacity frees, and for never exceeding the configured active/task limits; verify targeted tests fail against current batch-only behavior.
+- [x] 1.2 Add failing PostgreSQL-backed tests in `tools/dev-harness/tests/postgres.rs` for replacement claims while a slow claim remains active, for work arriving after capacity frees, and for never exceeding the configured active/task limits; verify targeted tests fail against current batch-only behavior.
 - [ ] 1.3 Add/extend a drain-during-refill test with queued backlog and a capable peer; verify the draining worker keeps its existing claim and never claims backlog after a committed drain request, and the peer can claim it.
 
 ## 2. Keep worker capacity filled
