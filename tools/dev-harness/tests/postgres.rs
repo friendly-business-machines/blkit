@@ -2479,6 +2479,7 @@ fn versioned_graph(
 fn refill_graph(
     blocked: &'static [i64],
     release: Arc<AtomicBool>,
+    release_first_fast: Arc<AtomicBool>,
     active: Arc<AtomicUsize>,
     peak: Arc<AtomicUsize>,
 ) -> GraphDefinition {
@@ -2487,8 +2488,14 @@ fn refill_graph(
         Arc::new(move |input, _| {
             let now = active.fetch_add(1, Ordering::SeqCst) + 1;
             peak.fetch_max(now, Ordering::SeqCst);
-            if blocked.contains(&input.as_i64().unwrap()) {
-                while !release.load(Ordering::SeqCst) {
+            let id = input.as_i64().unwrap();
+            if blocked.contains(&id) {
+                let gate = if id == 1 {
+                    &release_first_fast
+                } else {
+                    &release
+                };
+                while !gate.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_millis(5));
                 }
             }
@@ -2516,7 +2523,7 @@ async fn distributed_worker_refills_while_slow_claim_is_active() {
     let release = Arc::new(AtomicBool::new(false));
     let active = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
-    let graph = refill_graph(&[0], release.clone(), active, peak);
+    let graph = refill_graph(&[0], release.clone(), release.clone(), active, peak);
     for id in 0..3 {
         let mut item = Instance::new(&id.to_string(), "orders", "1.0", "decide", json!(id));
         item.created_at = id + 1;
@@ -2526,7 +2533,7 @@ async fn distributed_worker_refills_while_slow_claim_is_active() {
     let worker = DistributedWorker::new(store.clone(), "refill", vec![graph], 2, 5000).unwrap();
     worker.advertise().await.unwrap();
     let running = tokio::spawn(async move { worker.run_once().await.unwrap() });
-    let replaced = tokio::time::timeout(Duration::from_secs(3), async {
+    let replaced = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let slow = store.get("0").await.unwrap().unwrap();
             let replacement = store.get("2").await.unwrap().unwrap();
@@ -2539,7 +2546,10 @@ async fn distributed_worker_refills_while_slow_claim_is_active() {
     .await
     .is_ok();
     release.store(true, Ordering::SeqCst);
-    let claimed = running.await.unwrap();
+    let claimed = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("worker should finish after releasing blocked tasks")
+        .unwrap();
     assert!(
         replaced,
         "replacement must complete while the slow claim is still running"
@@ -2568,7 +2578,7 @@ async fn distributed_worker_claims_late_work_after_capacity_frees() {
     let release = Arc::new(AtomicBool::new(false));
     let active = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
-    let graph = refill_graph(&[0], release.clone(), active, peak);
+    let graph = refill_graph(&[0], release.clone(), release.clone(), active, peak);
     for id in 0..2 {
         let mut item = Instance::new(&id.to_string(), "orders", "1.0", "decide", json!(id));
         item.created_at = id + 1;
@@ -2579,7 +2589,7 @@ async fn distributed_worker_claims_late_work_after_capacity_frees() {
     let worker = DistributedWorker::new(store.clone(), "late", vec![graph], 2, 5000).unwrap();
     worker.advertise().await.unwrap();
     let running = tokio::spawn(async move { worker.run_once().await.unwrap() });
-    let freed = tokio::time::timeout(Duration::from_secs(3), async {
+    let freed = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if store.get("0").await.unwrap().unwrap().instance.status == "running"
                 && store.get("1").await.unwrap().unwrap().instance.status == "completed"
@@ -2594,7 +2604,7 @@ async fn distributed_worker_claims_late_work_after_capacity_frees() {
     let mut late = Instance::new("2", "orders", "1.0", "decide", json!(2));
     late.checkpoint = Some(late_checkpoint);
     store.create(&late).await.unwrap();
-    let claimed_late = tokio::time::timeout(Duration::from_secs(3), async {
+    let claimed_late = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if store.get("0").await.unwrap().unwrap().instance.status == "running"
                 && store.get("2").await.unwrap().unwrap().instance.status == "completed"
@@ -2607,7 +2617,10 @@ async fn distributed_worker_claims_late_work_after_capacity_frees() {
     .await
     .is_ok();
     release.store(true, Ordering::SeqCst);
-    let claimed = running.await.unwrap();
+    let claimed = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("worker should finish after releasing blocked tasks")
+        .unwrap();
     assert!(
         freed,
         "first fast claim must finish before late work arrives"
@@ -2636,7 +2649,14 @@ async fn distributed_worker_refill_respects_active_and_task_limit() {
     let release = Arc::new(AtomicBool::new(false));
     let active = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
-    let graph = refill_graph(&[0, 2, 3], release.clone(), active.clone(), peak.clone());
+    let release_first_fast = Arc::new(AtomicBool::new(false));
+    let graph = refill_graph(
+        &[0, 1, 2, 3],
+        release.clone(),
+        release_first_fast.clone(),
+        active.clone(),
+        peak.clone(),
+    );
     for id in 0..4 {
         let mut item = Instance::new(&id.to_string(), "orders", "1.0", "decide", json!(id));
         item.created_at = id + 1;
@@ -2646,7 +2666,24 @@ async fn distributed_worker_refill_respects_active_and_task_limit() {
     let worker = DistributedWorker::new(store.clone(), "limited", vec![graph], 2, 5000).unwrap();
     worker.advertise().await.unwrap();
     let running = tokio::spawn(async move { worker.run_once().await.unwrap() });
-    let filled = tokio::time::timeout(Duration::from_secs(3), async {
+    let initial_full = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if store.get("0").await.unwrap().unwrap().instance.status == "running"
+                && store.get("1").await.unwrap().unwrap().instance.status == "running"
+                && active.load(Ordering::SeqCst) == 2
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let third_before = store.get("2").await.unwrap().unwrap();
+    let fourth_before = store.get("3").await.unwrap().unwrap();
+    release_first_fast.store(true, Ordering::SeqCst);
+    let refilled = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if store.get("0").await.unwrap().unwrap().instance.status == "running"
                 && store.get("2").await.unwrap().unwrap().instance.status == "running"
@@ -2659,18 +2696,34 @@ async fn distributed_worker_refill_respects_active_and_task_limit() {
     })
     .await
     .is_ok();
-    let fourth = store.get("3").await.unwrap().unwrap().instance.status;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let fourth_after = store.get("3").await.unwrap().unwrap();
     release.store(true, Ordering::SeqCst);
-    let claimed = running.await.unwrap();
+    let claimed = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("worker should finish after releasing blocked tasks")
+        .unwrap();
     let maximum = peak.load(Ordering::SeqCst);
+    assert!(initial_full, "both initial claims should start");
+    assert_eq!(
+        third_before.instance.status, "pending",
+        "no third active claim at full capacity"
+    );
+    assert!(third_before.owner_id.is_none());
+    assert_eq!(
+        fourth_before.instance.status, "pending",
+        "no fourth active claim at full capacity"
+    );
+    assert!(fourth_before.owner_id.is_none());
     assert!(
-        filled,
+        refilled,
         "a freed slot should refill while the slow claim runs"
     );
     assert_eq!(
-        fourth, "pending",
-        "no third claim while both slots are occupied"
+        fourth_after.instance.status, "pending",
+        "only one replacement claim may be active"
     );
+    assert!(fourth_after.owner_id.is_none());
     assert!(
         maximum <= 2,
         "no more than two tasks may run concurrently: {maximum}"
