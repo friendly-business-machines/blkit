@@ -14,7 +14,7 @@
 
 ## 3. Decide connection management with evidence
 
-- [ ] 3.1 Re-run the identical API-only and combined workload after worker refill; record p50/p95 mutex wait and operation latency, throughput, database time, repetitions, and baseline comparison in `measurement.md`, and verify whether lock waiting is material versus time in PostgreSQL.
+- [x] 3.1 Re-run the identical API-only and combined workload after worker refill; record p50/p95 mutex wait and operation latency, throughput, database time, repetitions, and baseline comparison in `measurement.md`, and verify whether lock waiting is material versus time in PostgreSQL.
 - [ ] 3.2 If lock contention is material, trial a bounded multi-connection option (separate API/worker connections first for cross-role contention, otherwise a small established pool), run the same workload, and record measured benefit and connection count in `measurement.md`; otherwise explicitly record why the single connection stays. Verify the documented keep-or-change decision is backed by numbers, not assumptions.
 - [ ] 3.3 Only if the trial measurably improves throughput or p95 latency without harming correctness, implement the smallest bounded option, keep existing store/CLI contracts, add focused PostgreSQL concurrency and drain/fencing tests, and verify those tests plus the workload pass; otherwise remove the trial code/dependency and verify the original store tests still pass.
 
