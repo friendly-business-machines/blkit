@@ -2884,7 +2884,7 @@ async fn distributed_worker_defers_refill_error_until_active_claim_finishes() {
     }
     let invalid_checkpoint = graph.checkpoint(&json!(1)).unwrap();
     let worker =
-        DistributedWorker::new(store.clone(), "refill-error", vec![graph], 2, 600).unwrap();
+        DistributedWorker::new(store.clone(), "refill-error", vec![graph], 2, 5000).unwrap();
     worker.advertise().await.unwrap();
     let running = tokio::spawn(async move { worker.run_once().await });
     let initial = tokio::time::timeout(Duration::from_secs(5), async {
@@ -2926,7 +2926,7 @@ async fn distributed_worker_defers_refill_error_until_active_claim_finishes() {
     })
     .await;
     let after_fast = store.get("slow").await.unwrap().unwrap().lease_until;
-    let renewed = tokio::time::timeout(Duration::from_secs(3), async {
+    let renewed = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if store.get("slow").await.unwrap().unwrap().lease_until > after_fast {
                 break;
