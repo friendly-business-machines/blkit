@@ -171,8 +171,11 @@ impl DistributedWorker {
             tokio::time::Instant::now() + Duration::from_millis(100),
             Duration::from_millis(100),
         );
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut claim_available = true;
         loop {
-            if active.len() < self.limit {
+            if claim_available && active.len() < self.limit {
+                claim_available = false;
                 let claimed = self
                     .store
                     .claim(&self.id, self.limit - active.len(), self.lease_ms)
@@ -226,6 +229,7 @@ impl DistributedWorker {
                 completed = tasks.join_next() => {
                     let (id, result) = completed.ok_or("missing worker task")?.map_err(|e| e.to_string())?;
                     active.remove(&id);
+                    claim_available = true;
                     if let Err(error) = result {
                         let reason = if error == "lost claim during execution" {
                             "claim lost during execution"
@@ -235,7 +239,7 @@ impl DistributedWorker {
                         tracing::error!(worker_id = %self.id, instance_id = %id, reason, "instance execution stopped");
                     }
                 }
-                _ = poll.tick(), if active.len() < self.limit => {}
+                _ = poll.tick(), if active.len() < self.limit => { claim_available = true; }
             }
         }
     }
