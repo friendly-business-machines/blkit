@@ -2476,6 +2476,208 @@ fn versioned_graph(
     }
 }
 
+fn refill_graph(
+    blocked: &'static [i64],
+    release: Arc<AtomicBool>,
+    active: Arc<AtomicUsize>,
+    peak: Arc<AtomicUsize>,
+) -> GraphDefinition {
+    versioned_graph(
+        "1.0",
+        Arc::new(move |input, _| {
+            let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            if blocked.contains(&input.as_i64().unwrap()) {
+                while !release.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            active.fetch_sub(1, Ordering::SeqCst);
+            Ok(input.clone())
+        }),
+        None,
+    )
+}
+
+#[tokio::test]
+async fn distributed_worker_refills_while_slow_claim_is_active() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let release = Arc::new(AtomicBool::new(false));
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let graph = refill_graph(&[0], release.clone(), active, peak);
+    for id in 0..3 {
+        let mut item = Instance::new(&id.to_string(), "orders", "1.0", "decide", json!(id));
+        item.created_at = id + 1;
+        item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
+        store.create(&item).await.unwrap();
+    }
+    let worker = DistributedWorker::new(store.clone(), "refill", vec![graph], 2, 5000).unwrap();
+    worker.advertise().await.unwrap();
+    let running = tokio::spawn(async move { worker.run_once().await.unwrap() });
+    let replaced = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let slow = store.get("0").await.unwrap().unwrap();
+            let replacement = store.get("2").await.unwrap().unwrap();
+            if slow.instance.status == "running" && replacement.instance.status == "completed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok();
+    release.store(true, Ordering::SeqCst);
+    let claimed = running.await.unwrap();
+    assert!(
+        replaced,
+        "replacement must complete while the slow claim is still running"
+    );
+    assert_eq!(claimed, 3, "run_once returns all claims, including refills");
+    assert_eq!(
+        store.get("0").await.unwrap().unwrap().instance.status,
+        "completed"
+    );
+}
+
+#[tokio::test]
+async fn distributed_worker_claims_late_work_after_capacity_frees() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let release = Arc::new(AtomicBool::new(false));
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let graph = refill_graph(&[0], release.clone(), active, peak);
+    for id in 0..2 {
+        let mut item = Instance::new(&id.to_string(), "orders", "1.0", "decide", json!(id));
+        item.created_at = id + 1;
+        item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
+        store.create(&item).await.unwrap();
+    }
+    let late_checkpoint = graph.checkpoint(&json!(2)).unwrap();
+    let worker = DistributedWorker::new(store.clone(), "late", vec![graph], 2, 5000).unwrap();
+    worker.advertise().await.unwrap();
+    let running = tokio::spawn(async move { worker.run_once().await.unwrap() });
+    let freed = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if store.get("0").await.unwrap().unwrap().instance.status == "running"
+                && store.get("1").await.unwrap().unwrap().instance.status == "completed"
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok();
+    let mut late = Instance::new("2", "orders", "1.0", "decide", json!(2));
+    late.checkpoint = Some(late_checkpoint);
+    store.create(&late).await.unwrap();
+    let claimed_late = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if store.get("0").await.unwrap().unwrap().instance.status == "running"
+                && store.get("2").await.unwrap().unwrap().instance.status == "completed"
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok();
+    release.store(true, Ordering::SeqCst);
+    let claimed = running.await.unwrap();
+    assert!(
+        freed,
+        "first fast claim must finish before late work arrives"
+    );
+    assert!(
+        claimed_late,
+        "late work must run while the slow claim is still active"
+    );
+    assert_eq!(claimed, 3);
+}
+
+#[tokio::test]
+async fn distributed_worker_refill_respects_active_and_task_limit() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let release = Arc::new(AtomicBool::new(false));
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let graph = refill_graph(&[0, 2, 3], release.clone(), active.clone(), peak.clone());
+    for id in 0..4 {
+        let mut item = Instance::new(&id.to_string(), "orders", "1.0", "decide", json!(id));
+        item.created_at = id + 1;
+        item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
+        store.create(&item).await.unwrap();
+    }
+    let worker = DistributedWorker::new(store.clone(), "limited", vec![graph], 2, 5000).unwrap();
+    worker.advertise().await.unwrap();
+    let running = tokio::spawn(async move { worker.run_once().await.unwrap() });
+    let filled = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if store.get("0").await.unwrap().unwrap().instance.status == "running"
+                && store.get("2").await.unwrap().unwrap().instance.status == "running"
+                && active.load(Ordering::SeqCst) == 2
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok();
+    let fourth = store.get("3").await.unwrap().unwrap().instance.status;
+    release.store(true, Ordering::SeqCst);
+    let claimed = running.await.unwrap();
+    let maximum = peak.load(Ordering::SeqCst);
+    assert!(
+        filled,
+        "a freed slot should refill while the slow claim runs"
+    );
+    assert_eq!(
+        fourth, "pending",
+        "no third claim while both slots are occupied"
+    );
+    assert!(
+        maximum <= 2,
+        "no more than two tasks may run concurrently: {maximum}"
+    );
+    assert_eq!(claimed, 4);
+}
+
 #[tokio::test]
 async fn draining_worker_finishes_owned_work_but_does_not_claim_old_version_backlog() {
     let node = Postgres::default()
