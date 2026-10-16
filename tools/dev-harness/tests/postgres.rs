@@ -24,6 +24,7 @@ use testcontainers_modules::{
     postgres::Postgres,
     testcontainers::{ImageExt, runners::AsyncRunner},
 };
+use tokio_postgres::NoTls;
 use tower::ServiceExt;
 
 fn distributed_batch_graph(task: Evaluate) -> GraphDefinition {
@@ -2729,6 +2730,103 @@ async fn distributed_worker_refill_respects_active_and_task_limit() {
         "no more than two tasks may run concurrently: {maximum}"
     );
     assert_eq!(claimed, 4);
+}
+
+#[tokio::test]
+async fn distributed_worker_refill_does_not_burst_or_poll_on_heartbeat() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .with_cmd([
+            "postgres",
+            "-c",
+            "shared_preload_libraries=pg_stat_statements",
+        ])
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    db.batch_execute("CREATE EXTENSION pg_stat_statements")
+        .await
+        .unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let release_slow = Arc::new(AtomicBool::new(false));
+    let release_fast = Arc::new(AtomicBool::new(false));
+    let graph = refill_graph(
+        &[0, 1],
+        release_slow.clone(),
+        release_fast.clone(),
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    for id in 0..2 {
+        let mut item = Instance::new(&id.to_string(), "orders", "1.0", "decide", json!(id));
+        item.created_at = id + 1;
+        item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
+        store.create(&item).await.unwrap();
+    }
+    let worker = DistributedWorker::new(store.clone(), "cadence", vec![graph], 2, 180).unwrap();
+    worker.advertise().await.unwrap();
+    let running = tokio::spawn(async move { worker.run_once().await.unwrap() });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let slow = store.get("0").await.unwrap().unwrap();
+            let fast = store.get("1").await.unwrap().unwrap();
+            if slow.instance.status == "running" && fast.instance.status == "running" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("both slots should be occupied");
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    db.query_one("SELECT pg_stat_statements_reset()", &[])
+        .await
+        .unwrap();
+    release_fast.store(true, Ordering::SeqCst);
+    let observed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if store.get("1").await.unwrap().unwrap().instance.status == "completed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let claims: i64 = db
+        .query_one(
+            "SELECT coalesce(sum(calls), 0)::bigint FROM pg_stat_statements WHERE query LIKE 'SELECT i.id, i.checkpoint FROM instances i%'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    release_slow.store(true, Ordering::SeqCst);
+    let total = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("worker should finish after releasing slow task")
+        .unwrap();
+    assert!(
+        observed.is_ok(),
+        "fast claim must complete before the poll window"
+    );
+    assert_eq!(total, 2);
+    assert!(
+        claims > 0,
+        "pg_stat_statements must observe empty claim queries"
+    );
+    assert!(
+        claims <= 8,
+        "unexpected empty claim burst or heartbeat polls: {claims}"
+    );
 }
 
 #[tokio::test]
