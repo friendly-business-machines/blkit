@@ -2637,6 +2637,7 @@ async fn distributed_worker_refills_while_slow_claim_is_active() {
     );
     let store = PostgresStore::connect(&url).await.unwrap();
     let release = Arc::new(AtomicBool::new(false));
+    let _release_on_drop = ReleaseOnDrop(&release, &release);
     let active = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
     let graph = refill_graph(&[0], release.clone(), release.clone(), active, peak);
@@ -2692,6 +2693,7 @@ async fn distributed_worker_claims_late_work_after_capacity_frees() {
     );
     let store = PostgresStore::connect(&url).await.unwrap();
     let release = Arc::new(AtomicBool::new(false));
+    let _release_on_drop = ReleaseOnDrop(&release, &release);
     let active = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
     let graph = refill_graph(&[0], release.clone(), release.clone(), active, peak);
@@ -2766,6 +2768,7 @@ async fn distributed_worker_refill_respects_active_and_task_limit() {
     let active = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
     let release_first_fast = Arc::new(AtomicBool::new(false));
+    let _release_on_drop = ReleaseOnDrop(&release, &release_first_fast);
     let graph = refill_graph(
         &[0, 1, 2, 3],
         release.clone(),
@@ -2845,6 +2848,202 @@ async fn distributed_worker_refill_respects_active_and_task_limit() {
         "no more than two tasks may run concurrently: {maximum}"
     );
     assert_eq!(claimed, 4);
+}
+
+#[tokio::test]
+async fn distributed_worker_defers_refill_error_until_active_claim_finishes() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let release = Arc::new(AtomicBool::new(false));
+    let release_fast = Arc::new(AtomicBool::new(false));
+    let _release_on_drop = ReleaseOnDrop(&release, &release_fast);
+    let graph = refill_graph(
+        &[0, 1],
+        release.clone(),
+        release_fast.clone(),
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    for (id, input) in [("slow", 0), ("fast", 1)] {
+        let mut item = Instance::new(id, "orders", "1.0", "decide", json!(input));
+        item.created_at = input + 1;
+        item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
+        store.create(&item).await.unwrap();
+    }
+    let worker =
+        DistributedWorker::new(store.clone(), "refill-error", vec![graph], 2, 600).unwrap();
+    worker.advertise().await.unwrap();
+    let running = tokio::spawn(async move { worker.run_once().await });
+    let initial = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let row = store.get("slow").await.unwrap().unwrap();
+            if row.instance.status == "running"
+                && store.get("fast").await.unwrap().unwrap().instance.status == "running"
+            {
+                break row.lease_until;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("both claims must start");
+    let mut invalid = Instance::new("invalid", "orders", "1.0", "decide", json!(1));
+    invalid.created_at = 2;
+    store.create(&invalid).await.unwrap();
+    db.execute(
+        "UPDATE instances SET checkpoint='not json' WHERE id='invalid'",
+        &[],
+    )
+    .await
+    .unwrap();
+    release_fast.store(true, Ordering::SeqCst);
+    let fast_finished = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if store.get("fast").await.unwrap().unwrap().instance.status == "completed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let after_fast = store.get("slow").await.unwrap().unwrap().lease_until;
+    let renewed = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if store.get("slow").await.unwrap().unwrap().lease_until > after_fast {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let still_running = !running.is_finished();
+    release.store(true, Ordering::SeqCst);
+    let result = tokio::time::timeout(Duration::from_secs(5), running)
+        .await
+        .expect("worker must finish after active claim")
+        .unwrap();
+    assert!(fast_finished.is_ok(), "fast claim must free a refill slot");
+    assert!(after_fast >= initial);
+    assert!(renewed.is_ok(), "worker must renew after refill fails");
+    assert!(
+        still_running,
+        "refill failure must not abort the slow claim"
+    );
+    assert_eq!(
+        store.get("slow").await.unwrap().unwrap().instance.status,
+        "completed"
+    );
+    let error = result.unwrap_err();
+    assert!(
+        error.contains("expected") && !error.starts_with("invalid:"),
+        "original claim decode error must propagate: {error}"
+    );
+}
+
+#[tokio::test]
+async fn distributed_worker_resumes_due_wait_during_sustained_refills() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let release = Arc::new(AtomicBool::new(false));
+    let _release_on_drop = ReleaseOnDrop(&release, &release);
+    let graph = versioned_graph(
+        "1.0",
+        Arc::new({
+            let release = release.clone();
+            move |input, _| {
+                if input == &json!("slow") {
+                    while !release.load(Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                } else {
+                    std::thread::sleep(Duration::from_millis(40));
+                }
+                Ok(input.clone())
+            }
+        }),
+        None,
+    );
+    for id in 0..55 {
+        let input = if id == 0 { json!("slow") } else { json!(id) };
+        let mut item = Instance::new(&format!("job-{id:02}"), "orders", "1.0", "decide", input);
+        item.created_at = id + 1;
+        item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
+        store.create(&item).await.unwrap();
+    }
+    let due_checkpoint = graph.checkpoint(&json!("due")).unwrap();
+    let worker = DistributedWorker::new(store.clone(), "maintain", vec![graph], 2, 1500).unwrap();
+    worker.advertise().await.unwrap();
+    let running = tokio::spawn(async move { worker.run_once().await.unwrap() });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if store.get("job-00").await.unwrap().unwrap().instance.status == "running"
+                && store.get("job-01").await.unwrap().unwrap().instance.status == "completed"
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("long claim and refills must start");
+    let mut due = Instance::new("due", "orders", "1.0", "decide", json!("due"));
+    due.checkpoint = Some(due_checkpoint);
+    store.create(&due).await.unwrap();
+    db.execute(
+        "UPDATE instances SET status='waiting', wake_at_ms=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT+150 WHERE id='due'",
+        &[],
+    )
+    .await
+    .unwrap();
+    let progressed = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if store.get("due").await.unwrap().unwrap().instance.status == "completed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let long_active = store.get("job-00").await.unwrap().unwrap().instance.status == "running";
+    let still_running = !running.is_finished();
+    release.store(true, Ordering::SeqCst);
+    let total = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("worker should finish after long claim releases")
+        .unwrap();
+    assert!(
+        progressed.is_ok(),
+        "due wait must resume while run_once remains active"
+    );
+    assert!(
+        long_active && still_running,
+        "long claim must remain active through maintenance"
+    );
+    assert_eq!(total, 56);
 }
 
 struct ReleaseOnDrop<'a>(&'a AtomicBool, &'a AtomicBool);
@@ -3080,6 +3279,7 @@ async fn draining_worker_does_not_refill_freed_slot_after_committed_drain() {
     let store = PostgresStore::connect(&url).await.unwrap();
     let release_slow = Arc::new(AtomicBool::new(false));
     let release_fast = Arc::new(AtomicBool::new(false));
+    let _release_on_drop = ReleaseOnDrop(&release_slow, &release_fast);
     let old_graph = refill_graph(
         &[0, 1],
         release_slow.clone(),

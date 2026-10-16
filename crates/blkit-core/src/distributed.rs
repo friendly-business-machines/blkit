@@ -144,24 +144,7 @@ impl DistributedWorker {
         if !self.store.heartbeat(&self.id).await? {
             return Err("worker not registered".into());
         }
-        self.store.ensure_supported_incomplete().await?;
-        for expired in self.store.expired_claims().await? {
-            let key = (
-                expired.instance.namespace,
-                expired.instance.version,
-                expired.instance.process,
-            );
-            self.store
-                .reconcile_expired(
-                    &expired.instance.id,
-                    self.definitions
-                        .get(&key)
-                        .and_then(|graph| graph.retry.as_ref()),
-                )
-                .await?;
-        }
-        self.store.expire_due().await?;
-        self.store.resume_due_waits().await?;
+        self.maintain().await?;
         let mut count = 0;
         let mut active = HashMap::new();
         let mut tasks = JoinSet::new();
@@ -172,14 +155,28 @@ impl DistributedWorker {
             Duration::from_millis(100),
         );
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut maintenance = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+        maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut claim_available = true;
+        let mut pending_error = None;
         loop {
-            if claim_available && active.len() < self.limit {
+            if claim_available && active.len() < self.limit && pending_error.is_none() {
                 claim_available = false;
-                let claimed = self
+                let claimed = match self
                     .store
                     .claim(&self.id, self.limit - active.len(), self.lease_ms)
-                    .await?;
+                    .await
+                {
+                    Ok(claimed) => claimed,
+                    Err(error) if active.is_empty() => return Err(error),
+                    Err(error) => {
+                        pending_error = Some(error);
+                        continue;
+                    }
+                };
                 count += claimed.len();
                 for instance in claimed {
                     let key = (
@@ -217,6 +214,9 @@ impl DistributedWorker {
                     return Ok(count);
                 }
             }
+            if active.is_empty() {
+                return Err(pending_error.expect("active claims ended after an error"));
+            }
             tokio::select! {
                 _ = heartbeat.tick() => {
                     if !self.store.heartbeat(&self.id).await? { return Err("worker registration lost".into()); }
@@ -239,8 +239,35 @@ impl DistributedWorker {
                         tracing::error!(worker_id = %self.id, instance_id = %id, reason, "instance execution stopped");
                     }
                 }
-                _ = poll.tick(), if active.len() < self.limit => { claim_available = true; }
+                _ = poll.tick(), if active.len() < self.limit && pending_error.is_none() => { claim_available = true; }
+                _ = maintenance.tick(), if pending_error.is_none() => {
+                    if let Err(error) = self.maintain().await {
+                        pending_error = Some(error);
+                    }
+                }
             }
         }
+    }
+
+    async fn maintain(&self) -> Result<(), String> {
+        self.store.ensure_supported_incomplete().await?;
+        for expired in self.store.expired_claims().await? {
+            let key = (
+                expired.instance.namespace,
+                expired.instance.version,
+                expired.instance.process,
+            );
+            self.store
+                .reconcile_expired(
+                    &expired.instance.id,
+                    self.definitions
+                        .get(&key)
+                        .and_then(|graph| graph.retry.as_ref()),
+                )
+                .await?;
+        }
+        self.store.expire_due().await?;
+        self.store.resume_due_waits().await?;
+        Ok(())
     }
 }
