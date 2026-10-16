@@ -2882,6 +2882,7 @@ async fn distributed_worker_defers_refill_error_until_active_claim_finishes() {
         item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
         store.create(&item).await.unwrap();
     }
+    let invalid_checkpoint = graph.checkpoint(&json!(1)).unwrap();
     let worker =
         DistributedWorker::new(store.clone(), "refill-error", vec![graph], 2, 600).unwrap();
     worker.advertise().await.unwrap();
@@ -2901,13 +2902,19 @@ async fn distributed_worker_defers_refill_error_until_active_claim_finishes() {
     .expect("both claims must start");
     let mut invalid = Instance::new("invalid", "orders", "1.0", "decide", json!(1));
     invalid.created_at = 2;
+    invalid.checkpoint = Some(invalid_checkpoint);
     store.create(&invalid).await.unwrap();
-    db.execute(
-        "UPDATE instances SET checkpoint='not json' WHERE id='invalid'",
-        &[],
+    db.batch_execute(
+        "CREATE FUNCTION reject_invalid_claim() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN RAISE EXCEPTION 'injected claim failure'; END $$;
+         CREATE TRIGGER reject_invalid_claim BEFORE UPDATE OF status ON instances
+         FOR EACH ROW WHEN (NEW.id='invalid' AND OLD.status='pending' AND NEW.status='running')
+         EXECUTE FUNCTION reject_invalid_claim()",
     )
     .await
     .unwrap();
+    // Let periodic maintenance inspect the valid queued checkpoint before the claim fails.
+    tokio::time::sleep(Duration::from_millis(1300)).await;
     release_fast.store(true, Ordering::SeqCst);
     let fast_finished = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -2945,11 +2952,10 @@ async fn distributed_worker_defers_refill_error_until_active_claim_finishes() {
         store.get("slow").await.unwrap().unwrap().instance.status,
         "completed"
     );
-    let error = result.unwrap_err();
-    assert!(
-        error.contains("expected") && !error.starts_with("invalid:"),
-        "original claim decode error must propagate: {error}"
-    );
+    assert!(result.is_err(), "claim failure must propagate: {result:?}");
+    let queued = store.get("invalid").await.unwrap().unwrap();
+    assert_eq!(queued.instance.status, "pending");
+    assert!(queued.owner_id.is_none());
 }
 
 #[tokio::test]
