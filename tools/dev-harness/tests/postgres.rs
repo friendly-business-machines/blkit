@@ -2732,6 +2732,28 @@ async fn distributed_worker_refill_respects_active_and_task_limit() {
     assert_eq!(claimed, 4);
 }
 
+struct ReleaseOnDrop<'a>(&'a AtomicBool, &'a AtomicBool);
+
+impl Drop for ReleaseOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+        self.1.store(true, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn release_on_drop_opens_both_gates_after_panic() {
+    let slow = AtomicBool::new(false);
+    let fast = AtomicBool::new(false);
+    let panic = std::panic::catch_unwind(|| {
+        let _release = ReleaseOnDrop(&slow, &fast);
+        panic!("early test failure");
+    });
+    assert!(panic.is_err());
+    assert!(slow.load(Ordering::SeqCst));
+    assert!(fast.load(Ordering::SeqCst));
+}
+
 #[tokio::test]
 async fn distributed_worker_refill_does_not_burst_or_poll_on_heartbeat() {
     let node = Postgres::default()
@@ -2758,6 +2780,7 @@ async fn distributed_worker_refill_does_not_burst_or_poll_on_heartbeat() {
     let store = PostgresStore::connect(&url).await.unwrap();
     let release_slow = Arc::new(AtomicBool::new(false));
     let release_fast = Arc::new(AtomicBool::new(false));
+    let _release_on_drop = ReleaseOnDrop(&release_slow, &release_fast);
     let graph = refill_graph(
         &[0, 1],
         release_slow.clone(),
