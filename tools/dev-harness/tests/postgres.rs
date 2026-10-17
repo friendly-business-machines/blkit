@@ -27,6 +27,362 @@ use testcontainers_modules::{
 use tokio_postgres::NoTls;
 use tower::ServiceExt;
 
+#[tokio::test]
+async fn postgres_pool_allows_independent_operation_while_another_session_is_blocked() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect_with_pool_size(
+        &format!("{url}?application_name=blkit_pool_independent"),
+        2,
+    )
+    .await
+    .unwrap();
+    let (mut gate, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let lock = gate.transaction().await.unwrap();
+    lock.batch_execute("LOCK TABLE instances IN ACCESS EXCLUSIVE MODE")
+        .await
+        .unwrap();
+    let blocked = tokio::spawn({
+        let store = store.clone();
+        async move {
+            store
+                .create(&Instance::new("blocked", "test", "1", "pool", json!(null)))
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let waiting: i64 = lock
+                .query_one(
+                    "SELECT count(*) FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock'",
+                    &[&"blkit_pool_independent"],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if waiting == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("first operation must be blocked inside PostgreSQL");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), store.get_worker("absent"))
+            .await
+            .expect("independent operation must finish before the blocked SQL is released")
+            .unwrap()
+            .is_none()
+    );
+    assert!(!blocked.is_finished());
+    lock.commit().await.unwrap();
+    blocked.await.unwrap().unwrap();
+    assert!(store.get("blocked").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn postgres_pool_replaces_terminated_backend_without_acknowledging_its_write() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect_with_pool_size(
+        &format!("{url}?application_name=blkit_pool_replacement"),
+        1,
+    )
+    .await
+    .unwrap();
+    let (mut gate, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let lock = gate.transaction().await.unwrap();
+    lock.batch_execute("LOCK TABLE instances IN ACCESS EXCLUSIVE MODE")
+        .await
+        .unwrap();
+    let blocked = tokio::spawn({
+        let store = store.clone();
+        async move {
+            store
+                .create(&Instance::new(
+                    "lost-write",
+                    "test",
+                    "1",
+                    "pool",
+                    json!(null),
+                ))
+                .await
+        }
+    });
+    let pid = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            lock.batch_execute("SELECT pg_stat_clear_snapshot()")
+                .await
+                .unwrap();
+            let row = lock
+                .query_opt(
+                    "SELECT pid FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock'",
+                    &[&"blkit_pool_replacement"],
+                )
+                .await
+                .unwrap();
+            if let Some(row) = row {
+                break row.get::<_, i32>(0);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("write must reach the database before terminating its backend");
+    assert!(
+        lock.query_one("SELECT pg_terminate_backend($1)", &[&pid])
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    let error = tokio::time::timeout(Duration::from_secs(5), blocked)
+        .await
+        .expect("lost backend must not leave the operation waiting")
+        .unwrap()
+        .expect_err("lost write must not be acknowledged");
+    assert!(!error.is_empty());
+    lock.commit().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        // A fast-recycled dead session may report one more error before replacement.
+        if let Ok(row) = store.get("lost-write").await {
+            assert!(row.is_none());
+        }
+        assert!(store.get("lost-write").await.unwrap().is_none());
+        store
+            .create(&Instance::new(
+                "replacement",
+                "test",
+                "1",
+                "pool",
+                json!(null),
+            ))
+            .await
+            .unwrap();
+        assert!(store.get("replacement").await.unwrap().is_some());
+        let replacement_pid: i32 = gate
+            .query_one(
+                "SELECT pid FROM pg_stat_activity WHERE application_name=$1",
+                &[&"blkit_pool_replacement"],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_ne!(
+            replacement_pid, pid,
+            "pool must replace the terminated backend"
+        );
+    })
+    .await
+    .expect("replacement backend must restore the only pool slot");
+}
+
+#[tokio::test]
+async fn postgres_pool_limits_sessions_under_concurrent_load() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect_with_pool_size(
+        &format!("{url}?application_name=blkit_pool_bounded"),
+        2,
+    )
+    .await
+    .unwrap();
+    let (mut gate, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let lock = gate.transaction().await.unwrap();
+    lock.batch_execute("LOCK TABLE instances IN ACCESS EXCLUSIVE MODE")
+        .await
+        .unwrap();
+    let mut operations = Vec::new();
+    for index in 0..2 {
+        let store = store.clone();
+        operations.push(tokio::spawn(async move {
+            let id = format!("load-{index}");
+            store
+                .create(&Instance::new(&id, "test", "1", "pool", json!(null)))
+                .await
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            lock.batch_execute("SELECT pg_stat_clear_snapshot()")
+                .await
+                .unwrap();
+            let waiting: i64 = lock
+                .query_one(
+                    "SELECT count(*) FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock'",
+                    &[&"blkit_pool_bounded"],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if waiting == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("both allowed sessions must concurrently reach PostgreSQL");
+    let (started, mut contending) = tokio::sync::mpsc::channel(6);
+    for index in 2..8 {
+        let store = store.clone();
+        let started = started.clone();
+        operations.push(tokio::spawn(async move {
+            started.send(()).await.unwrap();
+            let id = format!("load-{index}");
+            store
+                .create(&Instance::new(&id, "test", "1", "pool", json!(null)))
+                .await
+        }));
+    }
+    drop(started);
+    for _ in 0..6 {
+        contending.recv().await.expect("all contenders must start");
+    }
+    for _ in 0..6 {
+        lock.batch_execute("SELECT pg_stat_clear_snapshot()")
+            .await
+            .unwrap();
+        let sessions: i64 = lock
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity WHERE application_name=$1",
+                &[&"blkit_pool_bounded"],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            sessions, 2,
+            "contending operations must not open extra sessions"
+        );
+        assert!(operations.iter().all(|operation| !operation.is_finished()));
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    lock.commit().await.unwrap();
+    for operation in operations {
+        operation.await.unwrap().unwrap();
+    }
+    for index in 0..8 {
+        assert!(store.get(&format!("load-{index}")).await.unwrap().is_some());
+    }
+}
+
+#[tokio::test]
+async fn postgres_pool_checkout_times_out_when_only_slot_is_held() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect_with_pool_size(
+        &format!("{url}?application_name=blkit_pool_timeout"),
+        1,
+    )
+    .await
+    .unwrap();
+    let (mut gate, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let lock = gate.transaction().await.unwrap();
+    lock.batch_execute("LOCK TABLE instances IN ACCESS EXCLUSIVE MODE")
+        .await
+        .unwrap();
+    let blocked = tokio::spawn({
+        let store = store.clone();
+        async move {
+            store
+                .create(&Instance::new("blocked", "test", "1", "pool", json!(null)))
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let waiting: i64 = lock
+                .query_one(
+                    "SELECT count(*) FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock'",
+                    &[&"blkit_pool_timeout"],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if waiting == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the only slot must be occupied by a blocked operation");
+    let error = tokio::time::timeout(
+        Duration::from_secs(3),
+        store.create(&Instance::new(
+            "timed-out",
+            "test",
+            "1",
+            "pool",
+            json!(null),
+        )),
+    )
+    .await
+    .expect("checkout must return before the outer deadline")
+    .expect_err("a saturated pool must reject the write");
+    assert!(
+        error.to_lowercase().contains("timeout") || error.to_lowercase().contains("timed out"),
+        "checkout must report a timeout, got: {error}"
+    );
+    assert!(!blocked.is_finished());
+    lock.commit().await.unwrap();
+    blocked.await.unwrap().unwrap();
+    assert!(store.get("blocked").await.unwrap().is_some());
+    assert!(store.get("timed-out").await.unwrap().is_none());
+    store
+        .create(&Instance::new(
+            "recovered",
+            "test",
+            "1",
+            "pool",
+            json!(null),
+        ))
+        .await
+        .unwrap();
+    assert!(store.get("recovered").await.unwrap().is_some());
+}
+
 fn distributed_batch_graph(task: Evaluate) -> GraphDefinition {
     GraphDefinition {
         namespace: "test",
@@ -1150,14 +1506,14 @@ async fn distributed_queued_and_first_claim_deadlines_expire_without_retrying_la
             .unwrap()
             .unwrap()
             .instance
-            .status
-            != "running"
+            .first_claim_at_ms
+            .is_none()
         {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
-    .unwrap();
+    .expect("worker must claim before first-claim deadline begins");
     let before = control.status(&claimed).await.unwrap().unwrap().instance;
     assert!(before.first_claim_at_ms.is_some());
     assert_eq!(
@@ -1552,7 +1908,7 @@ async fn concurrent_claims_match_exact_identity_without_double_assignment() {
 }
 
 #[tokio::test]
-async fn drain_waits_for_in_flight_claim_on_independent_connection() {
+async fn pooled_cross_session_claim_and_drain_keep_owned_claim_and_gate_backlog() {
     let node = Postgres::default()
         .with_tag("17.6-alpine")
         .start()
@@ -1564,8 +1920,12 @@ async fn drain_waits_for_in_flight_claim_on_independent_connection() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let worker = PostgresStore::connect(&url).await.unwrap();
-    let control = PostgresStore::connect(&url).await.unwrap();
+    let worker = PostgresStore::connect_with_pool_size(&url, 2)
+        .await
+        .unwrap();
+    let control = PostgresStore::connect_with_pool_size(&url, 2)
+        .await
+        .unwrap();
     worker
         .register_worker("w1", &[("orders", "1.0", "decide")])
         .await
@@ -1575,7 +1935,9 @@ async fn drain_waits_for_in_flight_claim_on_independent_connection() {
         item.created_at = created_at;
         worker.create(&item).await.unwrap();
     }
-    let peer = PostgresStore::connect(&url).await.unwrap();
+    let peer = PostgresStore::connect_with_pool_size(&url, 2)
+        .await
+        .unwrap();
     let (mut gate, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     gate.batch_execute(
@@ -1592,7 +1954,8 @@ async fn drain_waits_for_in_flight_claim_on_independent_connection() {
         .query_one("SELECT pg_advisory_xact_lock(987654321)", &[])
         .await
         .unwrap();
-    let claim = tokio::spawn(async move { worker.claim("w1", 1, 10_000).await });
+    let claiming_store = worker.clone();
+    let claim = tokio::spawn(async move { claiming_store.claim("w1", 1, 10_000).await });
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let blocked: i64 = barrier
@@ -1617,7 +1980,8 @@ async fn drain_waits_for_in_flight_claim_on_independent_connection() {
         .unwrap();
     assert_eq!(peer_claim.len(), 1);
     assert_eq!(peer_claim[0].instance.id, "backlog");
-    let drain = tokio::spawn(async move { control.drain("w1").await });
+    let draining_store = control.clone();
+    let drain = tokio::spawn(async move { draining_store.drain("w1").await });
     let acknowledged_early = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if drain.is_finished() {
@@ -1654,16 +2018,183 @@ async fn drain_waits_for_in_flight_claim_on_independent_connection() {
         "drain acknowledged before the already-selected claim was assigned"
     );
     assert!(
-        PostgresStore::connect(&url)
+        worker
+            .renew_claim("job", "w1", claimed[0].generation, 10_000)
+            .await
+            .unwrap(),
+        "drain must not revoke an already owned claim"
+    );
+    let mut checkpoint = GraphCheckpoint::default();
+    checkpoint.completed.insert("kept".into(), json!(1));
+    assert!(
+        worker
+            .commit_checkpoint("job", "w1", claimed[0].generation, &checkpoint)
             .await
             .unwrap()
-            .claim("w1", 1, 10_000)
+    );
+    assert!(
+        worker
+            .finish_owned(
+                "job",
+                "w1",
+                claimed[0].generation,
+                "completed",
+                Some(json!(1)),
+                None,
+                None
+            )
             .await
             .unwrap()
-            .is_empty(),
+    );
+    let completed = control.get("job").await.unwrap().unwrap();
+    assert_eq!(completed.instance.result, Some(json!(1)));
+    assert_eq!(
+        completed.instance.checkpoint.unwrap().completed["kept"],
+        json!(1)
+    );
+    assert_eq!(peer_claim[0].generation, 1);
+    assert_eq!(
+        control
+            .get("backlog")
+            .await
+            .unwrap()
+            .unwrap()
+            .owner_id
+            .as_deref(),
+        Some("w1")
+    );
+    let unclaimed = control.get("after-drain").await.unwrap().unwrap();
+    assert_eq!(unclaimed.instance.status, "pending");
+    assert!(unclaimed.owner_id.is_none());
+    assert!(
+        worker.claim("w1", 1, 10_000).await.unwrap().is_empty(),
         "a committed drain must gate later claims"
     );
     drop(node);
+}
+
+#[tokio::test]
+async fn active_claim_renewal_reports_pool_contention_then_recovers_without_stale_checkpoint() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect_with_pool_size(
+        &format!("{url}?application_name=blkit_active_claim"),
+        1,
+    )
+    .await
+    .unwrap();
+    store
+        .register_worker("w1", &[("orders", "1.0", "decide")])
+        .await
+        .unwrap();
+    store
+        .create(&Instance::new(
+            "job",
+            "orders",
+            "1.0",
+            "decide",
+            json!(null),
+        ))
+        .await
+        .unwrap();
+    let lease_ms = 30_000;
+    let claimed = store.claim("w1", 1, lease_ms).await.unwrap().pop().unwrap();
+    let (mut gate, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let lock = gate.transaction().await.unwrap();
+    lock.batch_execute("LOCK TABLE instances IN ACCESS EXCLUSIVE MODE")
+        .await
+        .unwrap();
+    let mut checkpoint = GraphCheckpoint::default();
+    checkpoint.completed.insert("current".into(), json!(1));
+    let writing = tokio::spawn({
+        let store = store.clone();
+        let checkpoint = checkpoint.clone();
+        let generation = claimed.generation;
+        async move {
+            store
+                .commit_checkpoint("job", "w1", generation, &checkpoint)
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            lock.batch_execute("SELECT pg_stat_clear_snapshot()").await.unwrap();
+            let waiting: i64 = lock.query_one(
+                "SELECT count(*) FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock'",
+                &[&"blkit_active_claim"],
+            ).await.unwrap().get(0);
+            if waiting == 1 { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("checkpoint write must occupy the pool before renewal");
+    let renewal = tokio::time::timeout(
+        Duration::from_secs(3),
+        store.renew_claim("job", "w1", claimed.generation, lease_ms),
+    )
+    .await
+    .expect("maintenance must not wait indefinitely for the active pool slot")
+    .expect_err("saturated pool must report an error, not an acknowledged renewal");
+    assert!(
+        renewal.to_lowercase().contains("timeout") || renewal.to_lowercase().contains("timed out"),
+        "{renewal}"
+    );
+    assert!(!writing.is_finished());
+    lock.commit().await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), writing)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+    );
+    assert!(
+        store
+            .renew_claim("job", "w1", claimed.generation, lease_ms)
+            .await
+            .unwrap()
+    );
+    let current = store.get("job").await.unwrap().unwrap();
+    assert_eq!(
+        current.instance.checkpoint.unwrap().completed["current"],
+        json!(1)
+    );
+    assert_eq!(current.generation, claimed.generation);
+    assert!(
+        store
+            .finish_owned(
+                "job",
+                "w1",
+                claimed.generation,
+                "completed",
+                Some(json!(1)),
+                None,
+                None
+            )
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .commit_checkpoint("job", "w1", claimed.generation, &GraphCheckpoint::default())
+            .await
+            .unwrap()
+    );
+    let finished = store.get("job").await.unwrap().unwrap();
+    assert_eq!(
+        finished.instance.checkpoint.unwrap().completed["current"],
+        json!(1)
+    );
+    assert_eq!(finished.instance.result, Some(json!(1)));
 }
 
 #[tokio::test]

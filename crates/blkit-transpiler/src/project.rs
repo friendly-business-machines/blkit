@@ -608,7 +608,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = args.get(1).ok_or("usage: api POSTGRES_URL [BIND_ADDRESS]")?;
     if args.len() > 3 { return Err("usage: api POSTGRES_URL [BIND_ADDRESS]".into()); }
     let bind = args.get(2).map_or("127.0.0.1:3000", String::as_str);
-    let control = Arc::new(DistributedControl::new(PostgresStore::connect(url).await?));
+    let pool_max = env::var_os("BLKIT_API_DB_POOL_MAX").map_or(Ok(4), |value| value.to_str().and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0).ok_or("invalid BLKIT_API_DB_POOL_MAX"))?;
+    let control = Arc::new(DistributedControl::new(PostgresStore::connect_with_pool_size(url, pool_max).await?));
     let reconciler = control.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
@@ -641,8 +642,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let limit = args.get(2).map_or(Ok(32), |n| n.parse::<usize>())?;
     let lease_ms = args.get(3).map_or(Ok(5000), |n| n.parse::<i64>())?;
     let bind = args.get(4).map_or("127.0.0.1:3000", String::as_str);
-    let store = PostgresStore::connect(url).await?;
-    let worker_store = PostgresStore::connect(url).await?;
+    let api_pool_max = env::var_os("BLKIT_API_DB_POOL_MAX").map_or(Ok(4), |value| value.to_str().and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0).ok_or("invalid BLKIT_API_DB_POOL_MAX"))?;
+    let worker_pool_max = env::var_os("BLKIT_WORKER_DB_POOL_MAX").map_or(Ok(4), |value| value.to_str().and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0).ok_or("invalid BLKIT_WORKER_DB_POOL_MAX"))?;
+    let store = PostgresStore::connect_with_pool_size(url, api_pool_max).await?;
+    let worker_store = PostgresStore::connect_with_pool_size(url, worker_pool_max).await?;
     let worker = DistributedWorker::new(worker_store, &format!("worker-{}", std::process::id()), PROJECT_CRATE::named_graph_definitions(), limit, lease_ms)?;
     worker.advertise().await?;
     let control = Arc::new(DistributedControl::new(store));
@@ -694,7 +697,8 @@ async fn run(args: &[String]) -> Result<(), &'static str> {
     if args.len() > 4 { return Err("usage: worker POSTGRES_URL [MAX_TASKS] [LEASE_MS]"); }
     let limit = args.get(2).map_or(Ok(32), |n| n.parse::<usize>()).map_err(|_| "invalid MAX_TASKS")?;
     let lease_ms = args.get(3).map_or(Ok(5000), |n| n.parse::<i64>()).map_err(|_| "invalid LEASE_MS")?;
-    let store = PostgresStore::connect(url).await.map_err(|_| "cannot connect to postgres")?;
+    let pool_max = env::var_os("BLKIT_WORKER_DB_POOL_MAX").map_or(Ok(4), |value| value.to_str().and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0).ok_or("invalid BLKIT_WORKER_DB_POOL_MAX"))?;
+    let store = PostgresStore::connect_with_pool_size(url, pool_max).await.map_err(|_| "cannot connect to postgres")?;
     let id = format!("worker-{}", std::process::id());
     let worker = DistributedWorker::new(store, &id, PROJECT_CRATE::named_graph_definitions(), limit, lease_ms)
         .map_err(|_| "invalid worker configuration")?;

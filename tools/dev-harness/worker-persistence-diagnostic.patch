@@ -1,0 +1,69 @@
+diff --git a/crates/blkit-core/src/postgres_store.rs b/crates/blkit-core/src/postgres_store.rs
+index b8357df..411bd9e 100644
+--- a/crates/blkit-core/src/postgres_store.rs
++++ b/crates/blkit-core/src/postgres_store.rs
+@@ -369,12 +369,20 @@ impl PostgresStore {
+         checkpoint: &GraphCheckpoint,
+     ) -> Result<bool, String> {
+         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
+-        let changed = self.0.lock().await.execute(
++        let started = std::time::Instant::now();
++        let client = self.0.lock().await;
++        let wait_us = started.elapsed().as_micros();
++        let changed = client.execute(
+             "UPDATE instances SET input=$4, checkpoint=$5, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running' AND checkpoint IS NULL
+                AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT
+                AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
+             &[&id, &worker_id, &generation, &input.to_string(), &value]
+         ).await.map_err(|e| e.to_string())?;
++        drop(client);
++        eprintln!(
++            "PERSIST_OP kind=initial_checkpoint total_us={} wait_us={wait_us} changed={changed}",
++            started.elapsed().as_micros()
++        );
+         Ok(changed == 1)
+     }
+@@ -387,11 +395,19 @@ impl PostgresStore {
+         checkpoint: &GraphCheckpoint,
+     ) -> Result<bool, String> {
+         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
+-        let changed = self.0.lock().await.execute(
++        let started = std::time::Instant::now();
++        let client = self.0.lock().await;
++        let wait_us = started.elapsed().as_micros();
++        let changed = client.execute(
+             "UPDATE instances SET checkpoint=$4, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running'
+                AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
+             &[&id, &worker_id, &generation, &value]
+         ).await.map_err(|e| e.to_string())?;
++        drop(client);
++        eprintln!(
++            "PERSIST_OP kind=checkpoint total_us={} wait_us={wait_us} changed={changed}",
++            started.elapsed().as_micros()
++        );
+         Ok(changed == 1)
+     }
+@@ -473,12 +489,20 @@ impl PostgresStore {
+             .map(|value| serde_json::to_string(&value))
+             .transpose()
+             .map_err(|e| e.to_string())?;
+-        let changed = self.0.lock().await.execute(
++        let started = std::time::Instant::now();
++        let client = self.0.lock().await;
++        let wait_us = started.elapsed().as_micros();
++        let changed = client.execute(
+             "UPDATE instances SET status=$4, result=$5, terminal_name=$6, error=$7,
+                 owner_id=NULL, lease_until=NULL, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running'
+                AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
+             &[&id, &worker_id, &generation, &status, &result, &terminal_name, &error]
+         ).await.map_err(|e| e.to_string())?;
++        drop(client);
++        eprintln!(
++            "PERSIST_OP kind=finish_owned total_us={} wait_us={wait_us} changed={changed}",
++            started.elapsed().as_micros()
++        );
+         Ok(changed == 1)
+     }

@@ -7,6 +7,7 @@ edition = "2024"
 axum = { version = "0.8", optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
+deadpool-postgres = { version = "0.14.2", default-features = false, optional = true, features = ["rt_tokio_1"] }
 http = { version = "1", optional = true }
 opentelemetry-appender-tracing = { version = "0.33", optional = true }
 opentelemetry-otlp = { version = "0.33", default-features = false, features = ["logs", "http-proto", "reqwest-blocking-client"], optional = true }
@@ -47,5 +48,5 @@ default = []
 api-server = ["dep:axum", "dep:tracing"]
 worker = ["dep:tokio", "dep:uuid"]
 local-persistence = ["dep:turso", "dep:tokio"]
-remote-persistence = ["dep:tokio-postgres", "dep:tokio", "dep:tracing", "dep:uuid"]
+remote-persistence = ["dep:deadpool-postgres", "dep:tokio-postgres", "dep:tokio", "dep:tracing", "dep:uuid"]
 logging = ["dep:http", "dep:tracing", "dep:tracing-subscriber", "dep:opentelemetry-otlp", "dep:opentelemetry_sdk", "dep:opentelemetry-appender-tracing"]

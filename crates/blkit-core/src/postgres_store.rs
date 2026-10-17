@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::{str::FromStr, time::Duration};
 
-use tokio::sync::Mutex;
-use tokio_postgres::{Client, NoTls};
+use deadpool_postgres::{Manager, Pool, Runtime};
+use tokio_postgres::{Config, NoTls};
 
 use crate::{
     DeadlinePolicy, RetryPolicy, compiled_graph::GraphCheckpoint, evaluation::next_retry_at,
@@ -9,7 +9,7 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct PostgresStore(Arc<Mutex<Client>>);
+pub struct PostgresStore(Pool);
 
 pub(crate) enum ClaimActivity {
     Active,
@@ -55,14 +55,27 @@ fn read_retry_policy(text: Option<String>) -> Result<Option<RetryPolicy>, String
 
 impl PostgresStore {
     pub async fn connect(url: &str) -> Result<Self, String> {
-        let (client, connection) = tokio_postgres::connect(url, NoTls)
+        Self::connect_with_pool_size(url, 4).await
+    }
+
+    pub async fn connect_with_pool_size(url: &str, max: usize) -> Result<Self, String> {
+        if max == 0 {
+            return Err("postgres pool maximum must be positive".into());
+        }
+        let config =
+            Config::from_str(url).map_err(|e| format!("invalid postgres configuration: {e}"))?;
+        let pool = Pool::builder(Manager::new(config, NoTls))
+            .max_size(max)
+            .runtime(Runtime::Tokio1)
+            .wait_timeout(Some(Duration::from_secs(1)))
+            .create_timeout(Some(Duration::from_secs(2)))
+            .recycle_timeout(Some(Duration::from_secs(1)))
+            .build()
+            .map_err(|e| format!("postgres pool configuration: {e}"))?;
+        let client = pool
+            .get()
             .await
-            .map_err(|e| e.to_string())?;
-        tokio::spawn(async move {
-            if connection.await.is_err() {
-                tracing::error!("postgres connection failed");
-            }
-        });
+            .map_err(|e| format!("postgres startup checkout: {e}"))?;
         client.batch_execute(
             "CREATE TABLE IF NOT EXISTS instances (
                 id TEXT PRIMARY KEY, namespace TEXT NOT NULL, version TEXT NOT NULL,
@@ -97,7 +110,7 @@ impl PostgresStore {
                 PRIMARY KEY (namespace, version, process)
             );",
         ).await.map_err(|e| e.to_string())?;
-        Ok(Self(Arc::new(Mutex::new(client))))
+        Ok(Self(pool))
     }
 
     pub async fn create(&self, instance: &Instance) -> Result<(), String> {
@@ -134,7 +147,7 @@ impl PostgresStore {
             .transpose()
             .map_err(|e| e.to_string())?;
         let attempt = i64::from(instance.attempt);
-        self.0.lock().await.execute(
+        self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
             "INSERT INTO instances (id, namespace, version, process, input, status, result, error, created_at, updated_at, checkpoint, attempt, first_failure_at, next_eligible_at, terminal_name, retry_policy, queued_at_ms, first_claim_at_ms, wake_at_ms, deadline_origin, deadline_duration_ms, deadline_at_ms)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)",
             &[&instance.id, &instance.namespace, &instance.version, &instance.process,
@@ -156,7 +169,7 @@ impl PostgresStore {
         input: &serde_json::Value,
     ) -> Result<(), String> {
         let json = input.to_string();
-        let inserted = self.0.lock().await.query_opt(
+        let inserted = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.query_opt(
             "WITH stamp AS (SELECT (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AS now_ms)
              INSERT INTO instances (id, namespace, version, process, input, status, created_at, updated_at, retry_policy,
                                     queued_at_ms, deadline_origin, deadline_duration_ms, deadline_at_ms)
@@ -185,7 +198,7 @@ impl PostgresStore {
         wake_at_ms: i64,
     ) -> Result<bool, String> {
         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
-        let changed = self.0.lock().await.execute(
+        let changed = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
             "UPDATE instances SET status='waiting', checkpoint=$4, wake_at_ms=$5, owner_id=NULL, lease_until=NULL, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running' AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
             &[&id, &worker_id, &generation, &value, &wake_at_ms]
         ).await.map_err(|e| e.to_string())?;
@@ -193,7 +206,7 @@ impl PostgresStore {
     }
 
     pub async fn expire_due(&self) -> Result<Vec<String>, String> {
-        let rows = self.0.lock().await.query(
+        let rows = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.query(
             "UPDATE instances SET status='business-error', terminal_name='timeout', wake_at_ms=NULL, owner_id=NULL, lease_until=NULL, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT WHERE deadline_at_ms IS NOT NULL AND deadline_at_ms<=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND status IN ('pending','running','retry-waiting','waiting') RETURNING id",
             &[]
         ).await.map_err(|e| e.to_string())?;
@@ -201,14 +214,18 @@ impl PostgresStore {
     }
 
     pub async fn resume_due_waits(&self) -> Result<u64, String> {
-        self.0.lock().await.execute(
+        self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
             "UPDATE instances SET status='pending' WHERE status='waiting' AND owner_id IS NULL AND wake_at_ms<=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT",
             &[]
         ).await.map_err(|e| e.to_string())
     }
 
     pub async fn cancel(&self, id: &str) -> Result<(), String> {
-        let client = self.0.lock().await;
+        let client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
         let changed = client
             .execute(
                 "UPDATE instances SET status='cancelled', owner_id=NULL, lease_until=NULL,
@@ -233,7 +250,7 @@ impl PostgresStore {
     }
 
     pub(crate) async fn ensure_supported_incomplete(&self) -> Result<(), String> {
-        let rows = self.0.lock().await.query(
+        let rows = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.query(
             "SELECT id, checkpoint FROM instances WHERE status IN ('pending', 'running', 'retry-waiting', 'waiting') AND checkpoint IS NOT NULL",
             &[],
         ).await.map_err(|e| e.to_string())?;
@@ -259,7 +276,11 @@ impl PostgresStore {
             return Err("lease must be positive".into());
         }
         let limit = i64::try_from(limit).map_err(|e| e.to_string())?;
-        let mut client = self.0.lock().await;
+        let mut client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
         let tx = client.transaction().await.map_err(|e| e.to_string())?;
         // Lock the worker before instances so drain cannot acknowledge an in-flight claim.
         let worker = tx
@@ -322,8 +343,9 @@ impl PostgresStore {
     ) -> Result<ClaimActivity, String> {
         let row = self
             .0
-            .lock()
+            .get()
             .await
+            .map_err(|e| format!("postgres checkout: {e}"))?
             .query_opt(
                 "SELECT status, COALESCE(owner_id=$2 AND generation=$3 AND
                 lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT), FALSE)
@@ -351,7 +373,7 @@ impl PostgresStore {
         if lease_ms <= 0 {
             return Err("lease must be positive".into());
         }
-        let changed = self.0.lock().await.execute(
+        let changed = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
             "UPDATE instances SET lease_until=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT+$4
              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running'
                 AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
@@ -369,7 +391,7 @@ impl PostgresStore {
         checkpoint: &GraphCheckpoint,
     ) -> Result<bool, String> {
         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
-        let changed = self.0.lock().await.execute(
+        let changed = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
             "UPDATE instances SET input=$4, checkpoint=$5, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running' AND checkpoint IS NULL
                AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT
@@ -387,7 +409,7 @@ impl PostgresStore {
         checkpoint: &GraphCheckpoint,
     ) -> Result<bool, String> {
         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
-        let changed = self.0.lock().await.execute(
+        let changed = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
             "UPDATE instances SET checkpoint=$4, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running'
                AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
@@ -404,7 +426,11 @@ impl PostgresStore {
         policy: Option<&RetryPolicy>,
         error: &str,
     ) -> Result<Option<&'static str>, String> {
-        let mut client = self.0.lock().await;
+        let mut client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
         let tx = client.transaction().await.map_err(|e| e.to_string())?;
         let row = tx
             .query_opt(
@@ -473,7 +499,7 @@ impl PostgresStore {
             .map(|value| serde_json::to_string(&value))
             .transpose()
             .map_err(|e| e.to_string())?;
-        let changed = self.0.lock().await.execute(
+        let changed = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
             "UPDATE instances SET status=$4, result=$5, terminal_name=$6, error=$7,
                 owner_id=NULL, lease_until=NULL, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running'
@@ -486,8 +512,9 @@ impl PostgresStore {
     pub async fn expired_claims(&self) -> Result<Vec<DistributedInstance>, String> {
         let rows = self
             .0
-            .lock()
+            .get()
             .await
+            .map_err(|e| format!("postgres checkout: {e}"))?
             .query(
                 "SELECT id FROM instances WHERE status='running' AND owner_id IS NOT NULL
                 AND lease_until<=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT
@@ -510,7 +537,11 @@ impl PostgresStore {
         id: &str,
         policy: Option<&RetryPolicy>,
     ) -> Result<Option<&'static str>, String> {
-        let mut client = self.0.lock().await;
+        let mut client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
         let tx = client.transaction().await.map_err(|e| e.to_string())?;
         let row = tx
             .query_opt(
@@ -561,7 +592,7 @@ impl PostgresStore {
     }
 
     pub async fn due_waits(&self, at_ms: i64) -> Result<Vec<DistributedInstance>, String> {
-        let rows = self.0.lock().await.query("SELECT id FROM instances WHERE status='waiting' AND wake_at_ms<=$1 ORDER BY wake_at_ms", &[&at_ms]).await.map_err(|e| e.to_string())?;
+        let rows = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.query("SELECT id FROM instances WHERE status='waiting' AND wake_at_ms<=$1 ORDER BY wake_at_ms", &[&at_ms]).await.map_err(|e| e.to_string())?;
         let mut due = Vec::new();
         for row in rows {
             if let Some(item) = self.get(row.get::<_, String>(0).as_str()).await? {
@@ -574,8 +605,9 @@ impl PostgresStore {
     pub async fn get(&self, id: &str) -> Result<Option<DistributedInstance>, String> {
         let row = self
             .0
-            .lock()
+            .get()
             .await
+            .map_err(|e| format!("postgres checkout: {e}"))?
             .query_opt(
                 "SELECT id, namespace, version, process, input, status, result, error,
                     created_at, updated_at, checkpoint, attempt, first_failure_at,
@@ -651,7 +683,11 @@ impl PostgresStore {
             Option<&DeadlinePolicy>,
         )],
     ) -> Result<(), String> {
-        let mut client = self.0.lock().await;
+        let mut client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
         let tx = client.transaction().await.map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO workers (id, heartbeat_at) VALUES ($1, (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)", &[&id])
             .await.map_err(|e| e.to_string())?;
@@ -713,8 +749,9 @@ impl PostgresStore {
     pub async fn drain(&self, id: &str) -> Result<bool, String> {
         let changed = self
             .0
-            .lock()
+            .get()
             .await
+            .map_err(|e| format!("postgres checkout: {e}"))?
             .execute("UPDATE workers SET draining=TRUE WHERE id=$1", &[&id])
             .await
             .map_err(|e| e.to_string())?;
@@ -722,7 +759,7 @@ impl PostgresStore {
     }
 
     pub async fn unregister_drained(&self, id: &str) -> Result<bool, String> {
-        let changed = self.0.lock().await.execute(
+        let changed = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
             "DELETE FROM workers w WHERE id=$1 AND draining
                 AND NOT EXISTS (SELECT 1 FROM instances i WHERE i.owner_id=w.id AND i.status='running')", &[&id]
         ).await.map_err(|e| e.to_string())?;
@@ -730,14 +767,18 @@ impl PostgresStore {
     }
 
     pub async fn heartbeat(&self, id: &str) -> Result<bool, String> {
-        let changed = self.0.lock().await.execute(
+        let changed = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
             "UPDATE workers SET heartbeat_at=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT WHERE id=$1", &[&id]
         ).await.map_err(|e| e.to_string())?;
         Ok(changed == 1)
     }
 
     pub async fn get_worker(&self, id: &str) -> Result<Option<Worker>, String> {
-        let client = self.0.lock().await;
+        let client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
         let Some(row) = client
             .query_opt(
                 "SELECT id, heartbeat_at, draining FROM workers WHERE id=$1",
@@ -758,5 +799,74 @@ impl PostgresStore {
             draining: row.get(2),
             identities,
         }))
+    }
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::PostgresStore;
+    use testcontainers_modules::{
+        postgres::Postgres,
+        testcontainers::{ImageExt, runners::AsyncRunner},
+    };
+
+    #[tokio::test]
+    async fn zero_pool_size_is_rejected_before_connecting() {
+        let error = PostgresStore::connect_with_pool_size("postgres://127.0.0.1:1/unused", 0)
+            .await
+            .err()
+            .expect("zero must be rejected");
+        assert!(error.contains("positive"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn unavailable_database_prevents_startup() {
+        let error = PostgresStore::connect_with_pool_size("postgres://127.0.0.1:1/unused", 2)
+            .await
+            .err()
+            .expect("connection must be checked during startup");
+        assert!(error.contains("postgres"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn constructor_initializes_schema_with_one_lazy_session() {
+        let node = Postgres::default()
+            .with_tag("17.6-alpine")
+            .start()
+            .await
+            .unwrap();
+        let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+            .unwrap_or(node.get_host().await.unwrap().to_string());
+        let url = format!(
+            "postgres://postgres:postgres@{host}:{}/postgres?application_name=blkit_constructor_test",
+            node.get_host_port_ipv4(5432).await.unwrap()
+        );
+        let store = PostgresStore::connect_with_pool_size(&url, 4)
+            .await
+            .unwrap();
+        let (observer, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let row = observer
+            .query_one(
+                "SELECT to_regclass('instances') IS NOT NULL, to_regclass('workers') IS NOT NULL",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(row.get::<_, bool>(0) && row.get::<_, bool>(1));
+        let row = observer
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity WHERE application_name='blkit_constructor_test'",
+                &[],
+            )
+            .await
+            .unwrap();
+        // Observer uses the same application name; only one store session is open.
+        assert_eq!(row.get::<_, i64>(0), 2);
+        assert!(store.get_worker("absent").await.unwrap().is_none());
+        let default_store = PostgresStore::connect(&url).await.unwrap();
+        assert_eq!(default_store.0.status().max_size, 4);
     }
 }

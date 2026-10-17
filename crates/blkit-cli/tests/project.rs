@@ -603,6 +603,643 @@ fn source_free_api_only_builds_without_generated_definitions() {
 }
 
 #[tokio::test]
+async fn generated_remote_roles_validate_only_active_pool_limits() {
+    use std::{
+        process::{Command, Stdio},
+        time::Duration,
+    };
+
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let postgres = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(postgres.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        postgres.get_host_port_ipv4(5432).await.unwrap()
+    );
+    for (target, persistence, binary, active, inactive) in [
+        (
+            "api-only",
+            "",
+            "orders-api",
+            "BLKIT_API_DB_POOL_MAX",
+            "BLKIT_WORKER_DB_POOL_MAX",
+        ),
+        (
+            "worker-only",
+            "",
+            "orders-worker",
+            "BLKIT_WORKER_DB_POOL_MAX",
+            "BLKIT_API_DB_POOL_MAX",
+        ),
+        (
+            "api-worker-split",
+            "",
+            "orders-api",
+            "BLKIT_API_DB_POOL_MAX",
+            "BLKIT_WORKER_DB_POOL_MAX",
+        ),
+        (
+            "api-worker-split",
+            "",
+            "orders-worker",
+            "BLKIT_WORKER_DB_POOL_MAX",
+            "BLKIT_API_DB_POOL_MAX",
+        ),
+        (
+            "api-worker",
+            "persistence = \"remote\"\n",
+            "orders-api-worker",
+            "BLKIT_API_DB_POOL_MAX",
+            "BLKIT_WORKER_DB_POOL_MAX",
+        ),
+        (
+            "api-worker",
+            "persistence = \"remote\"\n",
+            "orders-api-worker",
+            "BLKIT_WORKER_DB_POOL_MAX",
+            "BLKIT_API_DB_POOL_MAX",
+        ),
+    ] {
+        let root = project(
+            &MANIFEST.replace(
+                "build_target = \"crate\"\n",
+                &format!("build_target = {target:?}\n{persistence}"),
+            ),
+            &[("route.bl", SOURCE)],
+        );
+        blkit::project::Project::load(&root)
+            .unwrap()
+            .transpile()
+            .unwrap();
+        cargo_build(&root).unwrap();
+        let binary = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or(root.join(".blkit/target"))
+            .join("debug")
+            .join(binary);
+        let mut args = vec![url.as_str()];
+        if binary.to_string_lossy().ends_with("orders-worker") {
+            args.extend(["2", "1000"]);
+        }
+        if binary.to_string_lossy().ends_with("orders-api-worker") {
+            args.extend(["2", "1000", "127.0.0.1:0"]);
+        }
+        if binary.to_string_lossy().ends_with("orders-api") {
+            args.push("127.0.0.1:0");
+        }
+        for invalid in ["0", "malformed"] {
+            let diagnostic_path = root.join("invalid-pool-setting.log");
+            let diagnostic_file = fs::File::create(&diagnostic_path).unwrap();
+            let mut child = Child(
+                Command::new(&binary)
+                    .args(&args)
+                    .env(active, invalid)
+                    .env_remove(inactive)
+                    .env_remove("BLKIT_LOG_OUTPUTS")
+                    .stdout(Stdio::from(diagnostic_file.try_clone().unwrap()))
+                    .stderr(Stdio::from(diagnostic_file))
+                    .spawn()
+                    .unwrap(),
+            );
+            let exit = tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if let Some(exit) = child.0.try_wait().unwrap() {
+                        break exit;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+            let diagnostic = fs::read_to_string(&diagnostic_path).unwrap();
+            assert!(
+                exit.is_ok_and(|status| !status.success()) && diagnostic.contains(active),
+                "{target} {active}={invalid}: did not reject active setting within 3s: {diagnostic}"
+            );
+        }
+        if target != "api-worker" {
+            let mut child = Child(
+                Command::new(&binary)
+                    .args(&args)
+                    .env_remove(active)
+                    .env(inactive, "malformed")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "{target}: ignored {inactive} prevented startup"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn generated_remote_role_pool_budgets_are_bounded_independently() {
+    use blkit_core::{postgres_store::PostgresStore, runtime::Instance};
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+        time::Duration,
+    };
+    use testcontainers_modules::testcontainers::core::ExecCommand;
+
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let postgres = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(postgres.get_host().await.unwrap().to_string());
+    let base_url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        postgres.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let source = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } decision_task echo { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression input; } } process route { flow start -> echo; flow echo -> done; bind start.input -> echo.input; bind echo.result -> done.result; }";
+    for (target, persistence, binary, api_max, worker_max, expected_max) in [
+        ("api-only", "", "orders-api", None, None, 4),
+        ("api-only", "", "orders-api", Some("1"), Some("bad"), 1),
+        ("api-only", "", "orders-api", Some("2"), Some("bad"), 2),
+        ("worker-only", "", "orders-worker", None, None, 4),
+        (
+            "worker-only",
+            "",
+            "orders-worker",
+            Some("bad"),
+            Some("2"),
+            2,
+        ),
+        (
+            "worker-only",
+            "",
+            "orders-worker",
+            Some("bad"),
+            Some("1"),
+            1,
+        ),
+        (
+            "api-worker-split",
+            "",
+            "orders-api",
+            Some("1"),
+            Some("bad"),
+            1,
+        ),
+        (
+            "api-worker-split",
+            "",
+            "orders-worker",
+            Some("bad"),
+            Some("1"),
+            1,
+        ),
+        (
+            "api-worker",
+            "persistence = \"remote\"\n",
+            "orders-api-worker",
+            None,
+            None,
+            8,
+        ),
+        (
+            "api-worker",
+            "persistence = \"remote\"\n",
+            "orders-api-worker",
+            Some("1"),
+            Some("1"),
+            2,
+        ),
+        (
+            "api-worker",
+            "persistence = \"remote\"\n",
+            "orders-api-worker",
+            Some("1"),
+            Some("2"),
+            3,
+        ),
+        (
+            "api-worker",
+            "persistence = \"remote\"\n",
+            "orders-api-worker",
+            Some("2"),
+            Some("1"),
+            3,
+        ),
+    ] {
+        let root = project(
+            &MANIFEST.replace(
+                "build_target = \"crate\"\n",
+                &format!("build_target = {target:?}\n{persistence}"),
+            ),
+            &[("route.bl", source)],
+        );
+        blkit::project::Project::load(&root)
+            .unwrap()
+            .transpile()
+            .unwrap();
+        let worker_active = binary != "orders-api";
+        let app = format!("pool_{}", NEXT.fetch_add(1, Ordering::Relaxed));
+        if worker_active {
+            let lib = root.join(".blkit/src/lib.rs");
+            let generated = fs::read_to_string(&lib).unwrap();
+            fs::write(&lib, format!("{}\n{}", generated.replacen("pub fn named_graph_definitions()", "fn compiled_graph_definitions()", 1), r#"
+pub fn named_graph_definitions() -> Vec<blkit_core::compiled_graph::GraphDefinition> {
+    let mut graphs = compiled_graph_definitions();
+    let task = graphs[0].nodes.iter_mut().find(|node| node.name == "echo").unwrap();
+    task.kind = blkit_core::compiled_graph::GraphNodeKind::Task(std::sync::Arc::new(|input, _| {
+        let gate = std::path::PathBuf::from(std::env::var("BLKIT_TEST_GATE_DIR").unwrap());
+        std::fs::write(gate.join(format!("entered-{}", input["input"].as_str().unwrap())), "").unwrap();
+        while !gate.join("release").exists() { std::thread::sleep(std::time::Duration::from_millis(10)); }
+        Ok(input["input"].clone())
+    }));
+    graphs
+}"#)).unwrap();
+        }
+        if worker_active {
+            let entry = root.join(".blkit/src/bin").join(if target == "api-worker" {
+                "orders-api-worker.rs"
+            } else {
+                "orders-worker.rs"
+            });
+            let generated = fs::read_to_string(&entry).unwrap();
+            assert_eq!(generated.matches("#[tokio::main]").count(), 1);
+            fs::write(
+                &entry,
+                generated.replace("#[tokio::main]", "#[tokio::main(worker_threads = 8)]"),
+            )
+            .unwrap();
+        }
+        if target == "api-worker" {
+            let entry = root.join(".blkit/src/bin/orders-api-worker.rs");
+            let generated = fs::read_to_string(&entry).unwrap();
+            let api_call = "let store = PostgresStore::connect_with_pool_size(url, ";
+            let worker_call = "let worker_store = PostgresStore::connect_with_pool_size(url, ";
+            assert_eq!(generated.matches(api_call).count(), 1);
+            assert_eq!(generated.matches(worker_call).count(), 1);
+            let tagged = generated
+                .replace(api_call, &format!("let store = PostgresStore::connect_with_pool_size(&url.replace(\"application_name={app}\", \"application_name={app}_api\"), "))
+                .replace(worker_call, &format!("let worker_store = PostgresStore::connect_with_pool_size(&url.replace(\"application_name={app}\", \"application_name={app}_worker\"), "));
+            fs::write(entry, tagged).unwrap();
+        }
+        cargo_build(&root).unwrap();
+        let url = format!("{base_url}?application_name={app}");
+        if !worker_active {
+            let store = PostgresStore::connect(&base_url).await.unwrap();
+            store
+                .register_worker(&format!("{app}_fixture"), &[("orders", "1", "route")])
+                .await
+                .unwrap();
+        } else {
+            let store = PostgresStore::connect(&base_url).await.unwrap();
+            for i in 0..12 {
+                let item = Instance::new(
+                    &format!("{app}_{i}"),
+                    "orders",
+                    "1",
+                    "route",
+                    serde_json::json!({"input": i.to_string()}),
+                );
+                store.create(&item).await.unwrap();
+            }
+            drop(store);
+        }
+        let bin = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or(root.join(".blkit/target"))
+            .join("debug")
+            .join(binary);
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let bind = socket.local_addr().unwrap().to_string();
+        drop(socket);
+        let mut command = Command::new(bin);
+        command.arg(&url);
+        if worker_active {
+            command.args(["4", "1000"]);
+        }
+        if binary != "orders-worker" {
+            command.arg(&bind);
+        }
+        if let Some(max) = api_max {
+            command.env("BLKIT_API_DB_POOL_MAX", max);
+        } else {
+            command.env_remove("BLKIT_API_DB_POOL_MAX");
+        }
+        if let Some(max) = worker_max {
+            command.env("BLKIT_WORKER_DB_POOL_MAX", max);
+        } else {
+            command.env_remove("BLKIT_WORKER_DB_POOL_MAX");
+        }
+        if worker_active {
+            command.env("BLKIT_TEST_GATE_DIR", &root);
+        }
+        let mut child = Child(
+            command
+                .stdout(Stdio::null())
+                .stderr(Stdio::from(
+                    fs::File::create(root.join("stderr.log")).unwrap(),
+                ))
+                .spawn()
+                .unwrap(),
+        );
+        // Keep four real worker claims active while the table lock contends with persistence.
+        if worker_active {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while fs::read_dir(&root)
+                    .unwrap()
+                    .filter(|entry| {
+                        entry
+                            .as_ref()
+                            .unwrap()
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("entered-")
+                    })
+                    .count()
+                    < 4
+                {
+                    if let Some(exit) = child.0.try_wait().unwrap() {
+                        panic!(
+                            "{target}: worker exited {exit}: {}",
+                            fs::read_to_string(root.join("stderr.log")).unwrap()
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("worker did not claim four tasks despite MAX_TASKS=4");
+        }
+        if binary != "orders-worker" {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if std::net::TcpStream::connect(&bind).is_ok() {
+                        break;
+                    }
+                    if let Some(exit) = child.0.try_wait().unwrap() {
+                        panic!(
+                            "{target}: server exited {exit}: {}",
+                            fs::read_to_string(root.join("stderr.log")).unwrap()
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("generated API listener never became ready");
+        }
+        // A tagged, held table lock is observed in PostgreSQL before any pressure requests.
+        let mut requests = Vec::new();
+        let mut lock = Child(
+            Command::new("docker")
+                .args([
+                    "exec",
+                    "-i",
+                    postgres.id(),
+                    "psql",
+                    "-U",
+                    "postgres",
+                    "-q",
+                    "-X",
+                    "-v",
+                    "ON_ERROR_STOP=1",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        lock.0.stdin.as_mut().unwrap().write_all(format!("BEGIN; LOCK TABLE instances IN ACCESS EXCLUSIVE MODE; /* {app}_lock */ SELECT 1;\n").as_bytes()).unwrap();
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let mut observer = postgres.exec(ExecCommand::new(["psql", "-U", "postgres", "-Atc",
+                    &format!("SELECT count(*) FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid JOIN pg_class c ON c.oid=l.relation WHERE a.query LIKE '%{app}_lock%' AND a.state='idle in transaction' AND l.mode='AccessExclusiveLock' AND l.granted AND c.relname='instances'"),
+                ])).await.unwrap();
+                let held = String::from_utf8(observer.stdout_to_vec().await.unwrap()).unwrap();
+                if held.trim() == "1" { break; }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await.expect("disposable PostgreSQL table lock was not acquired");
+        if binary != "orders-worker" {
+            for _ in 0..24 {
+                let endpoint = format!("http://{bind}/processes/orders/1/route/instances");
+                requests.push(tokio::task::spawn_blocking(move || {
+                    Command::new("curl")
+                        .args([
+                            "-sS",
+                            "--max-time",
+                            "8",
+                            "-H",
+                            "content-type: application/json",
+                            "-d",
+                            "{\"input\":\"5\"}",
+                            &endpoint,
+                        ])
+                        .output()
+                        .unwrap()
+                }));
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "{target}: {}",
+            fs::read_to_string(root.join("stderr.log")).unwrap()
+        );
+        let mut observer = postgres
+            .exec(ExecCommand::new([
+                "psql",
+                "-U",
+                "postgres",
+                "-Atc",
+                &format!("SELECT count(*) FROM pg_stat_activity WHERE application_name='{app}' OR application_name IN ('{app}_api', '{app}_worker')"),
+            ]))
+            .await
+            .unwrap();
+        let count: i64 = String::from_utf8(observer.stdout_to_vec().await.unwrap())
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let expected_min = if target == "api-worker" { 2 } else { 1 };
+        assert!(
+            (expected_min..=expected_max).contains(&count),
+            "{target} API={api_max:?} worker={worker_max:?}: expected {expected_min}..={expected_max} sessions, got {count}"
+        );
+        lock.0
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"COMMIT;\n\\q\n")
+            .unwrap();
+        drop(lock.0.stdin.take());
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while lock.0.try_wait().unwrap().is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("disposable PostgreSQL lock client did not exit");
+        if target == "api-worker" {
+            let mut observer = postgres.exec(ExecCommand::new([
+                "psql", "-U", "postgres", "-Atc",
+                &format!("SELECT count(*) FILTER (WHERE application_name='{app}_api'), count(*) FILTER (WHERE application_name='{app}_worker') FROM pg_stat_activity"),
+            ])).await.unwrap();
+            let roles = String::from_utf8(observer.stdout_to_vec().await.unwrap()).unwrap();
+            let (api, worker) = roles.trim().split_once('|').unwrap();
+            let (api, worker) = (api.parse::<i64>().unwrap(), worker.parse::<i64>().unwrap());
+            let (api_limit, worker_limit) = (
+                api_max.unwrap_or("4").parse::<i64>().unwrap(),
+                worker_max.unwrap_or("4").parse::<i64>().unwrap(),
+            );
+            assert!(
+                (1..=api_limit).contains(&api) && (1..=worker_limit).contains(&worker),
+                "combined API={api_max:?} worker={worker_max:?}: observed API={api}, worker={worker}"
+            );
+        }
+        for request in requests {
+            let output = request.await.unwrap();
+            assert!(output.status.success() && serde_json::from_slice::<serde_json::Value>(&output.stdout).ok()
+                .is_some_and(|body| body.get("id").is_some() || body.get("error").is_some()),
+                "{target}: pressure request did not reach generated API route (exit {}, stderr {})", output.status, String::from_utf8_lossy(&output.stderr));
+        }
+        if binary != "orders-worker" {
+            let endpoint = format!("http://{bind}/processes/orders/1/route/instances");
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let output = Command::new("curl")
+                        .args([
+                            "-sS",
+                            "--max-time",
+                            "3",
+                            "-H",
+                            "content-type: application/json",
+                            "-d",
+                            "{\"input\":\"5\"}",
+                            &endpoint,
+                        ])
+                        .output()
+                        .unwrap();
+                    if output.status.success()
+                        && serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                            .ok()
+                            .is_some_and(|body| body.get("id").and_then(|id| id.as_str()).is_some())
+                    {
+                        break;
+                    }
+                    if let Some(exit) = child.0.try_wait().unwrap() {
+                        panic!(
+                            "{target}: API exited {exit}: {}",
+                            fs::read_to_string(root.join("stderr.log")).unwrap()
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("generated API did not accept a valid request after lock release");
+        }
+        drop(child);
+        // Each case shares only this test's disposable PostgreSQL container.
+        let mut cleanup = postgres
+            .exec(ExecCommand::new([
+                "psql",
+                "-U",
+                "postgres",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-c",
+                "DELETE FROM instances; DELETE FROM workers;",
+            ]))
+            .await
+            .unwrap();
+        let _ = cleanup.stdout_to_vec().await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn generated_local_role_ignores_postgres_pool_settings_and_has_no_postgres_dependency() {
+    use std::{
+        process::{Command, Stdio},
+        time::Duration,
+    };
+    let root = project(
+        &MANIFEST.replace(
+            "build_target = \"crate\"\n",
+            "build_target = \"api-worker\"\npersistence = \"local\"\n",
+        ),
+        &[("route.bl", SOURCE)],
+    );
+    blkit::project::Project::load(&root)
+        .unwrap()
+        .transpile()
+        .unwrap();
+    cargo_build(&root).unwrap();
+    let tree = Command::new("cargo")
+        .args(["tree", "--edges", "normal", "--manifest-path"])
+        .arg(root.join(".blkit/Cargo.toml"))
+        .output()
+        .unwrap();
+    assert!(
+        tree.status.success(),
+        "{}",
+        String::from_utf8_lossy(&tree.stderr)
+    );
+    let graph = String::from_utf8(tree.stdout).unwrap();
+    assert!(
+        !graph.contains("deadpool-postgres") && !graph.contains("tokio-postgres"),
+        "{graph}"
+    );
+    let bin = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or(root.join(".blkit/target"))
+        .join("debug/orders-api-worker");
+    let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let bind = socket.local_addr().unwrap().to_string();
+    drop(socket);
+    let mut child = Command::new(bin)
+        .arg(root.join("local.db"))
+        .args(["2", &bind])
+        .env("BLKIT_API_DB_POOL_MAX", "bad")
+        .env("BLKIT_WORKER_DB_POOL_MAX", "0")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "local role rejected remote-only settings"
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn generated_role_executables_smoke() {
     struct Child(std::process::Child);
     impl Drop for Child {
@@ -895,10 +1532,15 @@ async fn generated_remote_workers_drain_active_claims_without_claiming_backlog()
             .unwrap();
         let output = observer.stdout_to_vec().await.unwrap();
         let connections: i64 = String::from_utf8(output).unwrap().trim().parse().unwrap();
-        assert_eq!(
-            connections,
-            if target == "api-worker" { 4 } else { 3 },
-            "{target}: bounded role connections plus observer"
+        // The observer and test store use one session each; generated roles open lazily up to four each.
+        let (min, max) = if target == "api-worker" {
+            (4, 10)
+        } else {
+            (3, 6)
+        };
+        assert!(
+            (min..=max).contains(&connections),
+            "{target}: expected {min}..={max} bounded sessions, got {connections}"
         );
         let slow = store.get("slow").await.unwrap().unwrap();
         let fast = store.get("fast").await.unwrap().unwrap();

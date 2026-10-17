@@ -1,0 +1,43 @@
+diff --git a/crates/blkit-core/src/postgres_store.rs b/crates/blkit-core/src/postgres_store.rs
+index 6c3b0b4..78153f0 100644
+--- a/crates/blkit-core/src/postgres_store.rs
++++ b/crates/blkit-core/src/postgres_store.rs
+@@ -393,3 +393,6 @@ impl PostgresStore {
+         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
+-        let changed = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
++        let started = std::time::Instant::now();
++        let client = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?;
++        let wait_us = started.elapsed().as_micros();
++        let changed = client.execute(
+             "UPDATE instances SET input=$4, checkpoint=$5, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+@@ -400,2 +403,4 @@ impl PostgresStore {
+         ).await.map_err(|e| e.to_string())?;
++        drop(client);
++        eprintln!("PERSIST_OP kind=initial_checkpoint total_us={} wait_us={wait_us} changed={changed}", started.elapsed().as_micros());
+         Ok(changed == 1)
+@@ -411,3 +416,6 @@ impl PostgresStore {
+         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
+-        let changed = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
++        let started = std::time::Instant::now();
++        let client = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?;
++        let wait_us = started.elapsed().as_micros();
++        let changed = client.execute(
+             "UPDATE instances SET checkpoint=$4, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+@@ -417,2 +425,4 @@ impl PostgresStore {
+         ).await.map_err(|e| e.to_string())?;
++        drop(client);
++        eprintln!("PERSIST_OP kind=checkpoint total_us={} wait_us={wait_us} changed={changed}", started.elapsed().as_micros());
+         Ok(changed == 1)
+@@ -501,3 +511,6 @@ impl PostgresStore {
+             .map_err(|e| e.to_string())?;
+-        let changed = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
++        let started = std::time::Instant::now();
++        let client = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?;
++        let wait_us = started.elapsed().as_micros();
++        let changed = client.execute(
+             "UPDATE instances SET status=$4, result=$5, terminal_name=$6, error=$7,
+@@ -508,2 +521,4 @@ impl PostgresStore {
+         ).await.map_err(|e| e.to_string())?;
++        drop(client);
++        eprintln!("PERSIST_OP kind=finish_owned total_us={} wait_us={wait_us} changed={changed}", started.elapsed().as_micros());
+         Ok(changed == 1)
