@@ -42,6 +42,141 @@ fn dictionary_literals_parse_inside_braced_decisions() {
 }
 
 #[test]
+fn dictionary_literal_ast_keeps_source_entry_order_and_key_text() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression("{second: 2, \"first, key\": 1, third: 3}").unwrap(),
+        Expr::Dictionary(vec![
+            ("second".into(), Expr::Number("2".into())),
+            ("first, key".into(), Expr::Number("1".into())),
+            ("third".into(), Expr::Number("3".into())),
+        ])
+    );
+    assert_eq!(expr::expression("{}").unwrap(), Expr::Dictionary(vec![]));
+}
+
+#[test]
+fn parse_returns_dictionary_literal_ast_in_decision() {
+    use blkit::{decision::DecisionKind, expr::Expr};
+
+    let source = decision_expression("Number", "Dictionary<Number>", "{second: 2, first: 1}");
+    let program = parse(&source).unwrap();
+    let DecisionKind::Literal(expression) = &program.decisions[0].nodes[0].kind else {
+        panic!("expected literal expression");
+    };
+    assert_eq!(
+        expression,
+        &Expr::Dictionary(vec![
+            ("second".into(), Expr::Number("2".into())),
+            ("first".into(), Expr::Number("1".into())),
+        ])
+    );
+}
+
+#[test]
+fn dictionary_literal_ast_preserves_dependent_key_expressions() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression("{first: input + 1, second: first * 2}").unwrap(),
+        Expr::Dictionary(vec![
+            (
+                "first".into(),
+                Expr::Binary(
+                    Box::new(Expr::Name("input".into())),
+                    "+".into(),
+                    Box::new(Expr::Number("1".into())),
+                ),
+            ),
+            (
+                "second".into(),
+                Expr::Binary(
+                    Box::new(Expr::Name("first".into())),
+                    "*".into(),
+                    Box::new(Expr::Number("2".into())),
+                ),
+            ),
+        ])
+    );
+}
+
+#[test]
+fn dictionary_literal_ast_preserves_nested_dictionary_boundaries() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression("{outer: {first: input, second: first + 1}, later: outer.second}")
+            .unwrap(),
+        Expr::Dictionary(vec![
+            (
+                "outer".into(),
+                Expr::Dictionary(vec![
+                    ("first".into(), Expr::Name("input".into())),
+                    (
+                        "second".into(),
+                        Expr::Binary(
+                            Box::new(Expr::Name("first".into())),
+                            "+".into(),
+                            Box::new(Expr::Number("1".into())),
+                        ),
+                    ),
+                ]),
+            ),
+            (
+                "later".into(),
+                Expr::Field(Box::new(Expr::Name("outer".into())), "second".into()),
+            ),
+        ])
+    );
+}
+
+#[test]
+fn dictionary_literal_duplicate_keys_are_rejected_across_quoted_spelling() {
+    for expression in ["{a: 1, a: 2}", "{a: 1, \"a\": 2}", "{outer: {a: 1, a: 2}}"] {
+        let error = blkit::expr::expression(expression).unwrap_err();
+        assert!(
+            error.contains("duplicate dictionary key: a"),
+            "{expression}: {error}"
+        );
+    }
+}
+
+#[test]
+fn dictionary_literal_validation_resolves_earlier_keys_in_order() {
+    assert_valid_expression(
+        "Number",
+        "Dictionary<Number>",
+        "{first: input + 1, second: first * 2}",
+    );
+    assert_valid_expression(
+        "Number",
+        "Dictionary",
+        "{outer: {first: input, second: first + 1}, later: outer.second}",
+    );
+}
+
+#[test]
+fn dictionary_literal_validation_rejects_forward_keys_and_incompatible_values() {
+    for (output, expression, expected) in [
+        (
+            "Dictionary<Number>",
+            "{first: second, second: input}",
+            "unknown name",
+        ),
+        (
+            "Dictionary<Number>",
+            "{first: input, second: true}",
+            "incompatible type",
+        ),
+    ] {
+        let source = decision_expression("Number", output, expression);
+        let error = validate(&parse(&source).unwrap()).unwrap_err();
+        assert!(error.contains(expected), "{expression}: {error}");
+    }
+}
+
+#[test]
 fn headers_and_domain_members_require_semicolons_outside_quotes() {
     let source =
         "namespace demo; version \"1;0\";\nOrder = {amount: Number};\nenum Status:\n  ready;\n";
@@ -222,6 +357,49 @@ fn assert_valid_expression(input_type: &str, output_type: &str, expression: &str
     let source = decision_expression(input_type, output_type, expression);
     let program = parse(&source).unwrap_or_else(|error| panic!("{expression}: {error}"));
     validate(&program).unwrap_or_else(|error| panic!("{expression}: {error}"));
+}
+
+#[test]
+fn bracket_index_ast_preserves_nested_base_and_key() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression("input[1 + 2][input[1]]").unwrap(),
+        Expr::Index(
+            Box::new(Expr::Index(
+                Box::new(Expr::Name("input".into())),
+                Box::new(Expr::Binary(
+                    Box::new(Expr::Number("1".into())),
+                    "+".into(),
+                    Box::new(Expr::Number("2".into())),
+                )),
+            )),
+            Box::new(Expr::Index(
+                Box::new(Expr::Name("input".into())),
+                Box::new(Expr::Number("1".into())),
+            )),
+        )
+    );
+}
+
+#[test]
+fn bracket_filter_ast_preserves_predicate_and_nested_index() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression("input[.item > input[1]]").unwrap(),
+        Expr::Index(
+            Box::new(Expr::Name("input".into())),
+            Box::new(Expr::Binary(
+                Box::new(Expr::FilterItem),
+                ">".into(),
+                Box::new(Expr::Index(
+                    Box::new(Expr::Name("input".into())),
+                    Box::new(Expr::Number("1".into())),
+                )),
+            )),
+        )
+    );
 }
 
 #[test]
@@ -525,6 +703,73 @@ fn lists_support_structural_equality_and_scalar_membership() {
 }
 
 #[test]
+fn some_ast_keeps_ordered_bindings_and_nested_source() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression("some z in [[1, 2]], a in z[.item > 1] satisfies a > 1").unwrap(),
+        Expr::Some {
+            bindings: vec![
+                (
+                    "z".into(),
+                    Expr::List(vec![Expr::List(vec![
+                        Expr::Number("1".into()),
+                        Expr::Number("2".into()),
+                    ])]),
+                ),
+                (
+                    "a".into(),
+                    Expr::Index(
+                        Box::new(Expr::Name("z".into())),
+                        Box::new(Expr::Binary(
+                            Box::new(Expr::FilterItem),
+                            ">".into(),
+                            Box::new(Expr::Number("1".into())),
+                        )),
+                    ),
+                ),
+            ],
+            predicate: Box::new(Expr::Binary(
+                Box::new(Expr::Name("a".into())),
+                ">".into(),
+                Box::new(Expr::Number("1".into())),
+            )),
+        }
+    );
+}
+
+#[test]
+fn authored_some_named_call_is_not_the_some_quantifier() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression("__bl_some(true)").unwrap(),
+        Expr::Call("__bl_some".into(), vec![Expr::Bool(true)])
+    );
+    let source = decision_expression("Number", "Bool", "__bl_some(true)");
+    let error = validate(&parse(&source).unwrap()).unwrap_err();
+    assert!(error.contains("unknown"), "{error}");
+}
+
+#[test]
+fn some_binding_shadows_decision_node_after_its_source() {
+    let source = format!(
+        "{HEADER}decision_task check {{ input input: Number; output result: Bool = result; literal_expression base {{ output result: Number; expression input; }} literal_expression result {{ output result: Bool; expression some base in [base.result] satisfies base > 0; }} }}"
+    );
+    let program = parse(&source).unwrap();
+    assert_eq!(
+        program.decisions[0].links,
+        [("base".into(), "result".into())]
+    );
+    validate(&program).unwrap();
+}
+
+#[test]
+fn some_unused_empty_binding_is_valid() {
+    assert_valid_expression("Number", "Bool", "some x in [] satisfies true");
+}
+
+#[test]
 fn some_accepts_multiple_list_bindings() {
     assert_valid_expression(
         "Number",
@@ -574,6 +819,33 @@ fn every_accepts_multiple_list_bindings() {
         "Number",
         "Bool",
         "every x in [1, 2], y in [3, 4] satisfies x + y >= 4",
+    );
+}
+
+#[test]
+fn colon_sequence_ast_preserves_nested_endpoint_expressions() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression("(input[1] + 1):(input[2] * 2)").unwrap(),
+        Expr::Sequence(
+            Box::new(Expr::Binary(
+                Box::new(Expr::Index(
+                    Box::new(Expr::Name("input".into())),
+                    Box::new(Expr::Number("1".into())),
+                )),
+                "+".into(),
+                Box::new(Expr::Number("1".into())),
+            )),
+            Box::new(Expr::Binary(
+                Box::new(Expr::Index(
+                    Box::new(Expr::Name("input".into())),
+                    Box::new(Expr::Number("2".into())),
+                )),
+                "*".into(),
+                Box::new(Expr::Number("2".into())),
+            )),
+        )
     );
 }
 
@@ -900,6 +1172,19 @@ fn decision_models_validate_dependent_types_and_knowledge_calls() {
 }
 
 #[test]
+fn knowledge_cycles_inside_index_and_sequence_are_rejected() {
+    for expression in ["[1,2][fee(value)]", "sum(1:fee(value))"] {
+        let source = format!(
+            "{HEADER}decision_task check {{ input value: Number; output result: Number = out; knowledge fee {{ input value: Number; output result: Number; expression {expression}; }} literal_expression out {{ output result: Number; expression fee(value); }} }}"
+        );
+        let error = parse(&source)
+            .and_then(|program| validate(&program))
+            .unwrap_err();
+        assert!(error.contains("knowledge cycle"), "{expression}: {error}");
+    }
+}
+
+#[test]
 fn knowledge_calls_are_scoped_to_their_decision_model() {
     let source = format!(
         "{HEADER}decision_task first {{ input amount: Number; output result: Number = value; knowledge fee {{ input amount: Number; output result: Number; expression amount; }} literal_expression value {{ output result: Number; expression fee(amount); }} }} decision_task second {{ input flag: Bool; output result: Bool = value; knowledge fee {{ input flag: Bool; output result: Bool; expression flag; }} literal_expression value {{ output result: Bool; expression fee(flag); }} }}"
@@ -1138,6 +1423,56 @@ fn calendar_date_calls_preserve_specific_argument_diagnostics() {
         let error = transpile(&decision_expression(input, output, expression)).unwrap_err();
         assert!(error.contains(message), "{expression}: {error}");
     }
+}
+
+#[test]
+fn calendar_named_arguments_ast_keeps_source_order_and_expression_children() {
+    use blkit::expr::{self, Expr};
+
+    assert_eq!(
+        expr::expression("calendarMerge([input], tiebreak=input.name, dedupeBy=\"value\")")
+            .unwrap(),
+        Expr::Call(
+            "calendarMerge".into(),
+            vec![
+                Expr::List(vec![Expr::Name("input".into())]),
+                Expr::NamedArgument(
+                    "tiebreak".into(),
+                    Box::new(Expr::Field(
+                        Box::new(Expr::Name("input".into())),
+                        "name".into()
+                    )),
+                ),
+                Expr::NamedArgument("dedupeBy".into(), Box::new(Expr::String("value".into()))),
+            ],
+        )
+    );
+}
+
+#[test]
+fn calendar_named_arguments_reject_duplicate_and_misplaced_options_during_parsing() {
+    for (expression, expected) in [
+        (
+            "calendarMerge([input], dedupeBy=\"value\", dedupeBy=\"valueAndName\")",
+            "duplicate named argument: dedupeBy",
+        ),
+        (
+            "calendarKeep(input, \"A\", rangeMatch=\"overlap\", \"B\")",
+            "positional argument after named argument",
+        ),
+    ] {
+        let error = blkit::expr::expression(expression).unwrap_err();
+        assert!(error.contains(expected), "{expression}: {error}");
+    }
+}
+
+#[test]
+fn calendar_named_arguments_reject_unknown_options_during_validation() {
+    let expression = "calendarMerge([input], unknown=\"value\")";
+    let source = decision_expression("Calendar", "Calendar", expression);
+    let program = parse(&source).unwrap();
+    let error = validate(&program).unwrap_err();
+    assert!(error.contains("unknown calendarMerge option"), "{error}");
 }
 
 #[test]
@@ -3097,9 +3432,9 @@ fn expression_colon_and_or_share_left_associative_precedence() {
     assert_eq!(
         expr::expression("1:2 or 3").unwrap(),
         Expr::Binary(
-            Box::new(Expr::Call(
-                "__bl_sequence".into(),
-                vec![Expr::Number("1".into()), Expr::Number("2".into())]
+            Box::new(Expr::Sequence(
+                Box::new(Expr::Number("1".into())),
+                Box::new(Expr::Number("2".into())),
             )),
             "or".into(),
             Box::new(Expr::Number("3".into()))
@@ -3129,7 +3464,7 @@ fn iteration_keyword_requires_matching_body_keyword() {
 }
 
 #[test]
-fn expression_ast_preserves_precedence_and_lowerings() {
+fn expression_ast_preserves_precedence_and_dictionary_indexing() {
     use blkit::expr::{self, Expr};
 
     let expected = Expr::Binary(
@@ -3156,15 +3491,12 @@ fn expression_ast_preserves_precedence_and_lowerings() {
     assert_eq!(expr::expression("-2 ** 3 ** 2 + 4 * 5").unwrap(), expected);
     assert_eq!(
         expr::expression("{a: 1}[\"a\"]").unwrap(),
-        Expr::Call(
-            "__bl_index".into(),
-            vec![
-                Expr::Call(
-                    "__bl_dictionary".into(),
-                    vec![Expr::String("a".into()), Expr::Number("1".into())]
-                ),
-                Expr::String("a".into()),
-            ]
+        Expr::Index(
+            Box::new(Expr::Dictionary(vec![(
+                "a".into(),
+                Expr::Number("1".into()),
+            )])),
+            Box::new(Expr::String("a".into())),
         )
     );
 }

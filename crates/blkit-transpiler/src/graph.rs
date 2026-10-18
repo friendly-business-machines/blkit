@@ -478,9 +478,11 @@ pub(crate) fn route_expression(
         expression: &mut Expr,
         program: &crate::compiler::Program,
         refs: &mut Vec<RouteReference>,
+        locals: &[String],
     ) -> Result<(), String> {
         if let Expr::Field(base, port) = expression
             && let Expr::Name(source) = base.as_ref()
+            && !locals.contains(source)
         {
             let ports = if let Some(peer) =
                 program.peer_nodes.iter().find(|peer| peer.name == *source)
@@ -540,19 +542,50 @@ pub(crate) fn route_expression(
             }
         }
         match expression {
-            Expr::Field(base, _) | Expr::Not(base) => rewrite(base, program, refs)?,
-            Expr::Binary(left, _, right) => {
-                rewrite(left, program, refs)?;
-                rewrite(right, program, refs)?;
+            Expr::Field(base, _) | Expr::Not(base) | Expr::NamedArgument(_, base) => {
+                rewrite(base, program, refs, locals)?
+            }
+            Expr::Some {
+                bindings,
+                predicate,
+            } => {
+                let mut scoped = locals.to_vec();
+                for (binding, source) in bindings {
+                    rewrite(source, program, refs, &scoped)?;
+                    scoped.push(binding.clone());
+                }
+                rewrite(predicate, program, refs, &scoped)?;
+            }
+            Expr::Binary(left, _, right)
+            | Expr::Index(left, right)
+            | Expr::Sequence(left, right) => {
+                rewrite(left, program, refs, locals)?;
+                rewrite(right, program, refs, locals)?;
             }
             Expr::Call(_, args) | Expr::List(args) => {
                 for arg in args {
-                    rewrite(arg, program, refs)?;
+                    rewrite(arg, program, refs, locals)?;
+                }
+            }
+            Expr::Iteration {
+                binding,
+                source,
+                body,
+                ..
+            } => {
+                rewrite(source, program, refs, locals)?;
+                let mut scoped = locals.to_vec();
+                scoped.push(binding.clone());
+                rewrite(body, program, refs, &scoped)?;
+            }
+            Expr::Dictionary(entries) => {
+                for (_, value) in entries {
+                    rewrite(value, program, refs, locals)?;
                 }
             }
             Expr::Range(lower, upper, _, _) => {
                 for bound in lower.iter_mut().chain(upper.iter_mut()) {
-                    rewrite(bound, program, refs)?;
+                    rewrite(bound, program, refs, locals)?;
                 }
             }
             _ => {}
@@ -561,7 +594,7 @@ pub(crate) fn route_expression(
     }
     let mut expression = expression.clone();
     let mut refs = Vec::new();
-    rewrite(&mut expression, program, &mut refs)?;
+    rewrite(&mut expression, program, &mut refs, &[])?;
     Ok((expression, refs))
 }
 

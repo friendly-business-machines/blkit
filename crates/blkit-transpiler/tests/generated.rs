@@ -859,6 +859,72 @@ fn generated_dictionary_list_projection_checks_missing_keys() {
 }
 
 #[test]
+fn generated_graph_route_some_shadows_peer_after_binding_source() {
+    compile_and_test_graph(
+        r#"namespace routing; version "1";
+start_event start { output value: Number; }
+xor_split gate {}
+end_event done { input result: Number; }
+decision_task chosen { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression value; } }
+decision_task fallback { input value: Number; output result: Number = calc; literal_expression calc { output result: Number; expression 0; } }
+process route {
+  flow start -> gate;
+  flow gate -> chosen when some start in [start.value] satisfies start > 0;
+  flow gate -> fallback else;
+  flow chosen -> done;
+  flow fallback -> done;
+  bind start.value -> chosen.value;
+  bind start.value -> fallback.value;
+  bind chosen.result -> done.result;
+  bind fallback.result -> done.result;
+}"#,
+        r#"let graph = named_graph_definitions().remove(0); for (input, expected) in [("2", "2"), ("-2", "0")] { let value = serde_json::json!({"value": input}); let mut state = graph.checkpoint(&value).unwrap(); assert_eq!(graph.run(&value, &mut state).unwrap(), serde_json::json!(expected)); }"#,
+    );
+}
+
+#[test]
+fn generated_some_unused_empty_binding_returns_false() {
+    compile_and_test(
+        r#"namespace lists; version "1"; decision_task any { input value: Number; output result: Bool = calc; literal_expression calc { output result: Bool; expression some x in [] satisfies true; } }"#,
+        r#"assert!(!any(Number::ZERO).unwrap());"#,
+    );
+}
+
+#[test]
+fn generated_some_bindings_shadow_input_and_feed_later_sources() {
+    compile_and_test(
+        r#"namespace lists; version "1"; decision_task any { input value: List<Number>; output result: Bool = calc; literal_expression calc { output result: Bool; expression some value in value, next in [value + 1] satisfies next > 3; } }"#,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; assert!(any(vec![n("1"), n("3")]).unwrap()); assert!(!any(vec![n("1")]).unwrap());"#,
+    );
+}
+
+#[test]
+fn generated_some_preserves_input_captured_by_inlined_knowledge() {
+    compile_and_test(
+        r#"namespace lists; version "1";
+decision_task any {
+  input __bl_some: Number;
+  output result: Bool = calc;
+  knowledge positive { output result: Bool; expression __bl_some > 0; }
+  literal_expression calc { output result: Bool; expression some x in [1] satisfies positive(); }
+}"#,
+        r#"assert!(any(Number::ONE).unwrap()); assert!(!any(Number::ZERO).unwrap());"#,
+    );
+}
+
+#[test]
+fn generated_some_does_not_shadow_authored_knowledge_call() {
+    let source = r#"namespace lists; version "1";
+decision_task any {
+  input value: Number;
+  output result: Bool = calc;
+  knowledge __bl_some { input n: Number; output result: Bool; expression n > 0; }
+  literal_expression calc { output result: Bool; expression some x in [1] satisfies __bl_some(x); }
+}"#;
+    compile_and_test(source, r#"assert!(any(Number::ZERO).unwrap());"#);
+}
+
+#[test]
 fn generated_some_short_circuits_before_later_predicate_errors() {
     let source = "namespace lists; version \"1\"; decision_task any { input value: List<Number>; output result: Bool = calc; literal_expression calc { output result: Bool; expression some x in value, y in [1, 0] satisfies 1 / y > 0; } }";
     compile_and_test_graph(
@@ -1291,6 +1357,30 @@ assert!(weekend(d("2025-04-19")).unwrap());
 assert_eq!(weekday_count(d("2025-04-23"), d("2025-04-17")).unwrap(), Number::from(5));
 assert!(strict_business(d("2025-04-30"), holidays.clone()).unwrap_err().contains("bl.CalendarRangeError"));
 assert!(next_business(d("2025-04-30"), holidays).is_ok());"##,
+    );
+}
+
+#[test]
+fn generated_calendar_merge_preserves_input_captured_by_inlined_option() {
+    compile_and_test(
+        r#"namespace schedules; version "1";
+decision_task merge {
+  input c: Calendar;
+  input __bl_dedupe: String;
+  output result: Calendar = out;
+  knowledge option { output result: String; expression __bl_dedupe; }
+  literal_expression out { output result: Calendar; expression calendarMerge([c], dedupeBy=option()); }
+}"#,
+        r##"let c: Calendar = serde_json::from_str(r#"{"validFrom":"2025-01-01","validTo":"2025-12-31","entries":[]}"#).unwrap(); assert!(merge(c, "value".into()).unwrap().entries().is_empty());"##,
+    );
+}
+
+#[test]
+fn generated_calendar_merge_evaluates_named_options_in_source_order() {
+    compile_and_test(
+        r#"namespace schedules; version "1";
+decision_task merge { input c: Calendar; input d: Number; input text: String; output result: Calendar = out; literal_expression out { output result: Calendar; expression calendarMerge([c], tiebreak=string(1 / d), dedupeBy=string(number(text))); } }"#,
+        r##"let calendar: Calendar = serde_json::from_str(r#"{"validFrom":"2025-01-01","validTo":"2025-12-31","entries":[]}"#).unwrap(); let error = merge(calendar, "0".parse().unwrap(), "bad".into()).unwrap_err(); assert!(error.contains("division by zero"), "{error}");"##,
     );
 }
 
@@ -1795,6 +1885,24 @@ fn dictionary_literals_evaluate_in_order_and_compare_structurally() {
 decision_task computed { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression {a: 2, b: a * 2}.b; } }
 decision_task equality { input input: Number; output result: Bool = value; literal_expression value { output result: Bool; expression {a: 1, b: 2} == {b: 2, a: 1}; } }"#,
         r#"assert_eq!(computed(Number::ZERO).unwrap(), Number::from(4)); assert!(equality(Number::ZERO).unwrap());"#,
+    );
+}
+
+#[test]
+fn fallible_dictionary_literal_child_propagates_error() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task parsed { input text: String; output result: Dictionary<Number> = value; literal_expression value { output result: Dictionary<Number>; expression {first: 1, second: number(text)}; } }"#,
+        r#"assert_eq!(parsed("2".into()).unwrap()["second"], Number::from(2)); assert!(parsed("not a number".into()).is_err());"#,
+    );
+}
+
+#[test]
+fn nested_dictionary_literals_keep_earlier_bindings_and_outer_scope() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task nested { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression {outer: {first: input, second: first + 1}, later: outer.second + 1}.later; } }"#,
+        r#"assert_eq!(nested(Number::from(3)).unwrap(), Number::from(5));"#,
     );
 }
 
@@ -3107,6 +3215,15 @@ decision_task fractional { input value: Number; output result: List<Number> = ou
 decision_task range_member { input value: Number; output result: Bool = out; literal_expression out { output result: Bool; expression value in [1..3]; } }
 decision_task dictionary_key { input value: Number; output result: Number = out; literal_expression out { output result: Number; expression {score: value}.score; } }"#,
         r#"let n = |v: i64| Number::from(v); assert_eq!(descending(n(0)).unwrap(), (5..=10).rev().map(n).collect::<Vec<_>>()); assert_eq!(fractional(n(0)).unwrap(), ["0.5".parse().unwrap(), "1.5".parse().unwrap(), "2.5".parse().unwrap()]); assert!(range_member(n(2)).unwrap()); assert_eq!(dictionary_key(n(7)).unwrap(), n(7));"#,
+    );
+}
+
+#[test]
+fn generated_colon_sequence_checks_dynamic_numeric_bounds() {
+    compile_and_test(
+        r#"namespace sequences; version "1";
+decision_task bounds { input end: Number; output result: List<Number> = out; literal_expression out { output result: List<Number>; expression 0:end; } }"#,
+        r#"let n = |v: i64| Number::from(v); assert_eq!(bounds(n(3)).unwrap(), vec![n(0),n(1),n(2),n(3)]); assert_eq!(bounds(n(-2)).unwrap(), vec![n(0),n(-1),n(-2)]); assert!(bounds(Number::MAX).is_err());"#,
     );
 }
 

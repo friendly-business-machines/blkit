@@ -89,10 +89,13 @@ pub(super) fn check_decision(
                     calls(arg, found);
                 }
             }
-            Expr::Field(base, _) | Expr::Not(base) | Expr::InlinePredicate { body: base, .. } => {
-                calls(base, found)
-            }
-            Expr::Binary(left, _, right) => {
+            Expr::Field(base, _)
+            | Expr::Not(base)
+            | Expr::InlinePredicate { body: base, .. }
+            | Expr::NamedArgument(_, base) => calls(base, found),
+            Expr::Binary(left, _, right)
+            | Expr::Index(left, right)
+            | Expr::Sequence(left, right) => {
                 calls(left, found);
                 calls(right, found);
             }
@@ -101,9 +104,23 @@ pub(super) fn check_decision(
                     calls(item, found);
                 }
             }
+            Expr::Dictionary(entries) => {
+                for (_, value) in entries {
+                    calls(value, found);
+                }
+            }
             Expr::Iteration { source, body, .. } => {
                 calls(source, found);
                 calls(body, found);
+            }
+            Expr::Some {
+                bindings,
+                predicate,
+            } => {
+                for (_, source) in bindings {
+                    calls(source, found);
+                }
+                calls(predicate, found);
             }
             Expr::Range(lower, upper, _, _) => {
                 for bound in lower.iter().chain(upper.iter()) {

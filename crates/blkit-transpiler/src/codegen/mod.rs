@@ -14,8 +14,7 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
             let shadowed = knowledge.iter().find(|item| item.name == *name);
             (matches!(
                 name.as_str(),
-                "__bl_index"
-                    | "__bl_list_index"
+                "__bl_list_index"
                     | "__bl_list_filter"
                     | "__bl_list_sublist"
                     | "__bl_list_insertBefore_scalar"
@@ -26,7 +25,6 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
                     | "__bl_list_listReplace"
                     | "__bl_list_remove_match"
                     | "__bl_list_listReplace_match"
-                    | "__bl_sequence"
                     | "seq"
                     | "sort"
                     | "__bl_dictionary_field"
@@ -139,7 +137,19 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
                 || args.iter().any(|arg| expr_fallible(arg, knowledge))
         }
         Expr::Field(_, _) => true,
-        Expr::InlinePredicate { body, .. } => expr_fallible(body, knowledge),
+        Expr::Index(_, _) | Expr::Sequence(_, _) => true,
+        Expr::InlinePredicate { body, .. } | Expr::NamedArgument(_, body) => {
+            expr_fallible(body, knowledge)
+        }
+        Expr::Some {
+            bindings,
+            predicate,
+        } => {
+            bindings
+                .iter()
+                .any(|(_, source)| expr_fallible(source, knowledge))
+                || expr_fallible(predicate, knowledge)
+        }
         Expr::Not(value) => expr_fallible(value, knowledge),
         Expr::Binary(left, op, right) => {
             (matches!(op.as_str(), "num+" | "-" | "*" | "/" | "%" | "**" | "mod")
@@ -150,6 +160,9 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
                 || expr_fallible(right, knowledge)
         }
         Expr::List(items) => items.iter().any(|item| expr_fallible(item, knowledge)),
+        Expr::Dictionary(entries) => entries
+            .iter()
+            .any(|(_, value)| expr_fallible(value, knowledge)),
         Expr::Iteration { source, body, .. } => {
             expr_fallible(source, knowledge) || expr_fallible(body, knowledge)
         }
@@ -193,6 +206,20 @@ fn specialize_expr(
                 .expect("validated empty iteration source")
         } else {
             None
+        };
+        let resolved_some = if let Expr::Some { bindings, .. } = &*expr {
+            bindings
+                .iter()
+                .map(|(_, source)| {
+                    if matches!(source, Expr::List(items) if items.is_empty()) {
+                        semantic::empty_some_element(expr, source, env, program, knowledge).ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
         };
         match expr {
             Expr::Binary(left, op, right) => {
@@ -289,6 +316,91 @@ fn specialize_expr(
                 visit(left, program, knowledge, env, None);
                 visit(right, program, knowledge, env, None);
             }
+            Expr::Sequence(start, end) => {
+                visit(
+                    start,
+                    program,
+                    knowledge,
+                    env,
+                    Some(&Type::Named("Number".into())),
+                );
+                visit(
+                    end,
+                    program,
+                    knowledge,
+                    env,
+                    Some(&Type::Named("Number".into())),
+                );
+            }
+            Expr::Index(base, key) => {
+                let empty_base = matches!(base.as_ref(), Expr::List(items) if items.is_empty());
+                let base_expected = if empty_base
+                    && matches!(expected, Some(Type::Generic(kind, _)) if kind == "List")
+                {
+                    expected
+                } else {
+                    None
+                };
+                if let Ok(Type::Generic(kind, element)) =
+                    semantic::infer_with(base, base_expected, env, program, knowledge)
+                    && kind == "List"
+                {
+                    let numeric = semantic::infer_with(key, None, env, program, knowledge).ok()
+                        == Some(Type::Named("Number".into()));
+                    let mut local = env.clone();
+                    local.insert(".item".into(), *element.clone());
+                    visit(base, program, knowledge, env, None);
+                    if empty_base {
+                        **base = Expr::Call(
+                            format!("__bl_list_type_{}", rust_type(&element)),
+                            vec![*base.clone()],
+                        );
+                    }
+                    visit(
+                        key,
+                        program,
+                        knowledge,
+                        if numeric { env } else { &local },
+                        None,
+                    );
+                    *expr = Expr::Call(
+                        if numeric {
+                            "__bl_list_index"
+                        } else {
+                            "__bl_list_filter"
+                        }
+                        .into(),
+                        vec![*base.clone(), *key.clone()],
+                    );
+                    return;
+                }
+                if let Ok(Type::Named(shape)) =
+                    semantic::infer_with(base, None, env, program, knowledge)
+                    && let Expr::String(field) = key.as_ref()
+                    && program.records.iter().any(|record| record.name == shape)
+                {
+                    *expr = Expr::Field(base.clone(), rust_record_field(program, &shape, field));
+                    if let Expr::Field(base, _) = expr {
+                        visit(base, program, knowledge, env, None);
+                    }
+                    return;
+                }
+                if matches!(semantic::infer_with(base, None, env, program, knowledge), Ok(Type::Named(ref shape)) if program.records.iter().any(|record| &record.name == shape))
+                {
+                    **base = dynamic_wrapper(*base.clone(), program, knowledge, env);
+                    visit(base, program, knowledge, env, None);
+                    visit(key, program, knowledge, env, None);
+                    *expr =
+                        Expr::Call("__bl_index_named".into(), vec![*base.clone(), *key.clone()]);
+                    return;
+                }
+                visit(base, program, knowledge, env, None);
+                visit(key, program, knowledge, env, None);
+                *expr = Expr::Call(
+                    "__bl_dictionary_field".into(),
+                    vec![*base.clone(), *key.clone()],
+                );
+            }
             Expr::Call(name, args) => {
                 if matches!(name.as_str(), "remove" | "listReplace")
                     && !knowledge.iter().any(|item| item.name == *name)
@@ -322,39 +434,6 @@ fn specialize_expr(
                         visit(replacement, program, knowledge, env, Some(element));
                     }
                     *name = format!("__bl_list_{name}_match");
-                    return;
-                }
-                if name.starts_with("__bl_dictionary") {
-                    let mixed = name == "__bl_dictionary" && mixed_dictionary;
-                    if mixed {
-                        *name = "__bl_dictionary_mixed".into();
-                    }
-                    let mut scope = env.clone();
-                    for entry in args.chunks_exact_mut(2) {
-                        let source = match &entry[1] {
-                            Expr::Call(wrapper, args)
-                                if wrapper.ends_with("_as_value")
-                                    && (args.len() == 1
-                                        || wrapper == "__bl_collection_as_value"
-                                            && args.len() == 2) =>
-                            {
-                                &args[0]
-                            }
-                            other => other,
-                        };
-                        let ty =
-                            semantic::infer_with(source, None, &scope, program, knowledge).ok();
-                        if mixed {
-                            entry[1] =
-                                dynamic_wrapper(entry[1].clone(), program, knowledge, &scope);
-                        }
-                        visit(&mut entry[1], program, knowledge, &scope, None);
-                        if let (Expr::String(key), Some(ty)) = (&entry[0], ty)
-                            && crate::compiler::identifier(key)
-                        {
-                            scope.insert(key.clone(), ty);
-                        }
-                    }
                     return;
                 }
                 if name == "getValue" && args.first().is_some_and(|source| matches!(semantic::infer_with(source, None, env, program, knowledge), Ok(Type::Named(ref ty)) if ty == "Dictionary"))
@@ -593,70 +672,6 @@ fn specialize_expr(
                         return;
                     }
                 }
-                if name == "__bl_index" && args.len() == 2 {
-                    let empty_base = matches!(&args[0], Expr::List(items) if items.is_empty());
-                    let base_expected = if empty_base
-                        && matches!(expected, Some(Type::Generic(kind, _)) if kind == "List")
-                    {
-                        expected
-                    } else {
-                        None
-                    };
-                    if let Ok(Type::Generic(kind, element)) =
-                        semantic::infer_with(&args[0], base_expected, env, program, knowledge)
-                        && kind == "List"
-                    {
-                        let numeric = semantic::infer_with(&args[1], None, env, program, knowledge)
-                            .ok()
-                            == Some(Type::Named("Number".into()));
-                        let mut local = env.clone();
-                        local.insert(".item".into(), *element.clone());
-                        visit(&mut args[0], program, knowledge, env, None);
-                        if empty_base {
-                            args[0] = Expr::Call(
-                                format!("__bl_list_type_{}", rust_type(&element)),
-                                vec![args[0].clone()],
-                            );
-                        }
-                        visit(
-                            &mut args[1],
-                            program,
-                            knowledge,
-                            if numeric { env } else { &local },
-                            None,
-                        );
-                        *name = if numeric {
-                            "__bl_list_index"
-                        } else {
-                            "__bl_list_filter"
-                        }
-                        .into();
-                        return;
-                    }
-                }
-                if name == "__bl_index"
-                    && args.len() == 2
-                    && let Ok(Type::Named(shape)) =
-                        semantic::infer_with(&args[0], None, env, program, knowledge)
-                    && let Expr::String(key) = &args[1]
-                    && program.records.iter().any(|record| record.name == shape)
-                {
-                    *expr = Expr::Field(
-                        Box::new(args[0].clone()),
-                        rust_record_field(program, &shape, key),
-                    );
-                    if let Expr::Field(base, _) = expr {
-                        visit(base, program, knowledge, env, None);
-                    }
-                    return;
-                }
-                if name == "__bl_index"
-                    && args.len() == 2
-                    && matches!(semantic::infer_with(&args[0], None, env, program, knowledge), Ok(Type::Named(ref shape)) if program.records.iter().any(|record| &record.name == shape))
-                {
-                    args[0] = dynamic_wrapper(args[0].clone(), program, knowledge, env);
-                    *name = "__bl_index_named".into();
-                }
                 if (matches!(name.as_str(), "values" | "getEntries")
                     || name == "getValue"
                         && matches!(semantic::infer_with(&Expr::Call(name.clone(), args.clone()), None, env, program, knowledge), Ok(Type::Named(ref ty)) if ty == "Value"))
@@ -769,11 +784,6 @@ fn specialize_expr(
                         *name = format!("__bl_range_{name}");
                     }
                 }
-                if name == "__bl_some" {
-                    let list = Type::Generic("List".into(), Box::new(Type::Named("Bool".into())));
-                    visit(&mut args[0], program, knowledge, env, Some(&list));
-                    return;
-                }
                 if let Some(definition) = knowledge.iter().find(|item| item.name == *name) {
                     for (arg, (_, ty)) in args.iter_mut().zip(&definition.params) {
                         visit(arg, program, knowledge, env, Some(ty));
@@ -784,6 +794,65 @@ fn specialize_expr(
                     }
                 }
             }
+            Expr::NamedArgument(_, value) => visit(value, program, knowledge, env, None),
+            Expr::Some {
+                bindings,
+                predicate,
+            } => {
+                let mut local = env.clone();
+                for ((binding, source), resolved) in bindings.iter_mut().zip(resolved_some) {
+                    let element = resolved
+                        .map(|item| Type::Generic("List".into(), Box::new(item)))
+                        .or_else(|| {
+                            semantic::infer_with(source, None, &local, program, knowledge).ok()
+                        });
+                    visit(source, program, knowledge, &local, element.as_ref());
+                    if let Some(Type::Generic(_, inner)) = element {
+                        *source = Expr::Call(
+                            format!("__bl_list_type_{}", rust_type(&inner)),
+                            vec![source.clone()],
+                        );
+                        local.insert(binding.clone(), *inner);
+                    }
+                }
+                visit(
+                    predicate,
+                    program,
+                    knowledge,
+                    &local,
+                    Some(&Type::Named("Bool".into())),
+                );
+            }
+            Expr::Dictionary(entries) => {
+                let mixed = (mixed_dictionary
+                    || matches!(expected, Some(Type::Named(shape)) if shape == "Dictionary"))
+                    && !matches!(expected, Some(Type::Named(shape)) if program.records.iter().any(|record| record.name == *shape));
+                let mut scope = env.clone();
+                for (key, value) in entries {
+                    let source = match &*value {
+                        Expr::Call(wrapper, args)
+                            if wrapper.ends_with("_as_value")
+                                && (args.len() == 1
+                                    || wrapper == "__bl_collection_as_value"
+                                        && args.len() == 2) =>
+                        {
+                            &args[0]
+                        }
+                        other => other,
+                    };
+                    let ty = semantic::infer_with(source, None, &scope, program, knowledge).ok();
+                    if mixed {
+                        *value = dynamic_wrapper(value.clone(), program, knowledge, &scope);
+                    }
+                    visit(value, program, knowledge, &scope, None);
+                    if let Some(ty) = ty
+                        && crate::compiler::identifier(key)
+                    {
+                        scope.insert(key.clone(), ty);
+                    }
+                }
+            }
+
             Expr::List(args) => {
                 let element_expected = if let Some(Type::Generic(kind, inner)) = expected {
                     (kind == "List").then_some(inner.as_ref())
@@ -876,12 +945,34 @@ fn specialize_expr(
                     || matches!(semantic::infer_with(base, None, env, program, knowledge),
                         Ok(Type::Generic(kind, _)) if kind == "Dictionary")
                 {
+                    let literal_type = if matches!(base.as_ref(), Expr::Dictionary(_))
+                        && matches!(semantic::infer_with(base, None, env, program, knowledge), Ok(Type::Named(name)) if name == "Dictionary")
+                    {
+                        semantic::infer_with(
+                            &Expr::Field(base.clone(), field.clone()),
+                            None,
+                            env,
+                            program,
+                            knowledge,
+                        )
+                        .ok()
+                    } else {
+                        None
+                    };
                     *expr = Expr::Call(
                         "__bl_dictionary_field".into(),
                         vec![*base.clone(), Expr::String(field.clone())],
                     );
                     if let Expr::Call(_, args) = expr {
                         visit(&mut args[0], program, knowledge, env, None);
+                    }
+                    if let Some(ty) = literal_type
+                        && ty != Type::Named("Value".into())
+                    {
+                        *expr = Expr::Call(
+                            format!("__bl_cast_to_{}", rust_type(&ty)),
+                            vec![expr.clone()],
+                        );
                     }
                     return;
                 }
@@ -938,25 +1029,28 @@ fn dynamic_wrapper(
     knowledge: &[Knowledge],
     env: &HashMap<String, Type>,
 ) -> Expr {
-    if let Expr::Call(name, args) = &expr
-        && name == "__bl_dictionary"
-    {
-        let mut fields = args.clone();
+    if let Expr::Dictionary(entries) = &expr {
+        if let Ok(ty) = semantic::infer_with(&expr, None, env, program, knowledge)
+            && matches!(&ty, Type::Generic(kind, _) if kind == "Dictionary")
+        {
+            return Expr::Call(
+                "__bl_collection_as_value".into(),
+                vec![expr, Expr::String(type_label(&ty))],
+            );
+        }
+        let mut fields = entries.clone();
         let mut scope = env.clone();
-        for entry in fields.chunks_exact_mut(2) {
-            let value = entry[1].clone();
+        for (key, entry) in &mut fields {
+            let value = entry.clone();
             let ty = semantic::infer_with(&value, None, &scope, program, knowledge).ok();
-            entry[1] = dynamic_wrapper(value, program, knowledge, &scope);
-            if let (Expr::String(key), Some(ty)) = (&entry[0], ty)
+            *entry = dynamic_wrapper(value, program, knowledge, &scope);
+            if let Some(ty) = ty
                 && crate::compiler::identifier(key)
             {
                 scope.insert(key.clone(), ty);
             }
         }
-        return Expr::Call(
-            "__bl_as_value".into(),
-            vec![Expr::Call("__bl_dictionary_mixed".into(), fields)],
-        );
+        return Expr::Call("__bl_as_value".into(), vec![Expr::Dictionary(fields)]);
     }
     if let Expr::List(items) = &expr {
         return Expr::Call(
@@ -1029,31 +1123,18 @@ fn emit_typed_expr(
             _ => {}
         }
     }
-    if let Expr::Call(name, args) = &mut expr
-        && name == "__bl_dictionary"
-    {
-        if let Some(Type::Named(shape)) = expected
-            && program.records.iter().any(|record| record.name == *shape)
-        {
-            *name = format!("__bl_dictionary_named_{shape}");
-        } else if matches!(expected, Some(Type::Named(shape)) if shape == "Dictionary")
-            || matches!(semantic::infer_with(&Expr::Call(name.clone(), args.clone()), None, env, program, knowledge), Ok(Type::Named(shape)) if shape == "Dictionary")
-        {
-            *name = "__bl_dictionary_mixed".into();
-            let mut scope = env.clone();
-            for entry in args.chunks_exact_mut(2) {
-                let value = entry[1].clone();
-                let ty = semantic::infer_with(&value, None, &scope, program, knowledge).ok();
-                entry[1] = dynamic_wrapper(value, program, knowledge, &scope);
-                if let (Expr::String(key), Some(ty)) = (&entry[0], ty)
-                    && crate::compiler::identifier(key)
-                {
-                    scope.insert(key.clone(), ty);
-                }
-            }
-        }
-    }
     let mut expr = specialize_expr(&expr, program, knowledge, env, expected);
+    if let (Expr::Dictionary(entries), Some(Type::Named(shape))) = (&expr, expected)
+        && program.records.iter().any(|record| record.name == *shape)
+    {
+        let (statements, fields) = emit_dictionary_entries(entries, program, knowledge);
+        let members = fields
+            .into_iter()
+            .map(|(key, value)| format!("{}: {value}", rust_record_field(program, shape, &key)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!("{{ {statements} {shape} {{ {members} }} }}");
+    }
     if let Some(target) = cast {
         expr = Expr::Call(format!("__bl_cast_to_{target}"), vec![expr]);
     }
@@ -1136,14 +1217,29 @@ fn uses_name(expr: &Expr, name: &str) -> bool {
         Expr::Name(value) => value == name,
         Expr::Field(base, _) | Expr::Not(base) => uses_name(base, name),
         Expr::InlinePredicate { binding, body } => binding == name || uses_name(body, name),
+        Expr::NamedArgument(_, value) => uses_name(value, name),
+        Expr::Some {
+            bindings,
+            predicate,
+        } => {
+            bindings
+                .iter()
+                .any(|(binding, source)| binding == name || uses_name(source, name))
+                || uses_name(predicate, name)
+        }
         Expr::Call(_, args) | Expr::List(args) => args.iter().any(|arg| uses_name(arg, name)),
+        Expr::Dictionary(entries) => entries
+            .iter()
+            .any(|(key, value)| key == name || uses_name(value, name)),
         Expr::Iteration {
             binding,
             source,
             body,
             ..
         } => binding == name || uses_name(source, name) || uses_name(body, name),
-        Expr::Binary(left, _, right) => uses_name(left, name) || uses_name(right, name),
+        Expr::Binary(left, _, right) | Expr::Index(left, right) | Expr::Sequence(left, right) => {
+            uses_name(left, name) || uses_name(right, name)
+        }
         Expr::Range(left, right, _, _) => left
             .iter()
             .chain(right.iter())
@@ -1153,27 +1249,23 @@ fn uses_name(expr: &Expr, name: &str) -> bool {
 }
 
 fn emit_dictionary_entries(
-    args: &[Expr],
+    entries: &[(String, Expr)],
     program: &Program,
     knowledge: &[Knowledge],
 ) -> (String, Vec<(String, String)>) {
     let mut statements = String::new();
     let mut fields = Vec::new();
     let mut used = std::collections::HashSet::new();
-    for (index, entry) in args.chunks_exact(2).enumerate() {
-        let Expr::String(key) = &entry[0] else {
-            unreachable!()
-        };
+    for (index, (key, value)) in entries.iter().enumerate() {
         let binding = if crate::compiler::identifier(key) && semantic::check_name(key).is_ok() {
             key.clone()
         } else {
             let mut candidate = format!("__bl_literal_{index}");
             let mut suffix = 0;
             while used.contains(&candidate)
-                || args.iter().any(|arg| {
-                    uses_name(arg, &candidate)
-                        || matches!(arg, Expr::String(value) if value == &candidate)
-                })
+                || entries
+                    .iter()
+                    .any(|(key, value)| uses_name(value, &candidate) || key == &candidate)
             {
                 suffix += 1;
                 candidate = format!("__bl_literal_{index}_{suffix}");
@@ -1181,7 +1273,6 @@ fn emit_dictionary_entries(
             candidate
         };
         used.insert(binding.clone());
-        let value = &entry[1];
         let (initial, mapped) = if let Expr::Call(wrapper, args) = value
             && (args.len() == 1
                 && (matches!(wrapper.as_str(), "__bl_number_as_value" | "__bl_as_value")
@@ -1215,36 +1306,30 @@ fn emit_expr(expr: &Expr, program: &Program) -> String {
 }
 
 fn emit_some_iteration(
-    expr: &Expr,
+    bindings: &[(String, Expr)],
+    predicate: &Expr,
     program: &Program,
     knowledge: &[Knowledge],
     found: &str,
 ) -> String {
-    if let Expr::Iteration {
-        binding,
-        source,
-        body,
-        every: false,
-        ..
-    } = expr
-    {
+    if let Some(((binding, source), rest)) = bindings.split_first() {
         format!(
             "for {binding} in {} {{ {} }}",
             emit_expr_with(source, program, knowledge),
-            emit_some_iteration(body, program, knowledge, found)
+            emit_some_iteration(rest, predicate, program, knowledge, found)
         )
     } else {
         format!(
             "if {} {{ {found} = true; break '__bl_some; }}",
-            emit_expr_with(expr, program, knowledge)
+            emit_expr_with(predicate, program, knowledge)
         )
     }
 }
 
-fn fresh_local(expr: &Expr, base: &str) -> String {
+fn fresh_local(expr: &Expr, base: &str, knowledge: &[Knowledge]) -> String {
     let mut name = base.to_owned();
     let mut suffix = 0;
-    while uses_name(expr, &name) {
+    while uses_name(expr, &name) || knowledge.iter().any(|item| uses_name(&item.body, &name)) {
         name = format!("{base}_{suffix}");
         suffix += 1;
     }
@@ -1254,9 +1339,20 @@ fn fresh_local(expr: &Expr, base: &str) -> String {
 fn bind_filter_item(expr: &mut Expr, binding: &str) {
     match expr {
         Expr::FilterItem => *expr = Expr::Name(binding.into()),
-        Expr::InlinePredicate { body, .. } => bind_filter_item(body, binding),
+        Expr::InlinePredicate { body, .. } | Expr::NamedArgument(_, body) => {
+            bind_filter_item(body, binding)
+        }
+        Expr::Some {
+            bindings,
+            predicate,
+        } => {
+            for (_, source) in bindings {
+                bind_filter_item(source, binding);
+            }
+            bind_filter_item(predicate, binding);
+        }
         Expr::Field(base, _) | Expr::Not(base) => bind_filter_item(base, binding),
-        Expr::Binary(left, _, right) => {
+        Expr::Binary(left, _, right) | Expr::Index(left, right) | Expr::Sequence(left, right) => {
             bind_filter_item(left, binding);
             bind_filter_item(right, binding);
         }
@@ -1266,6 +1362,11 @@ fn bind_filter_item(expr: &mut Expr, binding: &str) {
         Expr::Call(_, args) | Expr::List(args) => {
             for arg in args {
                 bind_filter_item(arg, binding);
+            }
+        }
+        Expr::Dictionary(entries) => {
+            for (_, value) in entries {
+                bind_filter_item(value, binding);
             }
         }
         Expr::Iteration { source, body, .. } => {
@@ -1320,12 +1421,12 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             let source = emit_expr_with(source, program, knowledge);
             let body = emit_expr_with(body, program, knowledge);
             if *every {
-                let all = fresh_local(expr, "__bl_every");
+                let all = fresh_local(expr, "__bl_every", knowledge);
                 format!(
                     "{{ let mut {all} = true; for {binding} in {source} {{ if !({body}) {{ {all} = false; break; }} }} {all} }}"
                 )
             } else {
-                let result = fresh_local(expr, "__bl_iteration");
+                let result = fresh_local(expr, "__bl_iteration", knowledge);
                 let method = if *flatten { "extend" } else { "push" };
                 format!(
                     "{{ let mut {result} = Vec::new(); for {binding} in {source} {{ {result}.{method}({body}); }} {result} }}"
@@ -1415,15 +1516,26 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 format!("blkit_core::dictionary::{method}({base}, &{path})?")
             }
         }
-        Expr::Call(name, args) if name.starts_with("__bl_dictionary_named_") => {
-            let shape = name.strip_prefix("__bl_dictionary_named_").unwrap();
-            let (statements, fields) = emit_dictionary_entries(args, program, knowledge);
-            let members = fields
+        Expr::Sequence(start, end) => format!(
+            "blkit_core::number_ops::sequence({}, {}, Number::ONE)?",
+            emit_expr_with(start, program, knowledge),
+            emit_expr_with(end, program, knowledge)
+        ),
+        Expr::Index(base, key) => {
+            let base = emit_expr_with(base, program, knowledge);
+            let key = emit_expr_with(key, program, knowledge);
+            format!(
+                "({base}).get(&({key})).cloned().ok_or_else(|| format!(\"missing dictionary key: {{}}\", {key}))?"
+            )
+        }
+        Expr::Dictionary(entries) => {
+            let (statements, fields) = emit_dictionary_entries(entries, program, knowledge);
+            let pairs = fields
                 .into_iter()
-                .map(|(key, value)| format!("{}: {value}", rust_record_field(program, shape, &key)))
+                .map(|(key, value)| format!("({key:?}.to_owned(), {value})"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{{ {statements} {shape} {{ {members} }} }}")
+            format!("{{ {statements} std::collections::BTreeMap::from([{pairs}]) }}")
         }
         Expr::Call(name, args) if name == "__bl_collection_as_value" => {
             let Expr::String(label) = &args[1] else {
@@ -1453,17 +1565,6 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             }
         }
         Expr::Call(name, args)
-            if matches!(name.as_str(), "__bl_dictionary" | "__bl_dictionary_mixed") =>
-        {
-            let (statements, fields) = emit_dictionary_entries(args, program, knowledge);
-            let pairs = fields
-                .into_iter()
-                .map(|(key, value)| format!("({key:?}.to_owned(), {value})"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{{ {statements} std::collections::BTreeMap::from([{pairs}]) }}")
-        }
-        Expr::Call(name, args)
             if matches!(
                 name.as_str(),
                 "__bl_projection_dictionary" | "__bl_projection_value"
@@ -1486,16 +1587,21 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 emit_expr_with(&args[0], program, knowledge)
             )
         }
-        Expr::Call(name, args) if name == "__bl_some" => {
-            let found = fresh_local(expr, "__bl_some");
+        Expr::Some {
+            bindings,
+            predicate,
+        } => {
+            let found = fresh_local(expr, "__bl_some", knowledge);
             format!(
                 "{{ let mut {found} = false; '__bl_some: {{ {} }} {found} }}",
-                emit_some_iteration(&args[0], program, knowledge, &found)
+                emit_some_iteration(bindings, predicate, program, knowledge, &found)
             )
         }
+        Expr::NamedArgument(..) => {
+            unreachable!("named arguments are emitted by their calendar call")
+        }
         Expr::Call(name, args)
-            if name == "__bl_sequence"
-                || name == "seq" && !knowledge.iter().any(|item| item.name == *name) =>
+            if name == "seq" && !knowledge.iter().any(|item| item.name == *name) =>
         {
             let start = emit_expr_with(&args[0], program, knowledge);
             let end = emit_expr_with(&args[1], program, knowledge);
@@ -1512,7 +1618,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             format!("({values}).into_iter().{name}(|value| value)")
         }
         Expr::Call(name, args) if name.starts_with("__bl_sort_") => {
-            let values = fresh_local(expr, "__bl_sort_values");
+            let values = fresh_local(expr, "__bl_sort_values", knowledge);
             let source = emit_expr_with(&args[0], program, knowledge);
             let compare = if name.starts_with("__bl_sort_point_") {
                 "blkit_core::temporal::compare_checked(left, right, __bl_temporal_clock.clone())"
@@ -1538,8 +1644,8 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 "__bl_list_remove_match" | "__bl_list_listReplace_match"
             ) =>
         {
-            let items = fresh_local(expr, "__bl_match_items");
-            let result = fresh_local(expr, "__bl_match_result");
+            let items = fresh_local(expr, "__bl_match_items", knowledge);
+            let result = fresh_local(expr, "__bl_match_result", knowledge);
             let Expr::InlinePredicate { binding, body } = &args[1] else {
                 unreachable!()
             };
@@ -1548,7 +1654,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             let edit = if name == "__bl_list_remove_match" {
                 format!("if !({predicate}) {{ {result}.push({binding}); }}")
             } else {
-                let replacement = fresh_local(expr, "__bl_match_replacement");
+                let replacement = fresh_local(expr, "__bl_match_replacement", knowledge);
                 let value = emit_expr_with(&args[2], program, knowledge);
                 return format!(
                     "{{ let {items} = {source}; let {replacement} = {value}; let mut {result} = Vec::new(); for {binding} in {items} {{ if {predicate} {{ {result}.push({replacement}.clone()); }} else {{ {result}.push({binding}); }} }} {result} }}"
@@ -1593,7 +1699,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                     format!("({a}).contains(&({b}))")
                 }
                 "__bl_list_indexOf" => {
-                    let needle = fresh_local(expr, "__bl_index_of_needle");
+                    let needle = fresh_local(expr, "__bl_index_of_needle", knowledge);
                     let b = emit_expr_with(&args[1], program, knowledge);
                     format!(
                         "{{ let {needle} = {b}; ({a}).iter().enumerate().filter_map(|(i, item)| (item == &{needle}).then(|| Number::from(i + 1))).collect::<Vec<_>>() }}"
@@ -1635,8 +1741,8 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                             .collect::<String>()
                     );
                     if name == "__bl_list_union" {
-                        let result = fresh_local(expr, "__bl_union_result");
-                        let item = fresh_local(expr, "__bl_union_item");
+                        let result = fresh_local(expr, "__bl_union_result", knowledge);
+                        let item = fresh_local(expr, "__bl_union_item", knowledge);
                         format!(
                             "{{ let mut {result} = Vec::new(); for {item} in {combined} {{ if !{result}.contains(&{item}) {{ {result}.push({item}); }} }} {result} }}"
                         )
@@ -1645,25 +1751,25 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                     }
                 }
                 "__bl_list_distinct" => {
-                    let result = fresh_local(expr, "__bl_distinct_result");
-                    let item = fresh_local(expr, "__bl_distinct_item");
+                    let result = fresh_local(expr, "__bl_distinct_result", knowledge);
+                    let item = fresh_local(expr, "__bl_distinct_item", knowledge);
                     format!(
                         "{{ let mut {result} = Vec::new(); for {item} in {a} {{ if !{result}.contains(&{item}) {{ {result}.push({item}); }} }} {result} }}"
                     )
                 }
                 "__bl_list_duplicateValues" => {
-                    let items = fresh_local(expr, "__bl_duplicate_items");
-                    let result = fresh_local(expr, "__bl_duplicate_result");
-                    let item = fresh_local(expr, "__bl_duplicate_item");
+                    let items = fresh_local(expr, "__bl_duplicate_items", knowledge);
+                    let result = fresh_local(expr, "__bl_duplicate_result", knowledge);
+                    let item = fresh_local(expr, "__bl_duplicate_item", knowledge);
                     format!(
                         "{{ let {items} = {a}; let mut {result} = Vec::new(); for {item} in &{items} {{ if !{result}.contains({item}) && {items}.iter().filter(|value| *value == {item}).take(2).count() == 2 {{ {result}.push({item}.clone()); }} }} {result} }}"
                     )
                 }
                 "__bl_list_intersection" => {
-                    let lists = fresh_local(expr, "__bl_intersection_lists");
-                    let first = fresh_local(expr, "__bl_intersection_first");
-                    let result = fresh_local(expr, "__bl_intersection_result");
-                    let item = fresh_local(expr, "__bl_intersection_item");
+                    let lists = fresh_local(expr, "__bl_intersection_lists", knowledge);
+                    let first = fresh_local(expr, "__bl_intersection_first", knowledge);
+                    let result = fresh_local(expr, "__bl_intersection_result", knowledge);
+                    let item = fresh_local(expr, "__bl_intersection_item", knowledge);
                     let sources = args
                         .iter()
                         .map(|arg| emit_expr_with(arg, program, knowledge))
@@ -1698,8 +1804,8 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 | "__bl_list_insertAfter_spread"
                 | "__bl_list_remove"
                 | "__bl_list_listReplace" => {
-                    let items = fresh_local(expr, "__bl_edit_items");
-                    let index = fresh_local(expr, "__bl_edit_index");
+                    let items = fresh_local(expr, "__bl_edit_items", knowledge);
+                    let index = fresh_local(expr, "__bl_edit_index", knowledge);
                     let position = emit_expr_with(&args[1], program, knowledge);
                     let at = if name.starts_with("__bl_list_insertAfter") {
                         format!("{index} + 1")
@@ -1738,11 +1844,11 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             }
         }
         Expr::Call(name, args) if name == "__bl_list_index" => {
-            let items = fresh_local(expr, "__bl_index_items");
-            let position = fresh_local(expr, "__bl_index_position");
-            let length = fresh_local(expr, "__bl_index_length");
-            let offset = fresh_local(expr, "__bl_index_offset");
-            let index = fresh_local(expr, "__bl_index_offset_usize");
+            let items = fresh_local(expr, "__bl_index_items", knowledge);
+            let position = fresh_local(expr, "__bl_index_position", knowledge);
+            let length = fresh_local(expr, "__bl_index_length", knowledge);
+            let offset = fresh_local(expr, "__bl_index_offset", knowledge);
+            let index = fresh_local(expr, "__bl_index_offset_usize", knowledge);
             let base = emit_expr_with(&args[0], program, knowledge);
             let key = emit_expr_with(&args[1], program, knowledge);
             format!(
@@ -1750,8 +1856,8 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             )
         }
         Expr::Call(name, args) if name == "__bl_list_filter" => {
-            let result = fresh_local(expr, "__bl_filter_result");
-            let item = fresh_local(expr, "__bl_filter_item");
+            let result = fresh_local(expr, "__bl_filter_result", knowledge);
+            let item = fresh_local(expr, "__bl_filter_item", knowledge);
             let base = emit_expr_with(&args[0], program, knowledge);
             let mut key = args[1].clone();
             bind_filter_item(&mut key, &item);
@@ -1767,9 +1873,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 emit_expr_with(&args[1], program, knowledge)
             )
         }
-        Expr::Call(name, args)
-            if matches!(name.as_str(), "__bl_index" | "__bl_dictionary_field") =>
-        {
+        Expr::Call(name, args) if name == "__bl_dictionary_field" => {
             let base = emit_expr_with(&args[0], program, knowledge);
             let key = emit_expr_with(&args[1], program, knowledge);
             format!(
@@ -1916,21 +2020,23 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
         {
             if name == "calendarMerge" {
                 let calendars = emit_expr_with(&args[0], program, knowledge);
-                let mut dedupe = "None".to_string();
-                let mut tiebreak = "String::from(\"first\")".to_string();
+                let calendar_binding = fresh_local(expr, "__bl_calendars", knowledge);
+                let dedupe = fresh_local(expr, "__bl_dedupe", knowledge);
+                let tiebreak = fresh_local(expr, "__bl_tiebreak", knowledge);
+                let mut options = String::new();
                 for option in &args[1..] {
-                    let Expr::Call(key, value) = option else {
+                    let Expr::NamedArgument(key, value) = option else {
                         unreachable!()
                     };
-                    let emitted = emit_expr_with(&value[0], program, knowledge);
-                    if key == "__bl_named_dedupeBy" {
-                        dedupe = format!("Some({emitted})");
+                    let emitted = emit_expr_with(value, program, knowledge);
+                    if key == "dedupeBy" {
+                        options.push_str(&format!("{dedupe} = Some({emitted}); "));
                     } else {
-                        tiebreak = emitted;
+                        options.push_str(&format!("{tiebreak} = {emitted}; "));
                     }
                 }
                 format!(
-                    "{{ let dedupe: Option<String> = {dedupe}; blkit_core::temporal::Calendar::merge({calendars}, dedupe.as_deref(), &({tiebreak}))? }}"
+                    "{{ let {calendar_binding} = {calendars}; let mut {dedupe}: Option<String> = None; let mut {tiebreak} = String::from(\"first\"); {options} blkit_core::temporal::Calendar::merge({calendar_binding}, {dedupe}.as_deref(), &{tiebreak})? }}"
                 )
             } else {
                 let calendar = emit_expr_with(&args[0], program, knowledge);
@@ -1938,10 +2044,10 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                 let mode = args
                     .get(2)
                     .map_or("String::from(\"equality\")".to_string(), |option| {
-                        let Expr::Call(_, values) = option else {
+                        let Expr::NamedArgument(_, value) = option else {
                             unreachable!()
                         };
-                        emit_expr_with(&values[0], program, knowledge)
+                        emit_expr_with(value, program, knowledge)
                     });
                 format!(
                     "({calendar}).filter(&({target}), {}, &({mode}))?",

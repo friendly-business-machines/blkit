@@ -1034,7 +1034,38 @@ pub(super) fn expression_branches_with_bindings(
             Expr::FilterItem => Some(env.get(".item").map_or_else(Vec::new, |item| {
                 constrain(branches, result.clone(), item.clone())
             })),
-            Expr::InlinePredicate { .. } => Some(Vec::new()),
+            Expr::InlinePredicate { .. } | Expr::NamedArgument(..) => Some(Vec::new()),
+            Expr::Some {
+                bindings: sources,
+                predicate,
+            } => {
+                let mut branches = constrain(branches, result.clone(), named("Bool"));
+                let mut local = env.clone();
+                for (binding, source) in sources {
+                    let item = Term::Var(*next);
+                    *next += 1;
+                    bindings.insert(std::ptr::from_ref(source), item.clone());
+                    branches = visit(
+                        source,
+                        &generic("List", item.clone()),
+                        &local,
+                        context,
+                        bindings,
+                        next,
+                        branches,
+                    )?;
+                    local.insert(binding.clone(), item);
+                }
+                visit(
+                    predicate,
+                    &named("Bool"),
+                    &local,
+                    context,
+                    bindings,
+                    next,
+                    branches,
+                )
+            }
             Expr::List(items) => {
                 let terms: Vec<_> = items.iter().map(|_| allocate()).collect();
                 let item = allocate();
@@ -1144,6 +1175,72 @@ pub(super) fn expression_branches_with_bindings(
                     .collect();
                 visit(base, &source, env, context, bindings, next, branches)
             }
+            Expr::Dictionary(entries) => {
+                let mut fields = Vec::new();
+                for (key, _) in entries {
+                    fields.push((key.clone(), allocate()));
+                }
+                let mut branches: Vec<_> = branches
+                    .iter()
+                    .flat_map(|branch| {
+                        dictionary_literal_branches(branch, &fields, result, records)
+                    })
+                    .collect();
+                let mut local = env.clone();
+                for ((_, value), (key, term)) in entries.iter().zip(fields) {
+                    branches = visit(value, &term, &local, context, bindings, next, branches)?;
+                    if crate::compiler::identifier(&key) {
+                        local.insert(key, term);
+                    }
+                }
+                Some(branches)
+            }
+            Expr::Sequence(start, end) => {
+                let start_term = allocate();
+                let end_term = allocate();
+                let branches = constrain(branches, start_term.clone(), named("Number"));
+                let branches = constrain(branches, end_term.clone(), named("Number"));
+                let branches =
+                    constrain(branches, result.clone(), generic("List", named("Number")));
+                let branches = visit(start, &start_term, env, context, bindings, next, branches)?;
+                visit(end, &end_term, env, context, bindings, next, branches)
+            }
+            Expr::Index(base, key) => {
+                let source = allocate();
+                let position = allocate();
+                let literal_key = if let Expr::String(key) = key.as_ref() {
+                    Some(key.as_str())
+                } else {
+                    None
+                };
+                let branches: Vec<_> = branches
+                    .iter()
+                    .flat_map(|branch| {
+                        index_branches(branch, &source, &position, result, records, literal_key)
+                    })
+                    .collect();
+                let branches = visit(base, &source, env, context, bindings, next, branches)?;
+                let mut checked = Vec::new();
+                for branch in branches {
+                    let mut local = env.clone();
+                    if let Term::Generic(kind, element) = branch.resolve(&source)
+                        && kind == "List"
+                        && branch.resolve(&position) == named("Bool")
+                    {
+                        local.insert(".item".into(), *element);
+                    }
+                    checked.extend(visit(
+                        key,
+                        &position,
+                        &local,
+                        context,
+                        bindings,
+                        next,
+                        vec![branch],
+                    )?);
+                }
+                Some(checked)
+            }
             Expr::Call(name, args) => {
                 if matches!(name.as_str(), "remove" | "listReplace")
                     && !knowledge.iter().any(|definition| definition.name == *name)
@@ -1201,18 +1298,13 @@ pub(super) fn expression_branches_with_bindings(
                         return Some(Vec::new());
                     }
                     for option in options {
-                        let Expr::Call(key, values) = option else {
-                            return Some(Vec::new());
-                        };
-                        let [value] = values.as_slice() else {
+                        let Expr::NamedArgument(key, value) = option else {
                             return Some(Vec::new());
                         };
                         if !matches!(
                             (name.as_str(), key.as_str()),
-                            (
-                                "calendarMerge",
-                                "__bl_named_dedupeBy" | "__bl_named_tiebreak"
-                            ) | ("calendarDrop" | "calendarKeep", "__bl_named_rangeMatch")
+                            ("calendarMerge", "dedupeBy" | "tiebreak")
+                                | ("calendarDrop" | "calendarKeep", "rangeMatch")
                         ) {
                             return Some(Vec::new());
                         }
@@ -1228,56 +1320,8 @@ pub(super) fn expression_branches_with_bindings(
                     }
                     return Some(branches);
                 }
-                if name == "__bl_dictionary" {
-                    if args.len() % 2 != 0 {
-                        return Some(Vec::new());
-                    }
-                    let mut fields = Vec::new();
-                    for entry in args.chunks_exact(2) {
-                        let Expr::String(key) = &entry[0] else {
-                            return Some(Vec::new());
-                        };
-                        fields.push((key.clone(), allocate()));
-                    }
-                    let mut branches: Vec<_> = branches
-                        .iter()
-                        .flat_map(|branch| {
-                            dictionary_literal_branches(branch, &fields, result, records)
-                        })
-                        .collect();
-                    let mut local = env.clone();
-                    for (entry, (key, term)) in args.chunks_exact(2).zip(fields) {
-                        branches =
-                            visit(&entry[1], &term, &local, context, bindings, next, branches)?;
-                        if crate::compiler::identifier(&key) {
-                            local.insert(key, term);
-                        }
-                    }
-                    return Some(branches);
-                }
                 let terms: Vec<_> = args.iter().map(|_| allocate()).collect();
-                let branches: Vec<_> = if name == "__bl_some" && terms.len() == 1 {
-                    branches
-                        .iter()
-                        .filter_map(|branch| {
-                            branch.branch(&[
-                                (terms[0].clone(), generic("List", named("Bool"))),
-                                (result.clone(), named("Bool")),
-                            ])
-                        })
-                        .collect()
-                } else if name == "__bl_sequence" && terms.len() == 2 {
-                    branches
-                        .iter()
-                        .filter_map(|branch| {
-                            branch.branch(&[
-                                (terms[0].clone(), named("Number")),
-                                (terms[1].clone(), named("Number")),
-                                (result.clone(), generic("List", named("Number"))),
-                            ])
-                        })
-                        .collect()
-                } else {
+                let branches: Vec<_> = {
                     let definition = knowledge.iter().find(|item| item.name == *name);
                     let signatures = if let Some(definition) = definition {
                         Some(vec![(
@@ -1336,7 +1380,6 @@ pub(super) fn expression_branches_with_bindings(
                         && calendar.is_none()
                         && !dictionary
                         && !list_call
-                        && (shadowed || name != "__bl_index")
                         && (shadowed || !super::types::range_relation(name))
                     {
                         return None;
@@ -1381,52 +1424,13 @@ pub(super) fn expression_branches_with_bindings(
                                     branch, name, &terms, result, records, path,
                                 ));
                             }
-                            if !shadowed && name == "__bl_index" && terms.len() == 2 {
-                                let literal_key = if let Expr::String(key) = &args[1] {
-                                    Some(key.as_str())
-                                } else {
-                                    None
-                                };
-                                choices.extend(index_branches(
-                                    branch,
-                                    &terms[0],
-                                    &terms[1],
-                                    result,
-                                    records,
-                                    literal_key,
-                                ));
-                            }
                             choices
                         })
                         .collect()
                 };
                 let mut branches = branches;
-                for (index, (arg, term)) in args.iter().zip(terms.iter()).enumerate() {
-                    if name == "__bl_index" && index == 1 {
-                        let source = &branches;
-                        let mut checked = Vec::new();
-                        for branch in source {
-                            let mut local = env.clone();
-                            if let Term::Generic(kind, element) = branch.resolve(&terms[0])
-                                && kind == "List"
-                                && branch.resolve(term) == named("Bool")
-                            {
-                                local.insert(".item".into(), *element);
-                            }
-                            checked.extend(visit(
-                                arg,
-                                term,
-                                &local,
-                                context,
-                                bindings,
-                                next,
-                                vec![branch.clone()],
-                            )?);
-                        }
-                        branches = checked;
-                    } else {
-                        branches = visit(arg, term, env, context, bindings, next, branches)?;
-                    }
+                for (arg, term) in args.iter().zip(terms.iter()) {
+                    branches = visit(arg, term, env, context, bindings, next, branches)?;
                 }
                 if name == "flatten" {
                     branches = branches
@@ -1854,6 +1858,12 @@ mod tests {
                 bindings.get(&std::ptr::from_ref(expr)).unwrap()
             }
             crate::expr::Expr::Iteration { body, .. } => iteration_binding(body, name, bindings),
+            crate::expr::Expr::Some {
+                bindings: sources, ..
+            } => {
+                let (_, source) = sources.iter().find(|(binding, _)| binding == name).unwrap();
+                bindings.get(&std::ptr::from_ref(source)).unwrap()
+            }
             crate::expr::Expr::Call(_, args) if args.len() == 1 => {
                 iteration_binding(&args[0], name, bindings)
             }
@@ -3568,7 +3578,7 @@ mod tests {
         let crate::expr::Expr::List(items) = body.as_ref() else {
             panic!("expected list body")
         };
-        let crate::expr::Expr::Call(_, args) = &items[1] else {
+        let crate::expr::Expr::Index(inner, _) = &items[1] else {
             panic!("expected indexed inner iteration")
         };
         assert_eq!(bindings.len(), 2);
@@ -3579,7 +3589,7 @@ mod tests {
         assert_eq!(
             Constraints::unique_type(
                 &branches,
-                bindings.get(&std::ptr::from_ref(&args[0])).unwrap()
+                bindings.get(&std::ptr::from_ref(inner.as_ref())).unwrap()
             ),
             Some(Type::Named("Bool".into()))
         );

@@ -87,6 +87,18 @@ fn infer_dependencies(
         Expr::Field(value, _) | Expr::Not(value) => {
             infer_dependencies(value, target, nodes, links)?
         }
+        Expr::NamedArgument(_, value) => infer_dependencies(value, target, nodes, links)?,
+        Expr::Some {
+            bindings,
+            predicate,
+        } => {
+            let mut scoped = nodes.to_vec();
+            for (binding, source) in bindings {
+                infer_dependencies(source, target, &scoped, links)?;
+                scoped.retain(|(name, _)| name != binding);
+            }
+            infer_dependencies(predicate, target, &scoped, links)?;
+        }
         Expr::InlinePredicate { binding, body } => {
             let scoped: Vec<_> = nodes
                 .iter()
@@ -95,22 +107,20 @@ fn infer_dependencies(
                 .collect();
             infer_dependencies(body, target, &scoped, links)?;
         }
-        Expr::Binary(left, _, right) => {
+        Expr::Binary(left, _, right) | Expr::Index(left, right) | Expr::Sequence(left, right) => {
             infer_dependencies(left, target, nodes, links)?;
             infer_dependencies(right, target, nodes, links)?;
         }
-        Expr::Call(name, args) if name == "__bl_dictionary" => {
+        Expr::Dictionary(entries) => {
             let mut scoped = Vec::new();
-            for entry in args.chunks_exact_mut(2) {
+            for (key, value) in entries {
                 let available: Vec<_> = nodes
                     .iter()
                     .filter(|(name, _)| !scoped.contains(name))
                     .cloned()
                     .collect();
-                infer_dependencies(&mut entry[1], target, &available, links)?;
-                if let Expr::String(key) = &entry[0]
-                    && identifier(key)
-                {
+                infer_dependencies(value, target, &available, links)?;
+                if identifier(key) {
                     scoped.push(key.clone());
                 }
             }
@@ -304,14 +314,30 @@ fn expr_calls<'a>(expr: &'a Expr, found: &mut Vec<&'a str>) {
             }
         }
         Expr::Field(value, _) | Expr::Not(value) => expr_calls(value, found),
-        Expr::InlinePredicate { body, .. } => expr_calls(body, found),
-        Expr::Binary(left, _, right) => {
+        Expr::InlinePredicate { body, .. } | Expr::NamedArgument(_, body) => {
+            expr_calls(body, found)
+        }
+        Expr::Some {
+            bindings,
+            predicate,
+        } => {
+            for (_, source) in bindings {
+                expr_calls(source, found);
+            }
+            expr_calls(predicate, found);
+        }
+        Expr::Binary(left, _, right) | Expr::Index(left, right) | Expr::Sequence(left, right) => {
             expr_calls(left, found);
             expr_calls(right, found);
         }
         Expr::List(args) => {
             for arg in args {
                 expr_calls(arg, found);
+            }
+        }
+        Expr::Dictionary(entries) => {
+            for (_, value) in entries {
+                expr_calls(value, found);
             }
         }
         Expr::Iteration { source, body, .. } => {
@@ -355,18 +381,45 @@ fn expr_names<'a>(expr: &'a Expr, found: &mut Vec<&'a str>) {
     match expr {
         Expr::Name(name) => found.push(name),
         Expr::Field(value, _) | Expr::Not(value) => expr_names(value, found),
+        Expr::NamedArgument(_, value) => expr_names(value, found),
+        Expr::Some {
+            bindings,
+            predicate,
+        } => {
+            let mut scoped = Vec::new();
+            for (binding, source) in bindings {
+                let mut local = Vec::new();
+                expr_names(source, &mut local);
+                found.extend(local.into_iter().filter(|name| !scoped.contains(name)));
+                scoped.push(binding.as_str());
+            }
+            let mut local = Vec::new();
+            expr_names(predicate, &mut local);
+            found.extend(local.into_iter().filter(|name| !scoped.contains(name)));
+        }
         Expr::InlinePredicate { binding, body } => {
             let mut local = Vec::new();
             expr_names(body, &mut local);
             found.extend(local.into_iter().filter(|name| *name != binding));
         }
-        Expr::Binary(left, _, right) => {
+        Expr::Binary(left, _, right) | Expr::Index(left, right) | Expr::Sequence(left, right) => {
             expr_names(left, found);
             expr_names(right, found);
         }
         Expr::Call(_, args) | Expr::List(args) => {
             for arg in args {
                 expr_names(arg, found);
+            }
+        }
+        Expr::Dictionary(entries) => {
+            let mut scoped = Vec::new();
+            for (key, value) in entries {
+                let mut local = Vec::new();
+                expr_names(value, &mut local);
+                found.extend(local.into_iter().filter(|name| !scoped.contains(name)));
+                if identifier(key) {
+                    scoped.push(key.as_str());
+                }
             }
         }
         Expr::Iteration {

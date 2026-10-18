@@ -225,13 +225,29 @@ fn binding_used(expr: &Expr, name: &str) -> bool {
             ..
         } => binding_used(source, name) || binding != name && binding_used(body, name),
         Expr::InlinePredicate { binding, body } => binding != name && binding_used(body, name),
-        Expr::Not(value) | Expr::Field(value, _) => binding_used(value, name),
-        Expr::Binary(left, _, right) => binding_used(left, name) || binding_used(right, name),
-        Expr::Call(call, args) if call == "__bl_dictionary" => {
+        Expr::NamedArgument(_, value) => binding_used(value, name),
+        Expr::Some {
+            bindings,
+            predicate,
+        } => {
             let mut shadowed = false;
-            args.chunks_exact(2).any(|entry| {
-                let used = !shadowed && binding_used(&entry[1], name);
-                shadowed |= matches!(&entry[0], Expr::String(key) if key == name);
+            let mut used = false;
+            for (binding, source) in bindings {
+                used |= !shadowed && binding_used(source, name);
+                shadowed |= binding == name;
+            }
+            used || !shadowed && binding_used(predicate, name)
+        }
+        Expr::Not(value) | Expr::Field(value, _) => binding_used(value, name),
+        Expr::Index(base, key) | Expr::Sequence(base, key) => {
+            binding_used(base, name) || binding_used(key, name)
+        }
+        Expr::Binary(left, _, right) => binding_used(left, name) || binding_used(right, name),
+        Expr::Dictionary(entries) => {
+            let mut shadowed = false;
+            entries.iter().any(|(key, value)| {
+                let used = !shadowed && binding_used(value, name);
+                shadowed |= key == name;
                 used
             })
         }
@@ -291,6 +307,58 @@ pub(crate) fn empty_iteration_element(
         .ok_or("ambiguous empty iteration source binding type".into())
 }
 
+pub(crate) fn empty_some_element(
+    expr: &Expr,
+    source: &Expr,
+    env: &HashMap<String, Type>,
+    program: &Program,
+    knowledge: &[Knowledge],
+) -> Result<Type, String> {
+    let Expr::Some {
+        bindings: sources,
+        predicate,
+    } = expr
+    else {
+        return Err("expected some expression".into());
+    };
+    if let Some(index) = sources
+        .iter()
+        .position(|(_, value)| std::ptr::eq(value, source))
+    {
+        let binding = &sources[index].0;
+        let later = &sources[index + 1..];
+        let mut used = false;
+        let mut shadowed = false;
+        for (name, value) in later {
+            used |= !shadowed && binding_used(value, binding);
+            shadowed |= name == binding;
+        }
+        if !used && (shadowed || !binding_used(predicate, binding)) {
+            return Ok(Type::Named("Value".into()));
+        }
+    }
+    let symbolic_env = env
+        .iter()
+        .map(|(name, ty)| (name.clone(), Term::from(ty)))
+        .collect();
+    let mut bindings = HashMap::new();
+    let branches = constraints::expression_branches_with_bindings(
+        expr,
+        &Term::from(&Type::Named("Bool".into())),
+        &symbolic_env,
+        &program.records,
+        knowledge,
+        &program.enums,
+        &mut bindings,
+    )
+    .ok_or("cannot constrain empty some source")?;
+    let binding = bindings
+        .get(&std::ptr::from_ref(source))
+        .ok_or("missing some binding")?;
+    Constraints::unique_type(&branches, binding)
+        .ok_or("ambiguous empty some source binding type".into())
+}
+
 pub(crate) fn infer_with(
     expr: &Expr,
     expected: Option<&Type>,
@@ -322,6 +390,255 @@ pub(crate) fn infer_with(
             .ok_or(".item requires a list filter predicate".into()),
         InlinePredicate { .. } => {
             Err("inline predicate requires remove or listReplace match argument".into())
+        }
+        NamedArgument(..) => Err("named argument requires a calendar transformation".into()),
+        Some {
+            bindings,
+            predicate,
+        } => {
+            let mut local = env.clone();
+            for (binding, source) in bindings {
+                check_name(binding)?;
+                let hint = if matches!(source, Expr::List(items) if items.is_empty()) {
+                    Some(Type::Generic(
+                        "List".into(),
+                        Box::new(empty_some_element(expr, source, env, program, knowledge)?),
+                    ))
+                } else {
+                    None
+                };
+                let ty = infer_with(source, hint.as_ref(), &local, program, knowledge)?;
+                let Type::Generic(kind, element) = ty else {
+                    return Err("iteration source must be List".into());
+                };
+                if kind != "List" {
+                    return Err("iteration source must be List".into());
+                }
+                local.insert(binding.clone(), *element);
+            }
+            if infer_with(predicate, Some(&named("Bool")), &local, program, knowledge)?
+                != named("Bool")
+            {
+                return Err("some predicate must be Bool".into());
+            }
+            Ok(named("Bool"))
+        }
+        Dictionary(entries) => {
+            let schema = expected.and_then(|ty| match ty {
+                Type::Named(name) => program.records.iter().find(|record| &record.name == name),
+                _ => None,
+            });
+            if let Some(schema) = schema
+                && schema.fields.len() != entries.len()
+            {
+                return Err(format!("dictionary {} requires all fields", schema.name));
+            }
+            let element_type = match expected {
+                Some(Type::Generic(kind, inner)) if kind == "Dictionary" => Some(inner.as_ref()),
+                _ => None,
+            };
+            let mut scope = env.clone();
+            let mut homogeneous = None;
+            let mut fields = Vec::new();
+            for (key, value) in entries {
+                let field_type = schema.and_then(|schema| {
+                    schema
+                        .fields
+                        .iter()
+                        .find(|(field, _)| field == key)
+                        .map(|(_, ty)| ty)
+                });
+                if schema.is_some() && field_type.is_none() {
+                    return Err(format!("unknown dictionary field: {key}"));
+                }
+                let ty = infer_with(
+                    value,
+                    field_type.or(element_type),
+                    &scope,
+                    program,
+                    knowledge,
+                )?;
+                if field_type
+                    .or(element_type)
+                    .is_some_and(|wanted| wanted != &ty)
+                {
+                    return Err(format!(
+                        "dictionary field {key} has incompatible type: {ty}"
+                    ));
+                }
+                if homogeneous.as_ref().is_some_and(|previous| previous != &ty) {
+                    homogeneous = Some(named("Value"));
+                } else if homogeneous.is_none() {
+                    homogeneous = Some(ty.clone());
+                }
+                fields.push((key.clone(), Term::from(&ty)));
+                if crate::compiler::identifier(key) {
+                    scope.insert(key.clone(), ty);
+                }
+            }
+            let result = if let Some(ty) = expected {
+                if schema.is_some() || element_type.is_some() {
+                    ty.clone()
+                } else {
+                    Type::Named("Dictionary".into())
+                }
+            } else if let Some(ty) = homogeneous {
+                if ty == named("Value") {
+                    named("Dictionary")
+                } else {
+                    Type::Generic("Dictionary".into(), Box::new(ty))
+                }
+            } else {
+                named("Dictionary")
+            };
+            if constraints::dictionary_literal_branches(
+                &Constraints::default(),
+                &fields,
+                &Term::from(&result),
+                &program.records,
+            )
+            .is_empty()
+            {
+                return Err("dictionary fields have incompatible types".into());
+            }
+            Ok(result)
+        }
+        Sequence(start, end) => {
+            for bound in [start, end] {
+                if infer_with(bound, Some(&named("Number")), env, program, knowledge)?
+                    != named("Number")
+                {
+                    return Err("sequence bounds require Number".into());
+                }
+            }
+            Ok(Type::Generic("List".into(), Box::new(named("Number"))))
+        }
+        Index(base, key) => {
+            let base_expected = if matches!(base.as_ref(), List(elements) if elements.is_empty())
+                && matches!(expected, Some(Type::Generic(kind, _)) if kind == "List")
+            {
+                expected
+            } else {
+                None
+            };
+            let base_type = infer_with(base, base_expected, env, program, knowledge)?;
+            if let Type::Generic(kind, element) = &base_type
+                && kind == "List"
+            {
+                if infer_with(key, None, env, program, knowledge).ok() == Some(named("Number")) {
+                    let result = *element.clone();
+                    if constraints::index_branches(
+                        &Constraints::default(),
+                        &Term::from(&base_type),
+                        &Term::from(&named("Number")),
+                        &Term::from(&result),
+                        &program.records,
+                        None,
+                    )
+                    .is_empty()
+                    {
+                        return Err("list index requires Number".into());
+                    }
+                    return Ok(result);
+                }
+                let mut local = env.clone();
+                local.insert(".item".into(), *element.clone());
+                let predicate = infer_with(key, None, &local, program, knowledge)?;
+                if constraints::index_branches(
+                    &Constraints::default(),
+                    &Term::from(&base_type),
+                    &Term::from(&predicate),
+                    &Term::from(&base_type),
+                    &program.records,
+                    None,
+                )
+                .is_empty()
+                {
+                    return Err("list predicate must be Bool".into());
+                }
+                return Ok(base_type);
+            }
+            if infer_with(key, Some(&named("String")), env, program, knowledge)? != named("String")
+            {
+                return Err("dictionary key requires String".into());
+            }
+            match base_type {
+                Type::Generic(kind, ty) if kind == "Dictionary" => {
+                    let result = *ty;
+                    if constraints::index_branches(
+                        &Constraints::default(),
+                        &Term::from(&Type::Generic(kind, Box::new(result.clone()))),
+                        &Term::from(&named("String")),
+                        &Term::from(&result),
+                        &program.records,
+                        None,
+                    )
+                    .is_empty()
+                    {
+                        return Err("dictionary index requires a dictionary".into());
+                    }
+                    Ok(result)
+                }
+                Type::Named(name) if matches!(name.as_str(), "Dictionary" | "Value") => {
+                    let result = expected.cloned().unwrap_or_else(|| named("Value"));
+                    if constraints::index_branches(
+                        &Constraints::default(),
+                        &Term::from(&named(&name)),
+                        &Term::from(&named("String")),
+                        &Term::from(&result),
+                        &program.records,
+                        None,
+                    )
+                    .is_empty()
+                    {
+                        return Err("dictionary index requires a dictionary".into());
+                    }
+                    Ok(result)
+                }
+                Type::Named(name) => {
+                    let record = program
+                        .records
+                        .iter()
+                        .find(|record| record.name == name)
+                        .ok_or("dictionary index requires a dictionary")?;
+                    let Expr::String(key) = key.as_ref() else {
+                        let result = named("Value");
+                        if constraints::index_branches(
+                            &Constraints::default(),
+                            &Term::from(&named(&name)),
+                            &Term::from(&named("String")),
+                            &Term::from(&result),
+                            &program.records,
+                            None,
+                        )
+                        .is_empty()
+                        {
+                            return Err("dictionary index requires a dictionary".into());
+                        }
+                        return Ok(result);
+                    };
+                    let result = record
+                        .fields
+                        .iter()
+                        .find(|(field, _)| field == key)
+                        .map(|(_, ty)| ty.clone())
+                        .ok_or_else(|| format!("unknown dictionary field: {key}"))?;
+                    if constraints::index_branches(
+                        &Constraints::default(),
+                        &Term::from(&named(&name)),
+                        &Term::from(&named("String")),
+                        &Term::from(&result),
+                        &program.records,
+                        Some(key),
+                    )
+                    .is_empty()
+                    {
+                        return Err(format!("unknown dictionary field: {key}"));
+                    }
+                    Ok(result)
+                }
+                _ => Err("dictionary index requires a dictionary".into()),
+            }
         }
         Call(name, args) => {
             if matches!(
@@ -416,91 +733,6 @@ pub(crate) fn infer_with(
                     }
                 }
                 return Ok(source);
-            }
-            if name == "__bl_dictionary" {
-                let schema = expected.and_then(|ty| match ty {
-                    Type::Named(name) => program.records.iter().find(|record| &record.name == name),
-                    _ => None,
-                });
-                if let Some(schema) = schema
-                    && schema.fields.len() != args.len() / 2
-                {
-                    return Err(format!("dictionary {} requires all fields", schema.name));
-                }
-                let element_type = match expected {
-                    Some(Type::Generic(kind, inner)) if kind == "Dictionary" => {
-                        Some(inner.as_ref())
-                    }
-                    _ => None,
-                };
-                let mut scope = env.clone();
-                let mut homogeneous = None;
-                let mut fields = Vec::new();
-                for entry in args.chunks_exact(2) {
-                    let Expr::String(key) = &entry[0] else {
-                        return Err("invalid dictionary key".into());
-                    };
-                    let field_type = schema.and_then(|schema| {
-                        schema
-                            .fields
-                            .iter()
-                            .find(|(field, _)| field == key)
-                            .map(|(_, ty)| ty)
-                    });
-                    if schema.is_some() && field_type.is_none() {
-                        return Err(format!("unknown dictionary field: {key}"));
-                    }
-                    let ty = infer_with(
-                        &entry[1],
-                        field_type.or(element_type),
-                        &scope,
-                        program,
-                        knowledge,
-                    )?;
-                    if field_type
-                        .or(element_type)
-                        .is_some_and(|wanted| wanted != &ty)
-                    {
-                        return Err(format!(
-                            "dictionary field {key} has incompatible type: {ty}"
-                        ));
-                    }
-                    if homogeneous.as_ref().is_some_and(|previous| previous != &ty) {
-                        homogeneous = Some(named("Value"));
-                    } else if homogeneous.is_none() {
-                        homogeneous = Some(ty.clone());
-                    }
-                    fields.push((key.clone(), Term::from(&ty)));
-                    if crate::compiler::identifier(key) {
-                        scope.insert(key.clone(), ty);
-                    }
-                }
-                let result = if let Some(ty) = expected {
-                    if schema.is_some() || element_type.is_some() {
-                        ty.clone()
-                    } else {
-                        Type::Named("Dictionary".into())
-                    }
-                } else if let Some(ty) = homogeneous {
-                    if ty == named("Value") {
-                        named("Dictionary")
-                    } else {
-                        Type::Generic("Dictionary".into(), Box::new(ty))
-                    }
-                } else {
-                    named("Dictionary")
-                };
-                if constraints::dictionary_literal_branches(
-                    &Constraints::default(),
-                    &fields,
-                    &Term::from(&result),
-                    &program.records,
-                )
-                .is_empty()
-                {
-                    return Err("dictionary fields have incompatible types".into());
-                }
-                return Ok(result);
             }
             if matches!(name.as_str(), "dictionaryPut" | "dictionaryRemove") {
                 let Some(source) = args.first() else {
@@ -637,12 +869,12 @@ pub(crate) fn infer_with(
                         Expr::List(items) => items.iter().filter_map(|item| if let Expr::String(key) = item { Some(key.as_str()) } else { None }).collect(),
                         _ => Vec::new(),
                     };
-                    if let Expr::Call(kind, _) = &args[0] && kind == "__bl_dictionary" && !path.is_empty() {
+                    if matches!(&args[0], Expr::Dictionary(_)) && !path.is_empty() {
                         let mut value = &args[0];
                         for key in path {
-                            if let Expr::Call(kind, entries) = value && kind == "__bl_dictionary"
-                                && let Some(entry) = entries.chunks_exact(2).find(|entry| matches!(&entry[0], Expr::String(name) if name == key)) {
-                                value = &entry[1];
+                            if let Expr::Dictionary(entries) = value
+                                && let Some((_, entry)) = entries.iter().find(|(name, _)| name == key) {
+                                value = entry;
                                 continue;
                             }
                             value = &args[0];
@@ -664,161 +896,6 @@ pub(crate) fn infer_with(
                     "has" | "isEmpty" => named("Bool"),
                     _ => inner,
                 });
-            }
-            if name == "__bl_sequence" {
-                let [start, end] = args.as_slice() else {
-                    return Err("sequence requires two bounds".into());
-                };
-                for bound in [start, end] {
-                    if infer_with(bound, Some(&named("Number")), env, program, knowledge)?
-                        != named("Number")
-                    {
-                        return Err("sequence bounds require Number".into());
-                    }
-                }
-                return Ok(Type::Generic("List".into(), Box::new(named("Number"))));
-            }
-            if name == "__bl_some" {
-                let [body] = args.as_slice() else {
-                    return Err("some requires iteration".into());
-                };
-                let list = Type::Generic("List".into(), Box::new(named("Bool")));
-                if infer_with(body, Some(&list), env, program, knowledge)? != list {
-                    return Err("some predicate must be Bool".into());
-                }
-                return Ok(named("Bool"));
-            }
-            if name == "__bl_index" {
-                let [base, key] = args.as_slice() else {
-                    return Err("dictionary index requires key".into());
-                };
-                let base_expected = if matches!(base, List(elements) if elements.is_empty())
-                    && matches!(expected, Some(Type::Generic(kind, _)) if kind == "List")
-                {
-                    expected
-                } else {
-                    None
-                };
-                let base_type = infer_with(base, base_expected, env, program, knowledge)?;
-                if let Type::Generic(kind, element) = &base_type
-                    && kind == "List"
-                {
-                    if infer_with(key, None, env, program, knowledge).ok() == Some(named("Number"))
-                    {
-                        let result = *element.clone();
-                        if constraints::index_branches(
-                            &Constraints::default(),
-                            &Term::from(&base_type),
-                            &Term::from(&named("Number")),
-                            &Term::from(&result),
-                            &program.records,
-                            None,
-                        )
-                        .is_empty()
-                        {
-                            return Err("list index requires Number".into());
-                        }
-                        return Ok(result);
-                    }
-                    let mut local = env.clone();
-                    local.insert(".item".into(), *element.clone());
-                    let predicate = infer_with(key, None, &local, program, knowledge)?;
-                    if constraints::index_branches(
-                        &Constraints::default(),
-                        &Term::from(&base_type),
-                        &Term::from(&predicate),
-                        &Term::from(&base_type),
-                        &program.records,
-                        None,
-                    )
-                    .is_empty()
-                    {
-                        return Err("list predicate must be Bool".into());
-                    }
-                    return Ok(base_type);
-                }
-                if infer_with(key, Some(&named("String")), env, program, knowledge)?
-                    != named("String")
-                {
-                    return Err("dictionary key requires String".into());
-                }
-                return match base_type {
-                    Type::Generic(kind, ty) if kind == "Dictionary" => {
-                        let result = *ty;
-                        if constraints::index_branches(
-                            &Constraints::default(),
-                            &Term::from(&Type::Generic(kind, Box::new(result.clone()))),
-                            &Term::from(&named("String")),
-                            &Term::from(&result),
-                            &program.records,
-                            None,
-                        )
-                        .is_empty()
-                        {
-                            return Err("dictionary index requires a dictionary".into());
-                        }
-                        Ok(result)
-                    }
-                    Type::Named(name) if matches!(name.as_str(), "Dictionary" | "Value") => {
-                        let result = expected.cloned().unwrap_or_else(|| named("Value"));
-                        if constraints::index_branches(
-                            &Constraints::default(),
-                            &Term::from(&named(&name)),
-                            &Term::from(&named("String")),
-                            &Term::from(&result),
-                            &program.records,
-                            None,
-                        )
-                        .is_empty()
-                        {
-                            return Err("dictionary index requires a dictionary".into());
-                        }
-                        Ok(result)
-                    }
-                    Type::Named(name) => {
-                        let record = program
-                            .records
-                            .iter()
-                            .find(|record| record.name == name)
-                            .ok_or("dictionary index requires a dictionary")?;
-                        let Expr::String(key) = key else {
-                            let result = named("Value");
-                            if constraints::index_branches(
-                                &Constraints::default(),
-                                &Term::from(&named(&name)),
-                                &Term::from(&named("String")),
-                                &Term::from(&result),
-                                &program.records,
-                                None,
-                            )
-                            .is_empty()
-                            {
-                                return Err("dictionary index requires a dictionary".into());
-                            }
-                            return Ok(result);
-                        };
-                        let result = record
-                            .fields
-                            .iter()
-                            .find(|(field, _)| field == key)
-                            .map(|(_, ty)| ty.clone())
-                            .ok_or_else(|| format!("unknown dictionary field: {key}"))?;
-                        if constraints::index_branches(
-                            &Constraints::default(),
-                            &Term::from(&named(&name)),
-                            &Term::from(&named("String")),
-                            &Term::from(&result),
-                            &program.records,
-                            Some(key),
-                        )
-                        .is_empty()
-                        {
-                            return Err(format!("unknown dictionary field: {key}"));
-                        }
-                        Ok(result)
-                    }
-                    _ => Err("dictionary index requires a dictionary".into()),
-                };
             }
             if let Some(definition) = knowledge.iter().find(|item| item.name == *name) {
                 if args.len() != definition.params.len() {
@@ -1205,27 +1282,20 @@ pub(crate) fn infer_with(
                     }
                     let mut types = vec![expected];
                     for option in &args[1..] {
-                        let Expr::Call(key, values) = option else {
+                        let Expr::NamedArgument(key, value) = option else {
                             return Err("calendarMerge options must be named".into());
                         };
-                        if !matches!(key.as_str(), "__bl_named_dedupeBy" | "__bl_named_tiebreak")
-                            || values.len() != 1
-                        {
+                        if !matches!(key.as_str(), "dedupeBy" | "tiebreak") {
                             return Err(format!("unknown calendarMerge option: {key}"));
                         }
-                        let ty = infer_with(
-                            &values[0],
-                            Some(&named("String")),
-                            env,
-                            program,
-                            knowledge,
-                        )?;
+                        let ty =
+                            infer_with(value, Some(&named("String")), env, program, knowledge)?;
                         if ty != named("String") {
                             return Err(format!("{key} requires String"));
                         }
                         types.push(ty);
-                        if let Expr::String(value) = &values[0] {
-                            let valid = if key.ends_with("dedupeBy") {
+                        if let Expr::String(value) = value.as_ref() {
+                            let valid = if key == "dedupeBy" {
                                 matches!(value.as_str(), "value" | "valueAndName")
                             } else {
                                 matches!(value.as_str(), "first" | "name")
@@ -1300,24 +1370,19 @@ pub(crate) fn infer_with(
                     }
                     let mut option_type = None;
                     if let Some(option) = options.first() {
-                        let Expr::Call(key, values) = option else {
+                        let Expr::NamedArgument(key, value) = option else {
                             return Err("rangeMatch must be named".into());
                         };
-                        if key != "__bl_named_rangeMatch" || values.len() != 1 {
+                        if key != "rangeMatch" {
                             return Err(format!("unknown {name} option: {key}"));
                         }
-                        let ty = infer_with(
-                            &values[0],
-                            Some(&named("String")),
-                            env,
-                            program,
-                            knowledge,
-                        )?;
+                        let ty =
+                            infer_with(value, Some(&named("String")), env, program, knowledge)?;
                         if ty != named("String") {
                             return Err("rangeMatch requires String".into());
                         }
                         option_type = Some(ty);
-                        if let Expr::String(value) = &values[0]
+                        if let Expr::String(value) = value.as_ref()
                             && !matches!(
                                 value.as_str(),
                                 "equality" | "entryWithin" | "entryEncloses" | "overlap"
@@ -1866,16 +1931,11 @@ pub(crate) fn infer_with(
             Ok(output)
         }
         Field(base, field) => {
-            if let Call(name, entries) = base.as_ref()
-                && name == "__bl_dictionary"
-            {
+            if let Dictionary(entries) = base.as_ref() {
                 infer_with(base, None, env, program, knowledge)?;
                 let mut local = env.clone();
-                for entry in entries.chunks_exact(2) {
-                    let String(key) = &entry[0] else {
-                        unreachable!()
-                    };
-                    let ty = infer_with(&entry[1], None, &local, program, knowledge)?;
+                for (key, value) in entries {
+                    let ty = infer_with(value, None, &local, program, knowledge)?;
                     if key == field {
                         return Ok(ty);
                     }
@@ -1913,11 +1973,8 @@ pub(crate) fn infer_with(
                     }
                     if let Expr::List(elements) = base.as_ref() {
                         for element in elements {
-                            if let Expr::Call(name, entries) = element
-                                && name == "__bl_dictionary"
-                                && !entries.chunks_exact(2).any(
-                                    |entry| matches!(&entry[0], Expr::String(key) if key == field),
-                                )
+                            if let Expr::Dictionary(entries) = element
+                                && !entries.iter().any(|(key, _)| key == field)
                             {
                                 return Err(format!("missing dictionary field: {field}"));
                             }
@@ -2323,150 +2380,144 @@ pub(crate) fn infer_with(
 }
 
 pub(crate) fn builtin(name: &str) -> bool {
-    name.starts_with("__bl_named_")
-        || matches!(
-            name,
-            "__bl_dictionary"
-                | "__bl_index"
-                | "__bl_sequence"
-                | "__bl_some"
-                | "keys"
-                | "values"
-                | "getEntries"
-                | "size"
-                | "has"
-                | "getValue"
-                | "dictionaryPut"
-                | "dictionaryMerge"
-                | "dictionaryRemove"
-        )
-        || matches!(
-            name,
-            "daysBetween"
-                | "monthsBetween"
-                | "yearsBetween"
-                | "financialYear"
-                | "financialYearQuarter"
-                | "isWeekday"
-                | "isWeekend"
-                | "isPublicHoliday"
-                | "isBusinessDay"
-                | "lastDayOfMonth"
-                | "firstDayOfMonth"
-                | "lastDayOfPrevMonth"
-                | "firstDayOfNextMonth"
-                | "firstDayOfWeekInMonth"
-                | "lastDayOfWeekInMonth"
-                | "nthDayOfWeekInMonth"
-                | "nextDayOfWeek"
-                | "prevDayOfWeek"
-                | "nextWeekday"
-                | "prevWeekday"
-                | "nextBusinessDay"
-                | "prevBusinessDay"
-                | "addBusinessDays"
-                | "subtractBusinessDays"
-                | "weekdaysBetween"
-                | "businessDaysBetween"
-                | "calendarDrop"
-                | "calendarKeep"
-                | "calendarMerge"
-                | "pattern"
-                | "count"
-                | "listContains"
-                | "sublist"
-                | "append"
-                | "prepend"
-                | "concatenate"
-                | "union"
-                | "distinct"
-                | "duplicateValues"
-                | "intersection"
-                | "flatten"
-                | "sort"
-                | "seq"
-                | "all"
-                | "any"
-                | "insertBefore"
-                | "insertAfter"
-                | "remove"
-                | "listReplace"
-                | "entries"
-                | "names"
-                | "find"
-                | "entriesFor"
-                | "entriesIn"
-                | "validFrom"
-                | "validTo"
-                | "validRange"
-                | "entryValue"
-                | "entryName"
-                | "next"
-                | "prev"
-                | "dtDurationBetween"
-                | "ymDurationBetween"
-                | "withOffset"
-                | "withTimezone"
-                | "withoutOffset"
-                | "withoutTimezone"
-                | "withoutOffsetOrTimezone"
-                | "round"
-                | "roundUp"
-                | "roundDown"
-                | "roundHalfUp"
-                | "roundHalfDown"
-                | "roundHalfEven"
-                | "floor"
-                | "ceiling"
-                | "min"
-                | "max"
-                | "sum"
-                | "mean"
-                | "median"
-                | "product"
-                | "stddev"
-                | "mode"
-                | "number"
-                | "abs"
-                | "modulo"
-                | "sqrt"
-                | "exp"
-                | "ln"
-                | "log"
-                | "clamp"
-                | "odd"
-                | "even"
-                | "isPositive"
-                | "isNegative"
-                | "isZero"
-                | "string"
-                | "stringJoin"
-                | "zipStringJoin"
-                | "stringLength"
-                | "substring"
-                | "substringBefore"
-                | "substringAfter"
-                | "upperCase"
-                | "lowerCase"
-                | "trim"
-                | "trimLeading"
-                | "trimTrailing"
-                | "contains"
-                | "startsWith"
-                | "endsWith"
-                | "matches"
-                | "replace"
-                | "split"
-                | "extract"
-                | "isBlank"
-                | "isEmpty"
-                | "indexOf"
-                | "charAt"
-                | "reverse"
-                | "padLeading"
-                | "padTrailing"
-                | "repeat"
-        )
+    matches!(
+        name,
+        "keys"
+            | "values"
+            | "getEntries"
+            | "size"
+            | "has"
+            | "getValue"
+            | "dictionaryPut"
+            | "dictionaryMerge"
+            | "dictionaryRemove"
+    ) || matches!(
+        name,
+        "daysBetween"
+            | "monthsBetween"
+            | "yearsBetween"
+            | "financialYear"
+            | "financialYearQuarter"
+            | "isWeekday"
+            | "isWeekend"
+            | "isPublicHoliday"
+            | "isBusinessDay"
+            | "lastDayOfMonth"
+            | "firstDayOfMonth"
+            | "lastDayOfPrevMonth"
+            | "firstDayOfNextMonth"
+            | "firstDayOfWeekInMonth"
+            | "lastDayOfWeekInMonth"
+            | "nthDayOfWeekInMonth"
+            | "nextDayOfWeek"
+            | "prevDayOfWeek"
+            | "nextWeekday"
+            | "prevWeekday"
+            | "nextBusinessDay"
+            | "prevBusinessDay"
+            | "addBusinessDays"
+            | "subtractBusinessDays"
+            | "weekdaysBetween"
+            | "businessDaysBetween"
+            | "calendarDrop"
+            | "calendarKeep"
+            | "calendarMerge"
+            | "pattern"
+            | "count"
+            | "listContains"
+            | "sublist"
+            | "append"
+            | "prepend"
+            | "concatenate"
+            | "union"
+            | "distinct"
+            | "duplicateValues"
+            | "intersection"
+            | "flatten"
+            | "sort"
+            | "seq"
+            | "all"
+            | "any"
+            | "insertBefore"
+            | "insertAfter"
+            | "remove"
+            | "listReplace"
+            | "entries"
+            | "names"
+            | "find"
+            | "entriesFor"
+            | "entriesIn"
+            | "validFrom"
+            | "validTo"
+            | "validRange"
+            | "entryValue"
+            | "entryName"
+            | "next"
+            | "prev"
+            | "dtDurationBetween"
+            | "ymDurationBetween"
+            | "withOffset"
+            | "withTimezone"
+            | "withoutOffset"
+            | "withoutTimezone"
+            | "withoutOffsetOrTimezone"
+            | "round"
+            | "roundUp"
+            | "roundDown"
+            | "roundHalfUp"
+            | "roundHalfDown"
+            | "roundHalfEven"
+            | "floor"
+            | "ceiling"
+            | "min"
+            | "max"
+            | "sum"
+            | "mean"
+            | "median"
+            | "product"
+            | "stddev"
+            | "mode"
+            | "number"
+            | "abs"
+            | "modulo"
+            | "sqrt"
+            | "exp"
+            | "ln"
+            | "log"
+            | "clamp"
+            | "odd"
+            | "even"
+            | "isPositive"
+            | "isNegative"
+            | "isZero"
+            | "string"
+            | "stringJoin"
+            | "zipStringJoin"
+            | "stringLength"
+            | "substring"
+            | "substringBefore"
+            | "substringAfter"
+            | "upperCase"
+            | "lowerCase"
+            | "trim"
+            | "trimLeading"
+            | "trimTrailing"
+            | "contains"
+            | "startsWith"
+            | "endsWith"
+            | "matches"
+            | "replace"
+            | "split"
+            | "extract"
+            | "isBlank"
+            | "isEmpty"
+            | "indexOf"
+            | "charAt"
+            | "reverse"
+            | "padLeading"
+            | "padTrailing"
+            | "repeat"
+    )
 }
 
 pub(super) fn range_relation(name: &str) -> bool {

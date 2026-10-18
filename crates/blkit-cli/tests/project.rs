@@ -46,6 +46,13 @@ fn project(manifest: &str, files: &[(&str, &str)]) -> PathBuf {
     root
 }
 
+// Distinct package names keep concurrently generated role binaries distinct in CARGO_TARGET_DIR.
+fn isolated_role_project(manifest: &str, files: &[(&str, &str)]) -> (PathBuf, String) {
+    let name = format!("orders_fixture_{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    let manifest = manifest.replace("name = \"orders\"", &format!("name = {name:?}"));
+    (project(&manifest, files), name)
+}
+
 const SOURCE: &str = "namespace orders;\nversion \"1\";\n";
 const MANIFEST: &str =
     "[project]\nname = \"orders\"\nblkit = \"0.1.0\"\nbuild_target = \"crate\"\n";
@@ -672,7 +679,7 @@ async fn generated_remote_roles_validate_only_active_pool_limits() {
             "BLKIT_API_DB_POOL_MAX",
         ),
     ] {
-        let root = project(
+        let (root, name) = isolated_role_project(
             &MANIFEST.replace(
                 "build_target = \"crate\"\n",
                 &format!("build_target = {target:?}\n{persistence}"),
@@ -684,19 +691,32 @@ async fn generated_remote_roles_validate_only_active_pool_limits() {
             .transpile()
             .unwrap();
         cargo_build(&root).unwrap();
+        if target == "api-worker-split" && binary == "orders-api" {
+            let output = Command::new("cargo")
+                .args(["build", "--manifest-path"])
+                .arg(root.join(".blkit/api/Cargo.toml"))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let role = binary;
         let binary = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or(root.join(".blkit/target"))
             .join("debug")
-            .join(binary);
+            .join(role.replacen("orders-", &format!("{name}-"), 1));
         let mut args = vec![url.as_str()];
-        if binary.to_string_lossy().ends_with("orders-worker") {
+        if role == "orders-worker" {
             args.extend(["2", "1000"]);
         }
-        if binary.to_string_lossy().ends_with("orders-api-worker") {
+        if role == "orders-api-worker" {
             args.extend(["2", "1000", "127.0.0.1:0"]);
         }
-        if binary.to_string_lossy().ends_with("orders-api") {
+        if role == "orders-api" {
             args.push("127.0.0.1:0");
         }
         for invalid in ["0", "malformed"] {
@@ -848,7 +868,7 @@ async fn generated_remote_role_pool_budgets_are_bounded_independently() {
             3,
         ),
     ] {
-        let root = project(
+        let (root, name) = isolated_role_project(
             &MANIFEST.replace(
                 "build_target = \"crate\"\n",
                 &format!("build_target = {target:?}\n{persistence}"),
@@ -879,9 +899,9 @@ pub fn named_graph_definitions() -> Vec<blkit_core::compiled_graph::GraphDefinit
         }
         if worker_active {
             let entry = root.join(".blkit/src/bin").join(if target == "api-worker" {
-                "orders-api-worker.rs"
+                format!("{name}-api-worker.rs")
             } else {
-                "orders-worker.rs"
+                format!("{name}-worker.rs")
             });
             let generated = fs::read_to_string(&entry).unwrap();
             assert_eq!(generated.matches("#[tokio::main]").count(), 1);
@@ -892,7 +912,7 @@ pub fn named_graph_definitions() -> Vec<blkit_core::compiled_graph::GraphDefinit
             .unwrap();
         }
         if target == "api-worker" {
-            let entry = root.join(".blkit/src/bin/orders-api-worker.rs");
+            let entry = root.join(format!(".blkit/src/bin/{name}-api-worker.rs"));
             let generated = fs::read_to_string(&entry).unwrap();
             let api_call = "let store = PostgresStore::connect_with_pool_size(url, ";
             let worker_call = "let worker_store = PostgresStore::connect_with_pool_size(url, ";
@@ -904,6 +924,18 @@ pub fn named_graph_definitions() -> Vec<blkit_core::compiled_graph::GraphDefinit
             fs::write(entry, tagged).unwrap();
         }
         cargo_build(&root).unwrap();
+        if target == "api-worker-split" && binary == "orders-api" {
+            let output = Command::new("cargo")
+                .args(["build", "--manifest-path"])
+                .arg(root.join(".blkit/api/Cargo.toml"))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         let url = format!("{base_url}?application_name={app}");
         if !worker_active {
             let store = PostgresStore::connect(&base_url).await.unwrap();
@@ -929,7 +961,7 @@ pub fn named_graph_definitions() -> Vec<blkit_core::compiled_graph::GraphDefinit
             .map(PathBuf::from)
             .unwrap_or(root.join(".blkit/target"))
             .join("debug")
-            .join(binary);
+            .join(binary.replacen("orders-", &format!("{name}-"), 1));
         let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let bind = socket.local_addr().unwrap().to_string();
         drop(socket);
@@ -1186,7 +1218,7 @@ fn generated_local_role_ignores_postgres_pool_settings_and_has_no_postgres_depen
         process::{Command, Stdio},
         time::Duration,
     };
-    let root = project(
+    let (root, name) = isolated_role_project(
         &MANIFEST.replace(
             "build_target = \"crate\"\n",
             "build_target = \"api-worker\"\npersistence = \"local\"\n",
@@ -1216,7 +1248,7 @@ fn generated_local_role_ignores_postgres_pool_settings_and_has_no_postgres_depen
     let bin = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or(root.join(".blkit/target"))
-        .join("debug/orders-api-worker");
+        .join(format!("debug/{name}-api-worker"));
     let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let bind = socket.local_addr().unwrap().to_string();
     drop(socket);
@@ -1270,7 +1302,7 @@ async fn generated_role_executables_smoke() {
         } else {
             format!("persistence = {persistence:?}\n")
         };
-        let root = project(
+        let (root, name) = isolated_role_project(
             &MANIFEST.replace(
                 "build_target = \"crate\"\n",
                 &format!("build_target = {target:?}\n{settings}"),
@@ -1306,7 +1338,7 @@ async fn generated_role_executables_smoke() {
         let mut children = Vec::new();
         if target == "api-worker-split" {
             children.push(Child(
-                std::process::Command::new(binaries.join("orders-worker"))
+                std::process::Command::new(binaries.join(format!("{name}-worker")))
                     .args([&url, "2", "1000"])
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
@@ -1314,9 +1346,9 @@ async fn generated_role_executables_smoke() {
                     .unwrap(),
             ));
         }
-        let mut server = std::process::Command::new(binaries.join("orders-api-worker"));
+        let mut server = std::process::Command::new(binaries.join(format!("{name}-api-worker")));
         if target == "api-worker-split" {
-            server = std::process::Command::new(binaries.join("orders-api"));
+            server = std::process::Command::new(binaries.join(format!("{name}-api")));
             server.args([&url, &bind]);
         } else if persistence == "local" {
             server.arg(&database).args(["2", &bind]);
@@ -1408,7 +1440,7 @@ async fn generated_remote_workers_drain_active_claims_without_claiming_backlog()
             "orders-api-worker",
         ),
     ] {
-        let root = project(
+        let (root, name) = isolated_role_project(
             &MANIFEST.replace(
                 "build_target = \"crate\"\n",
                 &format!("build_target = {target:?}\n{persistence}"),
@@ -1477,7 +1509,7 @@ async fn generated_remote_workers_drain_active_claims_without_claiming_backlog()
             .map(PathBuf::from)
             .unwrap_or(root.join(".blkit/target"))
             .join("debug")
-            .join(binary);
+            .join(binary.replacen("orders-", &format!("{name}-"), 1));
         let mut command = std::process::Command::new(path);
         command.args([&url, "2", "5000"]);
         command.env("BLKIT_TEST_GATE_DIR", &root);

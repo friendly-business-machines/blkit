@@ -5,6 +5,7 @@ use chumsky::{
     prelude::*,
 };
 
+/// A parsed `.bl` expression. Source constructs are distinct from authored calls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Number(String),
@@ -18,7 +19,16 @@ pub enum Expr {
     },
     Field(Box<Expr>, String),
     Call(String, Vec<Expr>),
+    NamedArgument(String, Box<Expr>),
+    Some {
+        bindings: Vec<(String, Expr)>,
+        predicate: Box<Expr>,
+    },
     List(Vec<Expr>),
+    /// Source-ordered key/value pairs; keys contain the unquoted source text.
+    Dictionary(Vec<(String, Expr)>),
+    Index(Box<Expr>, Box<Expr>),
+    Sequence(Box<Expr>, Box<Expr>),
     Iteration {
         every: bool,
         flatten: bool,
@@ -124,29 +134,25 @@ pub(crate) fn expression_parser<'a>(
             )
             .boxed();
         let key = choice((quoted_text(source), ident.clone()));
-        let dictionary =
-            key.then_ignore(just(Token::Colon))
-                .then(expr.clone())
-                .separated_by(just(Token::Comma))
-                .collect::<Vec<_>>()
-                .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace))
-                .try_map_with(|entries, extra| {
-                    let mut args = Vec::new();
-                    for (key, value) in entries {
-                        if args.iter().any(
-                            |entry| matches!(entry, Expr::String(existing) if existing == &key),
-                        ) {
-                            return Err(Rich::custom(
-                                extra.span(),
-                                format!("duplicate dictionary key: {key}"),
-                            ));
-                        }
-                        args.push(Expr::String(key));
-                        args.push(value);
+        let dictionary = key
+            .then_ignore(just(Token::Colon))
+            .then(expr.clone())
+            .separated_by(just(Token::Comma))
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace))
+            .try_map_with(|entries, extra| {
+                let mut seen = std::collections::HashSet::new();
+                for (key, _) in &entries {
+                    if !seen.insert(key) {
+                        return Err(Rich::custom(
+                            extra.span(),
+                            format!("duplicate dictionary key: {key}"),
+                        ));
                     }
-                    Ok(Expr::Call("__bl_dictionary".into(), args))
-                })
-                .boxed();
+                }
+                Ok(Expr::Dictionary(entries))
+            })
+            .boxed();
         let binding = ident
             .clone()
             .filter(|name| !matches!(name.as_str(), "in" | "return" | "satisfies"))
@@ -172,6 +178,12 @@ pub(crate) fn expression_parser<'a>(
             if (kind == "for") != (keyword == "return") {
                 return Err(Rich::custom(extra.span(), "invalid iteration body keyword"));
             }
+            if kind == "some" {
+                return Ok(Expr::Some {
+                    bindings,
+                    predicate: Box::new(body),
+                });
+            }
             for (index, (binding, source)) in bindings.into_iter().rev().enumerate() {
                 body = Expr::Iteration {
                     every: kind == "every",
@@ -181,11 +193,7 @@ pub(crate) fn expression_parser<'a>(
                     body: Box::new(body),
                 };
             }
-            Ok(if kind == "some" {
-                Expr::Call("__bl_some".into(), vec![body])
-            } else {
-                body
-            })
+            Ok(body)
         })
         .boxed();
         let atom = choice((
@@ -239,7 +247,7 @@ pub(crate) fn expression_parser<'a>(
         let index = expr
             .clone()
             .delimited_by(just(Token::OpenBracket), just(Token::CloseBracket))
-            .map(|key| move |left| Expr::Call("__bl_index".into(), vec![left, key]));
+            .map(|key| move |left| Expr::Index(Box::new(left), Box::new(key)));
         // Calls validate their target and argument positions before they become AST nodes.
         let postfix = atom.map(Ok).foldl(
             choice((
@@ -263,7 +271,7 @@ pub(crate) fn expression_parser<'a>(
                                 }
                                 if named.contains(&option) { return Err(format!("duplicate named argument: {option}")); }
                                 named.push(option.clone());
-                                result.push(Expr::Call(format!("__bl_named_{option}"), vec![value]));
+                                result.push(Expr::NamedArgument(option, Box::new(value)));
                             }
                             Arg::Predicate(binding, body) => {
                                 if !matches!(name.as_str(), "remove" | "listReplace") || result.len() != 1 || !named.is_empty() {
@@ -411,7 +419,7 @@ pub(crate) fn expression_parser<'a>(
                 .repeated(),
             |a, (op, b)| {
                 if op == ":" {
-                    Expr::Call("__bl_sequence".into(), vec![a, b])
+                    Expr::Sequence(Box::new(a), Box::new(b))
                 } else {
                     Expr::Binary(Box::new(a), op.into(), Box::new(b))
                 }
