@@ -24,6 +24,8 @@
           "find-crate-source",
           "library-errors",
           "rust-best-practice",
+          "postgres-best-practices",
+          "supabase-postgres-best-practices",
           "rust-skills"
         ]
       }
