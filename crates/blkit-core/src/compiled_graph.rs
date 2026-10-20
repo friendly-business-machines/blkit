@@ -1,6 +1,11 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::Duration,
+};
 
 use crate::evaluation::{AsyncEvaluate, Cancel, Evaluate, Values};
+use crate::temporal::{Calendar, CalendarEntry, DTDuration, Date, DateTime, Time, YMDuration};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -18,6 +23,142 @@ pub struct GraphDefinition {
 pub struct GraphNode {
     pub name: &'static str,
     pub kind: GraphNodeKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RequestType {
+    Named(String),
+    List(Box<RequestType>),
+    Dictionary(Box<RequestType>),
+    DictionaryEntry(Box<RequestType>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestSchema {
+    pub ports: BTreeMap<String, RequestType>,
+    pub records: BTreeMap<String, BTreeMap<String, RequestType>>,
+    pub enums: BTreeMap<String, Vec<String>>,
+}
+
+impl RequestSchema {
+    pub fn validate_response(&self, response: &Value) -> Result<(), String> {
+        if let Some(name) = self.records.keys().chain(self.enums.keys()).find(|name| {
+            matches!(
+                name.as_str(),
+                "Bool"
+                    | "String"
+                    | "Number"
+                    | "Date"
+                    | "Time"
+                    | "DateTime"
+                    | "DTDuration"
+                    | "YMDuration"
+                    | "Calendar"
+                    | "CalendarEntry"
+                    | "List"
+                    | "Dictionary"
+                    | "DictionaryEntry"
+                    | "Value"
+            ) || self.records.contains_key(*name) && self.enums.contains_key(*name)
+        }) {
+            return Err(format!("invalid response schema type: {name}"));
+        }
+        self.validate_fields(&self.ports, response, "response")
+    }
+
+    fn validate_fields(
+        &self,
+        fields: &BTreeMap<String, RequestType>,
+        value: &Value,
+        path: &str,
+    ) -> Result<(), String> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| format!("{path} must be an object"))?;
+        for name in object.keys() {
+            if !fields.contains_key(name) {
+                return Err(format!("unexpected field {path}.{name}"));
+            }
+        }
+        for (name, ty) in fields {
+            let field = object
+                .get(name)
+                .ok_or_else(|| format!("missing field {path}.{name}"))?;
+            self.validate_type(ty, field, &format!("{path}.{name}"))?;
+        }
+        Ok(())
+    }
+
+    fn validate_type(&self, ty: &RequestType, value: &Value, path: &str) -> Result<(), String> {
+        let invalid = |error: String| format!("invalid {path}: {error}");
+        match ty {
+            RequestType::Named(name) => {
+                if let Some(fields) = self.records.get(name) {
+                    return self.validate_fields(fields, value, path);
+                }
+                if let Some(variants) = self.enums.get(name) {
+                    return if value
+                        .as_str()
+                        .is_some_and(|text| variants.iter().any(|v| v == text))
+                    {
+                        Ok(())
+                    } else {
+                        Err(invalid(format!("expected {name} variant")))
+                    };
+                }
+                let result = match name.as_str() {
+                    "Bool" => serde_json::from_value::<bool>(value.clone()).map(|_| ()),
+                    "String" => serde_json::from_value::<String>(value.clone()).map(|_| ()),
+                    "Number" => serde_json::from_value::<Decimal>(value.clone()).map(|_| ()),
+                    "Date" => serde_json::from_value::<Date>(value.clone()).map(|_| ()),
+                    "Time" => serde_json::from_value::<Time>(value.clone()).map(|_| ()),
+                    "DateTime" => serde_json::from_value::<DateTime>(value.clone()).map(|_| ()),
+                    "DTDuration" => serde_json::from_value::<DTDuration>(value.clone()).map(|_| ()),
+                    "YMDuration" => serde_json::from_value::<YMDuration>(value.clone()).map(|_| ()),
+                    "Calendar" => serde_json::from_value::<Calendar>(value.clone()).map(|_| ()),
+                    "CalendarEntry" => {
+                        serde_json::from_value::<CalendarEntry>(value.clone()).map(|_| ())
+                    }
+                    "Dictionary" => {
+                        serde_json::from_value::<BTreeMap<String, Value>>(value.clone()).map(|_| ())
+                    }
+                    "Value" => return Ok(()),
+                    _ => return Err(invalid(format!("unknown type {name}"))),
+                };
+                result.map_err(|e| invalid(e.to_string()))
+            }
+            RequestType::List(inner) => {
+                let items = value
+                    .as_array()
+                    .ok_or_else(|| invalid("expected list".into()))?;
+                for (index, item) in items.iter().enumerate() {
+                    self.validate_type(inner, item, &format!("{path}[{index}]"))?;
+                }
+                Ok(())
+            }
+            RequestType::Dictionary(inner) => {
+                let entries = value
+                    .as_object()
+                    .ok_or_else(|| invalid("expected dictionary".into()))?;
+                for (key, item) in entries {
+                    self.validate_type(inner, item, &format!("{path}.{key}"))?;
+                }
+                Ok(())
+            }
+            RequestType::DictionaryEntry(inner) => {
+                let entry = value
+                    .as_object()
+                    .ok_or_else(|| invalid("expected dictionary entry".into()))?;
+                if entry.len() != 2
+                    || !entry.get("key").is_some_and(Value::is_string)
+                    || !entry.contains_key("value")
+                {
+                    return Err(invalid("expected exactly a string key and a value".into()));
+                }
+                self.validate_type(inner, &entry["value"], &format!("{path}.value"))
+            }
+        }
+    }
 }
 
 pub struct LoopPolicy {
@@ -51,6 +192,11 @@ pub enum GraphNodeKind {
     TaskWithCancel(Evaluate, Cancel),
     PauseFor(Duration),
     PauseUntil(Evaluate),
+    InputRequest {
+        prompt: &'static str,
+        schema: RequestSchema,
+        decode_response: Box<dyn Fn(Value) -> Result<Value, String> + Send + Sync>,
+    },
     Split(&'static str),
     Join {
         kind: &'static str,
@@ -97,6 +243,19 @@ struct Activation {
 struct WaitActivation {
     token: Activation,
     at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct InputRequest {
+    pub id: String,
+    pub prompt: String,
+    pub schema: RequestSchema,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequestActivation {
+    prompt: String,
+    schema: RequestSchema,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -158,6 +317,8 @@ pub struct GraphCheckpoint {
     multi: HashMap<u64, MultiProgress>,
     #[serde(default)]
     pub(crate) children: HashMap<u64, ChildActivation>,
+    #[serde(default)]
+    requests: BTreeMap<u64, RequestActivation>,
     pub outcome: Option<Value>,
     pub terminal: Option<GraphTerminal>,
 }
@@ -176,6 +337,7 @@ impl Default for GraphCheckpoint {
             committed: HashMap::new(),
             multi: HashMap::new(),
             children: HashMap::new(),
+            requests: BTreeMap::new(),
             outcome: None,
             terminal: None,
         }
@@ -183,6 +345,30 @@ impl Default for GraphCheckpoint {
 }
 
 impl GraphCheckpoint {
+    pub fn requests(&self) -> Vec<InputRequest> {
+        if self.outcome.is_some() || self.terminal.is_some() {
+            return Vec::new();
+        }
+        let mut requests: Vec<_> = self
+            .requests
+            .iter()
+            .map(|(id, request)| InputRequest {
+                id: id.to_string(),
+                prompt: request.prompt.clone(),
+                schema: request.schema.clone(),
+            })
+            .collect();
+        let mut children: Vec<_> = self.children.iter().collect();
+        children.sort_by_key(|(id, _)| *id);
+        for (id, child) in children {
+            requests.extend(child.checkpoint.requests().into_iter().map(|mut request| {
+                request.id = format!("{id}/{}", request.id);
+                request
+            }));
+        }
+        requests
+    }
+
     pub fn ensure_supported(&self) -> Result<(), String> {
         if self.version != 2 {
             return Err(format!("unsupported checkpoint version: {}", self.version));
@@ -520,7 +706,82 @@ impl GraphDefinition {
         Ok(())
     }
 
+    pub fn complete_request(
+        &self,
+        input: &Value,
+        state: &mut GraphCheckpoint,
+        request_id: &str,
+        response: Value,
+    ) -> Result<(), String> {
+        let value = self.decode_request_response(state, request_id, response)?;
+        let id = request_id
+            .parse::<u64>()
+            .map_err(|_| "invalid request ID")?;
+        self.complete_decoded_activation(input, state, id, value)
+    }
+
+    pub(crate) fn decode_request_response(
+        &self,
+        state: &GraphCheckpoint,
+        request_id: &str,
+        response: Value,
+    ) -> Result<Value, String> {
+        state.ensure_supported()?;
+        let id = request_id
+            .parse::<u64>()
+            .map_err(|_| "invalid request ID")?;
+        if id.to_string() != request_id {
+            return Err("request not outstanding".into());
+        }
+        state
+            .requests
+            .get(&id)
+            .ok_or("request not outstanding")?
+            .schema
+            .validate_response(&response)?;
+        let name = state
+            .ready
+            .iter()
+            .find(|token| token.id == id)
+            .ok_or("request activation not ready")?
+            .node
+            .as_str();
+        let GraphNodeKind::InputRequest {
+            decode_response, ..
+        } = &self
+            .nodes
+            .iter()
+            .find(|node| node.name == name)
+            .ok_or("unknown request node")?
+            .kind
+        else {
+            return Err("request activation is not an input request".into());
+        };
+        decode_response(response)
+    }
+
     pub fn complete_activation(
+        &self,
+        input: &Value,
+        state: &mut GraphCheckpoint,
+        id: u64,
+        value: Value,
+    ) -> Result<(), String> {
+        state.ensure_supported()?;
+        let token = state
+            .ready
+            .iter()
+            .find(|token| token.id == id)
+            .ok_or_else(|| format!("task activation not ready: {id}"))?;
+        if self.nodes.iter().any(|node| {
+            node.name == token.node && matches!(node.kind, GraphNodeKind::InputRequest { .. })
+        }) {
+            return Err("input request requires a decoded response".into());
+        }
+        self.complete_decoded_activation(input, state, id, value)
+    }
+
+    fn complete_decoded_activation(
         &self,
         input: &Value,
         state: &mut GraphCheckpoint,
@@ -539,6 +800,7 @@ impl GraphDefinition {
             .position(|token| token.id == id)
             .ok_or_else(|| format!("task activation not ready: {id}"))?;
         let mut token = next.ready.remove(index);
+        next.requests.remove(&id);
         token.values.insert(token.node.clone(), value.clone());
         next.committed.insert(id, value.clone());
         if let Some(batch_id) = token.batch_id {
@@ -769,6 +1031,18 @@ impl GraphDefinition {
             GraphNodeKind::Subprocess { .. } => {
                 let mut token = Self::activation(state, node.name, path, generations, values);
                 token.started_at_ms = crate::store::now_ms();
+                state.ready.push(token);
+                Ok(())
+            }
+            GraphNodeKind::InputRequest { prompt, schema, .. } => {
+                let token = Self::activation(state, node.name, path, generations, values);
+                state.requests.insert(
+                    token.id,
+                    RequestActivation {
+                        prompt: (*prompt).into(),
+                        schema: schema.clone(),
+                    },
+                );
                 state.ready.push(token);
                 Ok(())
             }

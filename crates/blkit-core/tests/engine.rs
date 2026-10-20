@@ -3679,3 +3679,1739 @@ async fn queued_instance_cancels_before_its_first_task_is_dispatched() {
     drop(store);
     std::fs::remove_file(path).unwrap();
 }
+
+fn request_node() -> GraphNodeKind {
+    use blkit::compiled_graph::{RequestSchema, RequestType};
+    GraphNodeKind::InputRequest {
+        prompt: "Approve?",
+        schema: RequestSchema {
+            ports: [("approved".into(), RequestType::Named("Bool".into()))].into(),
+            records: Default::default(),
+            enums: Default::default(),
+        },
+        decode_response: Box::new(|value| match value {
+            Value::Object(ref object)
+                if object.len() == 1 && object.get("approved").is_some_and(Value::is_boolean) =>
+            {
+                Ok(value)
+            }
+            _ => Err("invalid approved response".into()),
+        }),
+    }
+}
+
+fn request_link(source: &'static str, target: &'static str, value: Option<Evaluate>) -> GraphLink {
+    GraphLink {
+        source,
+        target,
+        value,
+        condition: None,
+        fallback: false,
+        label: None,
+    }
+}
+
+fn request_graph() -> GraphDefinition {
+    GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "review",
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "review",
+                kind: request_node(),
+            },
+            GraphNode {
+                name: "route",
+                kind: GraphNodeKind::Split("xor"),
+            },
+            GraphNode {
+                name: "approved",
+                kind: GraphNodeKind::End,
+            },
+            GraphNode {
+                name: "rejected",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            request_link("start", "review", None),
+            request_link("review", "route", None),
+            GraphLink {
+                source: "route",
+                target: "approved",
+                condition: Some(Arc::new(|_, values| {
+                    Ok(values["review"]["approved"].clone())
+                })),
+                fallback: false,
+                value: Some(Arc::new(|_, _| Ok(json!("yes")))),
+                label: None,
+            },
+            GraphLink {
+                source: "route",
+                target: "rejected",
+                condition: None,
+                fallback: true,
+                value: Some(Arc::new(|_, _| Ok(json!("no")))),
+                label: None,
+            },
+        ],
+    }
+}
+
+#[test]
+fn request_response_routes_only_after_valid_response_and_survives_checkpoint() {
+    let graph = request_graph();
+    let input = json!(null);
+    let mut state: GraphCheckpoint =
+        serde_json::from_value(serde_json::to_value(graph.checkpoint(&input).unwrap()).unwrap())
+            .unwrap();
+    let requests = state.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].prompt, "Approve?");
+    assert_eq!(requests[0].schema.ports.len(), 1);
+    let id = requests[0].id.clone();
+    assert!(
+        graph
+            .complete_request(&input, &mut state, &id, json!({"approved": 7}))
+            .is_err()
+    );
+    assert_eq!(state.requests()[0].id, id);
+    assert!(state.outcome.is_none());
+    graph
+        .complete_request(&input, &mut state, &id, json!({"approved": false}))
+        .unwrap();
+    assert_eq!(state.outcome, Some(json!("no")));
+    assert!(state.requests().is_empty());
+    assert!(
+        graph
+            .complete_request(&input, &mut state, &id, json!({"approved": true}))
+            .is_err()
+    );
+}
+
+#[test]
+fn generic_task_completion_cannot_bypass_request_response_validation() {
+    let graph = request_graph();
+    let input = json!(null);
+    let mut state = graph.checkpoint(&input).unwrap();
+    let id = graph.ready_activations(&state)[0].0;
+    let saved = serde_json::to_value(&state).unwrap();
+    assert!(
+        graph
+            .complete_activation(&input, &mut state, id, json!({"approved": 7}))
+            .is_err()
+    );
+    assert_eq!(serde_json::to_value(&state).unwrap(), saved);
+    assert!(
+        graph
+            .complete(&input, &mut state, "review", json!({"approved": true}))
+            .is_err()
+    );
+    assert_eq!(serde_json::to_value(&state).unwrap(), saved);
+    graph
+        .complete_request(
+            &input,
+            &mut state,
+            &id.to_string(),
+            json!({"approved": true}),
+        )
+        .unwrap();
+    assert_eq!(state.outcome, Some(json!("yes")));
+}
+
+#[test]
+fn parallel_and_repeated_requests_have_independent_checkpointed_ids() {
+    let mut graph = request_graph();
+    graph.nodes.truncate(2);
+    graph.nodes.push(GraphNode {
+        name: "split",
+        kind: GraphNodeKind::Split("and"),
+    });
+    graph.nodes.push(GraphNode {
+        name: "other",
+        kind: request_node(),
+    });
+    graph.nodes.push(GraphNode {
+        name: "joined",
+        kind: GraphNodeKind::Join {
+            kind: "and",
+            split: "split",
+        },
+    });
+    graph.nodes.push(GraphNode {
+        name: "done",
+        kind: GraphNodeKind::End,
+    });
+    graph.links = vec![
+        request_link("start", "split", None),
+        GraphLink {
+            source: "split",
+            target: "review",
+            label: Some("left"),
+            ..request_link("split", "review", None)
+        },
+        GraphLink {
+            source: "split",
+            target: "other",
+            label: Some("right"),
+            ..request_link("split", "other", None)
+        },
+        request_link(
+            "review",
+            "joined",
+            Some(Arc::new(|_, values| Ok(values["review"].clone()))),
+        ),
+        request_link(
+            "other",
+            "joined",
+            Some(Arc::new(|_, values| Ok(values["other"].clone()))),
+        ),
+        request_link(
+            "joined",
+            "done",
+            Some(Arc::new(|_, values| Ok(values["joined"].clone()))),
+        ),
+    ];
+    let input = json!(null);
+    let mut state = graph.checkpoint(&input).unwrap();
+    let requests = state.requests();
+    assert_eq!(requests.len(), 2);
+    assert_ne!(requests[0].id, requests[1].id);
+    let first = requests[0].id.clone();
+    let second = requests[1].id.clone();
+    graph
+        .complete_request(&input, &mut state, &second, json!({"approved": false}))
+        .unwrap();
+    let mut state: GraphCheckpoint =
+        serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+    assert_eq!(state.requests().len(), 1);
+    assert_eq!(state.requests()[0].id, first);
+    assert!(state.outcome.is_none());
+    graph
+        .complete_request(&input, &mut state, &first, json!({"approved": true}))
+        .unwrap();
+    assert_eq!(
+        state.outcome,
+        Some(json!({"left": {"approved": true}, "right": {"approved": false}}))
+    );
+
+    let mut repeated = request_graph();
+    repeated.nodes.truncate(2);
+    repeated.nodes.push(GraphNode {
+        name: "again",
+        kind: GraphNodeKind::Task(Arc::new(|_, values| Ok(values["review"].clone()))),
+    });
+    repeated.nodes.push(GraphNode {
+        name: "done",
+        kind: GraphNodeKind::End,
+    });
+    repeated.links = vec![
+        request_link("start", "review", None),
+        request_link("review", "again", None),
+        request_link("again", "review", None),
+    ];
+    let mut state = repeated.checkpoint(&input).unwrap();
+    let first = state.requests()[0].id.clone();
+    repeated
+        .complete_request(&input, &mut state, &first, json!({"approved": true}))
+        .unwrap();
+    let task_id = repeated.ready_activations(&state)[0].0;
+    repeated
+        .complete_activation(&input, &mut state, task_id, json!({"approved": true}))
+        .unwrap();
+    let second = state.requests()[0].id.clone();
+    assert_ne!(first, second);
+    assert!(
+        repeated
+            .complete_activation(
+                &input,
+                &mut state,
+                second.parse().unwrap(),
+                json!({"approved": true})
+            )
+            .is_err()
+    );
+    let state: GraphCheckpoint =
+        serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+    assert_eq!(state.requests()[0].id, second);
+}
+
+#[tokio::test]
+async fn unanswered_request_before_restart_does_not_fail_or_retry() {
+    let path = std::env::temp_dir().join(format!("blkit-request-seam-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let mut graph = request_graph();
+    graph.retry = Some(RetryPolicy {
+        max_retries: 1,
+        retry_for: Duration::from_secs(2),
+        retry_delay: Duration::from_millis(5),
+        backoff: "exponential",
+    });
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    let id = engine
+        .start("test", "1", "review", json!(null))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let instance = engine.status(&id).await.unwrap().unwrap();
+    assert_eq!(instance.status, "waiting-for-input");
+    assert!(instance.error.is_none());
+    assert_eq!(instance.attempt, 0);
+    let request_id = instance.checkpoint.unwrap().requests()[0].id.clone();
+    assert_eq!(store.requests(&id).await.unwrap()[0].id, request_id);
+    drop(engine);
+    drop(store);
+    let store = LocalStore::open(&path).await.unwrap();
+    let engine = Engine::new(
+        Registry::new(vec![request_graph()]).unwrap(),
+        store.clone(),
+        1,
+    )
+    .unwrap();
+    engine.recover().await.unwrap();
+    assert_eq!(
+        engine.status(&id).await.unwrap().unwrap().status,
+        "waiting-for-input"
+    );
+    engine
+        .respond(&id, &request_id, json!({"approved": true}))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if engine.status(&id).await.unwrap().unwrap().status == "completed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let done = engine.status(&id).await.unwrap().unwrap();
+    assert_eq!(done.result, Some(json!("yes")));
+    assert_eq!(done.attempt, 0);
+    assert_eq!(done.first_failure_at, None);
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn first_claimed_deadline_expires_during_task_free_input_wait() {
+    let path = std::env::temp_dir().join(format!(
+        "blkit-request-first-claim-{}.db",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let mut graph = request_graph();
+    graph.deadline = Some(blkit::DeadlinePolicy {
+        origin: "first_claimed",
+        duration: Duration::from_millis(100),
+    });
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    let id = engine
+        .start("test", "1", "review", json!(null))
+        .await
+        .unwrap();
+    let waiting = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let item = engine.status(&id).await.unwrap().unwrap();
+            if item.status == "waiting-for-input" {
+                break item;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let request_id = waiting.checkpoint.as_ref().unwrap().requests()[0]
+        .id
+        .clone();
+    let first_claim = waiting
+        .first_claim_at_ms
+        .expect("input handoff claims instance");
+    assert_eq!(waiting.deadline_at_ms, Some(first_claim + 100));
+    assert_eq!(waiting.attempt, 0);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while engine.status(&id).await.unwrap().unwrap().status != "business-error" {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let expired = store.get(&id).await.unwrap().unwrap();
+    assert_eq!(expired.terminal_name.as_deref(), Some("timeout"));
+    assert_eq!(expired.first_claim_at_ms, Some(first_claim));
+    assert_eq!(expired.attempt, 0);
+    assert!(
+        engine
+            .respond(&id, &request_id, json!({"approved": true}))
+            .await
+            .is_err()
+    );
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn nested_parallel_requests_remain_scoped_when_answered_out_of_order() {
+    let path = std::env::temp_dir().join(format!("blkit-nested-request-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let mut child = request_graph();
+    child.name = "child";
+    let parent = GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "parent",
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "split",
+                kind: GraphNodeKind::Split("and"),
+            },
+            GraphNode {
+                name: "left",
+                kind: GraphNodeKind::Subprocess {
+                    process: "child",
+                    input: Arc::new(|input, _| Ok(input.clone())),
+                },
+            },
+            GraphNode {
+                name: "right",
+                kind: GraphNodeKind::Subprocess {
+                    process: "child",
+                    input: Arc::new(|input, _| Ok(input.clone())),
+                },
+            },
+            GraphNode {
+                name: "joined",
+                kind: GraphNodeKind::Join {
+                    kind: "and",
+                    split: "split",
+                },
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            request_link("start", "split", None),
+            GraphLink {
+                source: "split",
+                target: "left",
+                label: Some("left"),
+                ..request_link("split", "left", None)
+            },
+            GraphLink {
+                source: "split",
+                target: "right",
+                label: Some("right"),
+                ..request_link("split", "right", None)
+            },
+            request_link(
+                "left",
+                "joined",
+                Some(Arc::new(|_, values| Ok(values["left"].clone()))),
+            ),
+            request_link(
+                "right",
+                "joined",
+                Some(Arc::new(|_, values| Ok(values["right"].clone()))),
+            ),
+            request_link(
+                "joined",
+                "done",
+                Some(Arc::new(|_, values| Ok(values["joined"].clone()))),
+            ),
+        ],
+    };
+    let registry = Registry::new(vec![parent, child]).unwrap();
+    let engine = Engine::new(registry.clone(), store.clone(), 1).unwrap();
+    let id = engine
+        .start("test", "1", "parent", json!(null))
+        .await
+        .unwrap();
+    let mut checkpoint = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let item = store.get(&id).await.unwrap().unwrap();
+            let state = item.checkpoint.unwrap();
+            if state.requests().len() == 2 {
+                break state;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let requests = checkpoint.requests();
+    assert_ne!(requests[0].id, requests[1].id);
+    assert!(requests.iter().all(|request| request.id.contains('/')));
+    let second = requests[1].id.clone();
+    let first = requests[0].id.clone();
+    registry
+        .complete_request(
+            "test",
+            "1",
+            "parent",
+            &json!(null),
+            &mut checkpoint,
+            &second,
+            json!({"approved": true}),
+        )
+        .unwrap();
+    assert!(checkpoint.outcome.is_none());
+    let mut checkpoint: GraphCheckpoint =
+        serde_json::from_value(serde_json::to_value(checkpoint).unwrap()).unwrap();
+    assert_eq!(checkpoint.requests()[0].id, first);
+    registry
+        .complete_request(
+            "test",
+            "1",
+            "parent",
+            &json!(null),
+            &mut checkpoint,
+            &first,
+            json!({"approved": false}),
+        )
+        .unwrap();
+    assert_eq!(
+        checkpoint.outcome,
+        Some(json!({"left": "no", "right": "yes"}))
+    );
+    drop(engine);
+    drop(store);
+    let store = LocalStore::open(&path).await.unwrap();
+    let engine = Engine::new(registry, store.clone(), 1).unwrap();
+    engine.recover().await.unwrap();
+    let reopened = engine.status(&id).await.unwrap().unwrap();
+    assert_eq!(
+        reopened
+            .checkpoint
+            .unwrap()
+            .requests()
+            .iter()
+            .map(|request| request.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![first.as_str(), second.as_str()]
+    );
+    engine
+        .respond(&id, &second, json!({"approved": true}))
+        .await
+        .unwrap();
+    engine
+        .respond(&id, &first, json!({"approved": false}))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if engine.status(&id).await.unwrap().unwrap().status == "completed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        engine.status(&id).await.unwrap().unwrap().result,
+        Some(json!({"left": "no", "right": "yes"}))
+    );
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn nested_request_terminal_cancels_inflight_child_sibling_before_parent_continues() {
+    use std::sync::{Mutex, mpsc};
+
+    let path = std::env::temp_dir().join(format!(
+        "blkit-nested-reply-cancel-{}.db",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let (release, receiver) = mpsc::channel::<()>();
+    let receiver = Arc::new(Mutex::new(receiver));
+    let mut child = request_graph();
+    child.name = "child";
+    child.nodes.truncate(2);
+    child.nodes.extend([
+        GraphNode {
+            name: "split",
+            kind: GraphNodeKind::Split("and"),
+        },
+        GraphNode {
+            name: "slow",
+            kind: GraphNodeKind::TaskWithCancel(
+                Arc::new({
+                    let (started, receiver) = (started.clone(), receiver.clone());
+                    move |_, _| {
+                        started.notify_one();
+                        receiver
+                            .lock()
+                            .unwrap()
+                            .recv_timeout(Duration::from_secs(5))
+                            .map_err(|_| "child sibling was not cancelled".to_string())?;
+                        Ok(json!(7))
+                    }
+                }),
+                Arc::new({
+                    let (cancelled, release) = (cancelled.clone(), release.clone());
+                    move || {
+                        cancelled.store(true, Ordering::SeqCst);
+                        release.send(()).unwrap();
+                    }
+                }),
+            ),
+        },
+        GraphNode {
+            name: "failure",
+            kind: GraphNodeKind::Error,
+        },
+    ]);
+    child.links = vec![
+        request_link("start", "split", None),
+        GraphLink {
+            source: "split",
+            target: "review",
+            label: Some("review"),
+            ..request_link("split", "review", None)
+        },
+        GraphLink {
+            source: "split",
+            target: "slow",
+            label: Some("slow"),
+            ..request_link("split", "slow", None)
+        },
+        request_link("review", "failure", None),
+    ];
+    let parent = GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "parent",
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "called",
+                kind: GraphNodeKind::Subprocess {
+                    process: "child",
+                    input: Arc::new(|input, _| Ok(input.clone())),
+                },
+            },
+            GraphNode {
+                name: "recovered",
+                kind: GraphNodeKind::Task(Arc::new(|_, _| Ok(json!("handled")))),
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            request_link("start", "called", None),
+            GraphLink {
+                source: "called",
+                target: "recovered",
+                label: Some("error"),
+                ..request_link("called", "recovered", None)
+            },
+            request_link(
+                "recovered",
+                "done",
+                Some(Arc::new(|_, values| Ok(values["recovered"].clone()))),
+            ),
+        ],
+    };
+    let engine = Engine::new(
+        Registry::new(vec![parent, child]).unwrap(),
+        store.clone(),
+        2,
+    )
+    .unwrap();
+    let id = engine
+        .start("test", "1", "parent", json!(null))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    let running = store.get(&id).await.unwrap().unwrap();
+    assert_eq!(running.status, "running");
+    let request_id = running.checkpoint.as_ref().unwrap().requests()[0]
+        .id
+        .clone();
+    assert!(request_id.contains('/'));
+    engine
+        .respond(&id, &request_id, json!({"approved": true}))
+        .await
+        .unwrap();
+    let done = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let item = engine.status(&id).await.unwrap().unwrap();
+            if matches!(item.status.as_str(), "completed" | "failed") {
+                break item;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let was_cancelled = cancelled.load(Ordering::SeqCst);
+    let _ = release.send(());
+    assert_eq!(done.status, "completed", "{done:?}");
+    assert_eq!(done.result, Some(json!("handled")));
+    assert_eq!(done.attempt, 1);
+    assert!(
+        was_cancelled,
+        "child cancellation hook must run before parent completion"
+    );
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn request_does_not_prevent_independent_sibling_task_from_running() {
+    let path =
+        std::env::temp_dir().join(format!("blkit-request-sibling-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let mut graph = request_graph();
+    graph.nodes.truncate(2);
+    graph.nodes.extend([
+        GraphNode {
+            name: "split",
+            kind: GraphNodeKind::Split("and"),
+        },
+        GraphNode {
+            name: "work",
+            kind: GraphNodeKind::Task(Arc::new(|_, _| Ok(json!(42)))),
+        },
+        GraphNode {
+            name: "joined",
+            kind: GraphNodeKind::Join {
+                kind: "and",
+                split: "split",
+            },
+        },
+        GraphNode {
+            name: "done",
+            kind: GraphNodeKind::End,
+        },
+    ]);
+    graph.links = vec![
+        request_link("start", "split", None),
+        GraphLink {
+            source: "split",
+            target: "review",
+            label: Some("review"),
+            ..request_link("split", "review", None)
+        },
+        GraphLink {
+            source: "split",
+            target: "work",
+            label: Some("work"),
+            ..request_link("split", "work", None)
+        },
+        request_link(
+            "review",
+            "joined",
+            Some(Arc::new(|_, values| Ok(values["review"].clone()))),
+        ),
+        request_link(
+            "work",
+            "joined",
+            Some(Arc::new(|_, values| Ok(values["work"].clone()))),
+        ),
+        request_link(
+            "joined",
+            "done",
+            Some(Arc::new(|_, values| Ok(values["joined"].clone()))),
+        ),
+    ];
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    let id = engine
+        .start("test", "1", "review", json!(null))
+        .await
+        .unwrap();
+    let item = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let item = store.get(&id).await.unwrap().unwrap();
+            if item
+                .checkpoint
+                .as_ref()
+                .is_some_and(|state| state.completed.get("work") == Some(&json!(42)))
+            {
+                break item;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let request_id = item.checkpoint.as_ref().unwrap().requests()[0].id.clone();
+    assert_eq!(item.attempt, 1);
+    assert!(item.error.is_none());
+    let mut interrupted = Instance::new("interrupted", "test", "1", "review", json!(null));
+    interrupted.status = "running".into();
+    interrupted.attempt = 1;
+    interrupted.first_claim_at_ms = item.first_claim_at_ms;
+    interrupted.deadline_origin = Some("first_claimed".into());
+    interrupted.deadline_duration_ms = Some(300_000);
+    interrupted.deadline_at_ms = item.first_claim_at_ms.map(|at| at + 300_000);
+    interrupted.checkpoint = item.checkpoint.clone();
+    store.create(&interrupted).await.unwrap();
+    drop(engine);
+    drop(store);
+    let store = LocalStore::open(&path).await.unwrap();
+    let mut graph = request_graph();
+    graph.nodes.truncate(2);
+    graph.nodes.extend([
+        GraphNode {
+            name: "split",
+            kind: GraphNodeKind::Split("and"),
+        },
+        GraphNode {
+            name: "work",
+            kind: GraphNodeKind::Task(Arc::new(|_, _| Ok(json!(42)))),
+        },
+        GraphNode {
+            name: "joined",
+            kind: GraphNodeKind::Join {
+                kind: "and",
+                split: "split",
+            },
+        },
+        GraphNode {
+            name: "done",
+            kind: GraphNodeKind::End,
+        },
+    ]);
+    graph.links = vec![
+        request_link("start", "split", None),
+        GraphLink {
+            source: "split",
+            target: "review",
+            label: Some("review"),
+            ..request_link("split", "review", None)
+        },
+        GraphLink {
+            source: "split",
+            target: "work",
+            label: Some("work"),
+            ..request_link("split", "work", None)
+        },
+        request_link(
+            "review",
+            "joined",
+            Some(Arc::new(|_, values| Ok(values["review"].clone()))),
+        ),
+        request_link(
+            "work",
+            "joined",
+            Some(Arc::new(|_, values| Ok(values["work"].clone()))),
+        ),
+        request_link(
+            "joined",
+            "done",
+            Some(Arc::new(|_, values| Ok(values["joined"].clone()))),
+        ),
+    ];
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    engine.recover().await.unwrap();
+    let interrupted = engine.status("interrupted").await.unwrap().unwrap();
+    assert_eq!(interrupted.status, "waiting-for-input");
+    assert_eq!(interrupted.attempt, 1);
+    assert_eq!(interrupted.first_failure_at, None);
+    assert_eq!(interrupted.first_claim_at_ms, item.first_claim_at_ms);
+    assert_eq!(
+        interrupted.deadline_at_ms,
+        item.first_claim_at_ms.map(|at| at + 300_000)
+    );
+    assert_eq!(interrupted.checkpoint.unwrap().requests()[0].id, request_id);
+    let waiting = engine.status(&id).await.unwrap().unwrap();
+    assert_eq!(waiting.status, "waiting-for-input");
+    assert_eq!(waiting.attempt, 1);
+    assert_eq!(waiting.first_failure_at, None);
+    assert_eq!(
+        waiting.checkpoint.as_ref().unwrap().completed["work"],
+        json!(42)
+    );
+    assert_eq!(waiting.checkpoint.unwrap().requests()[0].id, request_id);
+    engine
+        .respond(&id, &request_id, json!({"approved": true}))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if engine.status(&id).await.unwrap().unwrap().status == "completed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let done = engine.status(&id).await.unwrap().unwrap();
+    assert_eq!(
+        done.result,
+        Some(json!({"review": {"approved": true}, "work": 42}))
+    );
+    assert_eq!(done.attempt, 1);
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn response_advances_while_independent_sibling_is_in_flight() {
+    use std::sync::{Mutex, mpsc};
+
+    let path = std::env::temp_dir().join(format!(
+        "blkit-live-sibling-request-{}.db",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let release_rx = Arc::new(Mutex::new(release_rx));
+    let mut graph = request_graph();
+    graph.nodes.truncate(2);
+    graph.nodes.extend([
+        GraphNode {
+            name: "split",
+            kind: GraphNodeKind::Split("and"),
+        },
+        GraphNode {
+            name: "work",
+            kind: GraphNodeKind::Task(Arc::new({
+                let (started, attempts, release_rx) =
+                    (started.clone(), attempts.clone(), release_rx.clone());
+                move |_, _| {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    started.notify_one();
+                    release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .map_err(|_| {
+                            "response-dependent task did not run while sibling was in flight"
+                                .to_string()
+                        })?;
+                    Ok(json!(42))
+                }
+            })),
+        },
+        GraphNode {
+            name: "use_response",
+            kind: GraphNodeKind::Task(Arc::new(move |_, values| {
+                release_tx.send(()).map_err(|error| error.to_string())?;
+                Ok(values["review"].clone())
+            })),
+        },
+        GraphNode {
+            name: "joined",
+            kind: GraphNodeKind::Join {
+                kind: "and",
+                split: "split",
+            },
+        },
+        GraphNode {
+            name: "done",
+            kind: GraphNodeKind::End,
+        },
+    ]);
+    graph.links = vec![
+        request_link("start", "split", None),
+        GraphLink {
+            source: "split",
+            target: "review",
+            label: Some("review"),
+            ..request_link("split", "review", None)
+        },
+        GraphLink {
+            source: "split",
+            target: "work",
+            label: Some("work"),
+            ..request_link("split", "work", None)
+        },
+        request_link("review", "use_response", None),
+        request_link(
+            "use_response",
+            "joined",
+            Some(Arc::new(|_, values| Ok(values["use_response"].clone()))),
+        ),
+        request_link(
+            "work",
+            "joined",
+            Some(Arc::new(|_, values| Ok(values["work"].clone()))),
+        ),
+        request_link(
+            "joined",
+            "done",
+            Some(Arc::new(|_, values| Ok(values["joined"].clone()))),
+        ),
+    ];
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 2).unwrap();
+    let id = engine
+        .start("test", "1", "review", json!(null))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    let before = engine.status(&id).await.unwrap().unwrap();
+    assert_eq!(before.status, "running");
+    assert_eq!(before.attempt, 1);
+    let request_id = before.checkpoint.as_ref().unwrap().requests()[0].id.clone();
+    engine
+        .respond(&id, &request_id, json!({"approved": true}))
+        .await
+        .unwrap();
+    assert!(store.requests(&id).await.unwrap().is_empty());
+    let done = tokio::time::timeout(Duration::from_secs(7), async {
+        loop {
+            let item = engine.status(&id).await.unwrap().unwrap();
+            if matches!(item.status.as_str(), "completed" | "failed") {
+                break item;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(done.status, "completed", "{done:?}");
+    assert_eq!(
+        done.result,
+        Some(json!({"review": {"approved": true}, "work": 42}))
+    );
+    assert_eq!(done.attempt, 1);
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn reply_and_release_commit_in_either_order_without_losing_answer() {
+    for reply_first in [true, false] {
+        let path = std::env::temp_dir().join(format!(
+            "blkit-request-order-{}-{reply_first}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let store = LocalStore::open(&path).await.unwrap();
+        let graph = request_graph();
+        let mut item = blkit::runtime::Instance::new("job", "test", "1", "review", json!(null));
+        let checkpoint = graph.checkpoint(&item.input).unwrap();
+        let request_id = checkpoint.requests()[0].id.clone();
+        item.checkpoint = Some(checkpoint.clone());
+        store.create(&item).await.unwrap();
+        let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+        if reply_first {
+            engine
+                .respond("job", &request_id, json!({"approved": true}))
+                .await
+                .unwrap();
+            assert!(!store.set_input_wait("job", &checkpoint).await.unwrap());
+        } else {
+            assert!(store.set_input_wait("job", &checkpoint).await.unwrap());
+            assert_eq!(
+                store.get("job").await.unwrap().unwrap().status,
+                "waiting-for-input"
+            );
+            engine
+                .respond("job", &request_id, json!({"approved": true}))
+                .await
+                .unwrap();
+        }
+        assert!(store.requests("job").await.unwrap().is_empty());
+        assert!(
+            engine
+                .respond("job", &request_id, json!({"approved": false}))
+                .await
+                .is_err()
+        );
+        engine.recover().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if engine.status("job").await.unwrap().unwrap().status == "completed" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            store.get("job").await.unwrap().unwrap().result,
+            Some(json!("yes"))
+        );
+        drop(engine);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn valid_reply_commits_before_downstream_route_failure() {
+    let path =
+        std::env::temp_dir().join(format!("blkit-reply-route-error-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let mut graph = request_graph();
+    graph
+        .links
+        .iter_mut()
+        .find(|link| link.target == "approved")
+        .unwrap()
+        .condition = Some(Arc::new(|_, _| Err("downstream route failed".into())));
+    let mut item = Instance::new("job", "test", "1", "review", json!(null));
+    item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
+    let request_id = item.checkpoint.as_ref().unwrap().requests()[0].id.clone();
+    store.create(&item).await.unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    engine
+        .respond("job", &request_id, json!({"approved": true}))
+        .await
+        .unwrap();
+    assert!(store.requests("job").await.unwrap().is_empty());
+    drop(engine);
+    drop(store);
+    let store = LocalStore::open(&path).await.unwrap();
+    let mut graph = request_graph();
+    graph
+        .links
+        .iter_mut()
+        .find(|link| link.target == "approved")
+        .unwrap()
+        .condition = Some(Arc::new(|_, _| Err("downstream route failed".into())));
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    engine.recover().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while engine.status("job").await.unwrap().unwrap().status != "failed" {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        engine
+            .status("job")
+            .await
+            .unwrap()
+            .unwrap()
+            .error
+            .unwrap()
+            .contains("downstream route failed")
+    );
+    assert!(
+        engine
+            .respond("job", &request_id, json!({"approved": false}))
+            .await
+            .is_err()
+    );
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn final_execution_failure_retires_other_unanswered_request() {
+    let path = std::env::temp_dir().join(format!(
+        "blkit-failed-sibling-request-{}.db",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let mut graph = request_graph();
+    graph.nodes.truncate(2);
+    graph.nodes.extend([
+        GraphNode {
+            name: "split",
+            kind: GraphNodeKind::Split("and"),
+        },
+        GraphNode {
+            name: "other",
+            kind: request_node(),
+        },
+        GraphNode {
+            name: "done",
+            kind: GraphNodeKind::End,
+        },
+    ]);
+    graph.links = vec![
+        request_link("start", "split", None),
+        GraphLink {
+            source: "split",
+            target: "review",
+            label: Some("first"),
+            ..request_link("split", "review", None)
+        },
+        GraphLink {
+            source: "split",
+            target: "other",
+            label: Some("second"),
+            ..request_link("split", "other", None)
+        },
+        request_link(
+            "review",
+            "done",
+            Some(Arc::new(|_, _| Err("response route failed".into()))),
+        ),
+        request_link("other", "done", None),
+    ];
+    let mut item = Instance::new("job", "test", "1", "review", json!(null));
+    item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
+    store.create(&item).await.unwrap();
+    assert_eq!(store.requests("job").await.unwrap().len(), 2);
+    let first = graph
+        .ready_activations(item.checkpoint.as_ref().unwrap())
+        .iter()
+        .find(|(_, node)| *node == "review")
+        .unwrap()
+        .0
+        .to_string();
+    let other = graph
+        .ready_activations(item.checkpoint.as_ref().unwrap())
+        .iter()
+        .find(|(_, node)| *node == "other")
+        .unwrap()
+        .0
+        .to_string();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    engine
+        .respond("job", &first, json!({"approved": true}))
+        .await
+        .unwrap();
+    assert_eq!(store.requests("job").await.unwrap()[0].id, other);
+    engine.recover().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while engine.status("job").await.unwrap().unwrap().status != "failed" {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        engine
+            .status("job")
+            .await
+            .unwrap()
+            .unwrap()
+            .error
+            .unwrap()
+            .contains("response route failed")
+    );
+    drop(engine);
+    drop(store);
+    let store = LocalStore::open(&path).await.unwrap();
+    assert_eq!(store.get("job").await.unwrap().unwrap().status, "failed");
+    assert!(store.requests("job").await.unwrap().is_empty());
+    let db = turso::Builder::new_local(path.to_str().unwrap())
+        .build()
+        .await
+        .unwrap();
+    let conn = db.connect().unwrap();
+    let mut rows = conn.query("SELECT response FROM input_requests WHERE instance_id='job' AND request_id=?1 AND status='answered'", [first]).await.unwrap();
+    let row = rows
+        .next()
+        .await
+        .unwrap()
+        .expect("accepted reply remains durable");
+    let response: String = row.get(0).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&response).unwrap(),
+        json!({"approved": true})
+    );
+    drop(rows);
+    drop(conn);
+    drop(db);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn worker_revalidates_persisted_schema_before_consuming_response() {
+    let mut graph = request_graph();
+    if let GraphNodeKind::InputRequest {
+        decode_response, ..
+    } = &mut graph.nodes[1].kind
+    {
+        *decode_response = Box::new(Ok);
+    } else {
+        panic!("missing request node");
+    }
+    let input = json!(null);
+    let mut checkpoint = graph.checkpoint(&input).unwrap();
+    let request_id = checkpoint.requests()[0].id.clone();
+    let before = serde_json::to_value(&checkpoint).unwrap();
+    assert!(
+        graph
+            .complete_request(&input, &mut checkpoint, &request_id, json!({"approved": 1}))
+            .is_err()
+    );
+    assert_eq!(serde_json::to_value(&checkpoint).unwrap(), before);
+}
+
+#[tokio::test]
+async fn local_response_uses_persisted_schema_even_if_compiled_decoder_accepts_more() {
+    let path =
+        std::env::temp_dir().join(format!("blkit-schema-boundary-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let mut graph = request_graph();
+    if let GraphNodeKind::InputRequest {
+        decode_response, ..
+    } = &mut graph.nodes[1].kind
+    {
+        *decode_response = Box::new(Ok);
+    } else {
+        panic!("missing request node");
+    }
+    let mut item = Instance::new("job", "test", "1", "review", json!(null));
+    item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
+    let request_id = item.checkpoint.as_ref().unwrap().requests()[0].id.clone();
+    store.create(&item).await.unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    assert!(
+        engine
+            .respond("job", &request_id, json!({"approved": 1}))
+            .await
+            .is_err()
+    );
+    assert_eq!(store.requests("job").await.unwrap().len(), 1);
+    assert_eq!(store.get("job").await.unwrap().unwrap().status, "pending");
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn invalid_and_late_replies_leave_requests_unchanged() {
+    let path = std::env::temp_dir().join(format!("blkit-request-reject-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let graph = request_graph();
+    let mut item = Instance::new("job", "test", "1", "review", json!(null));
+    item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
+    let request_id = item.checkpoint.as_ref().unwrap().requests()[0].id.clone();
+    store.create(&item).await.unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    assert!(
+        engine
+            .respond("job", &request_id, json!({"approved": 1}))
+            .await
+            .is_err()
+    );
+    assert!(
+        engine
+            .respond("job", &request_id, json!({"approved": true, "extra": 1}))
+            .await
+            .is_err()
+    );
+    assert!(
+        engine
+            .respond("job", "unknown", json!({"approved": true}))
+            .await
+            .is_err()
+    );
+    assert!(store.requests("job").await.unwrap().len() == 1);
+    store.finish("job", "cancelled", None, None).await.unwrap();
+    assert!(
+        engine
+            .respond("job", &request_id, json!({"approved": true}))
+            .await
+            .is_err()
+    );
+    assert_eq!(store.get("job").await.unwrap().unwrap().status, "cancelled");
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn reply_during_unrelated_timed_wait_advances_request_before_timer() {
+    let path = std::env::temp_dir().join(format!("blkit-reply-timed-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let advanced = Arc::new(AtomicBool::new(false));
+    let mut graph = request_graph();
+    graph.nodes = vec![
+        GraphNode {
+            name: "start",
+            kind: GraphNodeKind::Start,
+        },
+        GraphNode {
+            name: "kick",
+            kind: echo_task(),
+        },
+        GraphNode {
+            name: "fork",
+            kind: GraphNodeKind::Split("and"),
+        },
+        GraphNode {
+            name: "review",
+            kind: request_node(),
+        },
+        GraphNode {
+            name: "advanced",
+            kind: GraphNodeKind::Task(Arc::new({
+                let advanced = advanced.clone();
+                move |_, _| {
+                    advanced.store(true, Ordering::SeqCst);
+                    Ok(json!("answered"))
+                }
+            })),
+        },
+        GraphNode {
+            name: "pause",
+            kind: GraphNodeKind::PauseFor(Duration::from_secs(60)),
+        },
+        GraphNode {
+            name: "joined",
+            kind: GraphNodeKind::Join {
+                kind: "and",
+                split: "fork",
+            },
+        },
+        GraphNode {
+            name: "done",
+            kind: GraphNodeKind::End,
+        },
+    ];
+    graph.links = vec![
+        request_link("start", "kick", None),
+        request_link("kick", "fork", None),
+        GraphLink {
+            label: Some("left"),
+            ..request_link("fork", "review", None)
+        },
+        GraphLink {
+            label: Some("right"),
+            ..request_link("fork", "pause", None)
+        },
+        request_link("review", "advanced", None),
+        request_link(
+            "advanced",
+            "joined",
+            Some(Arc::new(|_, values| Ok(values["advanced"].clone()))),
+        ),
+        request_link("pause", "joined", Some(Arc::new(|_, _| Ok(json!("timer"))))),
+        request_link(
+            "joined",
+            "done",
+            Some(Arc::new(|_, values| Ok(values["joined"].clone()))),
+        ),
+    ];
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    let id = engine
+        .start("test", "1", "review", json!(null))
+        .await
+        .unwrap();
+    let waiting = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let item = engine.status(&id).await.unwrap().unwrap();
+            if item.status == "waiting" && !store.requests(&id).await.unwrap().is_empty() {
+                break item;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let wake = waiting.wake_at_ms.unwrap();
+    let request_id = store.requests(&id).await.unwrap()[0].id.clone();
+    engine
+        .respond(&id, &request_id, json!({"approved": true}))
+        .await
+        .unwrap();
+    let item = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let item = engine.status(&id).await.unwrap().unwrap();
+            if advanced.load(Ordering::SeqCst)
+                && item.status == "waiting"
+                && item.checkpoint.as_ref().unwrap().requests().is_empty()
+            {
+                break item;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(item.wake_at_ms, Some(wake));
+    assert_eq!(item.attempt, 1);
+    assert!(store.requests(&id).await.unwrap().is_empty());
+    engine.cancel(&id).await.unwrap();
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn reply_during_clock_wait_remains_durable_without_timer_resume() {
+    let path = std::env::temp_dir().join(format!("blkit-timed-reply-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let graph = request_graph();
+    let mut item = Instance::new("job", "test", "1", "review", json!(null));
+    let checkpoint = graph.checkpoint(&item.input).unwrap();
+    let request_id = checkpoint.requests()[0].id.clone();
+    item.checkpoint = Some(checkpoint.clone());
+    store.create(&item).await.unwrap();
+    store.set_wait("job", &checkpoint, 0).await.unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    engine
+        .respond("job", &request_id, json!({"approved": true}))
+        .await
+        .unwrap();
+    let saved = store.get("job").await.unwrap().unwrap();
+    assert_eq!(saved.status, "pending");
+    assert_eq!(saved.wake_at_ms, None);
+    engine.recover().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if engine.status("job").await.unwrap().unwrap().status == "completed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        store.get("job").await.unwrap().unwrap().result,
+        Some(json!("yes"))
+    );
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_replies_accept_exactly_one_response() {
+    let path = std::env::temp_dir().join(format!("blkit-reply-cas-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let graph = request_graph();
+    let mut item = Instance::new("job", "test", "1", "review", json!(null));
+    item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
+    let request_id = item.checkpoint.as_ref().unwrap().requests()[0].id.clone();
+    store.create(&item).await.unwrap();
+    store
+        .set_input_wait("job", item.checkpoint.as_ref().unwrap())
+        .await
+        .unwrap();
+    let engine = Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+    let (first, second) = tokio::join!(
+        engine.respond("job", &request_id, json!({"approved": true})),
+        engine.respond("job", &request_id, json!({"approved": false})),
+    );
+    assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+    drop(engine);
+    drop(store);
+    let store = LocalStore::open(&path).await.unwrap();
+    let engine = Engine::new(
+        Registry::new(vec![request_graph()]).unwrap(),
+        store.clone(),
+        1,
+    )
+    .unwrap();
+    engine.recover().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if engine.status("job").await.unwrap().unwrap().status == "completed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        store.get("job").await.unwrap().unwrap().result,
+        Some(if first.is_ok() {
+            json!("yes")
+        } else {
+            json!("no")
+        })
+    );
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn reply_races_with_cancel_and_deadline_in_both_commit_orders() {
+    for terminal in ["cancelled", "timeout"] {
+        for reply_first in [true, false] {
+            let path = std::env::temp_dir().join(format!(
+                "blkit-reply-{terminal}-{reply_first}-{}.db",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&path);
+            let store = LocalStore::open(&path).await.unwrap();
+            let graph = request_graph();
+            let checkpoint = graph.checkpoint(&json!(null)).unwrap();
+            let request_id = checkpoint.requests()[0].id.clone();
+            let mut item = Instance::new("job", "test", "1", "review", json!(null));
+            item.deadline_at_ms = Some(i64::MAX);
+            item.checkpoint = Some(checkpoint.clone());
+            store.create(&item).await.unwrap();
+            store.set_input_wait("job", &checkpoint).await.unwrap();
+            let engine =
+                Engine::new(Registry::new(vec![graph]).unwrap(), store.clone(), 1).unwrap();
+            if reply_first {
+                engine
+                    .respond("job", &request_id, json!({"approved": true}))
+                    .await
+                    .unwrap();
+                // A stale worker checkpoint cannot replace the separately committed reply.
+                store.commit_checkpoint("job", &checkpoint).await.unwrap();
+            }
+            if terminal == "cancelled" {
+                store.finish("job", "cancelled", None, None).await.unwrap();
+            } else {
+                assert_eq!(store.expire_due(i64::MAX).await.unwrap(), vec!["job"]);
+            }
+            if !reply_first {
+                assert!(
+                    engine
+                        .respond("job", &request_id, json!({"approved": true}))
+                        .await
+                        .is_err()
+                );
+            } else {
+                assert!(
+                    engine
+                        .respond("job", &request_id, json!({"approved": false}))
+                        .await
+                        .is_err()
+                );
+            }
+            let result = store.get("job").await.unwrap().unwrap();
+            assert_eq!(
+                result.status,
+                if terminal == "timeout" {
+                    "business-error"
+                } else {
+                    "cancelled"
+                }
+            );
+            assert_eq!(result.result, None);
+            drop(engine);
+            drop(store);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn terminal_graph_does_not_expose_or_accept_stale_requests() {
+    let mut graph = request_graph();
+    graph.nodes.truncate(2);
+    graph.nodes.extend([
+        GraphNode {
+            name: "split",
+            kind: GraphNodeKind::Split("and"),
+        },
+        GraphNode {
+            name: "finish",
+            kind: GraphNodeKind::Task(Arc::new(|_, _| Ok(json!(0)))),
+        },
+        GraphNode {
+            name: "done",
+            kind: GraphNodeKind::End,
+        },
+    ]);
+    graph.links = vec![
+        request_link("start", "split", None),
+        request_link("split", "review", None),
+        request_link("split", "finish", None),
+        request_link("finish", "done", Some(Arc::new(|_, _| Ok(json!(0))))),
+    ];
+    let input = json!(null);
+    let mut state = graph.checkpoint(&input).unwrap();
+    let request_id = state.requests()[0].id.clone();
+    let path =
+        std::env::temp_dir().join(format!("blkit-terminal-request-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let mut item = Instance::new("job", "test", "1", "review", input.clone());
+    item.checkpoint = Some(state.clone());
+    store.create(&item).await.unwrap();
+    assert_eq!(store.requests("job").await.unwrap()[0].id, request_id);
+    let finish_id = graph
+        .ready_activations(&state)
+        .iter()
+        .find(|(_, name)| *name == "finish")
+        .unwrap()
+        .0;
+    graph
+        .complete_activation(&input, &mut state, finish_id, json!(0))
+        .unwrap();
+    assert_eq!(state.outcome, Some(json!(0)));
+    assert!(state.requests().is_empty());
+    store.commit_checkpoint("job", &state).await.unwrap();
+    drop(store);
+    let store = LocalStore::open(&path).await.unwrap();
+    assert!(store.requests("job").await.unwrap().is_empty());
+    assert!(
+        store
+            .get("job")
+            .await
+            .unwrap()
+            .unwrap()
+            .checkpoint
+            .unwrap()
+            .requests()
+            .is_empty()
+    );
+    assert!(
+        graph
+            .complete_request(&input, &mut state, &request_id, json!({"approved": true}))
+            .is_err()
+    );
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn old_version_two_checkpoint_without_requests_still_loads() {
+    let mut json = serde_json::to_value(GraphCheckpoint::default()).unwrap();
+    json.as_object_mut().unwrap().remove("requests");
+    let restored: GraphCheckpoint = serde_json::from_value(json).unwrap();
+    restored.ensure_supported().unwrap();
+    assert!(restored.requests().is_empty());
+}

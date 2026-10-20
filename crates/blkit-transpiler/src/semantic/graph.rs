@@ -534,6 +534,7 @@ pub(super) fn check_source_graph(
         if let Some(peer) = program.peer_nodes.iter().find(|peer| peer.name == name) {
             return match &peer.kind {
                 PeerKind::Start { outputs }
+                | PeerKind::InputRequest { outputs, .. }
                 | PeerKind::Join { outputs, .. }
                 | PeerKind::Subprocess { outputs, .. } => Some(outputs.clone()),
                 PeerKind::End { .. }
@@ -564,6 +565,7 @@ pub(super) fn check_source_graph(
                     Some(vec![(input.clone(), Type::Named("DateTime".into()))])
                 }
                 PeerKind::Start { .. }
+                | PeerKind::InputRequest { .. }
                 | PeerKind::Split { .. }
                 | PeerKind::Terminal { .. }
                 | PeerKind::PauseFor(_) => None,

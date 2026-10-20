@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-stream = { version = "0.3", optional = true }
 axum = { version = "0.8", optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
@@ -45,7 +46,7 @@ required-features = ["logging"]
 
 [features]
 default = []
-api-server = ["dep:axum", "dep:tracing"]
+api-server = ["dep:axum", "dep:async-stream", "dep:tracing"]
 worker = ["dep:tokio", "dep:uuid"]
 local-persistence = ["dep:turso", "dep:tokio"]
 remote-persistence = ["dep:deadpool-postgres", "dep:tokio-postgres", "dep:tokio", "dep:tracing", "dep:uuid"]

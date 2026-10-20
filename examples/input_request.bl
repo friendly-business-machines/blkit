@@ -1,0 +1,15 @@
+namespace demo;
+version "1.0";
+
+start_event start {}
+input_request review {
+  prompt "Approve this order?";
+  output approved: Bool;
+}
+end_event done { input approved: Bool; }
+
+process approval {
+  flow start -> review;
+  flow review -> done;
+  bind review.approved -> done.approved;
+}

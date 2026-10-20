@@ -4,12 +4,14 @@ use deadpool_postgres::{Manager, Pool, Runtime};
 use tokio_postgres::{Config, NoTls};
 
 use crate::{
-    DeadlinePolicy, RetryPolicy, compiled_graph::GraphCheckpoint, evaluation::next_retry_at,
+    DeadlinePolicy, RetryPolicy,
+    compiled_graph::{GraphCheckpoint, InputRequest},
+    evaluation::next_retry_at,
     store::Instance,
 };
 
 #[derive(Clone)]
-pub struct PostgresStore(Pool);
+pub struct PostgresStore(Pool, Config);
 
 pub(crate) enum ClaimActivity {
     Active,
@@ -24,6 +26,7 @@ pub struct DistributedInstance {
     pub owner_id: Option<String>,
     pub lease_until: Option<i64>,
     pub generation: i64,
+    pub requests: Vec<InputRequest>,
 }
 
 pub struct Worker {
@@ -64,7 +67,7 @@ impl PostgresStore {
         }
         let config =
             Config::from_str(url).map_err(|e| format!("invalid postgres configuration: {e}"))?;
-        let pool = Pool::builder(Manager::new(config, NoTls))
+        let pool = Pool::builder(Manager::new(config.clone(), NoTls))
             .max_size(max)
             .runtime(Runtime::Tokio1)
             .wait_timeout(Some(Duration::from_secs(1)))
@@ -88,6 +91,7 @@ impl PostgresStore {
                 queued_at_ms BIGINT, first_claim_at_ms BIGINT, wake_at_ms BIGINT,
                 deadline_origin TEXT, deadline_duration_ms BIGINT, deadline_at_ms BIGINT
             );
+            ALTER TABLE instances ADD COLUMN IF NOT EXISTS input_resume BOOLEAN NOT NULL DEFAULT FALSE;
             ALTER TABLE instances ADD COLUMN IF NOT EXISTS retry_policy TEXT;
             ALTER TABLE instances ADD COLUMN IF NOT EXISTS queued_at_ms BIGINT;
             ALTER TABLE instances ADD COLUMN IF NOT EXISTS first_claim_at_ms BIGINT;
@@ -96,6 +100,53 @@ impl PostgresStore {
             ALTER TABLE instances ADD COLUMN IF NOT EXISTS deadline_duration_ms BIGINT;
             ALTER TABLE instances ADD COLUMN IF NOT EXISTS deadline_at_ms BIGINT;
             UPDATE instances SET queued_at_ms=created_at*1000 WHERE queued_at_ms IS NULL;
+            CREATE TABLE IF NOT EXISTS input_requests (
+                instance_id TEXT NOT NULL REFERENCES instances(id), request_id TEXT NOT NULL,
+                prompt TEXT NOT NULL, schema TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'outstanding' CHECK (status IN ('outstanding','answered','consumed','retired')),
+                response TEXT, PRIMARY KEY (instance_id, request_id)
+            );
+            CREATE INDEX IF NOT EXISTS input_requests_answered ON input_requests(instance_id) WHERE status='answered';
+            CREATE TABLE IF NOT EXISTS instance_interests (
+                instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+                channel TEXT NOT NULL CHECK (octet_length(channel) BETWEEN 1 AND 63),
+                expires_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (instance_id, channel)
+            );
+            CREATE OR REPLACE FUNCTION notify_instance_interests() RETURNS trigger LANGUAGE plpgsql AS $$
+            DECLARE changed_id TEXT;
+            BEGIN
+                IF TG_TABLE_NAME = 'instances' THEN
+                    IF NEW.status NOT IN ('completed', 'business-error', 'cancelled', 'terminated', 'failed')
+                        OR NEW.status = OLD.status THEN
+                        RETURN NEW;
+                    END IF;
+                    changed_id := NEW.id;
+                ELSE
+                    IF TG_OP = 'INSERT' THEN
+                        IF NEW.status <> 'outstanding' THEN RETURN NEW; END IF;
+                    ELSIF OLD.status <> 'outstanding' OR NEW.status NOT IN ('answered', 'retired') THEN
+                        RETURN NEW;
+                    END IF;
+                    changed_id := NEW.instance_id;
+                END IF;
+                PERFORM pg_notify(interest.channel, changed_id)
+                    FROM instance_interests interest
+                    WHERE interest.instance_id = changed_id AND interest.expires_at > clock_timestamp();
+                RETURN NEW;
+            END $$;
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='input_requests'::regclass AND tgname='input_request_interests_notify') THEN
+                    CREATE TRIGGER input_request_interests_notify
+                        AFTER INSERT OR UPDATE OF status ON input_requests
+                        FOR EACH ROW EXECUTE FUNCTION notify_instance_interests();
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='instances'::regclass AND tgname='instance_terminal_interests_notify') THEN
+                    CREATE TRIGGER instance_terminal_interests_notify
+                        AFTER UPDATE OF status ON instances
+                        FOR EACH ROW EXECUTE FUNCTION notify_instance_interests();
+                END IF;
+            END $$;
             CREATE TABLE IF NOT EXISTS workers (
                 id TEXT PRIMARY KEY, heartbeat_at BIGINT NOT NULL, draining BOOLEAN NOT NULL DEFAULT FALSE
             );
@@ -110,7 +161,81 @@ impl PostgresStore {
                 PRIMARY KEY (namespace, version, process)
             );",
         ).await.map_err(|e| e.to_string())?;
-        Ok(Self(pool))
+        Ok(Self(pool, config))
+    }
+
+    pub(crate) fn listener_config(&self) -> Config {
+        self.1.clone()
+    }
+
+    // The instance lock serializes registration with worker and terminal updates before snapshot.
+    pub(crate) async fn register_interest(&self, id: &str, channel: &str) -> Result<bool, String> {
+        self.register_interest_inner(id, channel, false)
+            .await?
+            .ok_or("interest lock timeout".into())
+    }
+
+    // A timed-out renewal must roll back on the server, freeing the pool for other instances.
+    pub(crate) async fn renew_interest(
+        &self,
+        id: &str,
+        channel: &str,
+    ) -> Result<Option<bool>, String> {
+        self.register_interest_inner(id, channel, true).await
+    }
+
+    async fn register_interest_inner(
+        &self,
+        id: &str,
+        channel: &str,
+        renewal: bool,
+    ) -> Result<Option<bool>, String> {
+        let mut client = self.0.get().await.map_err(|e| e.to_string())?;
+        let tx = client.transaction().await.map_err(|e| e.to_string())?;
+        if renewal {
+            tx.batch_execute("SET LOCAL lock_timeout = '750ms'")
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        let registered = async {
+            if tx.query_opt("SELECT id FROM instances WHERE id=$1 FOR SHARE", &[&id]).await?.is_none() {
+                return Ok(None);
+            }
+            let live = tx.query_opt("SELECT expires_at > clock_timestamp() FROM instance_interests WHERE instance_id=$1 AND channel=$2 FOR UPDATE", &[&id, &channel]).await?
+                .is_some_and(|row| row.get::<_, bool>(0));
+            tx.execute("INSERT INTO instance_interests (instance_id, channel, expires_at) VALUES ($1,$2,clock_timestamp() + interval '10 seconds') ON CONFLICT (instance_id, channel) DO UPDATE SET expires_at=EXCLUDED.expires_at", &[&id, &channel]).await?;
+            Ok::<_, tokio_postgres::Error>(Some(live))
+        }.await;
+        match registered {
+            Ok(Some(live)) => {
+                tx.commit().await.map_err(|e| e.to_string())?;
+                Ok(Some(live))
+            }
+            Ok(None) => Err("unknown instance".into()),
+            Err(error)
+                if renewal
+                    && error.code()
+                        == Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE) =>
+            {
+                tx.rollback().await.map_err(|e| e.to_string())?;
+                Ok(None)
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    pub(crate) async fn remove_interest(&self, id: &str, channel: &str) -> Result<(), String> {
+        self.0
+            .get()
+            .await
+            .map_err(|e| e.to_string())?
+            .execute(
+                "DELETE FROM instance_interests WHERE instance_id=$1 AND channel=$2",
+                &[&id, &channel],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub async fn create(&self, instance: &Instance) -> Result<(), String> {
@@ -147,7 +272,13 @@ impl PostgresStore {
             .transpose()
             .map_err(|e| e.to_string())?;
         let attempt = i64::from(instance.attempt);
-        self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
+        let mut client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
+        let tx = client.transaction().await.map_err(|e| e.to_string())?;
+        tx.execute(
             "INSERT INTO instances (id, namespace, version, process, input, status, result, error, created_at, updated_at, checkpoint, attempt, first_failure_at, next_eligible_at, terminal_name, retry_policy, queued_at_ms, first_claim_at_ms, wake_at_ms, deadline_origin, deadline_duration_ms, deadline_at_ms)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)",
             &[&instance.id, &instance.namespace, &instance.version, &instance.process,
@@ -157,6 +288,10 @@ impl PostgresStore {
               &instance.queued_at_ms, &instance.first_claim_at_ms, &instance.wake_at_ms,
               &instance.deadline_origin, &instance.deadline_duration_ms, &instance.deadline_at_ms]
         ).await.map_err(|e| e.to_string())?;
+        if let Some(checkpoint) = &instance.checkpoint {
+            Self::sync_requests(&tx, &instance.id, checkpoint).await?;
+        }
+        tx.commit().await.map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -189,6 +324,172 @@ impl PostgresStore {
         inserted.map(|_| ()).ok_or("worker unavailable".into())
     }
 
+    async fn sync_requests(
+        tx: &tokio_postgres::Transaction<'_>,
+        id: &str,
+        checkpoint: &GraphCheckpoint,
+    ) -> Result<(), String> {
+        let requests = checkpoint.requests();
+        let ids: Vec<&str> = requests.iter().map(|request| request.id.as_str()).collect();
+        for request in &requests {
+            tx.execute(
+                "INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+                &[&id, &request.id, &request.prompt, &serde_json::to_string(&request.schema).map_err(|e| e.to_string())?],
+            ).await.map_err(|e| e.to_string())?;
+        }
+        tx.execute("UPDATE input_requests SET status='retired' WHERE instance_id=$1 AND status='outstanding' AND NOT (request_id=ANY($2))", &[&id, &ids]).await.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn requests(&self, id: &str) -> Result<Vec<InputRequest>, String> {
+        let client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
+        let rows = client.query("SELECT request_id, prompt, schema FROM input_requests WHERE instance_id=$1 AND status='outstanding' ORDER BY request_id", &[&id]).await.map_err(|e| e.to_string())?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(InputRequest {
+                    id: row.get(0),
+                    prompt: row.get(1),
+                    schema: serde_json::from_str(&row.get::<_, String>(2))
+                        .map_err(|e| e.to_string())?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn answers(&self, id: &str) -> Result<Vec<(String, serde_json::Value)>, String> {
+        let client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
+        let rows = client.query("SELECT request_id, response FROM input_requests WHERE instance_id=$1 AND status='answered' ORDER BY request_id", &[&id]).await.map_err(|e| e.to_string())?;
+        rows.into_iter()
+            .map(|row| {
+                Ok((
+                    row.get(0),
+                    serde_json::from_str(&row.get::<_, String>(1)).map_err(|e| e.to_string())?,
+                ))
+            })
+            .collect()
+    }
+
+    pub async fn accept_response(
+        &self,
+        id: &str,
+        request_id: &str,
+        response: &serde_json::Value,
+    ) -> Result<(), String> {
+        let mut client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
+        let tx = client.transaction().await.map_err(|e| e.to_string())?;
+        let row = tx
+            .query_opt(
+                "SELECT status, deadline_at_ms FROM instances WHERE id=$1 FOR UPDATE",
+                &[&id],
+            )
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("unknown instance")?;
+        let now: i64 = tx
+            .query_one(
+                "SELECT (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT",
+                &[],
+            )
+            .await
+            .map_err(|e| e.to_string())?
+            .get(0);
+        if !matches!(
+            row.get::<_, String>(0).as_str(),
+            "pending" | "running" | "waiting" | "waiting-for-input"
+        ) || row.get::<_, Option<i64>>(1).is_some_and(|at| at <= now)
+        {
+            return Err("instance not active".into());
+        }
+        let row = tx
+            .query_opt(
+                "SELECT status, schema FROM input_requests WHERE instance_id=$1 AND request_id=$2",
+                &[&id, &request_id],
+            )
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("unknown request")?;
+        if row.get::<_, String>(0) != "outstanding" {
+            return Err("request not outstanding".into());
+        }
+        let schema: crate::compiled_graph::RequestSchema =
+            serde_json::from_str(&row.get::<_, String>(1)).map_err(|e| e.to_string())?;
+        schema
+            .validate_response(response)
+            .map_err(|error| format!("invalid response: {error}"))?;
+        tx.execute("UPDATE input_requests SET status='answered', response=$3 WHERE instance_id=$1 AND request_id=$2 AND status='outstanding'", &[&id, &request_id, &response.to_string()]).await.map_err(|e| e.to_string())?;
+        tx.execute("UPDATE instances SET status='pending', input_resume=TRUE, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT WHERE id=$1 AND status IN ('waiting-for-input','waiting')", &[&id]).await.map_err(|e| e.to_string())?;
+        tx.commit().await.map_err(|e| e.to_string())
+    }
+
+    pub async fn consume_response(
+        &self,
+        id: &str,
+        worker_id: &str,
+        generation: i64,
+        request_id: &str,
+        checkpoint: &GraphCheckpoint,
+    ) -> Result<bool, String> {
+        let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
+        let mut client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
+        let tx = client.transaction().await.map_err(|e| e.to_string())?;
+        let changed = tx.execute("UPDATE instances SET checkpoint=$4, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running' AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT) AND EXISTS (SELECT 1 FROM input_requests WHERE instance_id=$1 AND request_id=$5 AND status='answered')", &[&id, &worker_id, &generation, &value, &request_id]).await.map_err(|e| e.to_string())?;
+        if changed != 1 {
+            return Ok(false);
+        }
+        tx.execute("UPDATE input_requests SET status='consumed' WHERE instance_id=$1 AND request_id=$2 AND status='answered'", &[&id, &request_id]).await.map_err(|e| e.to_string())?;
+        Self::sync_requests(&tx, id, checkpoint).await?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
+    pub async fn release_input_owned(
+        &self,
+        id: &str,
+        worker_id: &str,
+        generation: i64,
+        checkpoint: &GraphCheckpoint,
+    ) -> Result<bool, String> {
+        let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
+        let ids: Vec<_> = checkpoint
+            .requests()
+            .into_iter()
+            .map(|request| request.id)
+            .collect();
+        let mut client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
+        let tx = client.transaction().await.map_err(|e| e.to_string())?;
+        // Acquire the instance lock before checking replies, so a competing POST's commit is visible.
+        tx.query_opt("SELECT id FROM instances WHERE id=$1 FOR UPDATE", &[&id])
+            .await
+            .map_err(|e| e.to_string())?;
+        let changed = tx.execute("UPDATE instances SET status='waiting-for-input', checkpoint=$4, wake_at_ms=NULL, owner_id=NULL, lease_until=NULL, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running' AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT) AND NOT EXISTS (SELECT 1 FROM input_requests WHERE instance_id=$1 AND request_id=ANY($5) AND status='answered')", &[&id, &worker_id, &generation, &value, &ids]).await.map_err(|e| e.to_string())?;
+        if changed != 1 {
+            return Ok(false);
+        }
+        Self::sync_requests(&tx, id, checkpoint).await?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
     pub async fn release_wait_owned(
         &self,
         id: &str,
@@ -198,19 +499,48 @@ impl PostgresStore {
         wake_at_ms: i64,
     ) -> Result<bool, String> {
         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
-        let changed = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
-            "UPDATE instances SET status='waiting', checkpoint=$4, wake_at_ms=$5, owner_id=NULL, lease_until=NULL, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running' AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
-            &[&id, &worker_id, &generation, &value, &wake_at_ms]
+        let request_ids: Vec<_> = checkpoint
+            .requests()
+            .into_iter()
+            .map(|request| request.id)
+            .collect();
+        let mut client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
+        let tx = client.transaction().await.map_err(|e| e.to_string())?;
+        // Serialize a reply and the wait handoff before testing answered requests.
+        tx.query_opt("SELECT id FROM instances WHERE id=$1 FOR UPDATE", &[&id])
+            .await
+            .map_err(|e| e.to_string())?;
+        let changed = tx.execute(
+            "UPDATE instances SET status='waiting', checkpoint=$4, wake_at_ms=$5, owner_id=NULL, lease_until=NULL, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running' AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT) AND NOT EXISTS (SELECT 1 FROM input_requests WHERE instance_id=$1 AND request_id=ANY($6) AND status='answered')",
+            &[&id, &worker_id, &generation, &value, &wake_at_ms, &request_ids]
         ).await.map_err(|e| e.to_string())?;
-        Ok(changed == 1)
+        if changed != 1 {
+            return Ok(false);
+        }
+        Self::sync_requests(&tx, id, checkpoint).await?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+        Ok(true)
     }
 
     pub async fn expire_due(&self) -> Result<Vec<String>, String> {
-        let rows = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.query(
-            "UPDATE instances SET status='business-error', terminal_name='timeout', wake_at_ms=NULL, owner_id=NULL, lease_until=NULL, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT WHERE deadline_at_ms IS NOT NULL AND deadline_at_ms<=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND status IN ('pending','running','retry-waiting','waiting') RETURNING id",
+        let mut client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
+        let tx = client.transaction().await.map_err(|e| e.to_string())?;
+        let rows = tx.query(
+            "UPDATE instances SET status='business-error', terminal_name='timeout', wake_at_ms=NULL, owner_id=NULL, lease_until=NULL, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT WHERE deadline_at_ms IS NOT NULL AND deadline_at_ms<=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND status IN ('pending','running','retry-waiting','waiting','waiting-for-input') RETURNING id",
             &[]
         ).await.map_err(|e| e.to_string())?;
-        Ok(rows.iter().map(|row| row.get(0)).collect())
+        let ids: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+        tx.execute("UPDATE input_requests SET status='retired' WHERE instance_id=ANY($1) AND status='outstanding'", &[&ids]).await.map_err(|e| e.to_string())?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+        Ok(ids)
     }
 
     pub async fn resume_due_waits(&self) -> Result<u64, String> {
@@ -221,24 +551,27 @@ impl PostgresStore {
     }
 
     pub async fn cancel(&self, id: &str) -> Result<(), String> {
-        let client = self
+        let mut client = self
             .0
             .get()
             .await
             .map_err(|e| format!("postgres checkout: {e}"))?;
-        let changed = client
+        let tx = client.transaction().await.map_err(|e| e.to_string())?;
+        let changed = tx
             .execute(
                 "UPDATE instances SET status='cancelled', owner_id=NULL, lease_until=NULL,
                 updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
-             WHERE id=$1 AND status IN ('pending', 'running', 'retry-waiting', 'waiting', 'cancelling') AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
+             WHERE id=$1 AND status IN ('pending', 'running', 'retry-waiting', 'waiting', 'waiting-for-input', 'cancelling') AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
                 &[&id],
             )
             .await
             .map_err(|e| e.to_string())?;
         if changed == 1 {
+            tx.execute("UPDATE input_requests SET status='retired' WHERE instance_id=$1 AND status='outstanding'", &[&id]).await.map_err(|e| e.to_string())?;
+            tx.commit().await.map_err(|e| e.to_string())?;
             return Ok(());
         }
-        match client
+        match tx
             .query_opt("SELECT status FROM instances WHERE id=$1", &[&id])
             .await
             .map_err(|e| e.to_string())?
@@ -251,7 +584,7 @@ impl PostgresStore {
 
     pub(crate) async fn ensure_supported_incomplete(&self) -> Result<(), String> {
         let rows = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.query(
-            "SELECT id, checkpoint FROM instances WHERE status IN ('pending', 'running', 'retry-waiting', 'waiting') AND checkpoint IS NOT NULL",
+            "SELECT id, checkpoint FROM instances WHERE status IN ('pending', 'running', 'retry-waiting', 'waiting', 'waiting-for-input') AND checkpoint IS NOT NULL",
             &[],
         ).await.map_err(|e| e.to_string())?;
         for row in rows {
@@ -318,7 +651,7 @@ impl PostgresStore {
         let rows = tx.query(
             "UPDATE instances i SET status='running', owner_id=$1,
                 lease_until=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT+$2,
-                generation=generation+1, attempt=CASE WHEN i.status='pending' AND i.wake_at_ms IS NOT NULL AND i.attempt>0 THEN i.attempt ELSE i.attempt+1 END, next_eligible_at=NULL, wake_at_ms=NULL,
+                generation=generation+1, attempt=CASE WHEN i.status='pending' AND (i.wake_at_ms IS NOT NULL OR i.input_resume) AND i.attempt>0 THEN i.attempt ELSE i.attempt+1 END, input_resume=FALSE, next_eligible_at=NULL, wake_at_ms=NULL,
                 first_claim_at_ms=COALESCE(first_claim_at_ms, (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT),
                 deadline_at_ms=CASE WHEN deadline_origin='first_claimed' THEN COALESCE(deadline_at_ms, (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT + deadline_duration_ms) ELSE deadline_at_ms END,
                 updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
@@ -391,14 +724,25 @@ impl PostgresStore {
         checkpoint: &GraphCheckpoint,
     ) -> Result<bool, String> {
         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
-        let changed = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
+        let mut client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
+        let tx = client.transaction().await.map_err(|e| e.to_string())?;
+        let changed = tx.execute(
             "UPDATE instances SET input=$4, checkpoint=$5, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running' AND checkpoint IS NULL
                AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT
                AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
             &[&id, &worker_id, &generation, &input.to_string(), &value]
         ).await.map_err(|e| e.to_string())?;
-        Ok(changed == 1)
+        if changed != 1 {
+            return Ok(false);
+        }
+        Self::sync_requests(&tx, id, checkpoint).await?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+        Ok(true)
     }
 
     pub async fn commit_checkpoint(
@@ -409,13 +753,44 @@ impl PostgresStore {
         checkpoint: &GraphCheckpoint,
     ) -> Result<bool, String> {
         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
-        let changed = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
+        if checkpoint.requests().is_empty() {
+            let client = self
+                .0
+                .get()
+                .await
+                .map_err(|e| format!("postgres checkout: {e}"))?;
+            let row = client.query_one(
+                "WITH saved AS (
+                    UPDATE instances SET checkpoint=$4, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+                    WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running'
+                        AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT
+                        AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)
+                    RETURNING id
+                ), retired AS (
+                    UPDATE input_requests SET status='retired' WHERE instance_id IN (SELECT id FROM saved) AND status='outstanding'
+                    RETURNING request_id
+                ) SELECT count(*) FROM saved", &[&id, &worker_id, &generation, &value]
+            ).await.map_err(|e| e.to_string())?;
+            return Ok(row.get::<_, i64>(0) == 1);
+        }
+        let mut client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
+        let tx = client.transaction().await.map_err(|e| e.to_string())?;
+        let changed = tx.execute(
             "UPDATE instances SET checkpoint=$4, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running'
                AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
             &[&id, &worker_id, &generation, &value]
         ).await.map_err(|e| e.to_string())?;
-        Ok(changed == 1)
+        if changed != 1 {
+            return Ok(false);
+        }
+        Self::sync_requests(&tx, id, checkpoint).await?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+        Ok(true)
     }
 
     pub async fn fail_owned(
@@ -473,6 +848,9 @@ impl PostgresStore {
         if changed != 1 {
             return Ok(None);
         }
+        if status == "failed" {
+            tx.execute("UPDATE input_requests SET status='retired' WHERE instance_id=$1 AND status='outstanding'", &[&id]).await.map_err(|e| e.to_string())?;
+        }
         tx.commit().await.map_err(|e| e.to_string())?;
         Ok(Some(status))
     }
@@ -499,14 +877,25 @@ impl PostgresStore {
             .map(|value| serde_json::to_string(&value))
             .transpose()
             .map_err(|e| e.to_string())?;
-        let changed = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.execute(
+        let mut client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
+        let tx = client.transaction().await.map_err(|e| e.to_string())?;
+        let changed = tx.execute(
             "UPDATE instances SET status=$4, result=$5, terminal_name=$6, error=$7,
                 owner_id=NULL, lease_until=NULL, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
              WHERE id=$1 AND owner_id=$2 AND generation=$3 AND status='running'
                AND lease_until>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AND (deadline_at_ms IS NULL OR deadline_at_ms>(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT)",
             &[&id, &worker_id, &generation, &status, &result, &terminal_name, &error]
         ).await.map_err(|e| e.to_string())?;
-        Ok(changed == 1)
+        if changed != 1 {
+            return Ok(false);
+        }
+        tx.execute("UPDATE input_requests SET status='retired' WHERE instance_id=$1 AND status='outstanding'", &[&id]).await.map_err(|e| e.to_string())?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+        Ok(true)
     }
 
     pub async fn expired_claims(&self) -> Result<Vec<DistributedInstance>, String> {
@@ -587,6 +976,9 @@ impl PostgresStore {
         if changed != 1 {
             return Ok(None);
         }
+        if status == "failed" {
+            tx.execute("UPDATE input_requests SET status='retired' WHERE instance_id=$1 AND status='outstanding'", &[&id]).await.map_err(|e| e.to_string())?;
+        }
         tx.commit().await.map_err(|e| e.to_string())?;
         Ok(Some(status))
     }
@@ -603,17 +995,23 @@ impl PostgresStore {
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<DistributedInstance>, String> {
-        let row = self
+        let client = self
             .0
             .get()
             .await
-            .map_err(|e| format!("postgres checkout: {e}"))?
-            .query_opt(
+            .map_err(|e| format!("postgres checkout: {e}"))?;
+        let row = client.query_opt(
                 "SELECT id, namespace, version, process, input, status, result, error,
                     created_at, updated_at, checkpoint, attempt, first_failure_at,
                     next_eligible_at, terminal_name, owner_id, lease_until, generation,
-                    queued_at_ms, first_claim_at_ms, wake_at_ms, deadline_origin, deadline_duration_ms, deadline_at_ms
-             FROM instances WHERE id=$1",
+                    queued_at_ms, first_claim_at_ms, wake_at_ms, deadline_origin, deadline_duration_ms, deadline_at_ms,
+                    r.request_ids, r.prompts, r.schemas
+             FROM instances i LEFT JOIN LATERAL (
+                 SELECT array_agg(request_id ORDER BY request_id) AS request_ids,
+                        array_agg(prompt ORDER BY request_id) AS prompts,
+                        array_agg(schema ORDER BY request_id) AS schemas
+                 FROM input_requests WHERE instance_id=i.id AND status='outstanding'
+             ) r ON TRUE WHERE i.id=$1",
                 &[&id],
             )
             .await
@@ -626,7 +1024,21 @@ impl PostgresStore {
         };
         let value = |text: Option<String>| text.map(&json).transpose();
         let attempt: i64 = row.get(11);
-        Ok(Some(DistributedInstance {
+        let requests = row
+            .get::<_, Option<Vec<String>>>(24)
+            .unwrap_or_default()
+            .into_iter()
+            .zip(row.get::<_, Option<Vec<String>>>(25).unwrap_or_default())
+            .zip(row.get::<_, Option<Vec<String>>>(26).unwrap_or_default())
+            .map(|((id, prompt), schema)| {
+                Ok(InputRequest {
+                    id,
+                    prompt,
+                    schema: serde_json::from_str(&schema).map_err(|e| e.to_string())?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let item = DistributedInstance {
             instance: Instance {
                 id: row.get(0),
                 namespace: row.get(1),
@@ -657,7 +1069,9 @@ impl PostgresStore {
             owner_id: row.get(15),
             lease_until: row.get(16),
             generation: row.get(17),
-        }))
+            requests,
+        };
+        Ok(Some(item))
     }
 
     pub async fn register_worker(

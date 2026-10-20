@@ -390,3 +390,106 @@ async fn measure_api_worker_and_combined_connections() {
         println!("mode={mode} phase=end");
     }
 }
+
+#[tokio::test]
+async fn concurrent_postgres_responses_have_one_committed_winner() {
+    use testcontainers_modules::{
+        postgres::Postgres,
+        testcontainers::{ImageExt, runners::AsyncRunner},
+    };
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let first = PostgresStore::connect(&url).await.unwrap();
+    let second = PostgresStore::connect(&url).await.unwrap();
+    first
+        .create(&blkit_core::runtime::Instance::new(
+            "job",
+            "test",
+            "1",
+            "review",
+            json!(null),
+        ))
+        .await
+        .unwrap();
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    db.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ('job','1','Approve?', $1)", &[&serde_json::to_string(&blkit_core::compiled_graph::RequestSchema {
+        ports: [("approved".into(), blkit_core::compiled_graph::RequestType::Named("Bool".into()))].into(), records: Default::default(), enums: Default::default(),
+    }).unwrap()]).await.unwrap();
+    let approved = json!({"approved":true});
+    let rejected = json!({"approved":false});
+    let (a, b) = tokio::join!(
+        first.accept_response("job", "1", &approved),
+        second.accept_response("job", "1", &rejected)
+    );
+    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    let answer = first.answers("job").await.unwrap();
+    assert_eq!(answer.len(), 1);
+    assert_eq!(
+        answer[0].1,
+        if a.is_ok() {
+            json!({"approved":true})
+        } else {
+            json!({"approved":false})
+        }
+    );
+}
+
+#[tokio::test]
+async fn concurrent_postgres_cancel_and_reply_have_one_terminal_order() {
+    use testcontainers_modules::{
+        postgres::Postgres,
+        testcontainers::{ImageExt, runners::AsyncRunner},
+    };
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let first = PostgresStore::connect(&url).await.unwrap();
+    let second = PostgresStore::connect(&url).await.unwrap();
+    first
+        .create(&blkit_core::runtime::Instance::new(
+            "job",
+            "test",
+            "1",
+            "review",
+            json!(null),
+        ))
+        .await
+        .unwrap();
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    db.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ('job','1','Approve?', $1)", &[&serde_json::to_string(&blkit_core::compiled_graph::RequestSchema {
+        ports: [("approved".into(), blkit_core::compiled_graph::RequestType::Named("Bool".into()))].into(), records: Default::default(), enums: Default::default(),
+    }).unwrap()]).await.unwrap();
+    let response = json!({"approved": true});
+    let (reply, cancel) = tokio::join!(
+        first.accept_response("job", "1", &response),
+        second.cancel("job")
+    );
+    cancel.unwrap();
+    assert_eq!(
+        first.get("job").await.unwrap().unwrap().instance.status,
+        "cancelled"
+    );
+    assert!(first.requests("job").await.unwrap().is_empty());
+    let answered = first.answers("job").await.unwrap();
+    assert_eq!(reply.is_ok(), !answered.is_empty());
+    assert!(first.accept_response("job", "1", &response).await.is_err());
+}

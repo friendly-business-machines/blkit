@@ -405,6 +405,7 @@ dependencies = [
 name = "blkit-core"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
  "axum",
  "chrono",
  "chrono-tz",
@@ -435,6 +436,7 @@ dependencies = [
  "blkit-core",
  "blkit-transpiler",
  "chrono",
+ "http-body-util",
  "rust_decimal",
  "serde",
  "serde_json",

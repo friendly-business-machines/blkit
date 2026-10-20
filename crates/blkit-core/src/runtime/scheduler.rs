@@ -13,43 +13,62 @@ pub(super) async fn run_named(
     };
     let mut next_eligible_at = instance.next_eligible_at;
     let mut wake_at_ms = instance.wake_at_ms;
-    loop {
+    'run: loop {
         if let Some(wake) = wake_at_ms.take() {
-            tokio::time::sleep(Duration::from_millis(
-                wake.saturating_sub(crate::store::now_ms()).max(0) as u64,
-            ))
-            .await;
-            let mut status = context.state.lock().await;
-            let Ok(Some(saved)) = context.store.as_ref().unwrap().get(&instance.id).await else {
-                break;
-            };
-            if saved.status != "waiting" {
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(wake.saturating_sub(crate::store::now_ms()).max(0) as u64)) => {},
+                    _ = context.response_notified() => {},
+                }
+                let mut status = context.state.lock().await;
+                let Ok(Some(saved)) = context.store.as_ref().unwrap().get(&instance.id).await
+                else {
+                    break 'run;
+                };
+                if saved.status == "waiting"
+                    && saved
+                        .wake_at_ms
+                        .is_some_and(|at| at > crate::store::now_ms())
+                {
+                    continue;
+                }
+                let Some(mut next) = saved.checkpoint else {
+                    break 'run;
+                };
+                let resumed = if saved.status == "waiting" {
+                    if graph
+                        .resume_due(&instance.input, &mut next, crate::store::now_ms())
+                        .is_err()
+                    {
+                        break 'run;
+                    }
+                    let Ok(Some(resumed)) = context
+                        .store
+                        .as_ref()
+                        .unwrap()
+                        .resume_wait(&instance.id, &next)
+                        .await
+                    else {
+                        break 'run;
+                    };
+                    resumed
+                } else if matches!(saved.status.as_str(), "pending" | "running") {
+                    if saved.status == "pending" {
+                        "pending"
+                    } else {
+                        "running"
+                    }
+                } else {
+                    break 'run;
+                };
+                *status = Running {
+                    status: resumed,
+                    next: status.next,
+                    in_flight: HashMap::new(),
+                };
+                checkpoint = next;
                 break;
             }
-            let Some(mut next) = saved.checkpoint else {
-                break;
-            };
-            if graph
-                .resume_due(&instance.input, &mut next, crate::store::now_ms())
-                .is_err()
-            {
-                break;
-            }
-            let Ok(Some(resumed)) = context
-                .store
-                .as_ref()
-                .unwrap()
-                .resume_wait(&instance.id, &next)
-                .await
-            else {
-                break;
-            };
-            *status = Running {
-                status: resumed,
-                next: status.next,
-                in_flight: HashMap::new(),
-            };
-            checkpoint = next;
         }
         if let Some(next) = next_eligible_at.take() {
             tokio::time::sleep(Duration::from_millis(
@@ -85,17 +104,28 @@ pub(super) async fn run_named(
                 let _ = context.named_terminal(&terminal).await;
                 break;
             }
+            Ok(NamedOutcome::InputPending) => break,
             Ok(NamedOutcome::Waiting(wake)) => {
-                context.state.lock().await.status = "waiting";
+                let mut status = context.state.lock().await;
                 let Ok(Some(saved)) = context.store.as_ref().unwrap().get(&instance.id).await
                 else {
                     break;
                 };
+                if !matches!(saved.status.as_str(), "waiting" | "pending" | "running") {
+                    break;
+                }
                 let Some(next) = saved.checkpoint else {
                     break;
                 };
+                status.status = if saved.status == "pending" {
+                    "pending"
+                } else if saved.status == "running" {
+                    "running"
+                } else {
+                    "waiting"
+                };
                 checkpoint = next;
-                wake_at_ms = Some(wake);
+                wake_at_ms = (saved.status == "waiting").then_some(wake);
             }
             Err(error) => {
                 let Ok(Some(next)) = context.fail_attempt(graph.retry.as_ref(), &error).await
@@ -112,7 +142,7 @@ async fn save_wait(
     context: &Context,
     checkpoint: &crate::compiled_graph::GraphCheckpoint,
     wake: i64,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     context.wait_until(checkpoint, wake).await
 }
 
@@ -163,6 +193,7 @@ fn collect_ready(
             continue;
         }
         let (call, async_call, cancel) = match &node.kind {
+            GraphNodeKind::InputRequest { .. } => continue,
             GraphNodeKind::Task(call) | GraphNodeKind::TaskLoop(call, _) => {
                 (Some(call.clone()), None, Arc::new(|| {}) as Cancel)
             }
@@ -193,13 +224,30 @@ fn collect_ready(
     Ok(())
 }
 
+pub(super) fn input_pending(
+    graph: &GraphDefinition,
+    input: &Value,
+    checkpoint: &GraphCheckpoint,
+    definitions: &NamedRegistry,
+) -> Result<bool, String> {
+    if checkpoint.requests().is_empty()
+        || nested_pending(graph, checkpoint, definitions)?
+        || nested_wake(graph, checkpoint, definitions)?.is_some()
+    {
+        return Ok(false);
+    }
+    let mut work = Vec::new();
+    collect_ready(graph, input, checkpoint, &[], definitions, &mut work)?;
+    Ok(work.is_empty())
+}
+
 pub(super) async fn execute_named(
     graph: &GraphDefinition,
     input: &Value,
     mut checkpoint: crate::compiled_graph::GraphCheckpoint,
     permits: &Arc<Semaphore>,
     context: &Context,
-    definitions: &NamedRegistry,
+    definitions: &Arc<NamedRegistry>,
 ) -> Result<NamedOutcome, String> {
     checkpoint.ensure_supported()?;
     let mut tasks = JoinSet::new();
@@ -232,15 +280,84 @@ pub(super) async fn execute_named(
             checkpoint = next;
             continue;
         }
+        let outstanding = checkpoint.requests();
+        if !outstanding.is_empty() {
+            #[cfg(feature = "local-persistence")]
+            let local_answers = if let Some(store) = &context.store {
+                store.answers(&context.id).await?
+            } else {
+                Vec::new()
+            };
+            #[cfg(not(feature = "local-persistence"))]
+            let local_answers: Vec<(String, Value)> = Vec::new();
+            #[cfg(feature = "remote-persistence")]
+            let remote_answers = if let Some(claim) = &context.claim {
+                claim.store.answers(&context.id).await?
+            } else {
+                Vec::new()
+            };
+            #[cfg(not(feature = "remote-persistence"))]
+            let remote_answers: Vec<(String, Value)> = Vec::new();
+            if let Some((id, response)) = local_answers
+                .into_iter()
+                .chain(remote_answers)
+                .find(|(id, _)| outstanding.iter().any(|request| request.id == *id))
+            {
+                let mut next = checkpoint.clone();
+                let ended = Registry {
+                    named: definitions.clone(),
+                }
+                .complete_request_with_ended(
+                    graph.namespace,
+                    graph.version,
+                    graph.name,
+                    input,
+                    &mut next,
+                    &id,
+                    response,
+                )?;
+                #[cfg(feature = "local-persistence")]
+                if let Some(store) = &context.store {
+                    store.consume_response(&context.id, &id, &next).await?;
+                }
+                #[cfg(feature = "remote-persistence")]
+                if let Some(claim) = &context.claim
+                    && !claim
+                        .store
+                        .consume_response(
+                            &context.id,
+                            &claim.worker_id,
+                            claim.generation,
+                            &id,
+                            &next,
+                        )
+                        .await?
+                {
+                    return Err("lost claim before consuming response".into());
+                }
+                signal_child_scopes(context, &ended, &mut scopes, &mut in_flight).await;
+                checkpoint = next;
+                continue;
+            }
+        }
         let mut work = Vec::new();
         collect_ready(graph, input, &checkpoint, &[], definitions, &mut work)?;
-        if tasks.is_empty()
-            && work.is_empty()
-            && !nested_pending(graph, &checkpoint, definitions)?
-            && let Some(wake) = nested_wake(graph, &checkpoint, definitions)?
+        if tasks.is_empty() && work.is_empty() && !nested_pending(graph, &checkpoint, definitions)?
         {
-            save_wait(context, &checkpoint, wake).await?;
-            return Ok(NamedOutcome::Waiting(wake));
+            if let Some(wake) = nested_wake(graph, &checkpoint, definitions)? {
+                if !save_wait(context, &checkpoint, wake).await? {
+                    context.checkpoint(&checkpoint).await?;
+                    continue;
+                }
+                return Ok(NamedOutcome::Waiting(wake));
+            }
+            if !checkpoint.requests().is_empty() {
+                if !context.release_input(&checkpoint).await? {
+                    context.checkpoint(&checkpoint).await?;
+                    continue;
+                }
+                return Ok(NamedOutcome::InputPending);
+            }
         }
         for ReadyWork {
             path,
@@ -344,13 +461,14 @@ pub(super) async fn execute_named(
         } else if let Some(wake) = nested_wake(graph, &checkpoint, definitions)? {
             tokio::select! {
                 done = tasks.join_next_with_id() => done.ok_or("graph has no ready tasks")?,
+                _ = context.response_notified() => continue 'drive,
                 _ = tokio::time::sleep(Duration::from_millis(wake.saturating_sub(crate::store::now_ms()) as u64)) => continue 'drive,
             }
         } else {
-            tasks
-                .join_next_with_id()
-                .await
-                .ok_or("graph has no ready tasks")?
+            tokio::select! {
+                done = tasks.join_next_with_id() => done.ok_or("graph has no ready tasks")?,
+                _ = context.response_notified() => continue 'drive,
+            }
         };
         let (task_id, (key, path, activation, child_input, result)) = match completed {
             Ok(completed) => completed,
@@ -429,11 +547,23 @@ pub(super) async fn execute_named(
         if tasks.is_empty() && !advanced && !nested_pending(graph, &next, definitions)? {
             let mut work = Vec::new();
             collect_ready(graph, input, &next, &[], definitions, &mut work)?;
-            if work.is_empty()
-                && let Some(wake) = nested_wake(graph, &next, definitions)?
-            {
-                save_wait(context, &next, wake).await?;
-                return Ok(NamedOutcome::Waiting(wake));
+            if work.is_empty() {
+                if let Some(wake) = nested_wake(graph, &next, definitions)? {
+                    if !save_wait(context, &next, wake).await? {
+                        context.checkpoint(&next).await?;
+                        checkpoint = next;
+                        continue;
+                    }
+                    return Ok(NamedOutcome::Waiting(wake));
+                }
+                if !next.requests().is_empty() {
+                    if !context.release_input(&next).await? {
+                        context.checkpoint(&next).await?;
+                        checkpoint = next;
+                        continue;
+                    }
+                    return Ok(NamedOutcome::InputPending);
+                }
             }
         }
         context.checkpoint(&next).await?;

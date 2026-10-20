@@ -1846,6 +1846,62 @@ async fn postgres_store_reopens_queued_checkpoint_retry_and_worker_capabilities(
 }
 
 #[tokio::test]
+async fn distributed_worker_resumes_version_two_checkpoint_without_request_field() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let graph = versioned_graph("1.0", Arc::new(|input, _| Ok(input.clone())), None);
+    let input = json!("before-rollout");
+    let mut checkpoint = serde_json::to_value(graph.checkpoint(&input).unwrap()).unwrap();
+    checkpoint.as_object_mut().unwrap().remove("requests");
+    let item = Instance::new("old-checkpoint", "orders", "1.0", "decide", input.clone());
+    store.create(&item).await.unwrap();
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    db.execute(
+        "UPDATE instances SET checkpoint=$1 WHERE id='old-checkpoint'",
+        &[&checkpoint.to_string()],
+    )
+    .await
+    .unwrap();
+    let stored: String = db
+        .query_one(
+            "SELECT checkpoint FROM instances WHERE id='old-checkpoint'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&stored)
+            .unwrap()
+            .get("requests")
+            .is_none(),
+        "fixture must persist the pre-request checkpoint shape"
+    );
+
+    drop(db);
+    drop(store);
+    let reopened = PostgresStore::connect(&url).await.unwrap();
+    let worker = DistributedWorker::new(reopened.clone(), "capable", vec![graph], 1, 5000).unwrap();
+    worker.advertise().await.unwrap();
+    assert_eq!(worker.run_once().await.unwrap(), 1);
+    let finished = reopened.get("old-checkpoint").await.unwrap().unwrap();
+    assert_eq!(finished.instance.status, "completed");
+    assert_eq!(finished.instance.result, Some(input));
+    assert!(finished.requests.is_empty());
+}
+
+#[tokio::test]
 async fn concurrent_claims_match_exact_identity_without_double_assignment() {
     let node = Postgres::default()
         .with_tag("17.6-alpine")
@@ -3548,18 +3604,35 @@ async fn distributed_worker_resumes_due_wait_during_sustained_refills() {
     .await
     .expect("long claim and refills must start");
     let mut due = Instance::new("due", "orders", "1.0", "decide", json!("due"));
+    due.created_at = 2;
+    due.status = "waiting".into();
+    due.wake_at_ms = Some(
+        db.query_one(
+            "SELECT (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT+150",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0),
+    );
     due.checkpoint = Some(due_checkpoint);
     store.create(&due).await.unwrap();
-    db.execute(
-        "UPDATE instances SET status='waiting', wake_at_ms=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT+150 WHERE id='due'",
-        &[],
-    )
-    .await
-    .unwrap();
+    assert_eq!(
+        store.get("due").await.unwrap().unwrap().instance.status,
+        "waiting",
+        "due wait must be inserted unclaimable"
+    );
     let progressed = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             if store.get("due").await.unwrap().unwrap().instance.status == "completed" {
-                break;
+                break db
+                    .query_one(
+                        "SELECT count(*) FROM instances WHERE id LIKE 'job-%' AND status='pending'",
+                        &[],
+                    )
+                    .await
+                    .unwrap()
+                    .get::<_, i64>(0);
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -3581,6 +3654,10 @@ async fn distributed_worker_resumes_due_wait_during_sustained_refills() {
         "long claim must remain active through maintenance"
     );
     assert_eq!(total, 56);
+    assert!(
+        progressed.unwrap() > 0,
+        "due wait must complete while backlog is pending"
+    );
 }
 
 struct ReleaseOnDrop<'a>(&'a AtomicBool, &'a AtomicBool);
@@ -4794,4 +4871,2700 @@ async fn postgres_module_launches_isolated_database_on_podman_socket() {
     assert!((170_000..180_000).contains(&version));
     drop(client);
     drop(node);
+}
+
+async fn remote_sse_event(body: &mut Body) -> (String, serde_json::Value) {
+    use http_body_util::BodyExt;
+    let frame = tokio::time::timeout(Duration::from_secs(5), body.frame())
+        .await
+        .expect("SSE event timed out")
+        .expect("stream closed")
+        .unwrap();
+    let text = std::str::from_utf8(frame.data_ref().unwrap()).unwrap();
+    (
+        text.lines()
+            .find_map(|line| line.strip_prefix("event: "))
+            .unwrap()
+            .to_string(),
+        serde_json::from_str(
+            text.lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .unwrap(),
+        )
+        .unwrap(),
+    )
+}
+
+async fn remote_sse_body(app: &axum::Router, id: &str) -> Body {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/instances/{id}/events"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response.into_body()
+}
+
+async fn listen_hints(
+    url: &str,
+    channel: &str,
+) -> (tokio_postgres::Client, tokio::sync::mpsc::Receiver<String>) {
+    let (client, mut connection) = tokio_postgres::connect(url, NoTls).await.unwrap();
+    let (sender, receiver) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move {
+        while let Some(message) = std::future::poll_fn(|cx| connection.poll_message(cx)).await {
+            match message {
+                Ok(tokio_postgres::AsyncMessage::Notification(notification)) => {
+                    if sender
+                        .send(notification.payload().to_owned())
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => panic!("listener failed: {error}"),
+            }
+        }
+    });
+    client
+        .batch_execute(&format!("LISTEN {channel}"))
+        .await
+        .unwrap();
+    (client, receiver)
+}
+
+async fn expect_hint(receiver: &mut tokio::sync::mpsc::Receiver<String>, id: &str) {
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+            .await
+            .expect("committed transition must notify"),
+        Some(id.to_owned())
+    );
+}
+
+async fn expect_no_hint(receiver: &mut tokio::sync::mpsc::Receiver<String>) {
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), receiver.recv())
+            .await
+            .is_err(),
+        "unrelated or uncommitted transition must not notify"
+    );
+}
+
+#[tokio::test]
+async fn postgres_request_notifications_target_only_live_interested_replicas() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let (_listen_a, mut a) = listen_hints(&url, "replica_a").await;
+    let (_listen_b, mut b) = listen_hints(&url, "replica_b").await;
+    let (_listen_c, mut c) = listen_hints(&url, "replica_c").await;
+    let checkpoint = input_wait_graph().checkpoint(&json!(null)).unwrap();
+    let request_id = checkpoint.requests()[0].id.clone();
+    store
+        .create(&Instance::new(
+            "watched",
+            "input",
+            "1",
+            "review",
+            json!(null),
+        ))
+        .await
+        .unwrap();
+    let mut other = Instance::new("z-unwatched", "input", "1", "review", json!(null));
+    other.checkpoint = Some(checkpoint.clone());
+    store.create(&other).await.unwrap();
+    expect_no_hint(&mut a).await;
+    expect_no_hint(&mut b).await;
+    db.execute("INSERT INTO instance_interests (instance_id, channel, expires_at) VALUES ('watched', 'replica_a', clock_timestamp() + interval '1 minute'), ('watched', 'replica_b', clock_timestamp() + interval '1 minute')", &[]).await.unwrap();
+    store
+        .register_worker("owner", &[("input", "1", "review")])
+        .await
+        .unwrap();
+    let claimed = store.claim("owner", 1, 5000).await.unwrap().pop().unwrap();
+    assert!(
+        store
+            .commit_initial_checkpoint(
+                "watched",
+                "owner",
+                claimed.generation,
+                &json!(null),
+                &checkpoint
+            )
+            .await
+            .unwrap()
+    );
+    expect_hint(&mut a, "watched").await;
+    expect_hint(&mut b, "watched").await;
+    expect_no_hint(&mut c).await;
+    assert!(
+        store
+            .commit_checkpoint("watched", "owner", claimed.generation, &checkpoint)
+            .await
+            .unwrap()
+    );
+    expect_no_hint(&mut a).await;
+    expect_no_hint(&mut b).await;
+    store.cancel("z-unwatched").await.unwrap();
+    expect_no_hint(&mut a).await;
+    store
+        .accept_response("watched", &request_id, &json!({"approved": true}))
+        .await
+        .unwrap();
+    expect_hint(&mut a, "watched").await;
+    expect_hint(&mut b, "watched").await;
+    expect_no_hint(&mut c).await;
+    store.cancel("watched").await.unwrap();
+    expect_hint(&mut a, "watched").await;
+    expect_hint(&mut b, "watched").await;
+    expect_no_hint(&mut a).await;
+}
+
+#[tokio::test]
+async fn postgres_retired_request_and_completed_instance_notify_only_interested_replicas() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let (_listen_a, mut a) = listen_hints(&url, "replica_a").await;
+    let (_listen_b, mut b) = listen_hints(&url, "replica_b").await;
+    let (_listen_c, mut c) = listen_hints(&url, "replica_c").await;
+    let checkpoint = input_wait_graph().checkpoint(&json!(null)).unwrap();
+    let mut instance = Instance::new("watched", "input", "1", "review", json!(null));
+    instance.checkpoint = Some(checkpoint.clone());
+    store.create(&instance).await.unwrap();
+    db.execute("INSERT INTO instance_interests (instance_id, channel, expires_at) VALUES ('watched', 'replica_a', clock_timestamp() + interval '1 minute'), ('watched', 'replica_b', clock_timestamp() + interval '1 minute')", &[]).await.unwrap();
+    store
+        .register_worker("owner", &[("input", "1", "review")])
+        .await
+        .unwrap();
+    let claim = store.claim("owner", 1, 5000).await.unwrap().pop().unwrap();
+    assert!(
+        store
+            .commit_checkpoint("watched", "owner", claim.generation, &checkpoint)
+            .await
+            .unwrap()
+    );
+    expect_no_hint(&mut a).await;
+    expect_no_hint(&mut b).await;
+    assert!(
+        store
+            .commit_checkpoint(
+                "watched",
+                "owner",
+                claim.generation,
+                &GraphCheckpoint::default()
+            )
+            .await
+            .unwrap()
+    );
+    assert!(store.requests("watched").await.unwrap().is_empty());
+    assert_eq!(
+        store.get("watched").await.unwrap().unwrap().instance.status,
+        "running"
+    );
+    expect_hint(&mut a, "watched").await;
+    expect_hint(&mut b, "watched").await;
+    expect_no_hint(&mut c).await;
+    assert!(
+        store
+            .finish_owned(
+                "watched",
+                "owner",
+                claim.generation,
+                "completed",
+                Some(json!(true)),
+                None,
+                None
+            )
+            .await
+            .unwrap()
+    );
+    expect_hint(&mut a, "watched").await;
+    expect_hint(&mut b, "watched").await;
+    expect_no_hint(&mut c).await;
+    expect_no_hint(&mut a).await;
+}
+
+#[tokio::test]
+async fn postgres_request_notifications_rollback_expiry_and_interest_removal() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let (_listen_a, mut a) = listen_hints(&url, "replica_a").await;
+    let (_listen_b, mut b) = listen_hints(&url, "replica_b").await;
+    store
+        .create(&Instance::new(
+            "watched",
+            "input",
+            "1",
+            "review",
+            json!(null),
+        ))
+        .await
+        .unwrap();
+    assert!(db.execute("INSERT INTO instance_interests (instance_id, channel, expires_at) VALUES ('watched', $1, clock_timestamp() + interval '1 minute')", &[&"é".repeat(32)]).await.is_err(), "PostgreSQL channel names cannot exceed 63 bytes");
+    db.execute("INSERT INTO instance_interests (instance_id, channel, expires_at) VALUES ('watched', 'replica_a', clock_timestamp() + interval '1 minute'), ('watched', 'replica_b', clock_timestamp() + interval '100 milliseconds')", &[]).await.unwrap();
+    let schema = serde_json::to_string(
+        &input_wait_graph()
+            .checkpoint(&json!(null))
+            .unwrap()
+            .requests()[0]
+            .schema,
+    )
+    .unwrap();
+    let tx = db.transaction().await.unwrap();
+    tx.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ('watched', 'rolled-back', 'Prompt', $1)", &[&schema]).await.unwrap();
+    tx.rollback().await.unwrap();
+    assert!(store.requests("watched").await.unwrap().is_empty());
+    expect_no_hint(&mut a).await;
+    // The second replica's lease lapses while its LISTEN connection stays open.
+    db.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ('watched', 'committed', 'Prompt', $1)", &[&schema]).await.unwrap();
+    expect_hint(&mut a, "watched").await;
+    expect_no_hint(&mut b).await;
+    db.execute("UPDATE instance_interests SET expires_at=clock_timestamp() + interval '1 minute' WHERE channel='replica_b'", &[]).await.unwrap();
+    db.execute("UPDATE input_requests SET status='answered', response='{}' WHERE instance_id='watched' AND request_id='committed'", &[]).await.unwrap();
+    expect_hint(&mut a, "watched").await;
+    expect_hint(&mut b, "watched").await;
+    db.execute(
+        "DELETE FROM instance_interests WHERE channel='replica_a'",
+        &[],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "UPDATE instances SET status='cancelled' WHERE id='watched'",
+        &[],
+    )
+    .await
+    .unwrap();
+    expect_hint(&mut b, "watched").await;
+    expect_no_hint(&mut a).await;
+}
+
+#[tokio::test]
+async fn remote_sse_listener_startup_failure_returns_http_error_and_retries() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let admin_url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let (admin, connection) = tokio_postgres::connect(&admin_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    admin.batch_execute("CREATE ROLE sse_limited LOGIN PASSWORD 'secret' CONNECTION LIMIT 1; GRANT ALL ON SCHEMA public TO sse_limited;").await.unwrap();
+    let url = admin_url.replace("postgres:postgres@", "sse_limited:secret@");
+    let store = PostgresStore::connect_with_pool_size(&url, 1)
+        .await
+        .unwrap();
+    store
+        .create(&Instance::new(
+            "watched",
+            "input",
+            "1",
+            "review",
+            json!(null),
+        ))
+        .await
+        .unwrap();
+    let app = router_distributed(Arc::new(DistributedControl::new(store.clone())));
+    // The request pool still serves GET, but the separate listener cannot acquire a session.
+    assert!(store.get("watched").await.unwrap().is_some());
+    let response = tokio::time::timeout(
+        Duration::from_secs(4),
+        app.clone().oneshot(
+            Request::builder()
+                .uri("/instances/watched/events")
+                .body(Body::empty())
+                .unwrap(),
+        ),
+    )
+    .await
+    .expect("SSE startup must return an HTTP error rather than hang")
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    admin
+        .batch_execute("ALTER ROLE sse_limited CONNECTION LIMIT -1")
+        .await
+        .unwrap();
+    let mut body = tokio::time::timeout(Duration::from_secs(5), remote_sse_body(&app, "watched"))
+        .await
+        .expect("background listener must retry once a session is available");
+    assert_eq!(remote_sse_event(&mut body).await.0, "snapshot");
+}
+
+#[test]
+fn remote_subscription_drop_after_runtime_stops_does_not_panic() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (node, registration, receiver) = runtime.block_on(async {
+        let node = Postgres::default()
+            .with_tag("17.6-alpine")
+            .start()
+            .await
+            .unwrap();
+        let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+            .unwrap_or(node.get_host().await.unwrap().to_string());
+        let url = format!(
+            "postgres://postgres:postgres@{host}:{}/postgres",
+            node.get_host_port_ipv4(5432).await.unwrap()
+        );
+        let store = PostgresStore::connect(&url).await.unwrap();
+        store
+            .create(&Instance::new(
+                "watched",
+                "input",
+                "1",
+                "review",
+                json!(null),
+            ))
+            .await
+            .unwrap();
+        let control = DistributedControl::new(store);
+        let (_, receiver, registration) = control.subscribe("watched").await.unwrap();
+        (node, registration, receiver)
+    });
+    runtime.block_on(async { drop(node) });
+    drop(runtime);
+    drop(receiver);
+    drop(registration);
+}
+
+#[tokio::test]
+async fn remote_sse_cancelled_registration_does_not_leave_a_live_interest() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    for id in ["watched", "other"] {
+        store
+            .create(&Instance::new(id, "input", "1", "review", json!(null)))
+            .await
+            .unwrap();
+    }
+    let app = router_distributed(Arc::new(DistributedControl::new(store)));
+    let mut healthy = remote_sse_body(&app, "other").await;
+    assert_eq!(remote_sse_event(&mut healthy).await.0, "snapshot");
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let tx = db.transaction().await.unwrap();
+    tx.execute(
+        "UPDATE instances SET status='running' WHERE id='watched'",
+        &[],
+    )
+    .await
+    .unwrap();
+    let pending = tokio::spawn({
+        let app = app.clone();
+        async move { remote_sse_body(&app, "watched").await }
+    });
+    let (observer, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let blocked: bool = observer.query_one("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE query LIKE 'SELECT id FROM instances WHERE id=$1 FOR SHARE%' AND wait_event_type='Lock')", &[]).await.unwrap().get(0);
+            if blocked { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("registration must be blocked by worker update");
+    pending.abort();
+    pending.await.unwrap_err();
+    tx.commit().await.unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let count: i64 = observer
+        .query_one(
+            "SELECT count(*) FROM instance_interests WHERE instance_id='watched'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 0, "aborted SSE registration must not be renewed");
+}
+
+#[tokio::test]
+async fn remote_sse_blocked_registration_does_not_delay_other_instance_hints() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    for id in ["blocked-a", "watched-b"] {
+        store
+            .create(&Instance::new(id, "input", "1", "review", json!(null)))
+            .await
+            .unwrap();
+    }
+    let app = router_distributed(Arc::new(DistributedControl::new(store.clone())));
+    let mut b = remote_sse_body(&app, "watched-b").await;
+    assert_eq!(remote_sse_event(&mut b).await.1["requests"], json!([]));
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let (observer, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let tx = db.transaction().await.unwrap();
+    tx.execute(
+        "UPDATE instances SET status='running' WHERE id='blocked-a'",
+        &[],
+    )
+    .await
+    .unwrap();
+    let connecting = tokio::spawn({
+        let app = app.clone();
+        async move { remote_sse_body(&app, "blocked-a").await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let blocked: bool = observer.query_one("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE query LIKE 'SELECT id FROM instances WHERE id=$1 FOR SHARE%' AND wait_event_type='Lock')", &[]).await.unwrap().get(0);
+            if blocked { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("A registration must be waiting on the row lock");
+
+    // A stalled registration must not prevent B's lapsed lease from renewing either.
+    observer.execute("UPDATE instance_interests SET expires_at=clock_timestamp() - interval '1 second' WHERE instance_id='watched-b'", &[]).await.unwrap();
+    let (kind, snapshot) = remote_sse_event(&mut b).await;
+    assert_eq!(kind, "snapshot");
+    assert_eq!(snapshot["id"], "watched-b");
+    assert_eq!(snapshot["requests"], json!([]));
+    let live: bool = observer.query_one("SELECT expires_at > clock_timestamp() FROM instance_interests WHERE instance_id='watched-b'", &[]).await.unwrap().get(0);
+    assert!(live, "B interest must be renewed while A waits");
+
+    let schema = serde_json::to_string(
+        &input_wait_graph()
+            .checkpoint(&json!(null))
+            .unwrap()
+            .requests()[0]
+            .schema,
+    )
+    .unwrap();
+    observer.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ('watched-b','b1','Prompt',$1)", &[&schema]).await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), remote_sse_event(&mut b))
+            .await
+            .expect("B hint must arrive while A remains locked"),
+        ("changed".into(), json!({"id":"watched-b"}))
+    );
+    assert!(!connecting.is_finished(), "A must still be blocked");
+    tx.commit().await.unwrap();
+    let mut a = connecting.await.unwrap();
+    let (kind, snapshot) = remote_sse_event(&mut a).await;
+    assert_eq!(kind, "snapshot");
+    assert_eq!(snapshot["id"], "blocked-a");
+    assert_eq!(snapshot["status"], "running");
+    drop(a);
+    drop(b);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let count: i64 = observer.query_one("SELECT count(*) FROM instance_interests WHERE instance_id IN ('blocked-a', 'watched-b')", &[]).await.unwrap().get(0);
+            if count == 0 { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("last subscribers must remove both interests");
+}
+
+#[tokio::test]
+async fn remote_sse_duplicate_blocked_instance_hints_do_not_starve_other_instances() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    for id in ["blocked-a", "watched-b"] {
+        store
+            .create(&Instance::new(id, "input", "1", "review", json!(null)))
+            .await
+            .unwrap();
+    }
+    let app = router_distributed(Arc::new(DistributedControl::new(store)));
+    let mut a = remote_sse_body(&app, "blocked-a").await;
+    let mut b = remote_sse_body(&app, "watched-b").await;
+    assert_eq!(remote_sse_event(&mut a).await.0, "snapshot");
+    assert_eq!(remote_sse_event(&mut b).await.0, "snapshot");
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let (observer, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let channel: String = observer
+        .query_one(
+            "SELECT channel FROM instance_interests WHERE instance_id='blocked-a'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let tx = db.transaction().await.unwrap();
+    tx.execute(
+        "UPDATE instances SET status='running' WHERE id='blocked-a'",
+        &[],
+    )
+    .await
+    .unwrap();
+    let connecting = tokio::spawn({
+        let app = app.clone();
+        async move { remote_sse_body(&app, "blocked-a").await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let blocked: bool = observer.query_one("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE query LIKE 'SELECT id FROM instances WHERE id=$1 FOR SHARE%' AND wait_event_type='Lock')", &[]).await.unwrap().get(0);
+            if blocked { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("A registration must hold the per-instance order lock");
+    for _ in 0..32 {
+        observer
+            .execute("SELECT pg_notify($1, 'blocked-a')", &[&channel])
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let schema = serde_json::to_string(
+        &input_wait_graph()
+            .checkpoint(&json!(null))
+            .unwrap()
+            .requests()[0]
+            .schema,
+    )
+    .unwrap();
+    observer.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ('watched-b','b1','Prompt',$1)", &[&schema]).await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), remote_sse_event(&mut b))
+            .await
+            .expect("B hint must arrive while 32 A hints wait"),
+        ("changed".into(), json!({"id":"watched-b"}))
+    );
+    assert!(!connecting.is_finished());
+    tx.commit().await.unwrap();
+    let mut connected = connecting.await.unwrap();
+    assert_eq!(
+        remote_sse_event(&mut connected).await.1["status"],
+        "running"
+    );
+}
+
+#[tokio::test]
+async fn remote_sse_renews_more_than_32_instances_without_starving_hints() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let app = router_distributed(Arc::new(DistributedControl::new(store.clone())));
+    let mut watched = Vec::new();
+    for index in 0..36 {
+        let id = format!("renew-{index}");
+        store
+            .create(&Instance::new(&id, "input", "1", "review", json!(null)))
+            .await
+            .unwrap();
+        let mut body = remote_sse_body(&app, &id).await;
+        assert_eq!(remote_sse_event(&mut body).await.0, "snapshot");
+        watched.push(body);
+    }
+    store
+        .create(&Instance::new(
+            "watched-b",
+            "input",
+            "1",
+            "review",
+            json!(null),
+        ))
+        .await
+        .unwrap();
+    let mut b = remote_sse_body(&app, "watched-b").await;
+    assert_eq!(remote_sse_event(&mut b).await.0, "snapshot");
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let (observer, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    observer.execute("UPDATE instance_interests SET expires_at=clock_timestamp() - interval '1 second' WHERE instance_id LIKE 'renew-%'", &[]).await.unwrap();
+    let tx = db.transaction().await.unwrap();
+    tx.execute(
+        "UPDATE instances SET status='running' WHERE id IN ('renew-0', 'renew-1')",
+        &[],
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let blocked: i64 = observer.query_one("SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT id FROM instances WHERE id=$1 FOR SHARE%' AND wait_event_type='Lock'", &[]).await.unwrap().get(0);
+            if blocked >= 2 { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("renewals must reach the locked instance rows");
+    let schema = serde_json::to_string(
+        &input_wait_graph()
+            .checkpoint(&json!(null))
+            .unwrap()
+            .requests()[0]
+            .schema,
+    )
+    .unwrap();
+    observer.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ('watched-b','b1','Prompt',$1)", &[&schema]).await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), remote_sse_event(&mut b))
+            .await
+            .expect("B hint must not wait for renewal of 36 watched instances"),
+        ("changed".into(), json!({"id":"watched-b"}))
+    );
+    observer.execute("UPDATE instance_interests SET expires_at=clock_timestamp() - interval '1 second' WHERE instance_id='watched-b'", &[]).await.unwrap();
+    let (kind, snapshot) = remote_sse_event(&mut b).await;
+    assert_eq!(kind, "snapshot");
+    assert_eq!(snapshot["requests"][0]["id"], "b1");
+    let b_live: bool = observer.query_one("SELECT expires_at > clock_timestamp() FROM instance_interests WHERE instance_id='watched-b'", &[]).await.unwrap().get(0);
+    assert!(
+        b_live,
+        "B lease must be renewed before the other rows unlock"
+    );
+    tx.commit().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let live: i64 = observer.query_one("SELECT count(*) FROM instance_interests WHERE instance_id LIKE 'renew-%' AND expires_at > clock_timestamp()", &[]).await.unwrap().get(0);
+            if live == 36 { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("all lapsed interests must eventually renew");
+    assert_eq!(remote_sse_event(&mut watched[0]).await.0, "snapshot");
+}
+
+#[tokio::test]
+async fn remote_sse_retry_waiting_behind_registrations_does_not_starve_other_renewals() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    for id in ["locked-a0", "locked-a1", "watched-b"] {
+        store
+            .create(&Instance::new(id, "input", "1", "review", json!(null)))
+            .await
+            .unwrap();
+    }
+    let app = router_distributed(Arc::new(DistributedControl::new(store)));
+    let mut existing = Vec::new();
+    for id in ["locked-a0", "locked-a1", "watched-b"] {
+        let mut body = remote_sse_body(&app, id).await;
+        assert_eq!(remote_sse_event(&mut body).await.0, "snapshot");
+        existing.push(body);
+    }
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let (observer, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    observer.execute("UPDATE instance_interests SET expires_at=clock_timestamp() - interval '1 second' WHERE instance_id LIKE 'locked-a%'", &[]).await.unwrap();
+    let tx = db.transaction().await.unwrap();
+    tx.execute(
+        "UPDATE instances SET status='running' WHERE id IN ('locked-a0', 'locked-a1')",
+        &[],
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let blocked: i64 = observer.query_one("SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT id FROM instances WHERE id=$1 FOR SHARE%' AND wait_event_type='Lock'", &[]).await.unwrap().get(0);
+            if blocked >= 2 { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("both renewal transactions must wait for the A row locks");
+    let mut registrations = Vec::new();
+    for id in ["locked-a0", "locked-a1"] {
+        let app = app.clone();
+        registrations.push(tokio::spawn(async move { remote_sse_body(&app, id).await }));
+    }
+    // A renewal query cannot stay locked for this long: these are the queued subscriptions.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let blocked: i64 = observer.query_one("SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT id FROM instances WHERE id=$1 FOR SHARE%' AND wait_event_type='Lock' AND clock_timestamp() - query_start > interval '850 milliseconds'", &[]).await.unwrap().get(0);
+            if blocked >= 2 { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("both A subscriptions must hold their order locks after renewal timeout");
+    observer.execute("UPDATE instance_interests SET expires_at=clock_timestamp() - interval '1 second' WHERE instance_id='watched-b'", &[]).await.unwrap();
+    let (kind, snapshot) = remote_sse_event(&mut existing[2]).await;
+    assert_eq!(
+        kind, "snapshot",
+        "B renewal must not wait for the two A registrations"
+    );
+    assert_eq!(snapshot["id"], "watched-b");
+    let live: bool = observer.query_one("SELECT expires_at > clock_timestamp() FROM instance_interests WHERE instance_id='watched-b'", &[]).await.unwrap().get(0);
+    assert!(live, "B interest must renew while A remains locked");
+    assert!(
+        registrations
+            .iter()
+            .all(|registration| !registration.is_finished())
+    );
+    tx.commit().await.unwrap();
+    for registration in registrations {
+        let mut body = registration.await.unwrap();
+        assert_eq!(remote_sse_event(&mut body).await.1["status"], "running");
+    }
+}
+
+#[tokio::test]
+async fn remote_sse_lagged_client_closes_and_reconnects_to_current_state() {
+    use http_body_util::BodyExt;
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    store
+        .create(&Instance::new(
+            "watched",
+            "input",
+            "1",
+            "review",
+            json!(null),
+        ))
+        .await
+        .unwrap();
+    let app = router_distributed(Arc::new(DistributedControl::new(store)));
+    let mut slow = remote_sse_body(&app, "watched").await;
+    assert_eq!(remote_sse_event(&mut slow).await.0, "snapshot");
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let channel: String = db
+        .query_one(
+            "SELECT channel FROM instance_interests WHERE instance_id='watched'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    for _ in 0..24 {
+        db.execute("SELECT pg_notify($1, 'watched')", &[&channel])
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(frame) = slow.frame().await {
+            frame.unwrap();
+        }
+    })
+    .await
+    .expect("lagged stream must close rather than silently drop events");
+    let mut fresh = remote_sse_body(&app, "watched").await;
+    assert_eq!(remote_sse_event(&mut fresh).await.0, "snapshot");
+    let unknown = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/instances/absent/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    drop(fresh);
+    drop(slow);
+    drop(app);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let count: i64 = db
+                .query_one(
+                    "SELECT count(*) FROM pg_stat_activity WHERE application_name=$1",
+                    &[&channel],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if count == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("dropping the replica must release its dedicated listener");
+}
+
+#[tokio::test]
+async fn remote_sse_registration_serializes_both_orders_of_request_commit() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let app = router_distributed(Arc::new(DistributedControl::new(store.clone())));
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let (mut registering, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let (observer, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = serde_json::to_string(
+        &input_wait_graph()
+            .checkpoint(&json!(null))
+            .unwrap()
+            .requests()[0]
+            .schema,
+    )
+    .unwrap();
+    for id in ["before", "after"] {
+        store
+            .create(&Instance::new(id, "input", "1", "review", json!(null)))
+            .await
+            .unwrap();
+    }
+    let mut second = remote_sse_body(&app, "after").await;
+    assert_eq!(remote_sse_event(&mut second).await.1["requests"], json!([]));
+    // LISTEN is committed; worker has updated the row but its request INSERT/trigger has not committed.
+    let tx = db.transaction().await.unwrap();
+    tx.execute(
+        "UPDATE instances SET status='running' WHERE id='before'",
+        &[],
+    )
+    .await
+    .unwrap();
+    tx.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ('before','r1','Prompt',$1)", &[&schema]).await.unwrap();
+    let connecting = tokio::spawn({
+        let app = app.clone();
+        async move { remote_sse_body(&app, "before").await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let blocked: bool = observer.query_one("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE query LIKE 'SELECT id FROM instances WHERE id=$1 FOR SHARE%' AND wait_event_type='Lock')", &[]).await.unwrap().get(0);
+            if blocked { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("registration must reach the instance lock before worker commit");
+    assert!(!connecting.is_finished());
+    tx.commit().await.unwrap();
+    let mut first = connecting.await.unwrap();
+    let (kind, snapshot) = remote_sse_event(&mut first).await;
+    assert_eq!(kind, "snapshot");
+    assert_eq!(snapshot["requests"][0]["id"], "r1");
+
+    // The registration transaction's SHARE lock forces the later worker update to wait.
+    let registering_tx = registering.transaction().await.unwrap();
+    registering_tx
+        .query_one("SELECT id FROM instances WHERE id='after' FOR SHARE", &[])
+        .await
+        .unwrap();
+    registering_tx.execute("UPDATE instance_interests SET expires_at=clock_timestamp() + interval '10 seconds' WHERE instance_id='after'", &[]).await.unwrap();
+    let worker = tokio::spawn(async move {
+        let tx = db.transaction().await.unwrap();
+        tx.execute(
+            "UPDATE instances SET status='running' WHERE id='after'",
+            &[],
+        )
+        .await
+        .unwrap();
+        tx.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ('after','r2','Prompt',$1)", &[&schema]).await.unwrap();
+        tx.commit().await.unwrap();
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let blocked: bool = observer.query_one("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE query LIKE 'UPDATE instances SET status=''running'' WHERE id=''after''%' AND wait_event_type='Lock')", &[]).await.unwrap().get(0);
+            if blocked { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("worker update must wait for registration commit");
+    registering_tx.commit().await.unwrap();
+    worker.await.unwrap();
+    assert_eq!(
+        remote_sse_event(&mut second).await,
+        ("changed".into(), json!({"id":"after"}))
+    );
+    assert_eq!(
+        store.get("after").await.unwrap().unwrap().requests[0].id,
+        "r2"
+    );
+}
+
+#[tokio::test]
+async fn remote_sse_fans_out_only_to_each_replicas_local_instance_clients() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    for id in ["watched", "other"] {
+        store
+            .create(&Instance::new(id, "input", "1", "review", json!(null)))
+            .await
+            .unwrap();
+    }
+    let a = router_distributed(Arc::new(DistributedControl::new(store.clone())));
+    let b = router_distributed(Arc::new(DistributedControl::new(store.clone())));
+    let c = router_distributed(Arc::new(DistributedControl::new(store.clone())));
+    let mut a1 = remote_sse_body(&a, "watched").await;
+    let mut a2 = remote_sse_body(&a, "watched").await;
+    let mut b1 = remote_sse_body(&b, "watched").await;
+    let mut c1 = remote_sse_body(&c, "other").await;
+    for body in [&mut a1, &mut a2, &mut b1, &mut c1] {
+        assert_eq!(remote_sse_event(body).await.0, "snapshot");
+    }
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let count: i64 = db
+        .query_one(
+            "SELECT count(*) FROM instance_interests WHERE instance_id='watched'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        count, 2,
+        "two replicas register once each, not once per client"
+    );
+    let schema = serde_json::to_string(
+        &input_wait_graph()
+            .checkpoint(&json!(null))
+            .unwrap()
+            .requests()[0]
+            .schema,
+    )
+    .unwrap();
+    db.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ('watched','r1','Prompt',$1)", &[&schema]).await.unwrap();
+    for body in [&mut a1, &mut a2, &mut b1] {
+        assert_eq!(
+            remote_sse_event(body).await,
+            ("changed".into(), json!({"id":"watched"}))
+        );
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), remote_sse_event(&mut c1))
+            .await
+            .is_err()
+    );
+    drop(a1);
+    drop(a2);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let count: i64 = db
+                .query_one(
+                    "SELECT count(*) FROM instance_interests WHERE instance_id='watched'",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if count == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    db.execute("UPDATE input_requests SET status='answered', response='{}' WHERE instance_id='watched' AND request_id='r1'", &[]).await.unwrap();
+    assert_eq!(remote_sse_event(&mut b1).await.1, json!({"id":"watched"}));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), remote_sse_event(&mut c1))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn remote_sse_two_replicas_use_distinct_listener_sessions_and_fan_out() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect_with_pool_size(&url, 1)
+        .await
+        .unwrap();
+    store
+        .create(&Instance::new(
+            "watched",
+            "input",
+            "1",
+            "review",
+            json!(null),
+        ))
+        .await
+        .unwrap();
+    let first = router_distributed(Arc::new(DistributedControl::new(store.clone())));
+    let second = router_distributed(Arc::new(DistributedControl::new(store)));
+    let mut first_stream = remote_sse_body(&first, "watched").await;
+    let mut second_stream = remote_sse_body(&second, "watched").await;
+    assert_eq!(remote_sse_event(&mut first_stream).await.0, "snapshot");
+    assert_eq!(remote_sse_event(&mut second_stream).await.0, "snapshot");
+
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let sessions = db
+        .query(
+            "SELECT channel, pid, state FROM instance_interests JOIN pg_stat_activity ON application_name=channel WHERE instance_id='watched' AND expires_at > clock_timestamp() ORDER BY channel",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        sessions.len(),
+        2,
+        "each replica needs a registered listener session"
+    );
+    let first_channel: String = sessions[0].get(0);
+    let second_channel: String = sessions[1].get(0);
+    assert_ne!(first_channel, second_channel);
+    assert_ne!(sessions[0].get::<_, i32>(1), sessions[1].get::<_, i32>(1));
+    for session in &sessions {
+        assert_eq!(
+            session.get::<_, String>(2),
+            "idle",
+            "LISTEN must not hold a transaction"
+        );
+    }
+    let queue_before: f64 = db
+        .query_one("SELECT pg_notification_queue_usage()", &[])
+        .await
+        .unwrap()
+        .get(0);
+
+    let schema = serde_json::to_string(
+        &input_wait_graph()
+            .checkpoint(&json!(null))
+            .unwrap()
+            .requests()[0]
+            .schema,
+    )
+    .unwrap();
+    db.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ('watched','r1','Prompt',$1)", &[&schema]).await.unwrap();
+    for stream in [&mut first_stream, &mut second_stream] {
+        assert_eq!(
+            remote_sse_event(stream).await,
+            ("changed".into(), json!({"id":"watched"}))
+        );
+    }
+    let queue_after: f64 = db
+        .query_one("SELECT pg_notification_queue_usage()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert!((0.0..=1.0).contains(&queue_before));
+    assert!((0.0..=1.0).contains(&queue_after));
+    println!("pg_notification_queue_usage(): before={queue_before}, after={queue_after}");
+}
+
+#[tokio::test]
+async fn postgres_request_transition_fanout_load_check() {
+    use std::{collections::HashMap, time::Instant};
+    use tokio::{sync::Semaphore, task::JoinSet};
+
+    const N: usize = 24;
+    const CONCURRENCY: usize = 8;
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let worker =
+        PostgresStore::connect_with_pool_size(&format!("{url}?application_name=load_worker"), 4)
+            .await
+            .unwrap();
+    let api_a = router_distributed(Arc::new(DistributedControl::new(
+        PostgresStore::connect_with_pool_size(&format!("{url}?application_name=load_api_a"), 2)
+            .await
+            .unwrap(),
+    )));
+    let api_b = router_distributed(Arc::new(DistributedControl::new(
+        PostgresStore::connect_with_pool_size(&format!("{url}?application_name=load_api_b"), 2)
+            .await
+            .unwrap(),
+    )));
+    let (observer, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let max_connections: String = observer
+        .query_one("SHOW max_connections", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let version: String = observer
+        .query_one("SHOW server_version", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let mut graph = input_wait_graph();
+    graph.deadline = None;
+    let checkpoint = graph.checkpoint(&json!(null)).unwrap();
+    let request_id = checkpoint.requests()[0].id.clone();
+    for prefix in ["watched", "unwatched"] {
+        for i in 0..N {
+            worker
+                .create(&Instance::new(
+                    &format!("{prefix}-{i}"),
+                    "input",
+                    "1",
+                    "review",
+                    json!(null),
+                ))
+                .await
+                .unwrap();
+        }
+    }
+    worker
+        .register_worker("load-owner", &[("input", "1", "review")])
+        .await
+        .unwrap();
+    let claims = worker.claim("load-owner", N * 2, 120_000).await.unwrap();
+    assert_eq!(claims.len(), N * 2);
+    assert!(
+        claims
+            .iter()
+            .all(|claim| claim.instance.deadline_origin.is_none()
+                && claim.instance.deadline_duration_ms.is_none()
+                && claim.instance.deadline_at_ms.is_none()),
+        "claimed load instances must not have deadlines"
+    );
+    let claims: HashMap<_, _> = claims
+        .into_iter()
+        .map(|claim| (claim.instance.id, claim.generation))
+        .collect();
+    let mut streams = HashMap::new();
+    for i in 0..N {
+        let id = format!("watched-{i}");
+        let mut a = remote_sse_body(&api_a, &id).await;
+        let mut b = remote_sse_body(&api_b, &id).await;
+        assert_eq!(remote_sse_event(&mut a).await.0, "snapshot");
+        assert_eq!(remote_sse_event(&mut b).await.0, "snapshot");
+        streams.insert(id, (a, b));
+    }
+    let (stop, mut stopped) = tokio::sync::watch::channel(false);
+    let monitor = tokio::spawn(async move {
+        let mut peak = [0_i64; 5]; // API A, API B, worker, dedicated listeners, all sessions.
+        let mut queues = Vec::new();
+        loop {
+            let row = observer
+                .query_one(
+                    "SELECT pg_notification_queue_usage(),
+                    (SELECT count(*) FROM pg_stat_activity WHERE application_name='load_api_a'),
+                    (SELECT count(*) FROM pg_stat_activity WHERE application_name='load_api_b'),
+                    (SELECT count(*) FROM pg_stat_activity WHERE application_name='load_worker'),
+                    (SELECT count(*) FROM pg_stat_activity WHERE application_name LIKE 'blkit_%'),
+                    (SELECT count(*) FROM pg_stat_activity WHERE datname=current_database())",
+                    &[],
+                )
+                .await
+                .unwrap();
+            queues.push(row.get::<_, f64>(0));
+            for (i, max) in peak.iter_mut().enumerate() {
+                *max = (*max).max(row.get::<_, i64>(i + 1));
+            }
+            if *stopped.borrow() {
+                break;
+            }
+            tokio::select! {
+                _ = stopped.changed() => {},
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {},
+            }
+        }
+        (peak, queues)
+    });
+    let limit = Arc::new(Semaphore::new(CONCURRENCY));
+    let mut watched_commits = Vec::new();
+    let mut unwatched_commits = Vec::new();
+    let mut hints = Vec::new();
+    let workload_start = Instant::now();
+    for prefix in ["watched", "unwatched"] {
+        let mut running = JoinSet::new();
+        for i in 0..N {
+            let id = format!("{prefix}-{i}");
+            let generation = claims[&id];
+            let worker = worker.clone();
+            let checkpoint = checkpoint.clone();
+            let streams = streams.remove(&id);
+            let permit = limit.clone().acquire_owned().await.unwrap();
+            running.spawn(async move {
+                let _permit = permit;
+                let start = Instant::now();
+                assert!(
+                    worker
+                        .commit_initial_checkpoint(
+                            &id,
+                            "load-owner",
+                            generation,
+                            &json!(null),
+                            &checkpoint
+                        )
+                        .await
+                        .unwrap()
+                );
+                let commit = start.elapsed();
+                let (hints, streams) = if let Some((mut a, mut b)) = streams {
+                    assert_eq!(
+                        remote_sse_event(&mut a).await,
+                        ("changed".into(), json!({"id": id}))
+                    );
+                    let first = start.elapsed();
+                    assert_eq!(
+                        remote_sse_event(&mut b).await,
+                        ("changed".into(), json!({"id": id}))
+                    );
+                    (vec![first, start.elapsed()], Some((a, b)))
+                } else {
+                    (Vec::new(), None)
+                };
+                (id, commit, hints, streams)
+            });
+        }
+        while let Some(result) = running.join_next().await {
+            let (id, commit, notified, bodies) = result.unwrap();
+            if let Some(bodies) = bodies {
+                watched_commits.push(commit);
+                hints.extend(notified);
+                streams.insert(id, bodies);
+            } else {
+                unwatched_commits.push(commit);
+            }
+        }
+    }
+    assert_eq!(watched_commits.len(), N);
+    assert_eq!(unwatched_commits.len(), N);
+    assert_eq!(hints.len(), N * 2);
+    let initial_elapsed = workload_start.elapsed();
+
+    // Updating a checkpoint with unchanged requests must produce no event on either replica.
+    assert!(
+        worker
+            .commit_checkpoint("watched-0", "load-owner", claims["watched-0"], &checkpoint)
+            .await
+            .unwrap()
+    );
+    let (a, b) = streams.get_mut("watched-0").unwrap();
+    let (no_a, no_b) = tokio::join!(
+        tokio::time::timeout(Duration::from_millis(200), remote_sse_event(a)),
+        tokio::time::timeout(Duration::from_millis(200), remote_sse_event(b)),
+    );
+    assert!(
+        no_a.is_err() && no_b.is_err(),
+        "ordinary checkpoint must not NOTIFY"
+    );
+
+    let mut replies = Vec::new();
+    let reply_start = Instant::now();
+    let mut running = JoinSet::new();
+    for i in 0..N {
+        let id = format!("watched-{i}");
+        let app = if i % 2 == 0 {
+            api_a.clone()
+        } else {
+            api_b.clone()
+        };
+        let request_id = request_id.clone();
+        let (mut a, mut b) = streams.remove(&id).unwrap();
+        let permit = limit.clone().acquire_owned().await.unwrap();
+        running.spawn(async move {
+            let _permit = permit;
+            let start = Instant::now();
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/instances/{id}/requests/{request_id}/response"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"approved":true}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            let commit = start.elapsed(); // HTTP acknowledgement includes validation and committed POST.
+            assert_eq!(
+                remote_sse_event(&mut a).await,
+                ("changed".into(), json!({"id": id}))
+            );
+            let first = start.elapsed();
+            assert_eq!(
+                remote_sse_event(&mut b).await,
+                ("changed".into(), json!({"id": id}))
+            );
+            (commit, [first, start.elapsed()])
+        });
+    }
+    while let Some(result) = running.join_next().await {
+        let (commit, notified) = result.unwrap();
+        replies.push(commit);
+        hints.extend(notified);
+    }
+    assert_eq!(replies.len(), N);
+    assert_eq!(hints.len(), N * 4);
+    let reply_elapsed = reply_start.elapsed();
+    stop.send(true).unwrap();
+    let (peak, queues) = monitor.await.unwrap();
+    assert!(peak[0] <= 2 && peak[1] <= 2 && peak[2] <= 4);
+    assert_eq!(peak[3], 2, "one dedicated LISTEN session per API replica");
+    assert!(
+        peak[4] <= 11,
+        "two API pools (2 each), worker pool (4), listeners (2), observer (1)"
+    );
+    assert!(queues.iter().all(|usage| (0.0..=1.0).contains(usage)));
+    assert!(
+        queues.last().unwrap() <= &queues[0],
+        "notification queue must not remain elevated after load"
+    );
+    let stats = |label: &str, mut values: Vec<Duration>| {
+        values.sort();
+        let ms = |i: usize| values[i].as_secs_f64() * 1000.0;
+        println!(
+            "{label}: n={} median={:.3}ms p95={:.3}ms max={:.3}ms",
+            values.len(),
+            ms(values.len() / 2),
+            ms(values.len() * 95 / 100),
+            ms(values.len() - 1)
+        );
+    };
+    stats("watched worker commit", watched_commits);
+    stats("unwatched worker commit", unwatched_commits);
+    stats("watched HTTP response acknowledgement", replies);
+    stats("SSE hints (pre-commit to both replicas)", hints);
+    println!(
+        "initial_elapsed={initial_elapsed:?} reply_elapsed={reply_elapsed:?} concurrency={CONCURRENCY} instances_per_group={N} queue_samples={} queue_fraction_start={} queue_fraction_max={} queue_fraction_end={} peak_sessions=[api_a:{},api_b:{},worker:{},listeners:{},total:{}] pg_version={version} max_connections={max_connections}",
+        queues.len(),
+        queues[0],
+        queues.iter().copied().fold(0.0_f64, f64::max),
+        queues.last().unwrap(),
+        peak[0],
+        peak[1],
+        peak[2],
+        peak[3],
+        peak[4]
+    );
+}
+
+#[tokio::test]
+async fn remote_sse_renews_resynced_b_while_a_reconnect_is_locked() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    for id in ["locked-a0", "locked-a1", "watched-b"] {
+        store
+            .create(&Instance::new(id, "input", "1", "review", json!(null)))
+            .await
+            .unwrap();
+    }
+    let app = router_distributed(Arc::new(DistributedControl::new(store)));
+    let mut a0 = remote_sse_body(&app, "locked-a0").await;
+    let mut a1 = remote_sse_body(&app, "locked-a1").await;
+    let mut b = remote_sse_body(&app, "watched-b").await;
+    for body in [&mut a0, &mut a1, &mut b] {
+        assert_eq!(remote_sse_event(body).await.0, "snapshot");
+    }
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let (observer, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let channel: String = observer
+        .query_one(
+            "SELECT channel FROM instance_interests WHERE instance_id='watched-b'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let tx = db.transaction().await.unwrap();
+    tx.execute(
+        "UPDATE instances SET status='running' WHERE id IN ('locked-a0','locked-a1')",
+        &[],
+    )
+    .await
+    .unwrap();
+    let pid: i32 = observer
+        .query_one(
+            "SELECT pid FROM pg_stat_activity WHERE application_name=$1",
+            &[&channel],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    observer
+        .execute("SELECT pg_terminate_backend($1)", &[&pid])
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let blocked: i64 = observer.query_one("SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT id FROM instances WHERE id=$1 FOR SHARE%' AND wait_event_type='Lock'", &[]).await.unwrap().get(0);
+            if blocked == 2 { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("both A registrations must block the two resync slots");
+    let (kind, snapshot) = remote_sse_event(&mut b).await;
+    assert_eq!(kind, "snapshot");
+    assert_eq!(snapshot["id"], "watched-b");
+    // Expire B before A unlocks: its recovered stream must remain able to receive hints.
+    observer.execute("UPDATE instance_interests SET expires_at=clock_timestamp() + interval '3 seconds' WHERE instance_id='watched-b'", &[]).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let live: bool = observer.query_one("SELECT expires_at > clock_timestamp() FROM instance_interests WHERE instance_id='watched-b'", &[]).await.unwrap().get(0);
+    assert!(live, "B must renew during A's blocked resync");
+    let schema = serde_json::to_string(
+        &input_wait_graph()
+            .checkpoint(&json!(null))
+            .unwrap()
+            .requests()[0]
+            .schema,
+    )
+    .unwrap();
+    observer.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ('watched-b','b1','Prompt',$1)", &[&schema]).await.unwrap();
+    assert_eq!(
+        remote_sse_event(&mut b).await,
+        ("changed".into(), json!({"id":"watched-b"}))
+    );
+    for body in [&mut a0, &mut a1] {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), remote_sse_event(body))
+                .await
+                .is_err(),
+            "A must not claim a resync snapshot before its lock is released"
+        );
+    }
+    tx.commit().await.unwrap();
+    for body in [&mut a0, &mut a1] {
+        assert_eq!(remote_sse_event(body).await.1["status"], "running");
+    }
+}
+
+#[tokio::test]
+async fn remote_sse_recovers_expired_interest_duplicate_hints_and_listener_outage() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect_with_pool_size(&url, 1)
+        .await
+        .unwrap();
+    store
+        .create(&Instance::new(
+            "watched",
+            "input",
+            "1",
+            "review",
+            json!(null),
+        ))
+        .await
+        .unwrap();
+    store
+        .create(&Instance::new("other", "input", "1", "review", json!(null)))
+        .await
+        .unwrap();
+    let app = router_distributed(Arc::new(DistributedControl::new(store.clone())));
+    let mut body = remote_sse_body(&app, "watched").await;
+    assert_eq!(remote_sse_event(&mut body).await.1["requests"], json!([]));
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let channel: String = db
+        .query_one(
+            "SELECT channel FROM instance_interests WHERE instance_id='watched'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let state: String = db
+        .query_one(
+            "SELECT state FROM pg_stat_activity WHERE application_name=$1",
+            &[&channel],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        state, "idle",
+        "LISTEN must commit without leaving an open transaction"
+    );
+    db.execute("SELECT pg_notify($1, 'watched')", &[&channel])
+        .await
+        .unwrap();
+    assert_eq!(remote_sse_event(&mut body).await.1, json!({"id":"watched"}));
+    db.execute("SELECT pg_notify($1, 'watched')", &[&channel])
+        .await
+        .unwrap();
+    assert_eq!(remote_sse_event(&mut body).await.1, json!({"id":"watched"}));
+    db.execute("UPDATE instance_interests SET expires_at=clock_timestamp() - interval '1 second' WHERE channel=$1", &[&channel]).await.unwrap();
+    db.execute(
+        "UPDATE instances SET status='cancelled' WHERE id='other'",
+        &[],
+    )
+    .await
+    .unwrap();
+    let schema = serde_json::to_string(
+        &input_wait_graph()
+            .checkpoint(&json!(null))
+            .unwrap()
+            .requests()[0]
+            .schema,
+    )
+    .unwrap();
+    db.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ('watched','r1','Prompt',$1)", &[&schema]).await.unwrap();
+    // A new local subscriber must repair the old subscriber even before the renewal tick.
+    let mut joining = remote_sse_body(&app, "watched").await;
+    assert_eq!(
+        remote_sse_event(&mut joining).await.1["requests"][0]["id"],
+        "r1"
+    );
+    let (kind, snapshot) =
+        tokio::time::timeout(Duration::from_secs(1), remote_sse_event(&mut body))
+            .await
+            .expect("joining client repairs lapsed live interest");
+    assert_eq!(
+        kind, "snapshot",
+        "expired live registration must force a resync"
+    );
+    assert_eq!(snapshot["requests"][0]["id"], "r1");
+    let pid: i32 = db.query_one("SELECT pid FROM pg_stat_activity WHERE application_name=$1 AND backend_type='client backend'", &[&channel]).await.unwrap().get(0);
+    db.execute("SELECT pg_terminate_backend($1)", &[&pid])
+        .await
+        .unwrap();
+    db.execute("UPDATE input_requests SET status='answered', response='{}' WHERE instance_id='watched' AND request_id='r1'", &[]).await.unwrap();
+    let (kind, snapshot) = remote_sse_event(&mut body).await;
+    assert_eq!(
+        kind, "snapshot",
+        "attached client must resync after listener restart"
+    );
+    assert_eq!(snapshot["requests"], json!([]));
+    drop(body);
+    drop(joining);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let count: i64 = db
+                .query_one(
+                    "SELECT count(*) FROM instance_interests WHERE channel=$1",
+                    &[&channel],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if count == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+fn input_wait_graph() -> GraphDefinition {
+    use blkit::compiled_graph::{RequestSchema, RequestType};
+    GraphDefinition {
+        namespace: "input",
+        version: "1",
+        name: "review",
+        retry: None,
+        deadline: Some(blkit::DeadlinePolicy {
+            origin: "first_claimed",
+            duration: Duration::from_secs(10),
+        }),
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "review",
+                kind: GraphNodeKind::InputRequest {
+                    prompt: "Approve this order?",
+                    schema: RequestSchema {
+                        ports: [("approved".into(), RequestType::Named("Bool".into()))].into(),
+                        records: Default::default(),
+                        enums: Default::default(),
+                    },
+                    decode_response: Box::new(Ok),
+                },
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            GraphLink {
+                source: "start",
+                target: "review",
+                value: None,
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+            GraphLink {
+                source: "review",
+                target: "done",
+                value: Some(Arc::new(|_, values| {
+                    Ok(values["review"]["approved"].clone())
+                })),
+                condition: None,
+                fallback: false,
+                label: None,
+            },
+        ],
+    }
+}
+
+#[tokio::test]
+async fn distributed_http_graph_free_request_visibility_validation_and_response() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let worker_store = PostgresStore::connect(&url).await.unwrap();
+    let worker = DistributedWorker::new(
+        worker_store.clone(),
+        "w1",
+        vec![input_wait_graph()],
+        1,
+        1000,
+    )
+    .unwrap();
+    worker.advertise().await.unwrap();
+    let api_store = PostgresStore::connect(&url).await.unwrap();
+    let app = router_distributed(Arc::new(DistributedControl::new(api_store)));
+    let start = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/processes/input/1/review/instances")
+                .header("content-type", "application/json")
+                .body(Body::from("null"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+    let started: serde_json::Value =
+        serde_json::from_slice(&to_bytes(start.into_body(), 4096).await.unwrap()).unwrap();
+    let id = started["id"].as_str().unwrap();
+    assert_eq!(worker.run_once().await.unwrap(), 1);
+    let get = |id: String| {
+        Request::builder()
+            .uri(format!("/instances/{id}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let state = app.clone().oneshot(get(id.into())).await.unwrap();
+    assert_eq!(state.status(), StatusCode::OK);
+    let state: serde_json::Value =
+        serde_json::from_slice(&to_bytes(state.into_body(), 8192).await.unwrap()).unwrap();
+    assert_eq!(state["status"], "waiting-for-input");
+    assert_eq!(state["requests"].as_array().unwrap().len(), 1);
+    assert_eq!(state["requests"][0]["prompt"], "Approve this order?");
+    assert_eq!(
+        state["requests"][0]["schema"]["ports"]["approved"],
+        json!({"Named":"Bool"})
+    );
+    assert!(state.get("checkpoint").is_none());
+    let events = app
+        .clone()
+        .oneshot(get(format!("{id}/events")))
+        .await
+        .unwrap();
+    assert_eq!(events.status(), StatusCode::OK);
+    let mut events = events.into_body();
+    assert_eq!(remote_sse_event(&mut events).await.0, "snapshot");
+    let request_id = state["requests"][0]["id"].as_str().unwrap();
+    let post = |id: &str, request_id: &str, body: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/instances/{id}/requests/{request_id}/response"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_owned()))
+            .unwrap()
+    };
+    assert_eq!(
+        app.clone()
+            .oneshot(post(id, request_id, "{"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    for invalid in [
+        "null",
+        "{}",
+        r#"{"approved":"yes"}"#,
+        r#"{"approved":true,"extra":0}"#,
+    ] {
+        assert_eq!(
+            app.clone()
+                .oneshot(post(id, request_id, invalid))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        app.clone()
+            .oneshot(post("unknown", request_id, r#"{"approved":true}"#))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(post(id, "missing", r#"{"approved":true}"#))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let accepted = app
+        .clone()
+        .oneshot(post(id, request_id, r#"{"approved":true}"#))
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let accepted: serde_json::Value =
+        serde_json::from_slice(&to_bytes(accepted.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(
+        accepted,
+        json!({"id": id, "request_id": request_id, "status": "accepted"})
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(post(id, request_id, r#"{"approved":false}"#))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let answered = app.clone().oneshot(get(id.into())).await.unwrap();
+    let answered: serde_json::Value =
+        serde_json::from_slice(&to_bytes(answered.into_body(), 8192).await.unwrap()).unwrap();
+    assert_eq!(answered["requests"], json!([]));
+    assert!(answered.get("checkpoint").is_none());
+    assert_eq!(worker_store.answers(id).await.unwrap().len(), 1);
+    assert_eq!(worker.run_once().await.unwrap(), 1);
+    let done = app.clone().oneshot(get(id.into())).await.unwrap();
+    let done: serde_json::Value =
+        serde_json::from_slice(&to_bytes(done.into_body(), 8192).await.unwrap()).unwrap();
+    assert_eq!(done["status"], "completed");
+    assert_eq!(done["result"], json!(true));
+    let late = DistributedControl::new(worker_store.clone())
+        .start("input", "1", "review", json!(null))
+        .await
+        .unwrap();
+    assert_eq!(worker.run_once().await.unwrap(), 1);
+    let late_request = worker_store
+        .requests(&late)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap()
+        .id;
+    assert_eq!(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/instances/{late}/cancel"))
+                    .body(Body::empty())
+                    .unwrap()
+            )
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(post(&late, &late_request, r#"{"approved":true}"#))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(post(&late, "missing", r#"{"approved":true}"#))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn distributed_input_wait_releases_fenced_claim_without_retry_or_clock_wake() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let worker =
+        DistributedWorker::new(store.clone(), "w1", vec![input_wait_graph()], 1, 300).unwrap();
+    worker.advertise().await.unwrap();
+    let control = DistributedControl::new(store.clone());
+    let id = control
+        .start("input", "1", "review", json!(null))
+        .await
+        .unwrap();
+    assert_eq!(worker.run_once().await.unwrap(), 1);
+    let waiting = store.get(&id).await.unwrap().unwrap();
+    assert_eq!(waiting.instance.status, "waiting-for-input");
+    assert!(waiting.owner_id.is_none());
+    assert!(waiting.lease_until.is_none());
+    assert!(waiting.instance.wake_at_ms.is_none());
+    assert_eq!(waiting.instance.attempt, 1);
+    assert!(waiting.instance.first_failure_at.is_none());
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert_eq!(control.reconcile_once().await.unwrap(), 0);
+    assert_eq!(worker.run_once().await.unwrap(), 0);
+    assert_eq!(
+        store.get(&id).await.unwrap().unwrap().instance.status,
+        "waiting-for-input"
+    );
+    let request = store.requests(&id).await.unwrap().pop().unwrap();
+    store
+        .accept_response(&id, &request.id, &json!({"approved": true}))
+        .await
+        .unwrap();
+    assert_eq!(worker.run_once().await.unwrap(), 1);
+    let done = store.get(&id).await.unwrap().unwrap();
+    assert_eq!(done.instance.status, "completed");
+    assert_eq!(done.instance.result, Some(json!(true)));
+    assert_eq!(done.instance.attempt, 1);
+    assert_eq!(
+        done.instance.first_claim_at_ms,
+        waiting.instance.first_claim_at_ms
+    );
+    assert_eq!(
+        done.instance.deadline_at_ms,
+        waiting.instance.deadline_at_ms
+    );
+}
+
+#[tokio::test]
+async fn postgres_reply_survives_no_worker_and_reclaims_only_matching_identity_without_retry() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let worker =
+        DistributedWorker::new(store.clone(), "w1", vec![input_wait_graph()], 1, 5000).unwrap();
+    worker.advertise().await.unwrap();
+    let id = DistributedControl::new(store.clone())
+        .start("input", "1", "review", json!(null))
+        .await
+        .unwrap();
+    assert_eq!(worker.run_once().await.unwrap(), 1);
+    let waiting = store.get(&id).await.unwrap().unwrap();
+    let first_claim = waiting.instance.first_claim_at_ms;
+    assert!(store.drain("w1").await.unwrap());
+    assert!(store.unregister_drained("w1").await.unwrap());
+    let request = store.requests(&id).await.unwrap().pop().unwrap();
+    assert_eq!(request.prompt, "Approve this order?");
+    assert!(
+        store
+            .accept_response(&id, &request.id, &json!({"approved": "yes"}))
+            .await
+            .is_err()
+    );
+    assert_eq!(store.requests(&id).await.unwrap().len(), 1);
+    assert!(
+        store
+            .accept_response(&id, &request.id, &json!({"approved": true}))
+            .await
+            .is_ok()
+    );
+    assert!(
+        store
+            .accept_response(&id, &request.id, &json!({"approved": false}))
+            .await
+            .is_err()
+    );
+    let reopened = PostgresStore::connect(&url).await.unwrap();
+    assert_eq!(
+        reopened.answers(&id).await.unwrap(),
+        vec![(request.id.clone(), json!({"approved": true}))]
+    );
+    store
+        .register_worker("wrong", &[("input", "2", "review")])
+        .await
+        .unwrap();
+    assert!(reopened.claim("wrong", 1, 5000).await.unwrap().is_empty());
+    assert_eq!(reopened.answers(&id).await.unwrap().len(), 1);
+    let replacement =
+        DistributedWorker::new(store.clone(), "w2", vec![input_wait_graph()], 1, 5000).unwrap();
+    replacement.advertise().await.unwrap();
+    let resumed = reopened.claim("w2", 1, 5000).await.unwrap().pop().unwrap();
+    assert_eq!(resumed.instance.attempt, 1);
+    assert_eq!(resumed.instance.first_claim_at_ms, first_claim);
+    assert!(
+        !reopened
+            .release_input_owned(
+                &id,
+                "w2",
+                resumed.generation,
+                resumed.instance.checkpoint.as_ref().unwrap()
+            )
+            .await
+            .unwrap()
+    );
+    assert!(
+        reopened
+            .commit_checkpoint(
+                &id,
+                "w2",
+                resumed.generation,
+                resumed.instance.checkpoint.as_ref().unwrap()
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(reopened.answers(&id).await.unwrap().len(), 1);
+    assert!(
+        reopened
+            .consume_response(
+                &id,
+                "w2",
+                resumed.generation,
+                &request.id,
+                resumed.instance.checkpoint.as_ref().unwrap()
+            )
+            .await
+            .unwrap()
+    );
+    assert!(reopened.answers(&id).await.unwrap().is_empty());
+    assert!(
+        !reopened
+            .commit_checkpoint(
+                &id,
+                "w1",
+                waiting.generation,
+                resumed.instance.checkpoint.as_ref().unwrap()
+            )
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn postgres_input_reply_cancel_and_timeout_retire_outstanding_requests() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let worker =
+        DistributedWorker::new(store.clone(), "w1", vec![input_wait_graph()], 1, 5000).unwrap();
+    worker.advertise().await.unwrap();
+    for id in ["cancelled", "expired"] {
+        store
+            .create(&Instance::new(id, "input", "1", "review", json!(null)))
+            .await
+            .unwrap();
+        assert_eq!(worker.run_once().await.unwrap(), 1);
+        let request = store.requests(id).await.unwrap().pop().unwrap();
+        if id == "cancelled" {
+            store.cancel(id).await.unwrap();
+        } else {
+            let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+            tokio::spawn(async move { connection.await.unwrap() });
+            db.execute("UPDATE instances SET deadline_at_ms=0 WHERE id=$1", &[&id])
+                .await
+                .unwrap();
+            assert_eq!(store.expire_due().await.unwrap(), vec![id.to_string()]);
+        }
+        assert!(
+            store
+                .accept_response(id, &request.id, &json!({"approved": true}))
+                .await
+                .is_err()
+        );
+        assert!(
+            store.requests(id).await.unwrap().is_empty(),
+            "terminal request must be retired"
+        );
+    }
+}
+
+#[tokio::test]
+async fn postgres_request_checkpoint_write_rolls_back_when_request_insert_fails() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    db.batch_execute("CREATE FUNCTION reject_request() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'request unavailable'; END $$; CREATE TRIGGER reject_request BEFORE INSERT ON input_requests FOR EACH ROW EXECUTE FUNCTION reject_request()") .await.unwrap();
+    let mut instance = Instance::new("job", "input", "1", "review", json!(null));
+    instance.checkpoint = Some(input_wait_graph().checkpoint(&json!(null)).unwrap());
+    assert_eq!(instance.checkpoint.as_ref().unwrap().requests().len(), 1);
+    assert!(store.create(&instance).await.is_err());
+    assert!(
+        store.get("job").await.unwrap().is_none(),
+        "checkpoint cannot commit without request row"
+    );
+    db.batch_execute(
+        "DROP TRIGGER reject_request ON input_requests; DROP FUNCTION reject_request()",
+    )
+    .await
+    .unwrap();
+    store.create(&instance).await.unwrap();
+    assert_eq!(store.get("job").await.unwrap().unwrap().requests.len(), 1);
+}
+
+#[tokio::test]
+async fn postgres_reply_racing_claim_release_cannot_strand_pending_response() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    store
+        .register_worker("w1", &[("input", "1", "review")])
+        .await
+        .unwrap();
+    let mut instance = Instance::new("job", "input", "1", "review", json!(null));
+    instance.checkpoint = Some(input_wait_graph().checkpoint(&json!(null)).unwrap());
+    let request_id = instance.checkpoint.as_ref().unwrap().requests()[0]
+        .id
+        .clone();
+    store.create(&instance).await.unwrap();
+    let owner = store.claim("w1", 1, 5000).await.unwrap().pop().unwrap();
+    let checkpoint = owner.instance.checkpoint.as_ref().unwrap();
+    let response = json!({"approved": true});
+    let (released, accepted) = tokio::join!(
+        store.release_input_owned("job", "w1", owner.generation, checkpoint),
+        store.accept_response("job", &request_id, &response)
+    );
+    assert!(accepted.is_ok());
+    let current = store.get("job").await.unwrap().unwrap();
+    if released.unwrap() {
+        assert_eq!(current.instance.status, "pending");
+        assert!(current.owner_id.is_none());
+        let next = store.claim("w1", 1, 5000).await.unwrap().pop().unwrap();
+        assert_eq!(next.instance.attempt, 1);
+    } else {
+        assert_eq!(current.instance.status, "running");
+        assert_eq!(current.owner_id.as_deref(), Some("w1"));
+    }
+    assert_eq!(store.answers("job").await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn postgres_owned_request_checkpoint_rolls_back_on_request_write_failure() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    store
+        .register_worker("owner", &[("input", "1", "review")])
+        .await
+        .unwrap();
+    let mut instance = Instance::new("job", "input", "1", "review", json!(null));
+    instance.checkpoint = Some(GraphCheckpoint::default());
+    store.create(&instance).await.unwrap();
+    let claim = store.claim("owner", 1, 5000).await.unwrap().pop().unwrap();
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    db.batch_execute("CREATE FUNCTION reject_request() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'request unavailable'; END $$; CREATE TRIGGER reject_request BEFORE INSERT ON input_requests FOR EACH ROW EXECUTE FUNCTION reject_request()") .await.unwrap();
+    let checkpoint = input_wait_graph().checkpoint(&json!(null)).unwrap();
+    assert!(
+        store
+            .commit_checkpoint("job", "owner", claim.generation, &checkpoint)
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .get("job")
+            .await
+            .unwrap()
+            .unwrap()
+            .instance
+            .checkpoint
+            .unwrap()
+            .requests()
+            .is_empty()
+    );
+    db.batch_execute(
+        "DROP TRIGGER reject_request ON input_requests; DROP FUNCTION reject_request()",
+    )
+    .await
+    .unwrap();
+    assert!(
+        store
+            .commit_checkpoint("job", "owner", claim.generation, &checkpoint)
+            .await
+            .unwrap()
+    );
+    let saved = store.get("job").await.unwrap().unwrap();
+    assert_eq!(saved.requests, checkpoint.requests());
+}
+
+fn input_with_sibling_graph(sibling: GraphNodeKind, process: &'static str) -> GraphDefinition {
+    let mut review = input_wait_graph().nodes;
+    let review = review.remove(1);
+    let edge = |source, target, value, label| GraphLink {
+        source,
+        target,
+        value,
+        condition: None,
+        fallback: false,
+        label,
+    };
+    GraphDefinition {
+        namespace: "input",
+        version: "1",
+        name: process,
+        retry: None,
+        deadline: Some(blkit::DeadlinePolicy {
+            origin: "first_claimed",
+            duration: Duration::from_secs(30),
+        }),
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "fork",
+                kind: GraphNodeKind::Split("and"),
+            },
+            review,
+            GraphNode {
+                name: "sibling",
+                kind: sibling,
+            },
+            GraphNode {
+                name: "joined",
+                kind: GraphNodeKind::Join {
+                    kind: "and",
+                    split: "fork",
+                },
+            },
+            GraphNode {
+                name: "done",
+                kind: GraphNodeKind::End,
+            },
+        ],
+        links: vec![
+            edge("start", "fork", None, None),
+            edge("fork", "review", None, Some("left")),
+            edge("fork", "sibling", None, Some("right")),
+            edge(
+                "review",
+                "joined",
+                Some(Arc::new(|_, values| Ok(values["review"].clone()))),
+                None,
+            ),
+            edge(
+                "sibling",
+                "joined",
+                Some(Arc::new(|input, _| Ok(input.clone()))),
+                None,
+            ),
+            edge(
+                "joined",
+                "done",
+                Some(Arc::new(|_, values| Ok(values["joined"].clone()))),
+                None,
+            ),
+        ],
+    }
+}
+
+#[tokio::test]
+async fn distributed_sibling_completion_releases_input_claim_and_preserves_checkpoint() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let graph = input_with_sibling_graph(
+        GraphNodeKind::Task(Arc::new({
+            let hits = hits.clone();
+            move |input, _| {
+                std::thread::sleep(Duration::from_millis(80));
+                hits.fetch_add(1, Ordering::SeqCst);
+                Ok(input.clone())
+            }
+        })),
+        "parallel",
+    );
+    let worker = DistributedWorker::new(store.clone(), "w1", vec![graph], 2, 5000).unwrap();
+    worker.advertise().await.unwrap();
+    let id = DistributedControl::new(store.clone())
+        .start("input", "1", "parallel", json!(7))
+        .await
+        .unwrap();
+    assert_eq!(worker.run_once().await.unwrap(), 1);
+    let waiting = store.get(&id).await.unwrap().unwrap();
+    assert_eq!(waiting.instance.status, "waiting-for-input");
+    assert!(waiting.owner_id.is_none());
+    assert_eq!(waiting.requests.len(), 1);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let origin = waiting.instance.first_claim_at_ms;
+    let deadline = waiting.instance.deadline_at_ms;
+    store
+        .accept_response(&id, &waiting.requests[0].id, &json!({"approved": true}))
+        .await
+        .unwrap();
+    assert_eq!(worker.run_once().await.unwrap(), 1);
+    let done = store.get(&id).await.unwrap().unwrap();
+    assert_eq!(done.instance.status, "completed");
+    assert_eq!(done.instance.attempt, 1);
+    assert_eq!(done.instance.first_claim_at_ms, origin);
+    assert_eq!(done.instance.deadline_at_ms, deadline);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn distributed_reply_after_timer_release_reclaims_before_clock_and_keeps_attempt() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let graph = input_with_sibling_graph(GraphNodeKind::PauseFor(Duration::from_secs(3)), "timer");
+    let worker =
+        DistributedWorker::new(store.clone(), "timer-worker", vec![graph], 1, 5000).unwrap();
+    worker.advertise().await.unwrap();
+    let id = DistributedControl::new(store.clone())
+        .start("input", "1", "timer", json!(9))
+        .await
+        .unwrap();
+    assert_eq!(worker.run_once().await.unwrap(), 1);
+    let waiting = store.get(&id).await.unwrap().unwrap();
+    assert_eq!(waiting.instance.status, "waiting");
+    assert!(waiting.owner_id.is_none());
+    assert_eq!(waiting.requests.len(), 1);
+    let wake = waiting.instance.wake_at_ms.unwrap();
+    store
+        .accept_response(&id, &waiting.requests[0].id, &json!({"approved": true}))
+        .await
+        .unwrap();
+    let answered = store.get(&id).await.unwrap().unwrap();
+    assert_eq!(
+        answered.instance.status, "pending",
+        "reply must wake timer wait early"
+    );
+    assert_eq!(answered.instance.wake_at_ms, Some(wake));
+    assert_eq!(worker.run_once().await.unwrap(), 1);
+    let resumed = store.get(&id).await.unwrap().unwrap();
+    assert_eq!(resumed.instance.attempt, 1);
+    assert_eq!(
+        resumed.instance.first_claim_at_ms,
+        waiting.instance.first_claim_at_ms
+    );
+    assert_eq!(
+        resumed.instance.deadline_at_ms,
+        waiting.instance.deadline_at_ms
+    );
+    assert!(resumed.requests.is_empty());
+    assert!(store.answers(&id).await.unwrap().is_empty());
+    assert_eq!(
+        resumed.instance.status, "waiting",
+        "unexpired timer still waits after consuming the answer"
+    );
+    tokio::time::sleep(Duration::from_millis(
+        wake.saturating_sub(
+            i64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis(),
+            )
+            .unwrap(),
+        )
+        .max(0) as u64
+            + 10,
+    ))
+    .await;
+    assert_eq!(worker.run_once().await.unwrap(), 1);
+    assert_eq!(
+        store.get(&id).await.unwrap().unwrap().instance.status,
+        "completed"
+    );
+}
+
+#[tokio::test]
+async fn distributed_reply_before_timer_release_prevents_unclaimable_wait() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let graph = input_with_sibling_graph(GraphNodeKind::PauseFor(Duration::from_secs(5)), "timer");
+    store
+        .register_worker("owner", &[("input", "1", "timer")])
+        .await
+        .unwrap();
+    let mut instance = Instance::new("job", "input", "1", "timer", json!(null));
+    instance.checkpoint = Some(graph.checkpoint(&json!(null)).unwrap());
+    let checkpoint = instance.checkpoint.clone().unwrap();
+    assert_eq!(checkpoint.requests().len(), 1);
+    let wake = graph.waiting_until(&checkpoint).unwrap();
+    store.create(&instance).await.unwrap();
+    let owner = store.claim("owner", 1, 5000).await.unwrap().pop().unwrap();
+    store
+        .accept_response(
+            "job",
+            &checkpoint.requests()[0].id,
+            &json!({"approved": true}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !store
+            .release_wait_owned("job", "owner", owner.generation, &checkpoint, wake)
+            .await
+            .unwrap()
+    );
+    let saved = store.get("job").await.unwrap().unwrap();
+    assert_eq!(saved.instance.status, "running");
+    assert_eq!(saved.owner_id.as_deref(), Some("owner"));
+    assert_eq!(store.answers("job").await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn postgres_get_never_mixes_pre_reply_status_with_post_reply_requests() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let mut instance = Instance::new("job", "input", "1", "review", json!(null));
+    instance.status = "waiting-for-input".into();
+    let mut checkpoint = input_wait_graph().checkpoint(&json!(null)).unwrap();
+    let request_id = checkpoint.requests()[0].id.clone();
+    // Make the first row slow to transfer/deserialize so a reply can commit before the request read.
+    checkpoint
+        .completed
+        .insert("padding".into(), json!("x".repeat(20_000_000)));
+    instance.checkpoint = Some(checkpoint);
+    store.create(&instance).await.unwrap();
+    let reader = PostgresStore::connect(&format!("{url}?application_name=blkit_snapshot_reader"))
+        .await
+        .unwrap();
+    let (observer, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let reading = tokio::spawn(async move { reader.get("job").await.unwrap().unwrap() });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let row = observer.query_one("SELECT coalesce(bool_or(query LIKE 'SELECT id, namespace, version, process, input, status, result, error,%'),FALSE) FROM pg_stat_activity WHERE application_name='blkit_snapshot_reader'", &[]).await.unwrap();
+            if row.get::<_, bool>(0) { break; }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }).await.expect("instance read must start before the reply");
+    store
+        .accept_response("job", &request_id, &json!({"approved": true}))
+        .await
+        .unwrap();
+    let observed = reading.await.unwrap();
+    assert!(
+        observed.instance.status != "waiting-for-input" || observed.requests.len() == 1,
+        "one GET cannot combine an input wait before reply with requests after reply"
+    );
+    let fresh = store.get("job").await.unwrap().unwrap();
+    assert_eq!(fresh.instance.status, "pending");
+    assert!(fresh.requests.is_empty());
+}
+
+#[tokio::test]
+async fn distributed_reply_wins_before_timer_release_without_retrying_sibling() {
+    let node = Postgres::default()
+        .with_tag("17.6-alpine")
+        .start()
+        .await
+        .unwrap();
+    let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+        .unwrap_or(node.get_host().await.unwrap().to_string());
+    let url = format!(
+        "postgres://postgres:postgres@{host}:{}/postgres",
+        node.get_host_port_ipv4(5432).await.unwrap()
+    );
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let release = Arc::new(AtomicBool::new(false));
+    let hits = Arc::new(AtomicUsize::new(0));
+    let mut graph = input_with_sibling_graph(
+        GraphNodeKind::PauseFor(Duration::from_secs(10)),
+        "timer_reply_wins",
+    );
+    graph.nodes.push(GraphNode {
+        name: "slow",
+        kind: GraphNodeKind::Task(Arc::new({
+            let release = release.clone();
+            let hits = hits.clone();
+            move |input, _| {
+                let start = std::time::Instant::now();
+                while !release.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(3) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                hits.fetch_add(1, Ordering::SeqCst);
+                Ok(input.clone())
+            }
+        })),
+    });
+    graph.links.push(GraphLink {
+        source: "fork",
+        target: "slow",
+        label: Some("third"),
+        value: None,
+        condition: None,
+        fallback: false,
+    });
+    graph.links.push(GraphLink {
+        source: "slow",
+        target: "joined",
+        value: Some(Arc::new(|input, _| Ok(input.clone()))),
+        condition: None,
+        fallback: false,
+        label: None,
+    });
+    let worker = DistributedWorker::new(store.clone(), "w1", vec![graph], 2, 5000).unwrap();
+    worker.advertise().await.unwrap();
+    let id = DistributedControl::new(store.clone())
+        .start("input", "1", "timer_reply_wins", json!(7))
+        .await
+        .unwrap();
+    let running = tokio::spawn(async move { worker.run_once().await });
+    let request = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let row = store.get(&id).await.unwrap().unwrap();
+            if row.instance.status == "running" && !row.requests.is_empty() {
+                break row.requests[0].id.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let origin = store
+        .get(&id)
+        .await
+        .unwrap()
+        .unwrap()
+        .instance
+        .first_claim_at_ms;
+    store
+        .accept_response(&id, &request, &json!({"approved": true}))
+        .await
+        .unwrap();
+    release.store(true, Ordering::SeqCst);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), running)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+        1
+    );
+    let waiting = store.get(&id).await.unwrap().unwrap();
+    assert_eq!(waiting.instance.status, "waiting");
+    assert!(waiting.owner_id.is_none());
+    assert!(waiting.requests.is_empty());
+    assert!(store.answers(&id).await.unwrap().is_empty());
+    assert_eq!(waiting.instance.attempt, 1);
+    assert_eq!(waiting.instance.first_claim_at_ms, origin);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
 }

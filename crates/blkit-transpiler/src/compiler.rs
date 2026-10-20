@@ -775,6 +775,7 @@ fn program_parser<'a>(
         word(source, "start_event").to("start_event"),
         word(source, "end_event").to("end_event"),
         word(source, "decision_task").to("decision_task"),
+        word(source, "input_request").to("input_request"),
         word(source, "process").to("process"),
         word(source, "xor_split").to("xor_split"),
         word(source, "xor_join").to("xor_join"),
@@ -875,6 +876,11 @@ fn program_parser<'a>(
                             Ok(Some(item)) => program.peer_nodes.push(item),
                             Ok(None) => {}
                             Err(error) => {
+                                let error = if kind == "input_request" {
+                                    error.context(&format!("input_request {name}"))
+                                } else {
+                                    error
+                                };
                                 if let Some(errors) = &mut errors {
                                     errors.append(error);
                                 } else {

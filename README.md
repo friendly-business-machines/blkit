@@ -116,7 +116,7 @@ For remote deployment, start `orders-worker "$POSTGRES_URL" 32 5000` (maximum co
 
 Remote PostgreSQL binaries accept `BLKIT_API_DB_POOL_MAX` (API requests **and** reconciler) and `BLKIT_WORKER_DB_POOL_MAX` (worker persistence), defaulting to **4 connections per active role**. Set each active role's limit to a positive integer; a zero or malformed value fails startup with the setting name, while a setting for an inactive role is ignored. The combined remote `orders-api-worker` uses **separate** API and worker pools; `orders-api` reads only the API setting and `orders-worker` only the worker setting, including split builds. Local-persistence binaries ignore both settings. These limits are independent of the worker's `MAX_TASKS` positional argument, which remains unchanged.
 
-Budget PostgreSQL/proxy `max_connections` for the **sum of both role limits across all running processes**, plus observers, admin clients and other users; pools open connections lazily but can reach their configured maxima under load. Each remote store checks out a connection and runs schema setup before startup succeeds, so an unavailable database or schema error fails startup. A saturated pool waits at most 1 second for checkout; creating a connection has a 2-second timeout and recycling one a 1-second timeout. Failed checkouts and database operations report errors rather than acknowledging uncommitted writes; outages or contention can still disrupt lease renewal, so size leases for expected pauses. On a connection-limited server, set the relevant limit(s) to `1` before rollout (both settings for combined mode) to keep the previous per-role session budget, then raise them only after checking capacity and workload. More connections do not guarantee faster execution. This change requires no database migration.
+Budget PostgreSQL/proxy `max_connections` for the **sum of both role limits across all running processes**, plus **one dedicated LISTEN session per API replica that serves remote SSE**, observers, admin clients and other users. For example, two API-only replicas with `BLKIT_API_DB_POOL_MAX=4` can consume up to 10 sessions (2 × [4 request-pool connections + 1 listener]); a combined API/worker process also needs its worker pool budget. The listener is outside the bounded request pool and requires a session-persistent PostgreSQL connection (not a transaction/statement-pooled proxy). Pools open connections lazily but can reach their configured maxima under load. Each remote store checks out a connection and runs schema setup before startup succeeds, so an unavailable database or schema error fails startup. A saturated pool waits at most 1 second for checkout; creating a connection has a 2-second timeout and recycling one a 1-second timeout. Failed checkouts and database operations report errors rather than acknowledging uncommitted writes; outages or contention can still disrupt lease renewal, so size leases for expected pauses. On a connection-limited server, set the relevant limit(s) to `1` before rollout (both settings for combined mode) to keep the previous per-role session budget, then raise them only after checking capacity and workload. More connections do not guarantee faster execution. These pool settings require no database migration; input-request persistence does (see rollout below).
 
 For one local server (no PostgreSQL or separate API), set `build_target = "server"` and transpile the `types.bl` and `process.bl` example above, then build it with Cargo:
 
@@ -305,6 +305,59 @@ process pass_through {
 }
 ```
 
+[`examples/input_request.bl`](examples/input_request.bl) shows a client response port in a process. Declare `input_request review { prompt "Approve this order?"; output approved: Bool; }` as a named task peer: `prompt` must be a nonempty literal string, and at least one named, typed `output` is required. Use `flow start -> review;` and `flow review -> done;` to place the request in the route; `bind review.approved -> done.approved;` declares a typed connection from the request's `Bool` output to the end event's `Bool` input. Validate and compile the `.bl` source (without running the process) with `cargo run -p blkit-cli -- examples/input_request.bl /tmp/blkit-input-request.rs` (or `blkit examples/input_request.bl /tmp/blkit-input-request.rs` with the installed CLI).
+
+### Answering an input request over HTTP
+
+To run [`examples/input_request.bl`](examples/input_request.bl) on a local server from this checkout (in a separate shell after building):
+
+```sh
+mkdir -p /tmp/blkit-approval
+cp examples/input_request.bl /tmp/blkit-approval/
+cat > /tmp/blkit-approval/blkit.toml <<'TOML'
+[project]
+name = "approvaldemo"
+blkit = "0.1.0"
+build_target = "api-worker"
+persistence = "local"
+TOML
+cargo run -p blkit-cli -- transpile /tmp/blkit-approval
+cargo build --manifest-path /tmp/blkit-approval/.blkit/Cargo.toml
+# Use $CARGO_TARGET_DIR/debug/approvaldemo-api-worker if CARGO_TARGET_DIR is set.
+/tmp/blkit-approval/.blkit/target/debug/approvaldemo-api-worker /tmp/blkit-approval/orders.db 32 127.0.0.1:3000
+```
+
+Use the returned instance ID to inspect the outstanding request, then its request ID to reply (replace `INSTANCE_ID` and `REQUEST_ID` with the actual IDs):
+
+```sh
+curl -sS -H 'content-type: application/json' -d '{}' \
+  http://127.0.0.1:3000/processes/demo/1.0/approval/instances
+# HTTP 202: {"id":"INSTANCE_ID","status":"pending"}
+curl -sS http://127.0.0.1:3000/instances/INSTANCE_ID
+# When waiting, relevant fields: {"id":"INSTANCE_ID","status":"waiting-for-input","requests":[{"id":"REQUEST_ID","prompt":"Approve this order?","schema":{"ports":{"approved":{"Named":"Bool"}},"records":{},"enums":{}}}]}
+curl -sS -X POST -H 'content-type: application/json' -d '{"approved":true}' \
+  http://127.0.0.1:3000/instances/INSTANCE_ID/requests/REQUEST_ID/response
+# HTTP 202: {"id":"INSTANCE_ID","request_id":"REQUEST_ID","status":"accepted"}
+curl -sS http://127.0.0.1:3000/instances/INSTANCE_ID
+# Once completed, relevant fields: {"status":"completed","requests":[],"result":true}
+```
+
+The GET examples show **selected fields**; actual responses also contain instance identity, input, attempt and timing metadata. `requests` contains only outstanding requests, with stable IDs, prompts and portable `.bl` response types. An answered request disappears from `requests`; its raw accepted JSON is **not** returned by GET. `result` is the process's ordinary completed output (this example binds `approved` into the end event's `Bool` input), not a reply-history endpoint. POST must send a JSON **object with exactly the declared fields** and compatible values. Malformed JSON, missing/extra fields or wrong types return HTTP 400 (`{"error":"..."}`) without accepting the reply; unknown instance/request returns 404, and a duplicate or late answer after cancellation/terminal state returns 409. Only a successful committed answer returns 202; a remote reply can remain durable until a matching worker resumes the instance.
+
+For local SSE, open a stream while the instance is active, or reconnect after any disconnection:
+
+```sh
+curl -N -H 'Accept: text/event-stream' http://127.0.0.1:3000/instances/INSTANCE_ID/events
+# First event: event: snapshot, data: the current GET instance JSON (including outstanding requests)
+# Later, on a change:
+# event: changed
+# data: {"id":"INSTANCE_ID"}
+```
+
+Each connection gets a fresh persisted `snapshot` before live `changed` hints. On `changed`, fetch `GET /instances/INSTANCE_ID` for the authoritative state; hints carry only the instance ID, not a reply. SSE sends keepalives; slow clients can be disconnected. Reconnect for a new snapshot after interruption: there is no `Last-Event-ID` replay or guaranteed history. GET works independently of SSE. Local and remote PostgreSQL SSE both provide snapshots and live hints; remote streams resynchronize from persisted state after listener reconnection or an expired registration. GET and response POST work in both local and remote modes (for a remote deployment, use a request-capable worker with the same process identity; see rollout below).
+
+The server provides **no native authentication or TLS** and binds to loopback (`127.0.0.1:3000`) by default. Remote clients must use operator-managed authenticated TLS ingress with **per-instance authorization** on GET, SSE and response POST (and admission/cancellation where enabled); never expose the listener or database directly. Browser `EventSource` cannot set arbitrary `Authorization` headers: use an authenticated ingress cookie/session for browser SSE and authorize the same instance on the corresponding GET/POST; non-browser HTTP/SSE clients can send ingress authorization headers. Do not place credentials or reply values in an SSE URL.
+
 A `subprocess called { process child; input input: Number; output result: Number; }` peer invokes a same-namespace/version child process. `flow called -> done;` routes a normal completion, while `flow called -> recover on error;`, `on cancel`, and `on terminate` handle child terminal outcomes. Child terminal values are not bound to handlers. Unhandled outcomes propagate with their terminal name; parent cancellation and deadlines cannot be caught. Parent and child share one instance and task-capacity limit. [`examples/subprocess.bl`](examples/subprocess.bl) compiles with `cargo run -p blkit-cli -- examples/subprocess.bl /tmp/subprocess.rs`; running `parent` with `{"input":"2"}`, `{"input":"0"}`, `{"input":"-1"}`, and `{"input":"11"}` returns `"2"`, `"100"`, `"200"`, and `"300"`. Register both generated processes to run the parent.
 
 Optionally declare `retry max_retries 2 retry_for "10m" retry_delay "1s" backoff exponential;` and `deadline queued "10m";` (or `first_claimed`) inside a process before flows. `max_retries` counts additional attempts; retry windows and delays are enforced by the runtime. Named `error_event`, `cancel_event`, and `terminate_event` are business outcomes, not retryable execution errors. Peers `pause_for hold { duration "1m"; }` and `pause_until hold { input at: DateTime; }` persist their wake time; bind a `DateTime` with `bind start.closes_at -> hold.at;`. Waits release worker claims and survive restart. Deadlines produce `business-error` with reserved `terminal_name: "timeout"` without retrying.
@@ -369,7 +422,80 @@ PostgreSQL keeps each instance as a durable queue row: `pending` or eligible `re
 
 ## Running distributed API and workers
 
-`tools/dev-harness/build.rs` compiles [`tools/dev-harness/examples/graph.bl`](tools/dev-harness/examples/graph.bl) ahead of time to Rust, and `tools/dev-harness/src/bin/blkit-api.rs` and `tools/dev-harness/src/bin/blkit-worker.rs` both include its `named_graph_definitions()` at build time. To deploy another graph, replace the `tools/dev-harness/build.rs` source with your `.bl` file and rebuild **both** binaries. No worker compiles `.bl` at runtime. Use a new `version` when changing graph semantics; same-identity graph compatibility is not checked. Keep old-version workers until their queued and claimed work finishes.
+`tools/dev-harness/build.rs` compiles [`tools/dev-harness/examples/graph.bl`](tools/dev-harness/examples/graph.bl) ahead of time to Rust; the API uses `DistributedControl` without linked graphs, while `blkit-worker` links `named_graph_definitions()`. To deploy another graph, replace the `tools/dev-harness/build.rs` source with your `.bl` file and rebuild the worker. No worker compiles `.bl` at runtime. Use a new `.bl` `version` when changing graph semantics; same-identity graph compatibility is not checked. Keep old-version workers until their queued and claimed work finishes.
+
+For an input-request rollout on an existing database with the `instances` table, apply these idempotent PostgreSQL additions **before** starting updated binaries (set `DATABASE_URL` to the same writable PostgreSQL URL used below):
+
+```sh
+psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" <<'SQL'
+ALTER TABLE instances ADD COLUMN IF NOT EXISTS input_resume BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE TABLE IF NOT EXISTS input_requests (
+    instance_id TEXT NOT NULL REFERENCES instances(id), request_id TEXT NOT NULL,
+    prompt TEXT NOT NULL, schema TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'outstanding' CHECK (status IN ('outstanding','answered','consumed','retired')),
+    response TEXT, PRIMARY KEY (instance_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS input_requests_answered ON input_requests(instance_id) WHERE status='answered';
+CREATE TABLE IF NOT EXISTS instance_interests (
+    instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+    channel TEXT NOT NULL CHECK (octet_length(channel) BETWEEN 1 AND 63),
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (instance_id, channel)
+);
+CREATE OR REPLACE FUNCTION notify_instance_interests() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE changed_id TEXT;
+BEGIN
+    IF TG_TABLE_NAME = 'instances' THEN
+        IF NEW.status NOT IN ('completed', 'business-error', 'cancelled', 'terminated', 'failed')
+            OR NEW.status = OLD.status THEN
+            RETURN NEW;
+        END IF;
+        changed_id := NEW.id;
+    ELSE
+        IF TG_OP = 'INSERT' THEN
+            IF NEW.status <> 'outstanding' THEN RETURN NEW; END IF;
+        ELSIF OLD.status <> 'outstanding' OR NEW.status NOT IN ('answered', 'retired') THEN
+            RETURN NEW;
+        END IF;
+        changed_id := NEW.instance_id;
+    END IF;
+    PERFORM pg_notify(interest.channel, changed_id)
+        FROM instance_interests interest
+        WHERE interest.instance_id = changed_id AND interest.expires_at > clock_timestamp();
+    RETURN NEW;
+END $$;
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='input_requests'::regclass AND tgname='input_request_interests_notify') THEN
+        CREATE TRIGGER input_request_interests_notify
+            AFTER INSERT OR UPDATE OF status ON input_requests
+            FOR EACH ROW EXECUTE FUNCTION notify_instance_interests();
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='instances'::regclass AND tgname='instance_terminal_interests_notify') THEN
+        CREATE TRIGGER instance_terminal_interests_notify
+            AFTER UPDATE OF status ON instances
+            FOR EACH ROW EXECUTE FUNCTION notify_instance_interests();
+    END IF;
+END $$;
+SQL
+```
+
+These statements match `PostgresStore::connect_with_pool_size`; startup also runs schema setup, but that is not a substitute for sequencing a mixed-version rollout. Deploy updated API replicas first, then request-capable workers and compiled processes with a **new** namespace/version/process identity (normally a new `.bl` `version`), so old workers cannot claim request-bearing instances. Retain old workers for old-version backlog. Existing version-2 checkpoints without request fields remain readable; unsupported older checkpoint formats are rejected, not silently replayed. To roll back, stop admitting new request-using process versions, and keep capable workers and APIs running until outstanding requests drain or are cancelled. Do not drop the request schema or switch active request checkpoints to binaries that cannot read them.
+
+Worker checkpoints and request records commit together in PostgreSQL: each outstanding request has a stable instance/request ID, prompt, and portable response schema with resolved named dictionary shapes. The persisted port types let a graph-free API validate responses through the HTTP reply route; the store validates accepted replies, and the worker checks again before consumption. An accepted reply is conditional and durable even while no matching worker is available. An idle instance reports `waiting-for-input` and releases its claim without a timer or retry; a matching worker resumes it after an answer, subject to the original deadline. GET, reply POST and SSE are available in both modes.
+
+Remote SSE starts a dedicated LISTEN session on first use per API replica, commits LISTEN before registering leased instance interests and reading the initial snapshot, and keeps the listener out of the request pool. PostgreSQL delivers NOTIFY only on commit; the notification is a hint, not a durable event or a replacement for GET. Request creation/answering and watched terminal changes notify interested replicas, not every checkpoint. Even selective NOTIFY adds commit work and can serialize concurrent notification-bearing commits; a full PostgreSQL notification queue can cause those transactions to fail at commit (not succeed without a hint). A listener stuck in a long transaction can prevent queue cleanup. Do not assume zero queue usage in a quiet test means unlimited headroom under load; measure commit latency and queue usage at expected request rates and replica counts before increasing them.
+
+When diagnosing missing or delayed remote hints, check API logs for `SSE listener disconnected; resynchronizing`, `SSE listener notification buffer overflow; reconnecting`, `SSE interest cleanup failed`, or an SSE startup error (`SSE listener unavailable`); verify PostgreSQL connectivity/session capacity and that the listener is idle rather than `idle in transaction`. Inspect the database (with a role allowed to view session details):
+
+```sql
+SELECT pg_notification_queue_usage() AS queue_fraction;
+SELECT application_name, pid, state, xact_start
+FROM pg_stat_activity WHERE application_name LIKE 'blkit_%';
+SELECT channel, count(*) AS watched_instances, min(expires_at) AS earliest_expiry
+FROM instance_interests WHERE expires_at > clock_timestamp() GROUP BY channel;
+```
+
+`pg_notification_queue_usage()` is a fraction, not a message count; repeat it during load and investigate sustained growth, long listener transactions and commit errors. A lost listener reconnects, re-registers interests and sends fresh persisted snapshots to attached clients; an expired live interest is renewed and resynchronized. During an outage hints can be missed and a new SSE subscription can fail until the listener returns. Clients should reconnect for a fresh snapshot or GET the current instance after interruption; do not rely on replay. If the database is unavailable, restore connectivity/session capacity first, then confirm listener reconnection and current GET state. Do not drop request rows or reset a notification queue as a recovery shortcut.
 
 For a local demonstration **outside the devcontainer**, start PostgreSQL with a loopback-only port and a non-example password, then in separate terminals run:
 

@@ -2911,7 +2911,7 @@ pub fn generate(program: &Program) -> Result<String, String> {
         .iter()
         .any(|item| item.named_graph.is_some() || item.source_graph.is_some());
     let serde = ", serde::Serialize, serde::Deserialize";
-    out.push_str("#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]\npub struct DictionaryEntry<T> { pub key: String, pub value: T }\n");
+    out.push_str("#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]\n#[serde(deny_unknown_fields)]\npub struct DictionaryEntry<T> { pub key: String, pub value: T }\n");
     for record in &program.records {
         out.push_str(&format!(
             "#[derive(Debug, Clone, PartialEq{serde})]\n#[serde(deny_unknown_fields)]\npub struct {} {{\n",

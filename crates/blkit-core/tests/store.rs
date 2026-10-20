@@ -1,9 +1,221 @@
+use blkit::compiled_graph::{
+    GraphDefinition, GraphLink, GraphNode, GraphNodeKind, RequestSchema, RequestType,
+};
 use blkit::{
     compiled_graph::GraphCheckpoint,
     runtime::{Engine, Instance, LocalStore, Registry},
 };
 use blkit_core as blkit;
 use serde_json::json;
+
+fn request_checkpoint() -> GraphCheckpoint {
+    let graph = GraphDefinition {
+        namespace: "test",
+        version: "1",
+        name: "request",
+        retry: None,
+        deadline: None,
+        decode_input: Box::new(Ok),
+        nodes: vec![
+            GraphNode {
+                name: "start",
+                kind: GraphNodeKind::Start,
+            },
+            GraphNode {
+                name: "ask",
+                kind: GraphNodeKind::InputRequest {
+                    prompt: "Proceed?",
+                    schema: RequestSchema {
+                        ports: [("proceed".into(), RequestType::Named("Bool".into()))].into(),
+                        records: Default::default(),
+                        enums: Default::default(),
+                    },
+                    decode_response: Box::new(Ok),
+                },
+            },
+        ],
+        links: vec![GraphLink {
+            source: "start",
+            target: "ask",
+            value: None,
+            condition: None,
+            fallback: false,
+            label: None,
+        }],
+    };
+    graph.checkpoint(&json!(null)).unwrap()
+}
+
+#[tokio::test]
+async fn request_is_visible_only_with_committed_checkpoint_and_survives_reopen() {
+    let path = std::env::temp_dir().join(format!("blkit-request-atomic-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let checkpoint = request_checkpoint();
+    let id = checkpoint.requests()[0].id.clone();
+    assert!(
+        store
+            .commit_checkpoint("missing", &checkpoint)
+            .await
+            .is_err()
+    );
+    assert!(store.requests("missing").await.unwrap().is_empty());
+    store
+        .create(&Instance::new("job", "test", "1", "request", json!(null)))
+        .await
+        .unwrap();
+    assert!(store.requests("job").await.unwrap().is_empty());
+    store.commit_checkpoint("job", &checkpoint).await.unwrap();
+    drop(store);
+    let store = LocalStore::open(&path).await.unwrap();
+    let requests = store.requests("job").await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].id, id);
+    assert_eq!(requests[0].prompt, "Proceed?");
+    assert_eq!(
+        requests[0].schema.ports["proceed"],
+        RequestType::Named("Bool".into())
+    );
+    assert_eq!(
+        store
+            .get("job")
+            .await
+            .unwrap()
+            .unwrap()
+            .checkpoint
+            .unwrap()
+            .requests()[0]
+            .id,
+        id
+    );
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn answered_request_prevents_unrelated_timed_wait_handoff() {
+    let path = std::env::temp_dir().join(format!("blkit-answered-timed-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let checkpoint = request_checkpoint();
+    let id = checkpoint.requests()[0].id.clone();
+    let mut instance = Instance::new("job", "test", "1", "request", json!(null));
+    instance.checkpoint = Some(checkpoint.clone());
+    store.create(&instance).await.unwrap();
+    let engine = Engine::new(Registry::new(vec![]).unwrap(), store.clone(), 1).unwrap();
+    engine
+        .respond("job", &id, json!({"proceed": true}))
+        .await
+        .unwrap();
+    assert!(!store.set_wait("job", &checkpoint, i64::MAX).await.unwrap());
+    let saved = store.get("job").await.unwrap().unwrap();
+    assert_eq!(saved.status, "pending");
+    assert_eq!(saved.wake_at_ms, None);
+    assert_eq!(saved.checkpoint.unwrap().requests()[0].id, id);
+    assert!(store.requests("job").await.unwrap().is_empty());
+    assert!(
+        engine
+            .respond("job", &id, json!({"proceed": false}))
+            .await
+            .is_err()
+    );
+    drop(engine);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn timed_wait_resume_persists_new_request_with_checkpoint() {
+    let path = std::env::temp_dir().join(format!("blkit-resume-request-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    store
+        .create(&Instance::new("job", "test", "1", "request", json!(null)))
+        .await
+        .unwrap();
+    store
+        .set_wait("job", &GraphCheckpoint::default(), 0)
+        .await
+        .unwrap();
+    let checkpoint = request_checkpoint();
+    assert_eq!(
+        store.resume_wait("job", &checkpoint).await.unwrap(),
+        Some("pending")
+    );
+    assert_eq!(
+        store.requests("job").await.unwrap()[0].id,
+        checkpoint.requests()[0].id
+    );
+    assert_eq!(
+        store
+            .get("job")
+            .await
+            .unwrap()
+            .unwrap()
+            .checkpoint
+            .unwrap()
+            .requests()
+            .len(),
+        1
+    );
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn terminal_transitions_retire_outstanding_requests_atomically() {
+    let path =
+        std::env::temp_dir().join(format!("blkit-retire-terminal-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    for id in ["completed", "cancelled", "timeout"] {
+        let mut item = Instance::new(id, "test", "1", "request", json!(null));
+        item.checkpoint = Some(request_checkpoint());
+        if id == "timeout" {
+            item.deadline_at_ms = Some(1);
+        }
+        store.create(&item).await.unwrap();
+        assert_eq!(store.requests(id).await.unwrap().len(), 1);
+        if id == "timeout" {
+            assert_eq!(store.expire_due(1).await.unwrap(), vec![id]);
+        } else {
+            store.finish(id, id, None, None).await.unwrap();
+        }
+        assert!(store.requests(id).await.unwrap().is_empty(), "{id}");
+    }
+    drop(store);
+    let store = LocalStore::open(&path).await.unwrap();
+    for id in ["completed", "cancelled", "timeout"] {
+        assert!(store.requests(id).await.unwrap().is_empty(), "{id}");
+    }
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn retry_waiting_keeps_outstanding_request_for_next_attempt() {
+    let path = std::env::temp_dir().join(format!("blkit-retry-request-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = LocalStore::open(&path).await.unwrap();
+    let mut item = Instance::new("job", "test", "1", "request", json!(null));
+    item.checkpoint = Some(request_checkpoint());
+    let request_id = item.checkpoint.as_ref().unwrap().requests()[0].id.clone();
+    store.create(&item).await.unwrap();
+    store
+        .record_retry("job", 1, 1, Some(1), "temporary task failure")
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get("job").await.unwrap().unwrap().status,
+        "retry-waiting"
+    );
+    assert_eq!(store.requests("job").await.unwrap()[0].id, request_id);
+    drop(store);
+    let store = LocalStore::open(&path).await.unwrap();
+    assert_eq!(store.requests("job").await.unwrap()[0].id, request_id);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
 
 #[tokio::test]
 async fn local_cancel_timeout_race_has_one_terminal_winner() {

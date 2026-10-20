@@ -88,6 +88,75 @@ impl Registry {
             .get(&(namespace.into(), version.into(), name.into()))
             .cloned()
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_request(
+        &self,
+        namespace: &str,
+        version: &str,
+        name: &str,
+        input: &Value,
+        state: &mut GraphCheckpoint,
+        request_id: &str,
+        response: Value,
+    ) -> Result<(), String> {
+        self.complete_request_with_ended(
+            namespace, version, name, input, state, request_id, response,
+        )
+        .map(|_| ())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn complete_request_with_ended(
+        &self,
+        namespace: &str,
+        version: &str,
+        name: &str,
+        input: &Value,
+        state: &mut GraphCheckpoint,
+        request_id: &str,
+        response: Value,
+    ) -> Result<Vec<Vec<u64>>, String> {
+        let graph = self
+            .get(namespace, version, name)
+            .ok_or("unknown process")?;
+        state.ensure_supported()?;
+        if !state
+            .requests()
+            .iter()
+            .any(|request| request.id == request_id)
+        {
+            return Err("request not outstanding".into());
+        }
+        if state.outcome.is_some() || state.terminal.is_some() {
+            return Err("graph already terminal".into());
+        }
+        let mut next = state.clone();
+        let mut current_graph = &graph;
+        let mut current_input = input;
+        let parts: Vec<_> = request_id.split('/').collect();
+        let mut current_state = &mut next;
+        for part in &parts[..parts.len() - 1] {
+            let id = part.parse::<u64>().map_err(|_| "invalid request ID")?;
+            let child = current_state
+                .children
+                .get_mut(&id)
+                .ok_or("unknown request scope")?;
+            current_graph = compiled_child(current_graph, &child.process, &self.named)?;
+            current_input = &child.input;
+            current_state = &mut child.checkpoint;
+        }
+        current_graph.complete_request(
+            current_input,
+            current_state,
+            parts[parts.len() - 1],
+            response,
+        )?;
+        let mut ended = Vec::new();
+        resolve_children(&graph, input, &mut next, &self.named, &[], &mut ended)?;
+        *state = next;
+        Ok(ended)
+    }
 }
 
 struct Running {
@@ -108,6 +177,8 @@ struct Claim {
 struct Context {
     state: Arc<Mutex<Running>>,
     #[cfg(feature = "local-persistence")]
+    response_wake: Arc<Notify>,
+    #[cfg(feature = "local-persistence")]
     store: Option<LocalStore>,
     #[cfg(feature = "remote-persistence")]
     claim: Option<Claim>,
@@ -115,6 +186,15 @@ struct Context {
 }
 
 impl Context {
+    async fn response_notified(&self) {
+        #[cfg(feature = "local-persistence")]
+        if self.store.is_some() {
+            self.response_wake.notified().await;
+            return;
+        }
+        std::future::pending::<()>().await;
+    }
+
     async fn signal_cancel(&self) {
         let mut state = self.state.lock().await;
         if state.status != "running" {
@@ -181,20 +261,44 @@ impl Context {
         Err("missing instance store".into())
     }
 
-    async fn wait_until(&self, state: &GraphCheckpoint, wake: i64) -> Result<(), String> {
+    async fn wait_until(&self, state: &GraphCheckpoint, wake: i64) -> Result<bool, String> {
         #[cfg(feature = "remote-persistence")]
         if let Some(claim) = &self.claim {
             return claim
                 .store
                 .release_wait_owned(&self.id, &claim.worker_id, claim.generation, state, wake)
-                .await?
-                .then_some(())
-                .ok_or("lost claim before wait checkpoint".into());
+                .await;
         }
         #[cfg(feature = "local-persistence")]
         if let Some(store) = &self.store {
             return store.set_wait(&self.id, state, wake).await;
         }
+        Err("missing instance store".into())
+    }
+
+    async fn release_input(&self, checkpoint: &GraphCheckpoint) -> Result<bool, String> {
+        #[cfg(feature = "remote-persistence")]
+        if let Some(claim) = &self.claim {
+            return claim
+                .store
+                .release_input_owned(&self.id, &claim.worker_id, claim.generation, checkpoint)
+                .await;
+        }
+        #[cfg(feature = "local-persistence")]
+        {
+            let mut state = self.state.lock().await;
+            let released = self
+                .store
+                .as_ref()
+                .ok_or("missing instance store")?
+                .set_input_wait(&self.id, checkpoint)
+                .await?;
+            if released {
+                state.status = "waiting-for-input";
+            }
+            Ok(released)
+        }
+        #[cfg(not(feature = "local-persistence"))]
         Err("missing instance store".into())
     }
 
@@ -356,7 +460,7 @@ impl Engine {
         }
         expire_local_deadlines(&self.store, &self.active).await?;
         self.store.recover_interrupted().await?;
-        for mut instance in self.store.incomplete().await? {
+        for instance in self.store.incomplete().await? {
             if self.active.lock().await.contains_key(&instance.id) {
                 continue;
             }
@@ -374,13 +478,21 @@ impl Engine {
                     .await?;
                 continue;
             };
-            if instance.status == "running" {
+            if instance.status == "running"
+                && !scheduler::input_pending(
+                    &graph,
+                    &instance.input,
+                    instance.checkpoint.as_ref().ok_or("missing checkpoint")?,
+                    &self.registry.named,
+                )?
+            {
                 let context = Context {
                     state: Arc::new(Mutex::new(Running {
                         status: "running",
                         next: 0,
                         in_flight: HashMap::new(),
                     })),
+                    response_wake: Arc::new(Notify::new()),
                     store: Some(self.store.clone()),
                     #[cfg(feature = "remote-persistence")]
                     claim: None,
@@ -389,11 +501,15 @@ impl Engine {
                 context
                     .fail_attempt(graph.retry.as_ref(), "interrupted by server restart")
                     .await?;
-                instance = self
-                    .store
-                    .get(&instance.id)
-                    .await?
-                    .ok_or("missing instance")?;
+            } else if instance.status == "running"
+                && self.store.answers(&instance.id).await?.is_empty()
+            {
+                self.store
+                    .set_input_wait(
+                        &instance.id,
+                        instance.checkpoint.as_ref().ok_or("missing checkpoint")?,
+                    )
+                    .await?;
             }
         }
         self.start_worker();
@@ -425,6 +541,13 @@ impl Engine {
                                     instance.next_eligible_at.is_some_and(|at| at <= now)
                                 }
                                 "waiting" => instance.wake_at_ms.is_some_and(|at| at <= now),
+                                "running" => match store.answers(&instance.id).await {
+                                    Ok(answers) => !answers.is_empty(),
+                                    Err(error) => {
+                                        eprintln!("local worker request poll failed: {error}");
+                                        false
+                                    }
+                                },
                                 _ => false,
                             };
                             if !eligible || active.lock().await.contains_key(&instance.id) {
@@ -472,6 +595,7 @@ impl Engine {
         let status = match instance.status.as_str() {
             "retry-waiting" => "retry-waiting",
             "waiting" => "waiting",
+            "running" => "running",
             _ => "pending",
         };
         let context = Context {
@@ -480,6 +604,7 @@ impl Engine {
                 next: 0,
                 in_flight: HashMap::new(),
             })),
+            response_wake: Arc::new(Notify::new()),
             store: Some(store.clone()),
             #[cfg(feature = "remote-persistence")]
             claim: None,
@@ -565,6 +690,64 @@ impl Engine {
         self.store.get(id).await
     }
 
+    pub async fn requests(
+        &self,
+        id: &str,
+    ) -> Result<Vec<crate::compiled_graph::InputRequest>, String> {
+        self.store.requests(id).await
+    }
+
+    pub async fn snapshot(
+        &self,
+        id: &str,
+    ) -> Result<Option<(Instance, Vec<crate::compiled_graph::InputRequest>)>, String> {
+        expire_local_deadlines(&self.store, &self.active).await?;
+        self.store.snapshot(id).await
+    }
+
+    pub fn subscribe(&self, id: &str) -> crate::store::Subscription {
+        self.store.subscribe(id)
+    }
+
+    pub async fn respond(&self, id: &str, request_id: &str, response: Value) -> Result<(), String> {
+        let instance = self.store.get(id).await?.ok_or("unknown instance")?;
+        if !matches!(
+            instance.status.as_str(),
+            "pending" | "running" | "waiting" | "waiting-for-input"
+        ) || instance
+            .deadline_at_ms
+            .is_some_and(|at| at <= crate::store::now_ms())
+        {
+            return Err("instance not active".into());
+        }
+        let request = self
+            .store
+            .requests(id)
+            .await?
+            .into_iter()
+            .find(|request| request.id == request_id);
+        let Some(request) = request else {
+            return Err(if self.store.request_exists(id, request_id).await? {
+                "request not outstanding"
+            } else {
+                "unknown request"
+            }
+            .into());
+        };
+        request
+            .schema
+            .validate_response(&response)
+            .map_err(|error| format!("invalid response: {error}"))?;
+        self.store
+            .accept_response(id, request_id, &response)
+            .await?;
+        if let Some(context) = self.active.lock().await.get(id) {
+            context.response_wake.notify_one();
+        }
+        self.wake.notify_one();
+        Ok(())
+    }
+
     pub async fn cancel(&self, id: &str) -> Result<(), String> {
         expire_local_deadlines(&self.store, &self.active).await?;
         let context = self.active.lock().await.get(id).cloned();
@@ -575,7 +758,7 @@ impl Engine {
                 Some(item)
                     if matches!(
                         item.status.as_str(),
-                        "pending" | "retry-waiting" | "waiting"
+                        "pending" | "retry-waiting" | "waiting" | "waiting-for-input"
                     ) =>
                 {
                     self.store.finish(id, "cancelled", None, None).await
@@ -589,7 +772,7 @@ impl Engine {
         }
         if !matches!(
             state.status,
-            "pending" | "running" | "retry-waiting" | "waiting"
+            "pending" | "running" | "retry-waiting" | "waiting" | "waiting-for-input"
         ) {
             return Err("instance already terminal".into());
         }
@@ -614,6 +797,7 @@ mod subprocess;
 
 #[cfg(feature = "remote-persistence")]
 pub(crate) use claimed::execute_claimed;
+#[cfg(feature = "remote-persistence")]
 use scheduler::execute_named;
 #[cfg(feature = "local-persistence")]
 use scheduler::run_named;
@@ -623,11 +807,57 @@ enum NamedOutcome {
     Completed(Value),
     Terminal(GraphTerminal),
     Waiting(i64),
+    InputPending,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_request_does_not_need_a_new_local_execution_attempt() {
+        use crate::compiled_graph::{GraphLink, GraphNode, RequestSchema};
+        let graph = GraphDefinition {
+            namespace: "test",
+            version: "1",
+            name: "request",
+            retry: None,
+            deadline: None,
+            decode_input: Box::new(Ok),
+            nodes: vec![
+                GraphNode {
+                    name: "start",
+                    kind: GraphNodeKind::Start,
+                },
+                GraphNode {
+                    name: "request",
+                    kind: GraphNodeKind::InputRequest {
+                        prompt: "Approve?",
+                        schema: RequestSchema {
+                            ports: Default::default(),
+                            records: Default::default(),
+                            enums: Default::default(),
+                        },
+                        decode_response: Box::new(Ok),
+                    },
+                },
+            ],
+            links: vec![GraphLink {
+                source: "start",
+                target: "request",
+                value: None,
+                condition: None,
+                fallback: false,
+                label: None,
+            }],
+        };
+        let registry = Registry::new(vec![graph]).unwrap();
+        let graph = registry.get("test", "1", "request").unwrap();
+        let checkpoint = graph.checkpoint(&Value::Null).unwrap();
+        assert!(
+            scheduler::input_pending(&graph, &Value::Null, &checkpoint, &registry.named).unwrap()
+        );
+    }
 
     #[cfg(feature = "local-persistence")]
     #[tokio::test]
@@ -654,6 +884,7 @@ mod tests {
                         next: 0,
                         in_flight: HashMap::new(),
                     })),
+                    response_wake: Arc::new(Notify::new()),
                     store: Some(store.clone()),
                     #[cfg(feature = "remote-persistence")]
                     claim: None,

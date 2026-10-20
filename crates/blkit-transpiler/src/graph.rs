@@ -17,6 +17,10 @@ pub enum PeerKind {
     End {
         inputs: Vec<(String, Type)>,
     },
+    InputRequest {
+        prompt: String,
+        outputs: Vec<(String, Type)>,
+    },
     Split {
         kind: &'static str,
     },
@@ -489,6 +493,7 @@ pub(crate) fn route_expression(
             {
                 match &peer.kind {
                     PeerKind::Start { outputs }
+                    | PeerKind::InputRequest { outputs, .. }
                     | PeerKind::Join { outputs, .. }
                     | PeerKind::Subprocess { outputs, .. } => Some(outputs.as_slice()),
                     PeerKind::End { .. }
@@ -692,6 +697,7 @@ pub(crate) fn duration(value: &str) -> Result<std::time::Duration, String> {
 #[derive(Debug)]
 enum GraphStatement {
     Port(String, String, Type),
+    Prompt(String),
     Reference(String, String),
     Duration(String, chumsky::span::SimpleSpan),
     Retry(
@@ -757,6 +763,9 @@ fn graph_statement<'a>(
     ))
     .then(typed_port(source))
     .map(|(direction, (name, ty))| GraphStatement::Port(direction.into(), name, ty));
+    let prompt = word(source, "prompt")
+        .ignore_then(quoted(source))
+        .map(GraphStatement::Prompt);
     let reference = choice((
         word(source, "process").to("process"),
         word(source, "split").to("split"),
@@ -854,6 +863,7 @@ fn graph_statement<'a>(
         });
     choice((
         port.boxed(),
+        prompt.boxed(),
         reference.boxed(),
         duration.boxed(),
         retry.boxed(),
@@ -948,6 +958,7 @@ pub(crate) fn parse_peer_tokens(
     let mut split = None;
     let mut process = None;
     let mut pause = None;
+    let mut prompt = None;
     for item in items {
         match item {
             GraphStatement::Port(direction, port, ty)
@@ -956,6 +967,7 @@ pub(crate) fn parse_peer_tokens(
                     "start_event"
                         | "end_event"
                         | "pause_until"
+                        | "input_request"
                         | "subprocess"
                         | "xor_join"
                         | "and_join"
@@ -967,7 +979,7 @@ pub(crate) fn parse_peer_tokens(
                 } else {
                     &mut inputs
                 };
-                if (kind == "start_event" && direction != "output")
+                if (matches!(kind, "start_event" | "input_request") && direction != "output")
                     || (matches!(kind, "end_event" | "pause_until") && direction != "input")
                     || target
                         .iter()
@@ -976,6 +988,16 @@ pub(crate) fn parse_peer_tokens(
                     return Err(format!("invalid or duplicate {kind} port: {port}").into());
                 }
                 target.push((port, ty));
+            }
+            GraphStatement::Prompt(value) if kind == "input_request" && prompt.is_none() => {
+                let value = &value[1..value.len() - 1];
+                if value.trim().is_empty() {
+                    return Err("input_request prompt must be nonempty".into());
+                }
+                prompt = Some(value.to_owned());
+            }
+            GraphStatement::Prompt(_) if kind == "input_request" => {
+                return Err("duplicate input_request prompt".into());
             }
             GraphStatement::Reference(key, value)
                 if key == "split" && kind.ends_with("_join") && split.is_none() =>
@@ -1004,6 +1026,11 @@ pub(crate) fn parse_peer_tokens(
     let kind = match kind {
         "start_event" => PeerKind::Start { outputs },
         "end_event" => PeerKind::End { inputs },
+        "input_request" if !outputs.is_empty() => PeerKind::InputRequest {
+            prompt: prompt.ok_or("input_request requires prompt")?,
+            outputs,
+        },
+        "input_request" => return Err("input_request requires an output port".into()),
         "xor_split" | "and_split" | "or_split"
             if inputs.is_empty()
                 && outputs.is_empty()

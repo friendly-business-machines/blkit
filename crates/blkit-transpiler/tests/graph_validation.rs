@@ -346,3 +346,120 @@ fn legacy_graph_forms_are_not_accepted() {
     }
     validate(&parse(SIMPLE).unwrap()).unwrap();
 }
+
+const REQUEST: &str = r#"namespace requests; version "1";
+Order = {total: Number};
+start_event start {}
+input_request review { prompt "Approve?"; output approved: Bool; output order: Order; }
+end_event done { input approved: Bool; }
+process run { flow start -> review; flow review -> done; bind review.approved -> done.approved; }"#;
+
+#[test]
+fn input_request_response_requires_a_reachable_typed_binding() {
+    validate(&parse(REQUEST).unwrap()).unwrap();
+    reject(
+        &REQUEST.replace("input approved: Bool;", "input approved: Number;"),
+        "type mismatch",
+    );
+    reject(
+        &REQUEST.replace(
+            "review.approved -> done.approved",
+            "review.unknown -> done.approved",
+        ),
+        "unknown binding output",
+    );
+    reject(
+        &REQUEST.replace("bind review.approved -> done.approved;", ""),
+        "missing binding",
+    );
+    reject(
+        &REQUEST.replace(
+            "bind review.approved -> done.approved;",
+            "bind review.approved -> done.approved; bind review.approved -> done.approved;",
+        ),
+        "ambiguous binding",
+    );
+    reject(
+        &REQUEST.replace("output order: Order;", "output order: Missing;"),
+        "unknown type",
+    );
+    reject(
+        &REQUEST.replace("output order: Order;", "output order: Option<Bool>;"),
+        "unsupported type",
+    );
+}
+
+#[test]
+fn input_request_outputs_reject_process_names_as_types() {
+    for invalid in ["run", "List<run>"] {
+        let source = REQUEST.replace("output order: Order;", &format!("output order: {invalid};"));
+        let error = validate(&parse(&source).unwrap()).unwrap_err();
+        assert!(error.contains("unknown type: run"), "{invalid}: {error}");
+    }
+}
+
+#[test]
+fn input_request_outputs_reject_unresolved_named_dictionary_fields() {
+    let nested = REQUEST
+        .replace(
+            "Order = {total: Number};",
+            "Order = {details: List<Detail>}; Detail = {bad: run};",
+        )
+        .replace("output order: Order;", "output order: List<Order>;");
+    let error = validate(&parse(&nested).unwrap()).unwrap_err();
+    assert!(error.contains("unknown type: run"), "{error}");
+}
+
+#[test]
+fn input_request_rejects_unparameterized_dictionary_entry_at_any_depth() {
+    for source in [
+        REQUEST.replace("output order: Order;", "output order: DictionaryEntry;"),
+        REQUEST.replace(
+            "Order = {total: Number};",
+            "Order = {total: DictionaryEntry};",
+        ),
+        REQUEST.replace(
+            "Order = {total: Number};",
+            "Order = {total: List<DictionaryEntry>};",
+        ),
+    ] {
+        reject(&source, "DictionaryEntry requires a type argument");
+    }
+    validate(
+        &parse(&REQUEST.replace(
+            "output order: Order;",
+            "output order: DictionaryEntry<Number>;",
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn input_request_outputs_allow_list_recursive_dictionary_shapes() {
+    let source = REQUEST.replace(
+        "Order = {total: Number};",
+        "Order = {children: List<Order>};",
+    );
+    validate(&parse(&source).unwrap()).unwrap();
+}
+
+#[test]
+fn input_request_response_is_not_available_before_request_flow() {
+    let early = REQUEST.replace("input_request review", "decision_task early { input flag: Bool; output result: Bool = value; literal_expression value { output result: Bool; expression flag; } } input_request review")
+        .replace("flow start -> review;", "flow start -> early; flow early -> review;")
+        .replace("bind review.approved -> done.approved;", "bind review.approved -> early.flag; bind review.approved -> done.approved;");
+    reject(&early, "unavailable");
+    let early_route = r#"namespace requests; version "1";
+start_event start {}
+xor_split gate {}
+input_request review { prompt "Approve?"; output approved: Bool; }
+end_event done {}
+process run {
+  flow start -> gate;
+  flow gate -> review when review.approved;
+  flow gate -> done else;
+  flow review -> done;
+}"#;
+    reject(early_route, "unavailable");
+}

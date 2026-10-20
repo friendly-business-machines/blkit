@@ -21,6 +21,8 @@ pub(crate) async fn execute_claimed(
             in_flight: HashMap::new(),
         })),
         #[cfg(feature = "local-persistence")]
+        response_wake: Arc::new(Notify::new()),
+        #[cfg(feature = "local-persistence")]
         store: None,
         claim: Some(Claim {
             store: store.clone(),
@@ -99,7 +101,7 @@ pub(crate) async fn execute_claimed(
     match outcome {
         Ok(NamedOutcome::Completed(value)) => context.complete(value).await,
         Ok(NamedOutcome::Terminal(terminal)) => context.named_terminal(&terminal).await,
-        Ok(NamedOutcome::Waiting(_)) => Ok(()),
+        Ok(NamedOutcome::Waiting(_) | NamedOutcome::InputPending) => Ok(()),
         Err(error) => {
             if store
                 .get(&context.id)

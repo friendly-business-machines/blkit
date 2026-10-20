@@ -330,3 +330,108 @@ process run { flow start -> done; bind start.value -> done.value; }"##;
         assert!(parse(&broken).is_err(), "accepted: {broken}");
     }
 }
+
+#[test]
+fn input_request_parses_literal_prompt_and_typed_response_ports() {
+    let source = r#"namespace requests; version "1";
+Order = {total: Number};
+start_event start {}
+input_request review { prompt "Approve this order?"; output approved: Bool; output order: Order; }
+end_event done { input approved: Bool; }
+process run { flow start -> review; flow review -> done; bind review.approved -> done.approved; }"#;
+    let program = parse(source).unwrap();
+    let review = program
+        .peer_nodes
+        .iter()
+        .find(|node| node.name == "review")
+        .unwrap();
+    let PeerKind::InputRequest { prompt, outputs } = &review.kind else {
+        panic!("expected input request");
+    };
+    assert_eq!(prompt, "Approve this order?");
+    assert_eq!(outputs.len(), 2);
+    assert_eq!(outputs[0].0, "approved");
+    assert_eq!(outputs[0].1.to_string(), "Bool");
+    assert_eq!(outputs[1].1.to_string(), "Order");
+    validate(&program).unwrap();
+    let escaped = parse(&source.replace("Approve this order?", r"Approve\tthis order?")).unwrap();
+    let PeerKind::InputRequest { prompt, .. } = &escaped
+        .peer_nodes
+        .iter()
+        .find(|node| node.name == "review")
+        .unwrap()
+        .kind
+    else {
+        panic!("expected input request");
+    };
+    assert_eq!(prompt, r"Approve\tthis order?");
+}
+
+#[test]
+fn input_request_declaration_errors_identify_the_named_request() {
+    let source = r#"namespace requests; version "1";
+input_request first { prompt "First?"; output yes: Bool; }
+input_request second { prompt "Second?"; output yes: Bool; }"#;
+    for (bad, reason) in [
+        ("prompt \"Second?\";", "requires an output"),
+        ("output yes: Bool;", "requires prompt"),
+        (
+            "prompt \"Second?\"; prompt \"Again?\"; output yes: Bool;",
+            "duplicate input_request prompt",
+        ),
+        (
+            "prompt \"Second?\"; output yes: Bool; output yes: Bool;",
+            "duplicate input_request port",
+        ),
+        ("prompt \"\"; output yes: Bool;", "prompt must be nonempty"),
+    ] {
+        let broken = source.replace("prompt \"Second?\"; output yes: Bool;", bad);
+        let error = transpile_diagnostic(&broken, "requests.bl").unwrap_err();
+        assert_eq!(error.source_name, "requests.bl");
+        assert!(error.message.contains("second"), "{bad}: {error}");
+        assert!(error.message.contains(reason), "{bad}: {error}");
+    }
+}
+
+#[test]
+fn input_request_rejects_malformed_statements_and_missing_parts() {
+    let source = "namespace requests; version \"1\"; input_request review { prompt \"Approve?\"; output approved: Bool; }";
+    for (bad, expected) in [
+        ("prompt \"\";", "prompt"),
+        ("prompt \"   \";", "prompt"),
+        ("output approved: Bool;", "prompt"),
+        ("prompt \"Approve?\";", "output"),
+        ("prompt \"Again?\";", "prompt"),
+        ("output approved: Bool; output approved: Bool;", "duplicate"),
+        (
+            "input value: Bool;",
+            "invalid or duplicate input_request port",
+        ),
+        ("duration \"1m\";", "invalid input_request statement"),
+    ] {
+        let altered = match bad {
+            "prompt \"\";" | "prompt \"   \";" => source.replace("prompt \"Approve?\";", bad),
+            "output approved: Bool;" => source.replace("prompt \"Approve?\"; ", ""),
+            "prompt \"Approve?\";" => source.replace("output approved: Bool; ", ""),
+            "prompt \"Again?\";" => source.replace(
+                "prompt \"Approve?\";",
+                "prompt \"Approve?\"; prompt \"Again?\";",
+            ),
+            "output approved: Bool; output approved: Bool;" => {
+                source.replace("output approved: Bool;", bad)
+            }
+            _ => source.replace("output approved: Bool;", bad),
+        };
+        let error = parse(&altered).unwrap_err();
+        assert!(error.contains(expected), "{bad}: {error}");
+    }
+    for malformed in [
+        "prompt name;",
+        "prompt 5;",
+        "output approved Bool;",
+        "output : Bool;",
+    ] {
+        let altered = source.replace("prompt \"Approve?\";", malformed);
+        assert!(parse(&altered).is_err(), "accepted {malformed}");
+    }
+}

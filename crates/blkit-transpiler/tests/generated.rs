@@ -2137,6 +2137,125 @@ fn compile_and_test_graph(source: &str, assertion: &str) {
 }
 
 #[test]
+fn generated_input_request_decodes_typed_ports_for_downstream_bindings() {
+    compile_and_test_graph(
+        r#"namespace requests; version "1";
+start_event start {}
+input_request review { prompt "Approve?"; output approved: Bool; output comment: String; }
+end_event done { input approved: Bool; }
+process route {
+  flow start -> review;
+  flow review -> done;
+  bind review.approved -> done.approved;
+}"#,
+        r#"let graph = named_graph_definitions().remove(0);
+           let input = serde_json::json!({});
+           let mut state = graph.checkpoint(&input).unwrap();
+           let id = match graph.ready_activations(&state).as_slice() { [(id, "review")] => *id, _ => panic!("request was not activated") };
+           let blkit::compiled_graph::GraphNodeKind::InputRequest { prompt, schema, decode_response } = &graph.nodes.iter().find(|node| node.name == "review").unwrap().kind else { panic!("missing request node") };
+           assert_eq!(*prompt, "Approve?");
+           assert_eq!(schema.ports.len(), 2);
+           for invalid in [serde_json::json!({"approved":"true", "comment":"ok"}), serde_json::json!({"approved":true}), serde_json::json!({"approved":true, "comment":"ok", "extra":0})] {
+               assert!(decode_response(invalid).is_err());
+           }
+           let response = decode_response(serde_json::json!({"approved":true, "comment":"ok"})).unwrap();
+           assert_eq!(response, serde_json::json!({"approved":true, "comment":"ok"}));
+           assert!(graph.run(&input, &mut state).is_err(), "request must not execute as a task");
+           graph.complete_request(&input, &mut state, &id.to_string(), response).unwrap();
+           assert_eq!(state.outcome, Some(serde_json::json!(true)));
+        "#,
+    );
+}
+
+#[test]
+fn generated_single_port_request_routes_and_binds_its_field() {
+    compile_and_test_graph(
+        r#"namespace requests; version "1";
+start_event start { output truth: Bool; }
+input_request review { prompt "Approve?"; output approved: Bool; }
+xor_split gate {}
+end_event yes { input result: Bool; }
+end_event no { input result: Bool; }
+process route {
+  flow start -> review;
+  flow review -> gate;
+  flow gate -> yes when review.approved;
+  flow gate -> no else;
+  bind review.approved -> yes.result;
+  bind start.truth -> no.result;
+}"#,
+        r#"let graph = named_graph_definitions().remove(0);
+           for (approved, truth) in [(true, false), (false, true)] {
+               let input = serde_json::json!({"truth":truth});
+               let mut state = graph.checkpoint(&input).unwrap();
+               let id = graph.ready_activations(&state)[0].0;
+               let blkit::compiled_graph::GraphNodeKind::InputRequest { decode_response, .. } = &graph.nodes.iter().find(|node| node.name == "review").unwrap().kind else { panic!("missing request") };
+               let response = decode_response(serde_json::json!({"approved":approved})).unwrap();
+               graph.complete_request(&input, &mut state, &id.to_string(), response).unwrap();
+               assert_eq!(state.outcome, Some(serde_json::json!(true)));
+           }"#,
+    );
+}
+
+#[test]
+fn generated_request_schema_resolves_nested_named_dictionaries_and_port_types() {
+    compile_and_test_graph(
+        r#"namespace requests; version "1";
+Order = {details: Detail, children: List<Order>};
+Detail = {amount: Number, due: DateTime, tags: Dictionary<List<Bool>>};
+enum Decision:
+  approved;
+  rejected;
+start_event start {}
+input_request review { prompt "Review?"; output order: Order; output decision: Decision; output entries: List<DictionaryEntry<Number>>; }
+end_event done { input order: Order; }
+process route { flow start -> review; flow review -> done; bind review.order -> done.order; }"#,
+        r#"let graph = named_graph_definitions().remove(0);
+           let blkit::compiled_graph::GraphNodeKind::InputRequest { schema, decode_response, .. } = &graph.nodes.iter().find(|node| node.name == "review").unwrap().kind else { panic!("missing request") };
+           let expected = serde_json::json!({
+               "ports": {"order": {"Named": "Order"}, "decision": {"Named": "Decision"}, "entries": {"List": {"DictionaryEntry": {"Named": "Number"}}}},
+               "records": {"Order": {"details": {"Named": "Detail"}, "children": {"List": {"Named": "Order"}}}, "Detail": {"amount": {"Named": "Number"}, "due": {"Named": "DateTime"}, "tags": {"Dictionary": {"List": {"Named": "Bool"}}}}},
+               "enums": {"Decision": ["approved", "rejected"]}
+           });
+           assert_eq!(serde_json::to_value(schema).unwrap(), expected);
+           assert_eq!(serde_json::from_value::<blkit::compiled_graph::RequestSchema>(expected).unwrap(), *schema);
+           let valid = serde_json::json!({"order":{"details":{"amount":"12.50","due":"2025-01-01T12:00:00Z","tags":{"ok":[true,false]}},"children":[]},"decision":"approved","entries":[{"key":"fee","value":"2"}]});
+           assert!(schema.validate_response(&valid).is_ok());
+           assert_eq!(decode_response(valid.clone()).unwrap(), valid);
+           let mut extra_entry = valid.clone();
+           extra_entry["entries"][0]["extra"] = serde_json::json!(0);
+           assert!(decode_response(extra_entry.clone()).is_err(), "generated DictionaryEntry must reject nested extras");
+           for invalid in [extra_entry, serde_json::json!({"order":{"details":{"amount":"not-a-number","due":"2025-01-01T12:00:00Z","tags":{}},"children":[]},"decision":"approved","entries":[]}), serde_json::json!({"order":{"details":{"amount":"12","due":"2025-01-01T12:00:00Z","tags":{}},"children":[]},"decision":"unknown","entries":[]}), serde_json::json!({"order":{"details":{"amount":"12","due":"2025-01-01T12:00:00Z","tags":{},"extra":1},"children":[]},"decision":"approved","entries":[]})] {
+               assert!(schema.validate_response(&invalid).is_err(), "API accepted {invalid}");
+               assert!(decode_response(invalid.clone()).is_err(), "worker accepted {invalid}");
+           }
+        "#,
+    );
+}
+
+#[test]
+fn generated_request_builtin_encodings_agree_with_portable_validation() {
+    compile_and_test_graph(
+        r#"namespace requests; version "1";
+start_event start {}
+input_request review { prompt "Review?"; output flag: Bool; output label: String; output amount: Number; output date: Date; output time: Time; output at: DateTime; output duration: DTDuration; output months: YMDuration; output arbitrary: Value; output free: Dictionary; output calendar: Calendar; output entry: CalendarEntry; }
+end_event done {}
+process route { flow start -> review; flow review -> done; }"#,
+        r#"let graph = named_graph_definitions().remove(0);
+           let blkit::compiled_graph::GraphNodeKind::InputRequest { schema, decode_response, .. } = &graph.nodes.iter().find(|node| node.name == "review").unwrap().kind else { panic!("missing request") };
+           let valid = serde_json::json!({"flag":true,"label":"ok","amount":"1.25","date":"2025-01-01","time":"12:00:00Z","at":"2025-01-01T12:00:00Z","duration":"PT1H","months":"P1Y","arbitrary":{"any":[null,2]},"free":{"any":[null,2]},"calendar":{"validFrom":"2025-01-01","validTo":"2025-12-31","entries":[]},"entry":{"value":"2025-01-01","name":"holiday"}});
+           assert!(schema.validate_response(&valid).is_ok());
+           assert!(decode_response(valid.clone()).is_ok());
+           for (port, bad) in [("flag", serde_json::json!(1)), ("amount", serde_json::json!("not-decimal")), ("date", serde_json::json!("2025-99-01")), ("time", serde_json::json!("25:00:00")), ("at", serde_json::json!("2025-01-01")), ("duration", serde_json::json!("P???")), ("months", serde_json::json!("P???")), ("free", serde_json::json!([1])), ("calendar", serde_json::json!({"validFrom":"2025-01-01"})), ("entry", serde_json::json!({"value":"2025-01-01","extra":0}))] {
+               let mut invalid = valid.clone(); invalid[port] = bad;
+               assert!(schema.validate_response(&invalid).is_err(), "API accepted {port}");
+               assert!(decode_response(invalid).is_err(), "worker accepted {port}");
+           }
+        "#,
+    );
+}
+
+#[test]
 fn generated_decision_task_receives_bound_start_port_and_returns_end_port() {
     compile_and_test_graph(
         include_str!("../../../examples/minimal.bl"),

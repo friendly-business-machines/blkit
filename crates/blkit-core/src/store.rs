@@ -1,10 +1,16 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(feature = "local-persistence")]
-use std::{path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, Mutex},
+};
+#[cfg(feature = "local-persistence")]
+use tokio::sync::broadcast;
 
 use serde_json::Value;
 
-use crate::compiled_graph::GraphCheckpoint;
+use crate::compiled_graph::{GraphCheckpoint, InputRequest};
 
 fn now() -> i64 {
     SystemTime::now()
@@ -91,7 +97,37 @@ impl Instance {
 
 #[cfg(feature = "local-persistence")]
 #[derive(Clone)]
-pub struct Store(Arc<turso::Database>);
+pub struct Store(
+    Arc<turso::Database>,
+    Arc<Mutex<HashMap<String, broadcast::Sender<()>>>>,
+);
+
+#[cfg(feature = "local-persistence")]
+pub struct Subscription {
+    id: String,
+    subscribers: Arc<Mutex<HashMap<String, broadcast::Sender<()>>>>,
+    receiver: broadcast::Receiver<()>,
+}
+
+#[cfg(feature = "local-persistence")]
+impl Subscription {
+    pub async fn recv(&mut self) -> Result<(), broadcast::error::RecvError> {
+        self.receiver.recv().await
+    }
+}
+
+#[cfg(feature = "local-persistence")]
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        let mut subscribers = self.subscribers.lock().unwrap();
+        if subscribers
+            .get(&self.id)
+            .is_some_and(|sender| sender.receiver_count() == 1)
+        {
+            subscribers.remove(&self.id);
+        }
+    }
+}
 
 #[cfg(feature = "local-persistence")]
 impl Store {
@@ -140,7 +176,28 @@ impl Store {
         )
         .await
         .map_err(|e| e.to_string())?;
-        Ok(Self(Arc::new(db)))
+        conn.execute("CREATE TABLE IF NOT EXISTS input_requests (instance_id TEXT NOT NULL, request_id TEXT NOT NULL, prompt TEXT NOT NULL, schema TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'outstanding', response TEXT, PRIMARY KEY (instance_id, request_id), FOREIGN KEY (instance_id) REFERENCES instances(id))", ())
+            .await.map_err(|e| e.to_string())?;
+        Ok(Self(Arc::new(db), Arc::new(Mutex::new(HashMap::new()))))
+    }
+
+    pub fn subscribe(&self, id: &str) -> Subscription {
+        let mut subscribers = self.1.lock().unwrap();
+        let receiver = subscribers
+            .entry(id.to_owned())
+            .or_insert_with(|| broadcast::channel(1).0)
+            .subscribe();
+        Subscription {
+            id: id.to_owned(),
+            subscribers: self.1.clone(),
+            receiver,
+        }
+    }
+
+    fn changed(&self, id: &str) {
+        if let Some(sender) = self.1.lock().unwrap().get(id) {
+            let _ = sender.send(());
+        }
     }
 
     pub async fn create(&self, instance: &Instance) -> Result<(), String> {
@@ -180,7 +237,152 @@ impl Store {
         )
         .await
         .map_err(|e| e.to_string())?;
+        if let Some(checkpoint) = &instance.checkpoint {
+            Self::sync_requests(&tx, &instance.id, checkpoint).await?;
+        }
         tx.commit().await.map_err(|e| e.to_string())
+    }
+
+    async fn sync_requests(
+        tx: &turso::transaction::Transaction<'_>,
+        id: &str,
+        checkpoint: &GraphCheckpoint,
+    ) -> Result<bool, String> {
+        let mut changed = false;
+        let requests = checkpoint.requests();
+        for request in &requests {
+            changed |= tx.execute("INSERT OR IGNORE INTO input_requests (instance_id, request_id, prompt, schema) VALUES (?1, ?2, ?3, ?4)", turso::params![id, request.id.as_str(), request.prompt.as_str(), serde_json::to_string(&request.schema).map_err(|e| e.to_string())?])
+                .await.map_err(|e| e.to_string())? != 0;
+        }
+        let active: std::collections::HashSet<_> =
+            requests.iter().map(|request| request.id.as_str()).collect();
+        let mut rows = tx.query("SELECT request_id FROM input_requests WHERE instance_id=?1 AND status='outstanding'", [id])
+            .await.map_err(|e| e.to_string())?;
+        let mut obsolete = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
+            let request_id: String = row.get(0).map_err(|e| e.to_string())?;
+            if !active.contains(request_id.as_str()) {
+                obsolete.push(request_id);
+            }
+        }
+        drop(rows);
+        changed |= !obsolete.is_empty();
+        for request_id in obsolete {
+            tx.execute("UPDATE input_requests SET status='retired' WHERE instance_id=?1 AND request_id=?2 AND status='outstanding'", turso::params![id, request_id])
+                .await.map_err(|e| e.to_string())?;
+        }
+        Ok(changed)
+    }
+
+    pub async fn requests(&self, id: &str) -> Result<Vec<InputRequest>, String> {
+        let conn = self.0.connect().map_err(|e| e.to_string())?;
+        Self::requests_from(&conn, id).await
+    }
+
+    async fn requests_from(
+        conn: &turso::Connection,
+        id: &str,
+    ) -> Result<Vec<InputRequest>, String> {
+        let mut rows = conn.query("SELECT request_id, prompt, schema FROM input_requests WHERE instance_id=?1 AND status='outstanding' ORDER BY request_id", [id])
+            .await.map_err(|e| e.to_string())?;
+        let mut requests = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
+            let schema: String = row.get(2).map_err(|e| e.to_string())?;
+            requests.push(InputRequest {
+                id: row.get(0).map_err(|e| e.to_string())?,
+                prompt: row.get(1).map_err(|e| e.to_string())?,
+                schema: serde_json::from_str(&schema).map_err(|e| e.to_string())?,
+            });
+        }
+        Ok(requests)
+    }
+
+    pub async fn snapshot(
+        &self,
+        id: &str,
+    ) -> Result<Option<(Instance, Vec<InputRequest>)>, String> {
+        let mut conn = self.0.connect().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().await.map_err(|e| e.to_string())?;
+        let instance = Self::get_from(&tx, id).await?;
+        let requests = if instance.is_some() {
+            Self::requests_from(&tx, id).await?
+        } else {
+            Vec::new()
+        };
+        tx.commit().await.map_err(|e| e.to_string())?;
+        Ok(instance.map(|instance| (instance, requests)))
+    }
+
+    pub(crate) async fn request_exists(&self, id: &str, request_id: &str) -> Result<bool, String> {
+        let conn = self.0.connect().map_err(|e| e.to_string())?;
+        let mut rows = conn
+            .query(
+                "SELECT 1 FROM input_requests WHERE instance_id=?1 AND request_id=?2",
+                turso::params![id, request_id],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(rows.next().await.map_err(|e| e.to_string())?.is_some())
+    }
+
+    pub(crate) async fn answers(&self, id: &str) -> Result<Vec<(String, Value)>, String> {
+        let conn = self.0.connect().map_err(|e| e.to_string())?;
+        let mut rows = conn.query("SELECT request_id, response FROM input_requests WHERE instance_id=?1 AND status='answered' ORDER BY request_id", [id])
+            .await.map_err(|e| e.to_string())?;
+        let mut answers = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
+            let response: String = row.get(1).map_err(|e| e.to_string())?;
+            answers.push((
+                row.get(0).map_err(|e| e.to_string())?,
+                serde_json::from_str(&response).map_err(|e| e.to_string())?,
+            ));
+        }
+        Ok(answers)
+    }
+
+    pub(crate) async fn accept_response(
+        &self,
+        id: &str,
+        request_id: &str,
+        response: &Value,
+    ) -> Result<(), String> {
+        let mut conn = self.0.connect().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().await.map_err(|e| e.to_string())?;
+        let changed = tx.execute("UPDATE input_requests SET status='answered', response=?3 WHERE instance_id=?1 AND request_id=?2 AND status='outstanding' AND EXISTS (SELECT 1 FROM instances WHERE id=?1 AND status IN ('pending','running','waiting','waiting-for-input') AND (deadline_at_ms IS NULL OR deadline_at_ms>?4))", turso::params![id, request_id, response.to_string(), now_ms()]).await.map_err(|e| e.to_string())?;
+        if changed != 1 {
+            return Err("request not outstanding or instance not active".into());
+        }
+        tx.execute("UPDATE instances SET status=CASE WHEN attempt>0 THEN 'running' ELSE 'pending' END, wake_at_ms=NULL, updated_at=?2 WHERE id=?1 AND status IN ('waiting-for-input','waiting')", turso::params![id, now()]).await.map_err(|e| e.to_string())?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+        self.changed(id);
+        Ok(())
+    }
+
+    pub(crate) async fn consume_response(
+        &self,
+        id: &str,
+        request_id: &str,
+        checkpoint: &GraphCheckpoint,
+    ) -> Result<(), String> {
+        let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
+        let mut conn = self.0.connect().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().await.map_err(|e| e.to_string())?;
+        let changed = tx.execute("UPDATE input_requests SET status='consumed' WHERE instance_id=?1 AND request_id=?2 AND status='answered' AND EXISTS (SELECT 1 FROM instances WHERE id=?1 AND status IN ('pending','running') AND (deadline_at_ms IS NULL OR deadline_at_ms>?3))", turso::params![id, request_id, now_ms()]).await.map_err(|e| e.to_string())?;
+        if changed != 1 {
+            return Err("request no longer answerable".into());
+        }
+        tx.execute(
+            "UPDATE instances SET checkpoint=?2, updated_at=?3 WHERE id=?1",
+            turso::params![id, value, now()],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let changed = Self::sync_requests(&tx, id, checkpoint).await?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+        if changed {
+            self.changed(id);
+        }
+        Ok(())
     }
 
     pub async fn commit_checkpoint(
@@ -195,7 +397,39 @@ impl Store {
         if affected != 1 {
             return Err(format!("instance not active: {id}"));
         }
-        tx.commit().await.map_err(|e| e.to_string())
+        let changed = Self::sync_requests(&tx, id, checkpoint).await?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+        if changed {
+            self.changed(id);
+        }
+        Ok(())
+    }
+
+    pub async fn set_input_wait(
+        &self,
+        id: &str,
+        checkpoint: &GraphCheckpoint,
+    ) -> Result<bool, String> {
+        let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
+        let mut conn = self.0.connect().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().await.map_err(|e| e.to_string())?;
+        let changed_requests = Self::sync_requests(&tx, id, checkpoint).await?;
+        for request in checkpoint.requests() {
+            let mut rows = tx.query("SELECT 1 FROM input_requests WHERE instance_id=?1 AND request_id=?2 AND status='answered'", turso::params![id, request.id]).await.map_err(|e| e.to_string())?;
+            if rows.next().await.map_err(|e| e.to_string())?.is_some() {
+                return Ok(false);
+            }
+        }
+        let claimed_at = now_ms();
+        let changed = tx.execute("UPDATE instances SET status='waiting-for-input', checkpoint=?2, wake_at_ms=NULL, updated_at=?3, first_claim_at_ms=COALESCE(first_claim_at_ms, ?4), deadline_at_ms=CASE WHEN deadline_origin='first_claimed' THEN COALESCE(deadline_at_ms, COALESCE(first_claim_at_ms, ?4)+deadline_duration_ms) ELSE deadline_at_ms END WHERE id=?1 AND status IN ('pending','running') AND (deadline_at_ms IS NULL OR deadline_at_ms>?4)", turso::params![id, value, now(), claimed_at]).await.map_err(|e| e.to_string())?;
+        if changed != 1 {
+            return Err(format!("instance not active: {id}"));
+        }
+        tx.commit().await.map_err(|e| e.to_string())?;
+        if changed_requests {
+            self.changed(id);
+        }
+        Ok(true)
     }
 
     pub async fn set_wait(
@@ -203,14 +437,26 @@ impl Store {
         id: &str,
         checkpoint: &GraphCheckpoint,
         wake_at_ms: i64,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
-        let conn = self.0.connect().map_err(|e| e.to_string())?;
-        let changed = conn.execute("UPDATE instances SET status='waiting', checkpoint=?2, wake_at_ms=?3, updated_at=?4 WHERE id=?1 AND status IN ('pending','running') AND (deadline_at_ms IS NULL OR deadline_at_ms>?5)", turso::params![id, value, wake_at_ms, now(), now_ms()]).await.map_err(|e| e.to_string())?;
+        let mut conn = self.0.connect().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().await.map_err(|e| e.to_string())?;
+        let changed_requests = Self::sync_requests(&tx, id, checkpoint).await?;
+        for request in checkpoint.requests() {
+            let mut rows = tx.query("SELECT 1 FROM input_requests WHERE instance_id=?1 AND request_id=?2 AND status='answered'", turso::params![id, request.id]).await.map_err(|e| e.to_string())?;
+            if rows.next().await.map_err(|e| e.to_string())?.is_some() {
+                return Ok(false);
+            }
+        }
+        let changed = tx.execute("UPDATE instances SET status='waiting', checkpoint=?2, wake_at_ms=?3, updated_at=?4 WHERE id=?1 AND status IN ('pending','running') AND (deadline_at_ms IS NULL OR deadline_at_ms>?5)", turso::params![id, value, wake_at_ms, now(), now_ms()]).await.map_err(|e| e.to_string())?;
         if changed != 1 {
             return Err(format!("instance not active: {id}"));
         }
-        Ok(())
+        tx.commit().await.map_err(|e| e.to_string())?;
+        if changed_requests {
+            self.changed(id);
+        }
+        Ok(true)
     }
 
     pub async fn resume_wait(
@@ -219,10 +465,16 @@ impl Store {
         checkpoint: &GraphCheckpoint,
     ) -> Result<Option<&'static str>, String> {
         let value = serde_json::to_string(checkpoint).map_err(|e| e.to_string())?;
-        let conn = self.0.connect().map_err(|e| e.to_string())?;
-        let changed = conn.execute("UPDATE instances SET status=CASE WHEN attempt>0 THEN 'running' ELSE 'pending' END, checkpoint=?2, wake_at_ms=NULL, updated_at=?3 WHERE id=?1 AND status='waiting' AND wake_at_ms<=?4 AND (deadline_at_ms IS NULL OR deadline_at_ms>?4)", turso::params![id, value, now(), now_ms()]).await.map_err(|e| e.to_string())?;
+        let mut conn = self.0.connect().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().await.map_err(|e| e.to_string())?;
+        let changed = tx.execute("UPDATE instances SET status=CASE WHEN attempt>0 THEN 'running' ELSE 'pending' END, checkpoint=?2, wake_at_ms=NULL, updated_at=?3 WHERE id=?1 AND status='waiting' AND wake_at_ms<=?4 AND (deadline_at_ms IS NULL OR deadline_at_ms>?4)", turso::params![id, value, now(), now_ms()]).await.map_err(|e| e.to_string())?;
         if changed != 1 {
             return Ok(None);
+        }
+        let changed_requests = Self::sync_requests(&tx, id, checkpoint).await?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+        if changed_requests {
+            self.changed(id);
         }
         let state = self.get(id).await?.ok_or("missing resumed wait")?;
         Ok(Some(if state.status == "pending" {
@@ -261,7 +513,15 @@ impl Store {
         if affected != 1 {
             return Err(format!("instance not active: {id}"));
         }
-        tx.commit().await.map_err(|e| e.to_string())
+        if status == "failed" {
+            tx.execute("UPDATE input_requests SET status='retired' WHERE instance_id=?1 AND status='outstanding'", [id])
+                .await.map_err(|e| e.to_string())?;
+        }
+        tx.commit().await.map_err(|e| e.to_string())?;
+        if status == "failed" {
+            self.changed(id);
+        }
+        Ok(())
     }
 
     pub async fn finish_named(
@@ -299,7 +559,7 @@ impl Store {
         let tx = conn.transaction().await.map_err(|e| e.to_string())?;
         let affected = tx
             .execute(
-                "UPDATE instances SET status=?1, result=?2, error=?3, terminal_name=?4, updated_at=?5 WHERE id=?6 AND status IN ('pending','running','retry-waiting','waiting','cancelling') AND (deadline_at_ms IS NULL OR deadline_at_ms>?7 OR status='cancelling')",
+                "UPDATE instances SET status=?1, result=?2, error=?3, terminal_name=?4, updated_at=?5 WHERE id=?6 AND status IN ('pending','running','retry-waiting','waiting','waiting-for-input','cancelling') AND (deadline_at_ms IS NULL OR deadline_at_ms>?7 OR status='cancelling')",
                 turso::params![status, result.map(|v| v.to_string()), error, terminal_name, now(), id, now_ms()],
             )
             .await
@@ -307,7 +567,21 @@ impl Store {
         if affected != 1 {
             return Err(format!("instance not active: {id}"));
         }
-        tx.commit().await.map_err(|e| e.to_string())
+        if matches!(
+            status,
+            "completed" | "cancelled" | "business-error" | "terminated" | "failed"
+        ) {
+            tx.execute("UPDATE input_requests SET status='retired' WHERE instance_id=?1 AND status='outstanding'", [id])
+                .await.map_err(|e| e.to_string())?;
+        }
+        tx.commit().await.map_err(|e| e.to_string())?;
+        if matches!(
+            status,
+            "completed" | "cancelled" | "business-error" | "terminated" | "failed"
+        ) {
+            self.changed(id);
+        }
+        Ok(())
     }
 
     pub async fn recover_interrupted(&self) -> Result<(), String> {
@@ -317,12 +591,14 @@ impl Store {
             .await.map_err(|e| e.to_string())?;
         tx.execute("UPDATE instances SET status='cancelled', updated_at=?1 WHERE checkpoint IS NOT NULL AND status='cancelling'", [now()])
             .await.map_err(|e| e.to_string())?;
+        tx.execute("UPDATE input_requests SET status='retired' WHERE status='outstanding' AND instance_id IN (SELECT id FROM instances WHERE status IN ('failed','cancelled','completed','terminated','business-error'))", ())
+            .await.map_err(|e| e.to_string())?;
         tx.commit().await.map_err(|e| e.to_string())
     }
 
     pub async fn incomplete(&self) -> Result<Vec<Instance>, String> {
         let conn = self.0.connect().map_err(|e| e.to_string())?;
-        let mut rows = conn.query("SELECT id FROM instances WHERE checkpoint IS NOT NULL AND status IN ('pending', 'running', 'retry-waiting', 'waiting')", ()).await.map_err(|e| e.to_string())?;
+        let mut rows = conn.query("SELECT id FROM instances WHERE checkpoint IS NOT NULL AND status IN ('pending', 'running', 'retry-waiting', 'waiting', 'waiting-for-input')", ()).await.map_err(|e| e.to_string())?;
         let mut ids = Vec::new();
         while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
             ids.push(row.get::<String>(0).map_err(|e| e.to_string())?);
@@ -339,7 +615,7 @@ impl Store {
 
     pub async fn expire_due(&self, at_ms: i64) -> Result<Vec<String>, String> {
         let conn = self.0.connect().map_err(|e| e.to_string())?;
-        let mut rows = conn.query("SELECT id FROM instances WHERE deadline_at_ms IS NOT NULL AND deadline_at_ms<=?1 AND status IN ('pending','running','retry-waiting','waiting')", [at_ms]).await.map_err(|e| e.to_string())?;
+        let mut rows = conn.query("SELECT id FROM instances WHERE deadline_at_ms IS NOT NULL AND deadline_at_ms<=?1 AND status IN ('pending','running','retry-waiting','waiting','waiting-for-input')", [at_ms]).await.map_err(|e| e.to_string())?;
         let mut ids = Vec::new();
         while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
             ids.push(row.get::<String>(0).map_err(|e| e.to_string())?);
@@ -347,8 +623,16 @@ impl Store {
         drop(rows);
         let mut expired = Vec::new();
         for id in ids {
-            let changed = conn.execute("UPDATE instances SET status='business-error', terminal_name='timeout', wake_at_ms=NULL, updated_at=?3 WHERE id=?1 AND deadline_at_ms<=?2 AND status IN ('pending','running','retry-waiting','waiting')", turso::params![id.as_str(), at_ms, now()]).await.map_err(|e| e.to_string())?;
+            let mut conn = self.0.connect().map_err(|e| e.to_string())?;
+            let tx = conn.transaction().await.map_err(|e| e.to_string())?;
+            let changed = tx.execute("UPDATE instances SET status='business-error', terminal_name='timeout', wake_at_ms=NULL, updated_at=?3 WHERE id=?1 AND deadline_at_ms<=?2 AND status IN ('pending','running','retry-waiting','waiting','waiting-for-input')", turso::params![id.as_str(), at_ms, now()]).await.map_err(|e| e.to_string())?;
             if changed == 1 {
+                tx.execute("UPDATE input_requests SET status='retired' WHERE instance_id=?1 AND status='outstanding'", [id.as_str()])
+                    .await.map_err(|e| e.to_string())?;
+            }
+            tx.commit().await.map_err(|e| e.to_string())?;
+            if changed == 1 {
+                self.changed(&id);
                 expired.push(id);
             }
         }
@@ -380,6 +664,10 @@ impl Store {
 
     pub async fn get(&self, id: &str) -> Result<Option<Instance>, String> {
         let conn = self.0.connect().map_err(|e| e.to_string())?;
+        Self::get_from(&conn, id).await
+    }
+
+    async fn get_from(conn: &turso::Connection, id: &str) -> Result<Option<Instance>, String> {
         let mut rows = conn.query("SELECT id, namespace, version, process, input, status, result, error, created_at, updated_at, checkpoint, attempt, first_failure_at, next_eligible_at, terminal_name, queued_at_ms, first_claim_at_ms, wake_at_ms, deadline_origin, deadline_duration_ms, deadline_at_ms FROM instances WHERE id=?1", [id])
             .await.map_err(|e| e.to_string())?;
         let Some(row) = rows.next().await.map_err(|e| e.to_string())? else {

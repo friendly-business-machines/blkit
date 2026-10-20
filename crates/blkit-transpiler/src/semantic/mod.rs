@@ -22,6 +22,31 @@ use graph::{check_named_graph, check_source_graph};
 pub(crate) use types::*;
 pub(crate) use types::{builtin, infer_with};
 
+fn resolve_request_type<'a>(
+    ty: &Type,
+    program: &'a Program,
+    names: &HashSet<&str>,
+    checked: &mut HashSet<&'a str>,
+) -> Result<(), String> {
+    resolve(ty, names)?;
+    match ty {
+        Type::Named(name) if name == "DictionaryEntry" => {
+            return Err("DictionaryEntry requires a type argument in input_request output".into());
+        }
+        Type::Named(name) => {
+            if let Some(record) = program.records.iter().find(|record| record.name == *name)
+                && checked.insert(&record.name)
+            {
+                for (_, field_type) in &record.fields {
+                    resolve_request_type(field_type, program, names, checked)?;
+                }
+            }
+        }
+        Type::Generic(_, inner) => resolve_request_type(inner, program, names, checked)?,
+    }
+    Ok(())
+}
+
 pub fn validate(program: &Program) -> Result<(), String> {
     let mut names: HashSet<&str> = [
         "Bool",
@@ -41,6 +66,7 @@ pub fn validate(program: &Program) -> Result<(), String> {
     ]
     .into_iter()
     .collect();
+    let mut request_types = names.clone();
     let has_graph = program
         .processes
         .iter()
@@ -65,6 +91,8 @@ pub fn validate(program: &Program) -> Result<(), String> {
             return Err(format!("duplicate declaration: {name}"));
         }
     }
+    request_types.extend(program.records.iter().map(|record| record.name.as_str()));
+    request_types.extend(program.enums.iter().map(|item| item.name.as_str()));
     for (task, definition) in &program.external_tasks {
         resolve(&definition.input, &names).map_err(|e| format!("{task}: {e}"))?;
         resolve(&definition.output, &names).map_err(|e| format!("{task}: {e}"))?;
@@ -115,7 +143,9 @@ pub fn validate(program: &Program) -> Result<(), String> {
             _ => {}
         }
         let (inputs, outputs) = match &peer.kind {
-            PeerKind::Start { outputs } => (&[][..], outputs.as_slice()),
+            PeerKind::Start { outputs } | PeerKind::InputRequest { outputs, .. } => {
+                (&[][..], outputs.as_slice())
+            }
             PeerKind::End { inputs } => (inputs.as_slice(), &[][..]),
             PeerKind::Split { .. }
             | PeerKind::Terminal { .. }
@@ -128,9 +158,14 @@ pub fn validate(program: &Program) -> Result<(), String> {
                 inputs, outputs, ..
             } => (inputs.as_slice(), outputs.as_slice()),
         };
+        let mut checked_records = HashSet::new();
         for (name, ty) in inputs.iter().chain(outputs) {
             check_name(name)?;
-            resolve(ty, &names)?;
+            if matches!(peer.kind, PeerKind::InputRequest { .. }) {
+                resolve_request_type(ty, program, &request_types, &mut checked_records)?;
+            } else {
+                resolve(ty, &names)?;
+            }
         }
     }
     for model in &program.decisions {

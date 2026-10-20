@@ -1,5 +1,60 @@
 use super::*;
 
+fn request_type(ty: &Type) -> String {
+    match ty {
+        Type::Named(name) => {
+            format!("blkit_core::compiled_graph::RequestType::Named({name:?}.into())")
+        }
+        Type::Generic(kind, inner) => format!(
+            "blkit_core::compiled_graph::RequestType::{kind}(Box::new({}))",
+            request_type(inner)
+        ),
+    }
+}
+
+fn request_schema(outputs: &[(String, Type)], program: &Program) -> String {
+    let ports = outputs
+        .iter()
+        .map(|(name, ty)| format!("({name:?}.into(), {})", request_type(ty)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut records = std::collections::BTreeMap::new();
+    let mut enums = std::collections::BTreeMap::new();
+    let mut pending: Vec<&Type> = outputs.iter().map(|(_, ty)| ty).collect();
+    while let Some(ty) = pending.pop() {
+        match ty {
+            Type::Generic(_, inner) => pending.push(inner),
+            Type::Named(name) => {
+                if let Some(record) = program.records.iter().find(|item| item.name == *name) {
+                    if !records.contains_key(name) {
+                        let fields = record
+                            .fields
+                            .iter()
+                            .map(|(field, ty)| format!("({field:?}.into(), {})", request_type(ty)))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        records.insert(name, format!("({name:?}.into(), [{fields}].into())"));
+                        pending.extend(record.fields.iter().map(|(_, ty)| ty));
+                    }
+                } else if let Some(item) = program.enums.iter().find(|item| item.name == *name) {
+                    let variants = item
+                        .variants
+                        .iter()
+                        .map(|variant| format!("{variant:?}.into()"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    enums.insert(name, format!("({name:?}.into(), vec![{variants}])"));
+                }
+            }
+        }
+    }
+    format!(
+        "blkit_core::compiled_graph::RequestSchema {{ ports: [{ports}].into(), records: [{}].into(), enums: [{}].into() }}",
+        records.values().cloned().collect::<Vec<_>>().join(", "),
+        enums.values().cloned().collect::<Vec<_>>().join(", ")
+    )
+}
+
 fn bound_value(
     graph: &crate::graph::SourceGraph,
     target: &str,
@@ -45,7 +100,7 @@ fn bound_value_from(
             };
             let field = if origin == "values"
                 && (program.decisions.iter().any(|task| task.name == binding.source && task.outputs.len() > 1)
-                    || program.peer_nodes.iter().any(|peer| peer.name == binding.source && matches!(&peer.kind, PeerKind::Subprocess { outputs, .. } if outputs.len() > 1)))
+                    || program.peer_nodes.iter().any(|peer| peer.name == binding.source && (matches!(peer.kind, PeerKind::InputRequest { .. }) || matches!(&peer.kind, PeerKind::Subprocess { outputs, .. } if outputs.len() > 1))))
             {
                 format!(".and_then(|value| value.get({:?}))", binding.output)
             } else {
@@ -82,7 +137,7 @@ fn route_closure(expression: &Expr, program: &Program) -> Result<String, String>
         };
         let key = if origin == "source" { port } else { name };
         let field = if origin == "values" && (program.decisions.iter().any(|task| task.name == *name && task.outputs.len() > 1)
-            || program.peer_nodes.iter().any(|peer| peer.name == *name && matches!(&peer.kind, PeerKind::Subprocess { outputs, .. } if outputs.len() > 1))) { format!(".and_then(|value| value.get({port:?}))") } else { String::new() };
+            || program.peer_nodes.iter().any(|peer| peer.name == *name && (matches!(peer.kind, PeerKind::InputRequest { .. }) || matches!(&peer.kind, PeerKind::Subprocess { outputs, .. } if outputs.len() > 1)))) { format!(".and_then(|value| value.get({port:?}))") } else { String::new() };
         vars.push_str(&format!("let __bl_route_{index}: {} = serde_json::from_value({origin}.get({key:?}){field}.cloned().ok_or(\"route source unavailable\")?).map_err(|e| e.to_string())?;", rust_type(ty)));
     }
     let env: HashMap<_, _> = refs
@@ -161,6 +216,17 @@ fn emit_source_graph(
                     }
                     format!(
                         "blkit_core::compiled_graph::GraphNodeKind::Subprocess {{ process: {child:?}, input: std::sync::Arc::new(|source, values| {{ {fields} Ok(serde_json::Value::Object(object)) }}) }}"
+                    )
+                }
+                PeerKind::InputRequest { prompt, outputs } => {
+                    let mut decoding = String::new();
+                    for (port, ty) in outputs {
+                        decoding.push_str(&format!("let typed: {} = serde_json::from_value(object.get({port:?}).ok_or(\"missing response port: {port}\")?.clone()).map_err(|e| e.to_string())?; result.insert({port:?}.into(), serde_json::to_value(typed).map_err(|e| e.to_string())?);", rust_type(ty)));
+                    }
+                    let schema = request_schema(outputs, program);
+                    format!(
+                        "blkit_core::compiled_graph::GraphNodeKind::InputRequest {{ prompt: {prompt:?}, schema: {schema}, decode_response: Box::new(|value| {{ let object = value.as_object().ok_or(\"request response must be an object\")?; if object.len() != {} {{ return Err(\"invalid response ports\".into()); }} let mut result = serde_json::Map::new(); {decoding} Ok(serde_json::Value::Object(result)) }}) }}",
+                        outputs.len()
                     )
                 }
                 PeerKind::Start { .. } => return Err("multiple start events".into()),
