@@ -27,6 +27,9 @@ use testcontainers_modules::{
 use tokio_postgres::NoTls;
 use tower::ServiceExt;
 
+#[path = "../../test-support/seaweed.rs"]
+mod seaweed;
+
 #[tokio::test]
 async fn postgres_pool_allows_independent_operation_while_another_session_is_blocked() {
     let node = Postgres::default()
@@ -2739,6 +2742,7 @@ mod compiled {
 
 #[tokio::test]
 async fn worker_binary_advertises_only_linked_identities_and_runs_without_source_files() {
+    let (_cloud, endpoint) = seaweed::start().await;
     let node = Postgres::default()
         .with_tag("17.6-alpine")
         .start()
@@ -2751,8 +2755,10 @@ async fn worker_binary_advertises_only_linked_identities_and_runs_without_source
         node.get_host_port_ipv4(5432).await.unwrap()
     );
     let store = PostgresStore::connect(&url).await.unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_blkit-worker"));
+    seaweed::configure(&mut command, &endpoint);
     let mut child = WorkerChild(
-        Command::new(env!("CARGO_BIN_EXE_blkit-worker"))
+        command
             .args([&url, "2", "1000"])
             .current_dir(std::env::temp_dir())
             .stdout(Stdio::null())
@@ -4255,6 +4261,7 @@ async fn cancellation_racing_checkpoint_or_lease_expiry_never_retries_or_overwri
 
 #[tokio::test]
 async fn distributed_api_binary_serves_graph_free_process_control_on_loopback() {
+    let (_cloud, endpoint) = seaweed::start().await;
     let node = Postgres::default()
         .with_tag("17.6-alpine")
         .start()
@@ -4274,8 +4281,10 @@ async fn distributed_api_binary_serves_graph_free_process_control_on_loopback() 
     let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = socket.local_addr().unwrap().port();
     drop(socket);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_blkit-api"));
+    seaweed::configure(&mut command, &endpoint);
     let _api = WorkerChild(
-        Command::new(env!("CARGO_BIN_EXE_blkit-api"))
+        command
             .args([&url, &format!("127.0.0.1:{port}")])
             .current_dir(std::env::temp_dir())
             .stdout(Stdio::null())

@@ -1,5 +1,12 @@
 use std::time::Duration;
 
+#[cfg(all(
+    any(feature = "attachment-local", feature = "attachment-cloud"),
+    any(feature = "local-persistence", feature = "remote-persistence")
+))]
+pub mod attachment_reader;
+#[cfg(any(feature = "attachment-local", feature = "attachment-cloud"))]
+pub mod attachment_store;
 pub mod compiled_graph;
 pub mod dictionary;
 #[cfg(feature = "remote-persistence")]
@@ -8,6 +15,11 @@ pub mod evaluation;
 pub mod list_ops;
 #[cfg(feature = "logging")]
 pub mod logging;
+#[cfg(all(
+    feature = "api-server",
+    any(feature = "attachment-local", feature = "attachment-cloud")
+))]
+pub mod multipart;
 pub mod number_ops;
 #[cfg(feature = "remote-persistence")]
 pub mod postgres_store;
@@ -22,6 +34,7 @@ pub mod runtime;
 ))]
 pub mod server;
 mod store;
+pub use store::Attachment;
 pub mod string_ops;
 pub mod temporal;
 

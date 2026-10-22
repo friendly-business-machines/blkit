@@ -165,12 +165,72 @@ impl DistributedControl {
         Ok(id)
     }
 
+    pub async fn can_start(
+        &self,
+        namespace: &str,
+        version: &str,
+        name: &str,
+    ) -> Result<bool, String> {
+        self.store.can_admit(namespace, version, name).await
+    }
+
+    pub async fn start_with_attachments(
+        &self,
+        id: String,
+        namespace: &str,
+        version: &str,
+        name: &str,
+        input: Value,
+        attachments: &[crate::store::Attachment],
+    ) -> Result<String, String> {
+        self.store
+            .admit_with_attachments(&id, namespace, version, name, &input, attachments)
+            .await?;
+        Ok(id)
+    }
+
+    pub async fn start_attachments(
+        &self,
+        id: &str,
+    ) -> Result<Vec<crate::store::Attachment>, String> {
+        self.store.attachments(id, None).await
+    }
+
     pub async fn status(&self, id: &str) -> Result<Option<DistributedInstance>, String> {
         self.store.get(id).await
     }
 
     pub async fn respond(&self, id: &str, request_id: &str, response: Value) -> Result<(), String> {
         self.store.accept_response(id, request_id, &response).await
+    }
+
+    pub async fn validate_reply(
+        &self,
+        id: &str,
+        request_id: &str,
+        response: &Value,
+    ) -> Result<(), String> {
+        self.store.validate_reply(id, request_id, response).await
+    }
+
+    pub async fn respond_with_attachments(
+        &self,
+        id: &str,
+        request_id: &str,
+        response: Value,
+        attachments: &[crate::store::Attachment],
+    ) -> Result<(), String> {
+        self.store
+            .accept_response_with_attachments(id, request_id, &response, attachments)
+            .await
+    }
+
+    pub async fn reply_attachments(
+        &self,
+        id: &str,
+        request_id: &str,
+    ) -> Result<Vec<crate::store::Attachment>, String> {
+        self.store.attachments(id, Some(request_id)).await
     }
 
     pub async fn cancel(&self, id: &str) -> Result<(), String> {

@@ -112,7 +112,7 @@ Choose one build target in `[project]` (all binaries use the `name` field; `orde
 
 All targets except `api-only` require at least one `.bl` file; every discovered file is validated. The split target retains the generated root library for Rust consumers but its API package neither links that library nor enables `worker`. Use `blkit transpile` before the build; it never invokes Cargo itself. Generated manifests pin `blkit-core` to the CLI version; when generated from a checkout, the manifest also contains a local path to `crates/blkit-core`. On another machine provide that source or a compatible published release. Direct-source consumers should replace `blkit` imports with `blkit_core` and pin the same version.
 
-For remote deployment, start `orders-worker "$POSTGRES_URL" 32 5000` (maximum concurrent tasks and lease milliseconds are optional), then start `orders-api "$POSTGRES_URL" 127.0.0.1:3000` or the combined `orders-api-worker "$POSTGRES_URL" 32 5000 127.0.0.1:3000`. `POSTGRES_URL` is a writable PostgreSQL URL such as `postgres://postgres:postgres@127.0.0.1:5432/orders`. Without `CARGO_TARGET_DIR`, binaries built with the generated manifest live under `.blkit/target/debug/`; otherwise use `$CARGO_TARGET_DIR/debug/`. Worker registration advertises exact namespace/version/process capabilities and immutable retry/deadline policies. The graph-free API accepts syntactically valid JSON only when a matching worker is live, recently heartbeating, and not draining (otherwise HTTP 503); malformed JSON receives HTTP 400. Typed input validation and initial checkpointing occur on worker claim, **after** HTTP 202, and an invalid typed input is persisted as a terminal failure. A request admitted just before a worker exits stays pending until a capable worker returns, cancellation, or deadline expiration. Status and cancellation use `/instances/ID` and `/instances/ID/cancel`. Bind to loopback unless a trusted proxy supplies authentication and TLS.
+For remote deployment, configure the shared cloud attachment store on every process first (see **Attachment storage and backups** below). Then start `orders-worker "$POSTGRES_URL" 32 5000` (maximum concurrent tasks and lease milliseconds are optional), then start `orders-api "$POSTGRES_URL" 127.0.0.1:3000` or the combined `orders-api-worker "$POSTGRES_URL" 32 5000 127.0.0.1:3000`. `POSTGRES_URL` is a writable PostgreSQL URL such as `postgres://postgres:postgres@127.0.0.1:5432/orders`. Without `CARGO_TARGET_DIR`, binaries built with the generated manifest live under `.blkit/target/debug/`; otherwise use `$CARGO_TARGET_DIR/debug/`. Worker registration advertises exact namespace/version/process capabilities and immutable retry/deadline policies. The graph-free API accepts syntactically valid JSON only when a matching worker is live, recently heartbeating, and not draining (otherwise HTTP 503); malformed JSON receives HTTP 400. Typed input validation and initial checkpointing occur on worker claim, **after** HTTP 202, and an invalid typed input is persisted as a terminal failure. A request admitted just before a worker exits stays pending until a capable worker returns, cancellation, or deadline expiration. Status and cancellation use `/instances/ID` and `/instances/ID/cancel`. Bind to loopback unless a trusted proxy supplies authentication and TLS.
 
 Remote PostgreSQL binaries accept `BLKIT_API_DB_POOL_MAX` (API requests **and** reconciler) and `BLKIT_WORKER_DB_POOL_MAX` (worker persistence), defaulting to **4 connections per active role**. Set each active role's limit to a positive integer; a zero or malformed value fails startup with the setting name, while a setting for an inactive role is ignored. The combined remote `orders-api-worker` uses **separate** API and worker pools; `orders-api` reads only the API setting and `orders-worker` only the worker setting, including split builds. Local-persistence binaries ignore both settings. These limits are independent of the worker's `MAX_TASKS` positional argument, which remains unchanged.
 
@@ -129,6 +129,18 @@ curl -sS -X POST -H 'content-type: application/json' -d '{"input":{"amount":"5"}
 # Use the returned id:
 curl -sS http://127.0.0.1:3000/instances/ID
 ```
+
+To start with files:
+
+```sh
+curl -sS -X POST \
+  -F 'input={"input":{"amount":"5"}};type=application/json' \
+  -F 'files=@./invoice.pdf;type=application/pdf' \
+  -F 'files=@./receipt.png;type=image/png' \
+  http://127.0.0.1:3000/processes/orders/1/route/instances
+```
+
+The multipart contract requires exactly one `input` part for starts or one `response` part for replies, plus one or more `files` parts with nonempty filenames and content; other parts, duplicate/missing JSON, or invalid JSON return 400. The limits on either endpoint are **10 files**, **25 MiB per file**, and **100 MiB combined file bytes** (exceeding one returns 413). JSON parts have a 2 MiB limit; the whole multipart envelope has a 103 MiB limit. Uploads stream to private storage; JSON-only calls keep their original request format.
 
 The completed result is `{"amount":"5"}`. For the newer local `api-worker` target the same command uses `orders-api-worker` instead. Server arguments are optional: local database file (default `blkit.db`), concurrent task limit (default `32`), and bind address (default `127.0.0.1:3000`). If `CARGO_TARGET_DIR` is set, the binary is at `$CARGO_TARGET_DIR/debug/orders-server`. The local server validates process identity and typed input before accepting a request. It persists accepted work in the local database, and an in-process worker polls that durable queue to run eligible work under the configured task limit. Pending work remains claimable after restart; interrupted running work follows the checkpoint/retry recovery rules. There is no separate local worker executable or PostgreSQL queue. The HTTP router has no authentication; keep the default loopback bind unless a trusted proxy supplies access control and TLS.
 
@@ -342,6 +354,15 @@ curl -sS http://127.0.0.1:3000/instances/INSTANCE_ID
 # Once completed, relevant fields: {"status":"completed","requests":[],"result":true}
 ```
 
+Multipart clients can submit the JSON response and files in one request:
+
+```sh
+curl -sS -X POST \
+  -F 'response={"approved":true};type=application/json' \
+  -F 'files=@./approval.pdf;type=application/pdf' \
+  http://127.0.0.1:3000/instances/INSTANCE_ID/requests/REQUEST_ID/response
+```
+
 The GET examples show **selected fields**; actual responses also contain instance identity, input, attempt and timing metadata. `requests` contains only outstanding requests, with stable IDs, prompts and portable `.bl` response types. An answered request disappears from `requests`; its raw accepted JSON is **not** returned by GET. `result` is the process's ordinary completed output (this example binds `approved` into the end event's `Bool` input), not a reply-history endpoint. POST must send a JSON **object with exactly the declared fields** and compatible values. Malformed JSON, missing/extra fields or wrong types return HTTP 400 (`{"error":"..."}`) without accepting the reply; unknown instance/request returns 404, and a duplicate or late answer after cancellation/terminal state returns 409. Only a successful committed answer returns 202; a remote reply can remain durable until a matching worker resumes the instance.
 
 For local SSE, open a stream while the instance is active, or reconnect after any disconnection:
@@ -436,6 +457,18 @@ CREATE TABLE IF NOT EXISTS input_requests (
     response TEXT, PRIMARY KEY (instance_id, request_id)
 );
 CREATE INDEX IF NOT EXISTS input_requests_answered ON input_requests(instance_id) WHERE status='answered';
+CREATE TABLE IF NOT EXISTS instance_attachments (
+    instance_id TEXT NOT NULL REFERENCES instances(id),
+    request_id TEXT,
+    ordinal BIGINT NOT NULL CHECK (ordinal >= 0),
+    object_key TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    media_type TEXT,
+    byte_length BIGINT NOT NULL CHECK (byte_length >= 0),
+    FOREIGN KEY (instance_id, request_id) REFERENCES input_requests(instance_id, request_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS instance_attachments_start ON instance_attachments(instance_id, ordinal) WHERE request_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS instance_attachments_reply ON instance_attachments(instance_id, request_id, ordinal) WHERE request_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS instance_interests (
     instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
     channel TEXT NOT NULL CHECK (octet_length(channel) BETWEEN 1 AND 63),
@@ -479,7 +512,31 @@ END $$;
 SQL
 ```
 
-These statements match `PostgresStore::connect_with_pool_size`; startup also runs schema setup, but that is not a substitute for sequencing a mixed-version rollout. Deploy updated API replicas first, then request-capable workers and compiled processes with a **new** namespace/version/process identity (normally a new `.bl` `version`), so old workers cannot claim request-bearing instances. Retain old workers for old-version backlog. Existing version-2 checkpoints without request fields remain readable; unsupported older checkpoint formats are rejected, not silently replayed. To roll back, stop admitting new request-using process versions, and keep capable workers and APIs running until outstanding requests drain or are cancelled. Do not drop the request schema or switch active request checkpoints to binaries that cannot read them.
+These statements match `PostgresStore::connect_with_pool_size`; startup also runs schema setup, but that is not a substitute for sequencing a mixed-version rollout. Local Turso creates the same `instance_attachments` table and partial unique indexes when opening its database; reopen is safe. Each row contains an instance ID, optional request ID, nonnegative ordinal, opaque object key, display filename, optional media type and nonnegative byte length — **never file bytes**. A reply's `(instance_id, request_id)` must match an existing input request; start files use a NULL request ID. Ordinals are unique within each start or reply scope, including NULL start scope, and listing uses ordinal order. Consuming a response leaves its attachment rows available. Store attachment objects privately under the application-owned prefix `blkit/attachments/`, not under client filenames.
+
+Trusted Rust worker code can construct `blkit_core::attachment_reader::AttachmentReader::local(LocalStore, AttachmentStore)` or `::remote(PostgresStore, AttachmentStore)` with the same durable database and object location as the API. Call `list(instance_id, None)` for ordered start-file metadata or `list(instance_id, Some(request_id))` for reply metadata (including consumed replies); `read(instance_id, request_id, ordinal)` returns `Ok(None)` only when that attachment record is absent, and an error if the referenced object cannot be read. Metadata returned by `list` excludes object keys and file bytes. Remote workers must use the same configured cloud store (`AttachmentStore::remote_from_env(AttachmentRole::Worker)`); the local filesystem store is for single-node deployments only. This Rust interface does not add an HTTP download route or a `.bl` file type.
+
+### Attachment storage and backups
+
+Provision storage **before** starting a generated binary, including for JSON-only clients. A local `server` or `api-worker` (`persistence = "local"`) creates a writable `attachments/` directory beside its selected database file (default `blkit.db`); for `./orders.db` this is `./attachments/`. To use another persistent filesystem, set `BLKIT_ATTACHMENT_ROOT=/persistent/orders-attachments` on that local process. Keep both the local database file and attachment root on persistent storage; startup fails if the root cannot be written. No cloud settings are needed locally.
+
+Every remote `api-only`, `worker-only` (or `worker`), `api-worker` with `persistence = "remote"`, and both processes of `api-worker-split` **require** `BLKIT_ATTACHMENT_BACKEND=s3|gcs|azure` plus `BLKIT_ATTACHMENT_BUCKET` for S3/GCS or `BLKIT_ATTACHMENT_CONTAINER` for Azure. Remote filesystem (`fs`) and a JSON-only fallback are not supported. Use the **same private bucket/container and `blkit/attachments/` prefix** on all API and worker replicas. The API role (including combined) needs write/read/delete permissions for upload and startup probes; for S3, also grant `s3:AbortMultipartUpload` on attachment objects so failed multipart uploads can be aborted (the startup probe does not check this permission). Worker roles (including combined) need list/read. Missing/invalid settings or failed store probes prevent startup, even if no files are sent. Provision the location and credentials for the role before launching it; do not place secrets in `blkit.toml` or client requests.
+
+For example, supply one of these provider-native credential sets alongside the mandatory blkit variables on **each** remote process (use secret management rather than committing credentials):
+
+| Backend | Required blkit location | Example provider environment for `object_store` |
+| --- | --- | --- |
+| S3 | `BLKIT_ATTACHMENT_BACKEND=s3`, `BLKIT_ATTACHMENT_BUCKET=orders-private` | `AWS_DEFAULT_REGION=us-east-1`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN` for temporary keys); alternatively an IAM role via the AWS credential chain. `AWS_ENDPOINT_URL_S3` can select a custom S3 endpoint. |
+| GCS | `BLKIT_ATTACHMENT_BACKEND=gcs`, `BLKIT_ATTACHMENT_BUCKET=orders-private` | `GOOGLE_APPLICATION_CREDENTIALS=/secure/orders-gcs.json` for application default credentials (or `GOOGLE_SERVICE_ACCOUNT=/secure/orders-gcs.json`); workload identity also works where available. |
+| Azure Blob | `BLKIT_ATTACHMENT_BACKEND=azure`, `BLKIT_ATTACHMENT_CONTAINER=orders-private` | `AZURE_STORAGE_ACCOUNT_NAME=ordersaccount`, `AZURE_STORAGE_ACCOUNT_KEY` (or `AZURE_STORAGE_CLIENT_ID`, `AZURE_STORAGE_CLIENT_SECRET`, `AZURE_STORAGE_TENANT_ID` for a service principal). |
+
+The generated binaries use provider `object_store` builders' `from_env()` with the blkit bucket/container name; there is no `BLKIT_ATTACHMENT_CREDENTIALS` setting. For S3, for example, after exporting `BLKIT_ATTACHMENT_BACKEND=s3`, `BLKIT_ATTACHMENT_BUCKET=orders-private`, `AWS_DEFAULT_REGION=us-east-1` and valid AWS credentials in **both** shells, run `orders-api "$POSTGRES_URL" 127.0.0.1:3000` and `orders-worker "$POSTGRES_URL" 32 5000`; for split builds, build the API from `.blkit/api/Cargo.toml` and the worker from `.blkit/Cargo.toml` (both binaries are under `.blkit/target/debug/` by default). A combined remote `orders-api-worker "$POSTGRES_URL" 32 5000 127.0.0.1:3000` needs both permission sets. The same configuration applies to the dev-harness `blkit-api` and `blkit-worker` binaries.
+
+Back up the database **and** the corresponding private objects together with compatible retention windows, including terminal and cancelled instances; retain a consistent database/object snapshot for restore. Restoring metadata without its objects breaks worker reads; restoring objects without rows creates orphans. Restrict access (no public URLs) and track storage capacity. There is no automatic orphan deletion or per-instance retention policy: lifecycle rules must **not** delete referenced files merely because an instance is terminal or cancelled.
+
+An API crash during upload or between upload and database commit can leave unreachable objects. For a manual orphan audit, first stop new admissions/uploads on **all** API replicas (or otherwise establish a quiescent, consistent database/object snapshot); wait for in-flight requests and uncertain commits to settle. Export all `instance_attachments.object_key` values from the authoritative database, list keys under `blkit/attachments/` in the corresponding private object location, and identify only keys absent from the export. Allow a conservative grace period for uploads, listing delays and backup/restore lag; immediately before deleting a candidate, check the authoritative database again for any association and skip deletion on a failed/inconclusive check. Never delete any key referenced by a committed row; retain uncertain candidates for another audit. Object-store lifecycle expiry independent of database retention is unsafe. JSON-only clients do not need to change their request format.
+
+Deploy updated API replicas first, then request-capable workers and compiled processes with a **new** namespace/version/process identity (normally a new `.bl` `version`), so old workers cannot claim request-bearing instances. Retain old workers for old-version backlog. Existing version-2 checkpoints without request fields remain readable; unsupported older checkpoint formats are rejected, not silently replayed. To roll back, stop admitting new request-using process versions, and keep capable workers and APIs running until outstanding requests drain or are cancelled. Do not drop the request schema or switch active request checkpoints to binaries that cannot read them.
 
 Worker checkpoints and request records commit together in PostgreSQL: each outstanding request has a stable instance/request ID, prompt, and portable response schema with resolved named dictionary shapes. The persisted port types let a graph-free API validate responses through the HTTP reply route; the store validates accepted replies, and the worker checks again before consumption. An accepted reply is conditional and durable even while no matching worker is available. An idle instance reports `waiting-for-input` and releases its claim without a timer or retry; a matching worker resumes it after an answer, subject to the original deadline. GET, reply POST and SSE are available in both modes.
 
@@ -504,7 +561,10 @@ For a local demonstration **outside the devcontainer**, start PostgreSQL with a 
 docker run --rm --name blkit-postgres -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
   -p 127.0.0.1:55432:5432 postgres:17.6-alpine
 
-# Other terminals, with DATABASE_URL set to the matching private PostgreSQL address:
+# Other terminals, with DATABASE_URL set to the matching private PostgreSQL address
+# and the same cloud backend, bucket/container and provider credentials in each shell:
+export BLKIT_ATTACHMENT_BACKEND=s3 BLKIT_ATTACHMENT_BUCKET=orders-private AWS_DEFAULT_REGION=us-east-1
+# Supply valid AWS credentials or an IAM role with the API/worker permissions above.
 cargo build -p blkit-dev-harness --bin blkit-api --bin blkit-worker
 cargo run -p blkit-dev-harness --bin blkit-api -- "$DATABASE_URL"                  # default 127.0.0.1:3000
 cargo run -p blkit-dev-harness --bin blkit-worker -- "$DATABASE_URL" 32 5000      # start two terminals

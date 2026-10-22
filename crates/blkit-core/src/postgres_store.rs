@@ -7,7 +7,10 @@ use crate::{
     DeadlinePolicy, RetryPolicy,
     compiled_graph::{GraphCheckpoint, InputRequest},
     evaluation::next_retry_at,
-    store::Instance,
+    store::{
+        Attachment, Instance, UNCERTAIN_REPLY_COMMIT, UNCERTAIN_START_COMMIT,
+        validate_attachment_scope,
+    },
 };
 
 #[derive(Clone)]
@@ -43,6 +46,15 @@ struct StoredRetryPolicy {
     retry_delay_ms: u64,
 }
 
+// Only a server-side transaction rejection proves COMMIT did not persist; transport and shutdown errors do not.
+fn definitively_rejected_commit(error: &tokio_postgres::Error) -> bool {
+    error.code().is_some_and(|code| {
+        code.code().starts_with("23")
+            || matches!(code.code(), "40001" | "40P01")
+            || code == &tokio_postgres::error::SqlState::RAISE_EXCEPTION
+    })
+}
+
 fn read_retry_policy(text: Option<String>) -> Result<Option<RetryPolicy>, String> {
     text.map(|text| {
         let stored: StoredRetryPolicy = serde_json::from_str(&text).map_err(|e| e.to_string())?;
@@ -55,6 +67,21 @@ fn read_retry_policy(text: Option<String>) -> Result<Option<RetryPolicy>, String
     })
     .transpose()
 }
+
+const ADMIT_SQL: &str = "WITH stamp AS (SELECT (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AS now_ms)
+             INSERT INTO instances (id, namespace, version, process, input, status, created_at, updated_at, retry_policy,
+                                    queued_at_ms, deadline_origin, deadline_duration_ms, deadline_at_ms)
+             SELECT $1, p.namespace, p.version, p.process, $5, 'pending', stamp.now_ms/1000, stamp.now_ms/1000,
+                    p.retry_policy, stamp.now_ms, p.deadline_origin, p.deadline_duration_ms,
+                    CASE WHEN p.deadline_origin='queued' THEN stamp.now_ms+p.deadline_duration_ms END
+             FROM process_policies p CROSS JOIN stamp
+             WHERE p.namespace=$2 AND p.version=$3 AND p.process=$4
+               AND EXISTS (
+                   SELECT 1 FROM worker_capabilities c JOIN workers w ON w.id=c.worker_id
+                   WHERE c.namespace=p.namespace AND c.version=p.version AND c.process=p.process
+                     AND NOT w.draining AND w.heartbeat_at >= stamp.now_ms - 30000
+               )
+             RETURNING id";
 
 impl PostgresStore {
     pub async fn connect(url: &str) -> Result<Self, String> {
@@ -107,6 +134,18 @@ impl PostgresStore {
                 response TEXT, PRIMARY KEY (instance_id, request_id)
             );
             CREATE INDEX IF NOT EXISTS input_requests_answered ON input_requests(instance_id) WHERE status='answered';
+            CREATE TABLE IF NOT EXISTS instance_attachments (
+                instance_id TEXT NOT NULL REFERENCES instances(id),
+                request_id TEXT,
+                ordinal BIGINT NOT NULL CHECK (ordinal >= 0),
+                object_key TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                media_type TEXT,
+                byte_length BIGINT NOT NULL CHECK (byte_length >= 0),
+                FOREIGN KEY (instance_id, request_id) REFERENCES input_requests(instance_id, request_id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS instance_attachments_start ON instance_attachments(instance_id, ordinal) WHERE request_id IS NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS instance_attachments_reply ON instance_attachments(instance_id, request_id, ordinal) WHERE request_id IS NOT NULL;
             CREATE TABLE IF NOT EXISTS instance_interests (
                 instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
                 channel TEXT NOT NULL CHECK (octet_length(channel) BETWEEN 1 AND 63),
@@ -162,6 +201,37 @@ impl PostgresStore {
             );",
         ).await.map_err(|e| e.to_string())?;
         Ok(Self(pool, config))
+    }
+
+    pub async fn insert_attachment(&self, attachment: &Attachment) -> Result<(), String> {
+        self.0.get().await.map_err(|e| e.to_string())?.execute(
+            "INSERT INTO instance_attachments (instance_id, request_id, ordinal, object_key, filename, media_type, byte_length) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            &[&attachment.instance_id, &attachment.request_id, &attachment.ordinal, &attachment.object_key, &attachment.filename, &attachment.media_type, &attachment.byte_length],
+        ).await.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn attachments(
+        &self,
+        id: &str,
+        request_id: Option<&str>,
+    ) -> Result<Vec<Attachment>, String> {
+        let rows = self.0.get().await.map_err(|e| e.to_string())?.query(
+            "SELECT instance_id, request_id, ordinal, object_key, filename, media_type, byte_length FROM instance_attachments WHERE instance_id=$1 AND request_id IS NOT DISTINCT FROM $2 ORDER BY ordinal",
+            &[&id, &request_id],
+        ).await.map_err(|e| e.to_string())?;
+        Ok(rows
+            .into_iter()
+            .map(|row| Attachment {
+                instance_id: row.get(0),
+                request_id: row.get(1),
+                ordinal: row.get(2),
+                object_key: row.get(3),
+                filename: row.get(4),
+                media_type: row.get(5),
+                byte_length: row.get(6),
+            })
+            .collect())
     }
 
     pub(crate) fn listener_config(&self) -> Config {
@@ -304,24 +374,71 @@ impl PostgresStore {
         input: &serde_json::Value,
     ) -> Result<(), String> {
         let json = input.to_string();
-        let inserted = self.0.get().await.map_err(|e| format!("postgres checkout: {e}"))?.query_opt(
-            "WITH stamp AS (SELECT (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AS now_ms)
-             INSERT INTO instances (id, namespace, version, process, input, status, created_at, updated_at, retry_policy,
-                                    queued_at_ms, deadline_origin, deadline_duration_ms, deadline_at_ms)
-             SELECT $1, p.namespace, p.version, p.process, $5, 'pending', stamp.now_ms/1000, stamp.now_ms/1000,
-                    p.retry_policy, stamp.now_ms, p.deadline_origin, p.deadline_duration_ms,
-                    CASE WHEN p.deadline_origin='queued' THEN stamp.now_ms+p.deadline_duration_ms END
-             FROM process_policies p CROSS JOIN stamp
-             WHERE p.namespace=$2 AND p.version=$3 AND p.process=$4
-               AND EXISTS (
-                   SELECT 1 FROM worker_capabilities c JOIN workers w ON w.id=c.worker_id
-                   WHERE c.namespace=p.namespace AND c.version=p.version AND c.process=p.process
-                     AND NOT w.draining AND w.heartbeat_at >= stamp.now_ms - 30000
-               )
-             RETURNING id",
-            &[&id, &namespace, &version, &process, &json],
-        ).await.map_err(|e| e.to_string())?;
+        let inserted = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?
+            .query_opt(ADMIT_SQL, &[&id, &namespace, &version, &process, &json])
+            .await
+            .map_err(|e| e.to_string())?;
         inserted.map(|_| ()).ok_or("worker unavailable".into())
+    }
+
+    pub async fn admit_with_attachments(
+        &self,
+        id: &str,
+        namespace: &str,
+        version: &str,
+        process: &str,
+        input: &serde_json::Value,
+        attachments: &[Attachment],
+    ) -> Result<(), String> {
+        validate_attachment_scope(attachments, id, None)?;
+        let mut client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
+        let tx = client.transaction().await.map_err(|e| e.to_string())?;
+        let inserted = tx
+            .query_opt(
+                ADMIT_SQL,
+                &[&id, &namespace, &version, &process, &input.to_string()],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        if inserted.is_none() {
+            return Err("worker unavailable".into());
+        }
+        for attachment in attachments {
+            tx.execute("INSERT INTO instance_attachments (instance_id, request_id, ordinal, object_key, filename, media_type, byte_length) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                &[&attachment.instance_id, &attachment.request_id, &attachment.ordinal, &attachment.object_key, &attachment.filename, &attachment.media_type, &attachment.byte_length])
+                .await.map_err(|e| e.to_string())?;
+        }
+        tx.commit().await.map_err(|e| {
+            if definitively_rejected_commit(&e) {
+                e.to_string()
+            } else {
+                format!("{UNCERTAIN_START_COMMIT}{e}")
+            }
+        })?;
+        Ok(())
+    }
+
+    // A preflight check avoids uploading files for requests which cannot currently be admitted.
+    // The transactional INSERT repeats this predicate after uploads to close the race.
+    pub async fn can_admit(
+        &self,
+        namespace: &str,
+        version: &str,
+        process: &str,
+    ) -> Result<bool, String> {
+        let row = self.0.get().await.map_err(|e| e.to_string())?.query_one(
+            "SELECT EXISTS(SELECT 1 FROM process_policies p JOIN worker_capabilities c USING (namespace, version, process) JOIN workers w ON w.id=c.worker_id WHERE p.namespace=$1 AND p.version=$2 AND p.process=$3 AND NOT w.draining AND w.heartbeat_at >= (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT - 30000)",
+            &[&namespace, &version, &process]
+        ).await.map_err(|e| e.to_string())?;
+        Ok(row.get(0))
     }
 
     async fn sync_requests(
@@ -377,12 +494,61 @@ impl PostgresStore {
             .collect()
     }
 
+    pub async fn validate_reply(
+        &self,
+        id: &str,
+        request_id: &str,
+        response: &serde_json::Value,
+    ) -> Result<(), String> {
+        let client = self
+            .0
+            .get()
+            .await
+            .map_err(|e| format!("postgres checkout: {e}"))?;
+        let row = client.query_opt("SELECT i.status, i.deadline_at_ms, r.status, r.schema, (EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT FROM instances i LEFT JOIN input_requests r ON r.instance_id=i.id AND r.request_id=$2 WHERE i.id=$1", &[&id, &request_id]).await.map_err(|e| e.to_string())?.ok_or("unknown instance")?;
+        if !matches!(
+            row.get::<_, String>(0).as_str(),
+            "pending" | "running" | "waiting" | "waiting-for-input"
+        ) || row
+            .get::<_, Option<i64>>(1)
+            .is_some_and(|at| at <= row.get::<_, i64>(4))
+        {
+            return Err("instance not active".into());
+        }
+        let status: Option<String> = row.get(2);
+        if status.as_deref() != Some("outstanding") {
+            return Err(if status.is_some() {
+                "request not outstanding"
+            } else {
+                "unknown request"
+            }
+            .into());
+        }
+        let schema: crate::compiled_graph::RequestSchema =
+            serde_json::from_str(&row.get::<_, String>(3)).map_err(|e| e.to_string())?;
+        schema
+            .validate_response(response)
+            .map_err(|error| format!("invalid response: {error}"))
+    }
+
     pub async fn accept_response(
         &self,
         id: &str,
         request_id: &str,
         response: &serde_json::Value,
     ) -> Result<(), String> {
+        self.accept_response_with_attachments(id, request_id, response, &[])
+            .await
+    }
+
+    pub async fn accept_response_with_attachments(
+        &self,
+        id: &str,
+        request_id: &str,
+        response: &serde_json::Value,
+        attachments: &[Attachment],
+    ) -> Result<(), String> {
+        validate_attachment_scope(attachments, id, Some(request_id))?;
         let mut client = self
             .0
             .get()
@@ -429,8 +595,19 @@ impl PostgresStore {
             .validate_response(response)
             .map_err(|error| format!("invalid response: {error}"))?;
         tx.execute("UPDATE input_requests SET status='answered', response=$3 WHERE instance_id=$1 AND request_id=$2 AND status='outstanding'", &[&id, &request_id, &response.to_string()]).await.map_err(|e| e.to_string())?;
+        for attachment in attachments {
+            tx.execute("INSERT INTO instance_attachments (instance_id, request_id, ordinal, object_key, filename, media_type, byte_length) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                &[&attachment.instance_id, &attachment.request_id, &attachment.ordinal, &attachment.object_key, &attachment.filename, &attachment.media_type, &attachment.byte_length])
+                .await.map_err(|e| e.to_string())?;
+        }
         tx.execute("UPDATE instances SET status='pending', input_resume=TRUE, updated_at=EXTRACT(EPOCH FROM clock_timestamp())::BIGINT WHERE id=$1 AND status IN ('waiting-for-input','waiting')", &[&id]).await.map_err(|e| e.to_string())?;
-        tx.commit().await.map_err(|e| e.to_string())
+        tx.commit().await.map_err(|e| {
+            if definitively_rejected_commit(&e) {
+                e.to_string()
+            } else {
+                format!("{UNCERTAIN_REPLY_COMMIT}{e}")
+            }
+        })
     }
 
     pub async fn consume_response(
@@ -1223,6 +1400,250 @@ mod pool_tests {
         postgres::Postgres,
         testcontainers::{ImageExt, runners::AsyncRunner},
     };
+
+    #[tokio::test]
+    async fn attachments_enforce_scope_and_survive_consumed_reply_and_reconnect() {
+        use crate::store::{Attachment, Instance};
+        use serde_json::json;
+        let node = Postgres::default()
+            .with_tag("17.6-alpine")
+            .start()
+            .await
+            .unwrap();
+        let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+            .unwrap_or(node.get_host().await.unwrap().to_string());
+        let url = format!(
+            "postgres://postgres:postgres@{host}:{}/postgres",
+            node.get_host_port_ipv4(5432).await.unwrap()
+        );
+        let store = PostgresStore::connect(&url).await.unwrap();
+        store
+            .create(&Instance::new("one", "ns", "1", "p", json!({})))
+            .await
+            .unwrap();
+        store
+            .create(&Instance::new("two", "ns", "1", "p", json!({})))
+            .await
+            .unwrap();
+        let client = store.0.get().await.unwrap();
+        client.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ('one','reply','Prompt','{}')", &[]).await.unwrap();
+        let first = Attachment {
+            instance_id: "one".into(),
+            request_id: None,
+            ordinal: 0,
+            object_key: "objects/first".into(),
+            filename: "file.txt".into(),
+            media_type: Some("text/plain".into()),
+            byte_length: 4,
+        };
+        let mut second = first.clone();
+        second.ordinal = 1;
+        second.object_key = "objects/second".into();
+        store.insert_attachment(&second).await.unwrap();
+        store.insert_attachment(&first).await.unwrap();
+        assert!(
+            store.insert_attachment(&first).await.is_err(),
+            "NULL scope must be unique"
+        );
+        let mut reply = first.clone();
+        reply.request_id = Some("reply".into());
+        store.insert_attachment(&reply).await.unwrap();
+        assert!(store.insert_attachment(&reply).await.is_err());
+        let mut wrong = reply.clone();
+        wrong.instance_id = "two".into();
+        assert!(
+            store.insert_attachment(&wrong).await.is_err(),
+            "composite FK"
+        );
+        wrong.instance_id = "missing".into();
+        wrong.request_id = None;
+        assert!(
+            store.insert_attachment(&wrong).await.is_err(),
+            "instance FK"
+        );
+        assert_eq!(
+            store.attachments("one", None).await.unwrap(),
+            vec![first, second]
+        );
+        client.execute("UPDATE input_requests SET status='consumed' WHERE instance_id='one' AND request_id='reply'", &[]).await.unwrap();
+        drop(client);
+        drop(store);
+        let reopened = PostgresStore::connect(&url).await.unwrap();
+        assert_eq!(
+            reopened.attachments("one", Some("reply")).await.unwrap(),
+            vec![reply]
+        );
+        assert!(
+            reopened
+                .attachments("two", Some("reply"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let cols = reopened.0.get().await.unwrap().query("SELECT column_name FROM information_schema.columns WHERE table_name='instance_attachments'", &[]).await.unwrap();
+        assert_eq!(
+            cols.len(),
+            7,
+            "schema must hold metadata and object keys, not bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn multipart_admit_and_reply_reject_mismatched_attachment_scope() {
+        use crate::store::{Attachment, Instance};
+        use serde_json::json;
+        let node = Postgres::default()
+            .with_tag("17.6-alpine")
+            .start()
+            .await
+            .unwrap();
+        let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+            .unwrap_or(node.get_host().await.unwrap().to_string());
+        let url = format!(
+            "postgres://postgres:postgres@{host}:{}/postgres",
+            node.get_host_port_ipv4(5432).await.unwrap()
+        );
+        let store = PostgresStore::connect(&url).await.unwrap();
+        store
+            .register_worker("live", &[("ns", "1", "p")])
+            .await
+            .unwrap();
+        store
+            .create(&Instance::new("other", "ns", "1", "p", json!({})))
+            .await
+            .unwrap();
+        let mut file = Attachment {
+            instance_id: "other".into(),
+            request_id: None,
+            ordinal: 0,
+            object_key: "objects/wrong".into(),
+            filename: "wrong".into(),
+            media_type: None,
+            byte_length: 1,
+        };
+        let mut valid = file.clone();
+        valid.instance_id = "target".into();
+        valid.ordinal = 1;
+        let error = store
+            .admit_with_attachments(
+                "target",
+                "ns",
+                "1",
+                "p",
+                &json!({}),
+                &[valid.clone(), file.clone()],
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("attachment scope"), "{error}");
+        assert!(store.get("target").await.unwrap().is_none());
+        assert!(store.attachments("other", None).await.unwrap().is_empty());
+        assert!(store.attachments("target", None).await.unwrap().is_empty());
+        file.instance_id = "target".into();
+        file.request_id = Some("answer".into());
+        let error = store
+            .admit_with_attachments("target", "ns", "1", "p", &json!({}), &[file.clone()])
+            .await
+            .unwrap_err();
+        assert!(error.contains("attachment scope"), "{error}");
+        assert!(store.get("target").await.unwrap().is_none());
+        store
+            .create(&Instance::new("target", "ns", "1", "p", json!({})))
+            .await
+            .unwrap();
+        let client = store.0.get().await.unwrap();
+        for (id, request) in [
+            ("target", "answer"),
+            ("target", "different"),
+            ("other", "answer"),
+        ] {
+            client.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES ($1, $2, 'prompt', '{}')", &[&id, &request]).await.unwrap();
+        }
+        for (id, request) in [
+            ("other", Some("answer")),
+            ("target", Some("different")),
+            ("target", None),
+        ] {
+            file.instance_id = id.into();
+            file.request_id = request.map(str::to_owned);
+            valid.request_id = Some("answer".into());
+            let error = store
+                .accept_response_with_attachments(
+                    "target",
+                    "answer",
+                    &json!({}),
+                    &[valid.clone(), file.clone()],
+                )
+                .await
+                .unwrap_err();
+            assert!(error.contains("attachment scope"), "{error}");
+            assert!(store.attachments(id, request).await.unwrap().is_empty());
+            assert!(
+                store
+                    .attachments("target", Some("answer"))
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(store.answers("target").await.unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn multipart_admit_rolls_back_instance_when_second_attachment_fails() {
+        use crate::store::Attachment;
+        use serde_json::json;
+        let node = Postgres::default()
+            .with_tag("17.6-alpine")
+            .start()
+            .await
+            .unwrap();
+        let host = std::env::var("BLKIT_TESTCONTAINERS_HOST")
+            .unwrap_or(node.get_host().await.unwrap().to_string());
+        let url = format!(
+            "postgres://postgres:postgres@{host}:{}/postgres",
+            node.get_host_port_ipv4(5432).await.unwrap()
+        );
+        let store = PostgresStore::connect(&url).await.unwrap();
+        store
+            .register_worker("live", &[("ns", "1", "p")])
+            .await
+            .unwrap();
+        let file = Attachment {
+            instance_id: "rollback".into(),
+            request_id: None,
+            ordinal: 0,
+            object_key: "objects/first".into(),
+            filename: "first".into(),
+            media_type: None,
+            byte_length: 1,
+        };
+        let mut duplicate = file.clone();
+        duplicate.object_key = "objects/second".into();
+        assert!(
+            store
+                .admit_with_attachments("rollback", "ns", "1", "p", &json!({}), &[file, duplicate])
+                .await
+                .is_err()
+        );
+        assert!(store.get("rollback").await.unwrap().is_none());
+        assert!(
+            store
+                .attachments("rollback", None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        // JSON starts still use their existing path; typed JSON remains worker-validated.
+        store
+            .admit("deferred", "ns", "1", "p", &json!({"wrong":true}))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get("deferred").await.unwrap().unwrap().instance.input,
+            json!({"wrong":true})
+        );
+    }
 
     #[tokio::test]
     async fn zero_pool_size_is_rejected_before_connecting() {

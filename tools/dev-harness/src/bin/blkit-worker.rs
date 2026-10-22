@@ -1,6 +1,10 @@
 use std::{env, time::Duration};
 
-use blkit_core::{distributed::DistributedWorker, postgres_store::PostgresStore};
+use blkit_core::{
+    attachment_store::{AttachmentRole, AttachmentStore},
+    distributed::DistributedWorker,
+    postgres_store::PostgresStore,
+};
 
 // Generated Rust is checked by compilation and integration tests, not style lints.
 #[allow(clippy::all)]
@@ -26,6 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let limit = args.get(2).map_or(Ok(32), |n| n.parse::<usize>())?;
     let lease_ms = args.get(3).map_or(Ok(5000), |n| n.parse::<i64>())?;
+    let _attachments = AttachmentStore::remote_from_env(AttachmentRole::Worker).await?;
     let store = PostgresStore::connect(url).await?;
     let id = uuid::Uuid::new_v4().to_string();
     let worker = DistributedWorker::new(

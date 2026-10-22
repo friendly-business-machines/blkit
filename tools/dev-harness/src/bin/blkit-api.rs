@@ -1,7 +1,10 @@
 use std::{env, sync::Arc, time::Duration};
 
 use blkit_core::{
-    distributed::DistributedControl, postgres_store::PostgresStore, server::router_distributed,
+    attachment_store::{AttachmentRole, AttachmentStore},
+    distributed::DistributedControl,
+    postgres_store::PostgresStore,
+    server::router_distributed_with_attachments,
 };
 
 #[tokio::main]
@@ -21,6 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("usage: blkit-api POSTGRES_URL [BIND_ADDRESS]".into());
     }
     let bind = args.get(2).map_or("127.0.0.1:3000", String::as_str);
+    let attachments = AttachmentStore::remote_from_env(AttachmentRole::Api).await?;
     let store = PostgresStore::connect(url).await?;
     let control = Arc::new(DistributedControl::new(store));
     let reconciler = control.clone();
@@ -35,6 +39,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let listener = tokio::net::TcpListener::bind(bind).await?;
     eprintln!("blkit-api listening on {}", listener.local_addr()?);
-    axum::serve(listener, router_distributed(control)).await?;
+    axum::serve(
+        listener,
+        router_distributed_with_attachments(control, attachments),
+    )
+    .await?;
     Ok(())
 }

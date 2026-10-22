@@ -9,6 +9,9 @@ use testcontainers_modules::{
     testcontainers::{ImageExt, runners::AsyncRunner},
 };
 
+#[path = "../../../tools/test-support/seaweed.rs"]
+mod seaweed;
+
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 fn cargo_build(root: &std::path::Path) -> Result<(), String> {
@@ -635,6 +638,7 @@ async fn generated_remote_roles_validate_only_active_pool_limits() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         postgres.get_host_port_ipv4(5432).await.unwrap()
     );
+    let (_cloud, endpoint) = seaweed::start().await;
     for (target, persistence, binary, active, inactive) in [
         (
             "api-only",
@@ -722,8 +726,10 @@ async fn generated_remote_roles_validate_only_active_pool_limits() {
         for invalid in ["0", "malformed"] {
             let diagnostic_path = root.join("invalid-pool-setting.log");
             let diagnostic_file = fs::File::create(&diagnostic_path).unwrap();
+            let mut command = Command::new(&binary);
+            seaweed::configure(&mut command, &endpoint);
             let mut child = Child(
-                Command::new(&binary)
+                command
                     .args(&args)
                     .env(active, invalid)
                     .env_remove(inactive)
@@ -749,8 +755,10 @@ async fn generated_remote_roles_validate_only_active_pool_limits() {
             );
         }
         if target != "api-worker" {
+            let mut command = Command::new(&binary);
+            seaweed::configure(&mut command, &endpoint);
             let mut child = Child(
-                Command::new(&binary)
+                command
                     .args(&args)
                     .env_remove(active)
                     .env(inactive, "malformed")
@@ -798,6 +806,7 @@ async fn generated_remote_role_pool_budgets_are_bounded_independently() {
         postgres.get_host_port_ipv4(5432).await.unwrap()
     );
     let source = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } decision_task echo { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression input; } } process route { flow start -> echo; flow echo -> done; bind start.input -> echo.input; bind echo.result -> done.result; }";
+    let (_cloud, endpoint) = seaweed::start().await;
     for (target, persistence, binary, api_max, worker_max, expected_max) in [
         ("api-only", "", "orders-api", None, None, 4),
         ("api-only", "", "orders-api", Some("1"), Some("bad"), 1),
@@ -986,6 +995,7 @@ pub fn named_graph_definitions() -> Vec<blkit_core::compiled_graph::GraphDefinit
         if worker_active {
             command.env("BLKIT_TEST_GATE_DIR", &root);
         }
+        seaweed::configure(&mut command, &endpoint);
         let mut child = Child(
             command
                 .stdout(Stdio::null())
@@ -1273,6 +1283,7 @@ fn generated_local_role_ignores_postgres_pool_settings_and_has_no_postgres_depen
 
 #[tokio::test]
 async fn generated_role_executables_smoke() {
+    let (_cloud, cloud_endpoint) = seaweed::start().await;
     struct Child(std::process::Child);
     impl Drop for Child {
         fn drop(&mut self) {
@@ -1337,8 +1348,10 @@ async fn generated_role_executables_smoke() {
         let database = root.join("local.db");
         let mut children = Vec::new();
         if target == "api-worker-split" {
+            let mut worker = std::process::Command::new(binaries.join(format!("{name}-worker")));
+            seaweed::configure(&mut worker, &cloud_endpoint);
             children.push(Child(
-                std::process::Command::new(binaries.join(format!("{name}-worker")))
+                worker
                     .args([&url, "2", "1000"])
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
@@ -1354,6 +1367,9 @@ async fn generated_role_executables_smoke() {
             server.arg(&database).args(["2", &bind]);
         } else {
             server.args([&url, "2", "1000", &bind]);
+        }
+        if persistence != "local" {
+            seaweed::configure(&mut server, &cloud_endpoint);
         }
         children.push(Child(
             server
@@ -1422,6 +1438,7 @@ async fn generated_role_executables_smoke() {
 async fn generated_remote_workers_drain_active_claims_without_claiming_backlog() {
     use blkit_core::{postgres_store::PostgresStore, runtime::Instance};
     use std::{process::Stdio, time::Duration};
+    let (_cloud, endpoint) = seaweed::start().await;
 
     struct Child(std::process::Child);
     impl Drop for Child {
@@ -1513,6 +1530,7 @@ async fn generated_remote_workers_drain_active_claims_without_claiming_backlog()
         let mut command = std::process::Command::new(path);
         command.args([&url, "2", "5000"]);
         command.env("BLKIT_TEST_GATE_DIR", &root);
+        seaweed::configure(&mut command, &endpoint);
         if target == "api-worker" {
             let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let address = socket.local_addr().unwrap().to_string();
@@ -2470,9 +2488,10 @@ fn renaming_project_removes_stale_generated_binary() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[test]
-fn generated_binaries_configure_logging_before_runtime_and_report_failures() {
+#[tokio::test]
+async fn generated_binaries_configure_logging_before_runtime_and_report_failures() {
     use std::process::Command;
+    let (_cloud, endpoint) = seaweed::start().await;
     let source = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } process route { flow start -> done; bind start.input -> done.result; }";
     for role in ["server", "worker"] {
         let root = project(
@@ -2513,7 +2532,11 @@ fn generated_binaries_configure_logging_before_runtime_and_report_failures() {
         } else {
             args.clone()
         };
-        let fatal = Command::new(&binary)
+        let mut command = Command::new(&binary);
+        if role == "worker" {
+            seaweed::configure(&mut command, &endpoint);
+        }
+        let fatal = command
             .args(&fatal_args)
             .env_remove("BLKIT_LOG_OUTPUTS")
             .env_remove("BLKIT_LOG_LEVEL")
@@ -2618,6 +2641,7 @@ fn project_server_executes_compiled_process_over_loopback_rest() {
 
 #[tokio::test]
 async fn project_worker_binary_claims_only_its_compiled_process_version() {
+    let (_cloud, endpoint) = seaweed::start().await;
     use blkit_core::{
         compiled_graph::{GraphDefinition, GraphLink, GraphNode, GraphNodeKind},
         postgres_store::PostgresStore,
@@ -2709,7 +2733,9 @@ async fn project_worker_binary_claims_only_its_compiled_process_version() {
         item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
         store.create(&item).await.unwrap();
     }
-    let mut child = Command::new(binary)
+    let mut command = Command::new(binary);
+    seaweed::configure(&mut command, &endpoint);
+    let mut child = command
         .arg(&url)
         .args(["32", "5000"])
         .stdout(Stdio::piped())

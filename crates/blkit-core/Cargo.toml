@@ -5,11 +5,13 @@ edition = "2024"
 
 [dependencies]
 async-stream = { version = "0.3", optional = true }
-axum = { version = "0.8", optional = true }
+axum = { version = "0.8", optional = true, features = ["multipart"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 deadpool-postgres = { version = "0.14.2", default-features = false, optional = true, features = ["rt_tokio_1"] }
+futures-util = { version = "0.3", optional = true }
 http = { version = "1", optional = true }
+object_store = { version = "=0.14.2", default-features = false, optional = true }
 opentelemetry-appender-tracing = { version = "0.33", optional = true }
 opentelemetry-otlp = { version = "0.33", default-features = false, features = ["logs", "http-proto", "reqwest-blocking-client"], optional = true }
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["logs"], optional = true }
@@ -26,7 +28,19 @@ unicode-segmentation = "1"
 uuid = { version = "1", features = ["v4"], optional = true }
 
 [dev-dependencies]
+async-trait = "0.1"
+futures-util = "0.3"
 testcontainers-modules = { version = "=0.15.0", features = ["postgres"] }
+tower = { version = "0.5.3", features = ["util"] }
+uuid = { version = "1", features = ["v4"] }
+
+[[test]]
+name = "attachment_reader"
+required-features = ["worker", "attachment-local", "local-persistence"]
+
+[[test]]
+name = "attachments"
+required-features = ["worker", "local-persistence"]
 
 [[test]]
 name = "concurrency"
@@ -46,6 +60,8 @@ required-features = ["logging"]
 
 [features]
 default = []
+attachment-local = ["dep:object_store", "object_store/fs", "dep:tokio", "dep:uuid"]
+attachment-cloud = ["dep:object_store", "object_store/aws", "object_store/gcp", "object_store/azure", "dep:tokio", "dep:uuid", "dep:futures-util"]
 api-server = ["dep:axum", "dep:async-stream", "dep:tracing"]
 worker = ["dep:tokio", "dep:uuid"]
 local-persistence = ["dep:turso", "dep:tokio"]

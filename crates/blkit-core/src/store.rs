@@ -10,7 +10,9 @@ use tokio::sync::broadcast;
 
 use serde_json::Value;
 
-use crate::compiled_graph::{GraphCheckpoint, InputRequest};
+use crate::compiled_graph::GraphCheckpoint;
+#[cfg(feature = "local-persistence")]
+use crate::compiled_graph::InputRequest;
 
 fn now() -> i64 {
     SystemTime::now()
@@ -18,6 +20,10 @@ fn now() -> i64 {
         .unwrap()
         .as_secs() as i64
 }
+
+// A failed COMMIT can still have persisted its transaction; never compensate on this error.
+pub(crate) const UNCERTAIN_START_COMMIT: &str = "uncertain start commit: ";
+pub(crate) const UNCERTAIN_REPLY_COMMIT: &str = "uncertain reply commit: ";
 
 pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
@@ -92,6 +98,94 @@ impl Instance {
             deadline_duration_ms: None,
             deadline_at_ms: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attachment {
+    pub instance_id: String,
+    pub request_id: Option<String>,
+    pub ordinal: i64,
+    pub object_key: String,
+    pub filename: String,
+    pub media_type: Option<String>,
+    pub byte_length: i64,
+}
+
+#[cfg(any(feature = "local-persistence", feature = "remote-persistence"))]
+pub(crate) fn validate_attachment_scope(
+    attachments: &[Attachment],
+    id: &str,
+    request_id: Option<&str>,
+) -> Result<(), String> {
+    if attachments.iter().any(|attachment| {
+        attachment.instance_id != id || attachment.request_id.as_deref() != request_id
+    }) {
+        return Err("attachment scope does not match instance and request".into());
+    }
+    Ok(())
+}
+
+#[cfg(all(test, feature = "local-persistence"))]
+mod attachment_scope_tests {
+    use super::{Attachment, Instance, Store};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn reply_rejects_mismatched_existing_instance_or_request_without_answering() {
+        let path =
+            std::env::temp_dir().join(format!("blkit-reply-scope-{}.db", uuid::Uuid::new_v4()));
+        let store = Store::open(&path).await.unwrap();
+        for id in ["target", "other"] {
+            store
+                .create(&Instance::new(id, "ns", "1", "p", json!({})))
+                .await
+                .unwrap();
+        }
+        let conn = store.0.connect().unwrap();
+        for (id, request) in [
+            ("target", "answer"),
+            ("target", "different"),
+            ("other", "answer"),
+        ] {
+            conn.execute("INSERT INTO input_requests (instance_id, request_id, prompt, schema) VALUES (?1, ?2, 'prompt', '{}')", turso::params![id, request]).await.unwrap();
+        }
+        for (id, request) in [
+            ("other", Some("answer")),
+            ("target", Some("different")),
+            ("target", None),
+        ] {
+            let file = Attachment {
+                instance_id: id.into(),
+                request_id: request.map(str::to_owned),
+                ordinal: 0,
+                object_key: "objects/wrong".into(),
+                filename: "wrong".into(),
+                media_type: None,
+                byte_length: 1,
+            };
+            let mut valid = file.clone();
+            valid.instance_id = "target".into();
+            valid.request_id = Some("answer".into());
+            valid.ordinal = 1;
+            let error = store
+                .accept_response_with_attachments("target", "answer", &json!({}), &[valid, file])
+                .await
+                .unwrap_err();
+            assert!(error.contains("attachment scope"), "{error}");
+            assert!(store.attachments(id, request).await.unwrap().is_empty());
+            assert!(
+                store
+                    .attachments("target", Some("answer"))
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(store.answers("target").await.unwrap().is_empty());
+        }
+        drop(conn);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
     }
 }
 
@@ -178,7 +272,46 @@ impl Store {
         .map_err(|e| e.to_string())?;
         conn.execute("CREATE TABLE IF NOT EXISTS input_requests (instance_id TEXT NOT NULL, request_id TEXT NOT NULL, prompt TEXT NOT NULL, schema TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'outstanding', response TEXT, PRIMARY KEY (instance_id, request_id), FOREIGN KEY (instance_id) REFERENCES instances(id))", ())
             .await.map_err(|e| e.to_string())?;
+        conn.execute("CREATE TABLE IF NOT EXISTS instance_attachments (instance_id TEXT NOT NULL REFERENCES instances(id), request_id TEXT, ordinal INTEGER NOT NULL CHECK (ordinal >= 0), object_key TEXT NOT NULL, filename TEXT NOT NULL, media_type TEXT, byte_length INTEGER NOT NULL CHECK (byte_length >= 0), FOREIGN KEY (instance_id, request_id) REFERENCES input_requests(instance_id, request_id))", ())
+            .await.map_err(|e| e.to_string())?;
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS instance_attachments_start ON instance_attachments(instance_id, ordinal) WHERE request_id IS NULL", ())
+            .await.map_err(|e| e.to_string())?;
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS instance_attachments_reply ON instance_attachments(instance_id, request_id, ordinal) WHERE request_id IS NOT NULL", ())
+            .await.map_err(|e| e.to_string())?;
         Ok(Self(Arc::new(db), Arc::new(Mutex::new(HashMap::new()))))
+    }
+
+    pub async fn insert_attachment(&self, attachment: &Attachment) -> Result<(), String> {
+        let conn = self.0.connect().map_err(|e| e.to_string())?;
+        conn.execute("PRAGMA foreign_keys = ON", ())
+            .await
+            .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO instance_attachments (instance_id, request_id, ordinal, object_key, filename, media_type, byte_length) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", turso::params![attachment.instance_id.as_str(), attachment.request_id.as_deref(), attachment.ordinal, attachment.object_key.as_str(), attachment.filename.as_str(), attachment.media_type.as_deref(), attachment.byte_length])
+            .await.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn attachments(
+        &self,
+        id: &str,
+        request_id: Option<&str>,
+    ) -> Result<Vec<Attachment>, String> {
+        let conn = self.0.connect().map_err(|e| e.to_string())?;
+        let mut rows = conn.query("SELECT instance_id, request_id, ordinal, object_key, filename, media_type, byte_length FROM instance_attachments WHERE instance_id=?1 AND request_id IS ?2 ORDER BY ordinal", turso::params![id, request_id])
+            .await.map_err(|e| e.to_string())?;
+        let mut attachments = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
+            attachments.push(Attachment {
+                instance_id: row.get(0).map_err(|e| e.to_string())?,
+                request_id: row.get(1).map_err(|e| e.to_string())?,
+                ordinal: row.get(2).map_err(|e| e.to_string())?,
+                object_key: row.get(3).map_err(|e| e.to_string())?,
+                filename: row.get(4).map_err(|e| e.to_string())?,
+                media_type: row.get(5).map_err(|e| e.to_string())?,
+                byte_length: row.get(6).map_err(|e| e.to_string())?,
+            });
+        }
+        Ok(attachments)
     }
 
     pub fn subscribe(&self, id: &str) -> Subscription {
@@ -201,6 +334,15 @@ impl Store {
     }
 
     pub async fn create(&self, instance: &Instance) -> Result<(), String> {
+        self.create_with_attachments(instance, &[]).await
+    }
+
+    pub async fn create_with_attachments(
+        &self,
+        instance: &Instance,
+        attachments: &[Attachment],
+    ) -> Result<(), String> {
+        validate_attachment_scope(attachments, &instance.id, None)?;
         let checkpoint = instance
             .checkpoint
             .as_ref()
@@ -240,7 +382,13 @@ impl Store {
         if let Some(checkpoint) = &instance.checkpoint {
             Self::sync_requests(&tx, &instance.id, checkpoint).await?;
         }
-        tx.commit().await.map_err(|e| e.to_string())
+        for attachment in attachments {
+            tx.execute("INSERT INTO instance_attachments (instance_id, request_id, ordinal, object_key, filename, media_type, byte_length) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", turso::params![attachment.instance_id.as_str(), attachment.request_id.as_deref(), attachment.ordinal, attachment.object_key.as_str(), attachment.filename.as_str(), attachment.media_type.as_deref(), attachment.byte_length])
+                .await.map_err(|e| e.to_string())?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| format!("{UNCERTAIN_START_COMMIT}{e}"))
     }
 
     async fn sync_requests(
@@ -340,20 +488,28 @@ impl Store {
         Ok(answers)
     }
 
-    pub(crate) async fn accept_response(
+    pub(crate) async fn accept_response_with_attachments(
         &self,
         id: &str,
         request_id: &str,
         response: &Value,
+        attachments: &[Attachment],
     ) -> Result<(), String> {
+        validate_attachment_scope(attachments, id, Some(request_id))?;
         let mut conn = self.0.connect().map_err(|e| e.to_string())?;
         let tx = conn.transaction().await.map_err(|e| e.to_string())?;
         let changed = tx.execute("UPDATE input_requests SET status='answered', response=?3 WHERE instance_id=?1 AND request_id=?2 AND status='outstanding' AND EXISTS (SELECT 1 FROM instances WHERE id=?1 AND status IN ('pending','running','waiting','waiting-for-input') AND (deadline_at_ms IS NULL OR deadline_at_ms>?4))", turso::params![id, request_id, response.to_string(), now_ms()]).await.map_err(|e| e.to_string())?;
         if changed != 1 {
             return Err("request not outstanding or instance not active".into());
         }
+        for attachment in attachments {
+            tx.execute("INSERT INTO instance_attachments (instance_id, request_id, ordinal, object_key, filename, media_type, byte_length) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", turso::params![attachment.instance_id.as_str(), attachment.request_id.as_deref(), attachment.ordinal, attachment.object_key.as_str(), attachment.filename.as_str(), attachment.media_type.as_deref(), attachment.byte_length])
+                .await.map_err(|e| e.to_string())?;
+        }
         tx.execute("UPDATE instances SET status=CASE WHEN attempt>0 THEN 'running' ELSE 'pending' END, wake_at_ms=NULL, updated_at=?2 WHERE id=?1 AND status IN ('waiting-for-input','waiting')", turso::params![id, now()]).await.map_err(|e| e.to_string())?;
-        tx.commit().await.map_err(|e| e.to_string())?;
+        tx.commit()
+            .await
+            .map_err(|e| format!("{UNCERTAIN_REPLY_COMMIT}{e}"))?;
         self.changed(id);
         Ok(())
     }

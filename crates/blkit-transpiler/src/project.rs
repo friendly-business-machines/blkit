@@ -504,15 +504,41 @@ impl Project {
         let local = Path::new(env!("CARGO_MANIFEST_DIR")).join("../blkit-core");
         let local = local.canonicalize().unwrap_or(local);
         let features = match (self.build_target.as_str(), self.persistence.as_deref()) {
-            ("api-only", _) => vec!["api-server", "remote-persistence"],
-            ("worker" | "worker-only", _) => vec!["worker", "remote-persistence", "logging"],
+            ("api-only", _) => vec!["api-server", "remote-persistence", "attachment-cloud"],
+            ("worker" | "worker-only", _) => {
+                vec![
+                    "worker",
+                    "remote-persistence",
+                    "logging",
+                    "attachment-cloud",
+                ]
+            }
             ("server", _) | ("api-worker", Some("local")) => {
-                vec!["api-server", "worker", "local-persistence", "logging"]
+                vec![
+                    "api-server",
+                    "worker",
+                    "local-persistence",
+                    "logging",
+                    "attachment-local",
+                ]
             }
             ("api-worker", Some("remote")) => {
-                vec!["api-server", "worker", "remote-persistence", "logging"]
+                vec![
+                    "api-server",
+                    "worker",
+                    "remote-persistence",
+                    "logging",
+                    "attachment-cloud",
+                ]
             }
-            ("api-worker-split", _) => vec!["worker", "remote-persistence", "logging"],
+            ("api-worker-split", _) => {
+                vec![
+                    "worker",
+                    "remote-persistence",
+                    "logging",
+                    "attachment-cloud",
+                ]
+            }
             _ => vec![],
         };
         let mut manifest = format!(
@@ -582,7 +608,7 @@ impl Project {
                 String::new()
             };
             fs::write(package.join("api/Cargo.toml"), format!(
-                "[package]\nname = {:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit-core = {{ version = \"={}\", {core_path}default-features = false, features = [\"api-server\", \"remote-persistence\"] }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"time\", \"net\"] }}\naxum = \"0.8\"\n",
+                "[package]\nname = {:?}\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nblkit-core = {{ version = \"={}\", {core_path}default-features = false, features = [\"api-server\", \"remote-persistence\", \"attachment-cloud\"] }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"time\", \"net\"] }}\naxum = \"0.8\"\n",
                 format!("{}-api", self.name), env!("CARGO_PKG_VERSION")
             )).map_err(|e| e.to_string())?;
             fs::write(api_source.join("main.rs"), API_SOURCE).map_err(|e| e.to_string())?;
@@ -596,7 +622,7 @@ impl Project {
 }
 
 const API_SOURCE: &str = r#"use std::{env, sync::Arc, time::Duration};
-use blkit_core::{distributed::DistributedControl, postgres_store::PostgresStore, server::router_distributed};
+use blkit_core::{attachment_store::{AttachmentRole, AttachmentStore}, distributed::DistributedControl, postgres_store::PostgresStore, server::router_distributed_with_attachments};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -609,6 +635,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() > 3 { return Err("usage: api POSTGRES_URL [BIND_ADDRESS]".into()); }
     let bind = args.get(2).map_or("127.0.0.1:3000", String::as_str);
     let pool_max = env::var_os("BLKIT_API_DB_POOL_MAX").map_or(Ok(4), |value| value.to_str().and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0).ok_or("invalid BLKIT_API_DB_POOL_MAX"))?;
+    let attachments = AttachmentStore::remote_from_env(AttachmentRole::Api).await?;
     let control = Arc::new(DistributedControl::new(PostgresStore::connect_with_pool_size(url, pool_max).await?));
     let reconciler = control.clone();
     tokio::spawn(async move {
@@ -621,13 +648,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    axum::serve(listener, router_distributed(control)).await?;
+    axum::serve(listener, router_distributed_with_attachments(control, attachments)).await?;
     Ok(())
 }
 "#;
 
 const API_WORKER_SOURCE: &str = r#"use std::{env, sync::Arc, time::Duration};
-use blkit_core::{distributed::{DistributedControl, DistributedWorker}, logging, postgres_store::PostgresStore, server::router_distributed};
+use blkit_core::{attachment_store::{AttachmentRole, AttachmentStore}, distributed::{DistributedControl, DistributedWorker}, logging, postgres_store::PostgresStore, server::router_distributed_with_attachments};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -644,6 +671,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind = args.get(4).map_or("127.0.0.1:3000", String::as_str);
     let api_pool_max = env::var_os("BLKIT_API_DB_POOL_MAX").map_or(Ok(4), |value| value.to_str().and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0).ok_or("invalid BLKIT_API_DB_POOL_MAX"))?;
     let worker_pool_max = env::var_os("BLKIT_WORKER_DB_POOL_MAX").map_or(Ok(4), |value| value.to_str().and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0).ok_or("invalid BLKIT_WORKER_DB_POOL_MAX"))?;
+    let attachments = AttachmentStore::remote_from_env(AttachmentRole::Api).await?;
+    let _worker_attachments = AttachmentStore::remote_from_env(AttachmentRole::Worker).await?;
     let store = PostgresStore::connect_with_pool_size(url, api_pool_max).await?;
     let worker_store = PostgresStore::connect_with_pool_size(url, worker_pool_max).await?;
     let worker = DistributedWorker::new(worker_store, &format!("worker-{}", std::process::id()), PROJECT_CRATE::named_graph_definitions(), limit, lease_ms)?;
@@ -667,14 +696,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     tokio::select! {
         result = run => result?,
-        result = axum::serve(listener, router_distributed(control)) => { result?; }
+        result = axum::serve(listener, router_distributed_with_attachments(control, attachments)) => { result?; }
     }
     Ok(())
 }
 "#;
 
 const WORKER_SOURCE: &str = r#"use std::{env, time::Duration};
-use blkit_core::{distributed::DistributedWorker, logging::{self, tracing}, postgres_store::PostgresStore};
+use blkit_core::{attachment_store::{AttachmentRole, AttachmentStore}, distributed::DistributedWorker, logging::{self, tracing}, postgres_store::PostgresStore};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -685,6 +714,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let _logging = logging::init(concat!(env!("CARGO_PKG_NAME"), "-worker"))
         .map_err(|e| { eprintln!("logging configuration: {e}"); e })?;
+    let _attachments = AttachmentStore::remote_from_env(AttachmentRole::Worker).await?;
     if let Err(reason) = run(&args).await {
         tracing::error!(reason, "worker error");
         return Err(reason.into());
@@ -713,7 +743,7 @@ async fn run(args: &[String]) -> Result<(), &'static str> {
 "#;
 
 const SERVER_SOURCE: &str = r#"use std::{env, path::Path, sync::Arc};
-use blkit_core::{logging::{self, tracing}, runtime::{Engine, Registry, LocalStore}, server::router};
+use blkit_core::{attachment_store::AttachmentStore, logging::{self, tracing}, runtime::{Engine, Registry, LocalStore}, server::router_with_attachments};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -736,6 +766,7 @@ async fn run(args: &[String]) -> Result<(), &'static str> {
     let database = args.get(1).map_or("blkit.db", String::as_str);
     let limit = args.get(2).map_or(Ok(32), |value| value.parse::<usize>()).map_err(|_| "invalid MAX_TASKS")?;
     let bind = args.get(3).map_or("127.0.0.1:3000", String::as_str);
+    let attachments = AttachmentStore::local(Path::new(database), None).await.map_err(|error| { eprintln!("{error}"); "cannot initialize attachments" })?;
     let store = LocalStore::open(Path::new(database)).await.map_err(|_| "cannot open store")?;
     let registry = Registry::new(PROJECT_CRATE::named_graph_definitions()).map_err(|_| "invalid process definitions")?;
     let engine = Arc::new(Engine::new(registry, store, limit).map_err(|_| "invalid server configuration")?);
@@ -743,7 +774,7 @@ async fn run(args: &[String]) -> Result<(), &'static str> {
     let listener = tokio::net::TcpListener::bind(bind).await.map_err(|_| "cannot bind server address")?;
     let address = listener.local_addr().map_err(|_| "cannot read bound address")?;
     tracing::info!(%address, "server listening");
-    axum::serve(listener, router(engine)).await.map_err(|_| "server listener failed")?;
+    axum::serve(listener, router_with_attachments(engine, attachments)).await.map_err(|_| "server listener failed")?;
     Ok(())
 }
 "#;

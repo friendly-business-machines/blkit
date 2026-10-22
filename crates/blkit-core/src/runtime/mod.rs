@@ -651,6 +651,25 @@ impl Engine {
         });
     }
 
+    pub fn has_process(&self, namespace: &str, version: &str, name: &str) -> bool {
+        self.registry.get(namespace, version, name).is_some()
+    }
+
+    pub fn validate_start_input(
+        &self,
+        namespace: &str,
+        version: &str,
+        name: &str,
+        input: &Value,
+    ) -> Result<(), String> {
+        let graph = self
+            .registry
+            .get(namespace, version, name)
+            .ok_or("unknown process")?;
+        (graph.decode_input)(input.clone()).map_err(|error| format!("invalid input: {error}"))?;
+        Ok(())
+    }
+
     pub async fn start(
         &self,
         namespace: &str,
@@ -658,13 +677,32 @@ impl Engine {
         name: &str,
         input: Value,
     ) -> Result<String, String> {
+        self.start_with_attachments(
+            uuid::Uuid::new_v4().to_string(),
+            namespace,
+            version,
+            name,
+            input,
+            &[],
+        )
+        .await
+    }
+
+    pub async fn start_with_attachments(
+        &self,
+        id: String,
+        namespace: &str,
+        version: &str,
+        name: &str,
+        input: Value,
+        attachments: &[crate::store::Attachment],
+    ) -> Result<String, String> {
         let graph = self
             .registry
             .get(namespace, version, name)
             .ok_or("unknown process")?;
         let input =
             (graph.decode_input)(input).map_err(|error| format!("invalid input: {error}"))?;
-        let id = uuid::Uuid::new_v4().to_string();
         let mut instance = Instance::new(&id, namespace, version, name, input.clone());
         if let Some(policy) = &graph.deadline {
             instance.with_deadline(policy)?;
@@ -679,10 +717,27 @@ impl Engine {
             instance.wake_at_ms = Some(at_ms);
         }
         instance.checkpoint = Some(checkpoint);
-        self.store.create(&instance).await?;
+        self.store
+            .create_with_attachments(&instance, attachments)
+            .await?;
         self.start_worker();
         self.wake.notify_one();
         Ok(id)
+    }
+
+    pub async fn start_attachments(
+        &self,
+        id: &str,
+    ) -> Result<Vec<crate::store::Attachment>, String> {
+        self.store.attachments(id, None).await
+    }
+
+    pub async fn reply_attachments(
+        &self,
+        id: &str,
+        request_id: &str,
+    ) -> Result<Vec<crate::store::Attachment>, String> {
+        self.store.attachments(id, Some(request_id)).await
     }
 
     pub async fn status(&self, id: &str) -> Result<Option<Instance>, String> {
@@ -710,6 +765,16 @@ impl Engine {
     }
 
     pub async fn respond(&self, id: &str, request_id: &str, response: Value) -> Result<(), String> {
+        self.respond_with_attachments(id, request_id, response, &[])
+            .await
+    }
+
+    pub async fn validate_reply(
+        &self,
+        id: &str,
+        request_id: &str,
+        response: &Value,
+    ) -> Result<(), String> {
         let instance = self.store.get(id).await?.ok_or("unknown instance")?;
         if !matches!(
             instance.status.as_str(),
@@ -736,10 +801,21 @@ impl Engine {
         };
         request
             .schema
-            .validate_response(&response)
+            .validate_response(response)
             .map_err(|error| format!("invalid response: {error}"))?;
+        Ok(())
+    }
+
+    pub async fn respond_with_attachments(
+        &self,
+        id: &str,
+        request_id: &str,
+        response: Value,
+        attachments: &[crate::store::Attachment],
+    ) -> Result<(), String> {
+        self.validate_reply(id, request_id, &response).await?;
         self.store
-            .accept_response(id, request_id, &response)
+            .accept_response_with_attachments(id, request_id, &response, attachments)
             .await?;
         if let Some(context) = self.active.lock().await.get(id) {
             context.response_wake.notify_one();

@@ -22,3 +22,5 @@ blkit-core = { path = "../blkit-core", features = ["worker", "remote-persistence
 serde_json = "1"
 testcontainers-modules = { version = "=0.15.0", features = ["postgres"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio-postgres = "0.7.18"
+turso = { version = "=0.7.2", default-features = false }
