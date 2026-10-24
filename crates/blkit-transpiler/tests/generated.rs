@@ -41,6 +41,277 @@ fn compile_and_test(source: &str, assertion: &str) {
 }
 
 #[test]
+fn generated_readme_table_constructors_preserve_inferred_and_empty_schemas() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Position = {region: String, rate: Number};
+Adopted = {rate: Number, region: String};
+Rate = {rate: Number};
+Empty = {};
+decision_task positional { input unused: Number; output result: Table<Position> = value; literal_expression value { output result: Table<Position>; expression table(["region", "rate"], ["domestic", 5.99], ["europe", 15.99]); } }
+decision_task dictionaries { input unused: Number; output result: Table<Adopted> = value; literal_expression value { output result: Table<Adopted>; expression tableFromDicts([{region: "domestic", rate: 5.99}, {region: "europe", rate: 15.99}]); } }
+decision_task named_empty { input unused: Number; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression table(["rate"]); } }
+decision_task empty { input unused: Number; output result: Table<Empty> = value; literal_expression value { output result: Table<Empty>; expression table([]); } }
+decision_task dict_empty { input unused: Number; output result: Table<Empty> = value; literal_expression value { output result: Table<Empty>; expression tableFromDicts([]); } }
+"#,
+        r#"let expected = serde_json::json!({"columns":["region","rate"],"rows":[{"region":"domestic","rate":5.99},{"region":"europe","rate":15.99}]});
+assert_eq!(serde_json::to_value(positional(Number::ZERO).unwrap()).unwrap(), expected);
+assert_eq!(serde_json::to_value(dictionaries(Number::ZERO).unwrap()).unwrap(), serde_json::json!({"columns":["rate","region"],"rows":[{"region":"domestic","rate":5.99},{"region":"europe","rate":15.99}]}));
+assert_eq!(serde_json::to_value(named_empty(Number::ZERO).unwrap()).unwrap(), serde_json::json!({"columns":["rate"],"rows":[]})); assert_eq!(named_empty(Number::ZERO).unwrap().column_types(), &[None]);
+for empty in [empty(Number::ZERO).unwrap(), dict_empty(Number::ZERO).unwrap()] { assert_eq!(serde_json::to_value(empty).unwrap(), serde_json::json!({"columns":[],"rows":[]})); }"#,
+    );
+}
+
+#[test]
+fn generated_table_enum_cells_keep_type_identity() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+enum Status:
+  ready;
+StatusRow = {status: Status};
+decision_task valid { input status: Status; output result: Table<StatusRow> = value; literal_expression value { output result: Table<StatusRow>; expression table(["status"], [status], [Status.ready]); } }
+"#,
+        r#"let table = valid(Status::ready).unwrap(); assert_eq!(serde_json::to_value(&table).unwrap(), serde_json::json!({"columns":["status"],"rows":[{"status":"ready"},{"status":"ready"}]})); assert_eq!(table.column_types(), &[Some(blkit_core::CellType::Enum("Status".into()))]);"#,
+    );
+}
+
+#[test]
+fn generated_table_constructors_accept_dynamic_rows_without_coercing_dictionary_lists() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {rate: Number};
+Adopted = {a: Number};
+decision_task positional { input values: List<Number>; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression table(["rate"], values); } }
+decision_task adopted { input values: List<Adopted>; output result: Table<Adopted> = value; literal_expression value { output result: Table<Adopted>; expression tableFromDicts(values); } }
+decision_task list_only { input values: List<Dictionary>; output result: List<Dictionary> = value; literal_expression value { output result: List<Dictionary>; expression values; } }
+"#,
+        r#"assert_eq!(serde_json::to_value(positional(vec![Number::from(3)]).unwrap()).unwrap(), serde_json::json!({"columns":["rate"],"rows":[{"rate":3}]})); let rows = vec![Adopted { a: Number::ONE }, Adopted { a: Number::from(2) }]; assert_eq!(serde_json::to_value(adopted(rows).unwrap()).unwrap(), serde_json::json!({"columns":["a"],"rows":[{"a":1},{"a":2}]})); let untyped: Vec<std::collections::BTreeMap<String, serde_json::Value>> = serde_json::from_value(serde_json::json!([{"a":1},{"a":2}])).unwrap(); assert_eq!(serde_json::to_value(list_only(untyped).unwrap()).unwrap(), serde_json::json!([{"a":1},{"a":2}]));"#,
+    );
+}
+
+#[test]
+fn generated_table_cells_evaluate_nested_values_and_keep_temporal_types() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Order = {day: Date, amount: Number};
+Nested = {date: Date, meta: Dictionary, amount: Number};
+Recorded = {record: Order};
+Adopted = {amount: Number, day: Date};
+decision_task nested { input amount: Number; output result: Table<Nested> = value; literal_expression value { output result: Table<Nested>; expression table(["date", "meta", "amount"], [date("2026-10-02"), {enabled: true, tags: ["a", "b"]}, amount], [date("2026-10-03"), {enabled: false, tags: ["c"]}, amount + 1]); } }
+decision_task recorded { input order: Order; output result: Table<Recorded> = value; literal_expression value { output result: Table<Recorded>; expression table(["record"], [order]); } }
+decision_task adopted { input day: Date; output result: Table<Adopted> = value; literal_expression value { output result: Table<Adopted>; expression tableFromDicts([{day: day, amount: 1}, {day: date("2026-10-03"), amount: 2}]); } }
+"#,
+        r#"let table = nested(Number::from(2)).unwrap(); assert_eq!(table.columns(), &["date", "meta", "amount"]); assert!(matches!(table.rows()[0][0], Some(blkit_core::Cell::Date(_)))); assert!(matches!(table.rows()[0][1], Some(blkit_core::Cell::Dictionary(_)))); assert_eq!(serde_json::to_value(table).unwrap(), serde_json::json!({"columns":["date","meta","amount"],"rows":[{"date":"2026-10-02","meta":{"enabled":true,"tags":["a","b"]},"amount":2},{"date":"2026-10-03","meta":{"enabled":false,"tags":["c"]},"amount":3}]})); let day = serde_json::from_str("\"2026-10-02\"").unwrap(); let adopted = adopted(day).unwrap(); assert!(matches!(adopted.rows()[0][1], Some(blkit_core::Cell::Date(_)))); let record = recorded(Order { day: serde_json::from_str("\"2026-10-02\"").unwrap(), amount: Number::from(1) }).unwrap(); assert!(matches!(record.rows()[0][0], Some(blkit_core::Cell::Dictionary(ref fields)) if matches!(fields.get("day"), Some(blkit_core::Cell::Date(_)))));"#,
+    );
+}
+
+#[test]
+fn generated_table_nested_dictionary_literals_keep_typed_cells() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+NestedRow = {payload: Dictionary};
+decision_task nested { input amount: Number; output result: Table<NestedRow> = value; literal_expression value { output result: Table<NestedRow>; expression tableFromDicts([{payload: {day: date("2026-10-02"), amount: amount}}]); } }
+decision_task quoted { input unused: Number; output result: Table<NestedRow> = value; literal_expression value { output result: Table<NestedRow>; expression tableFromDicts([{payload: {"day label": date("2026-10-02"), amount: 1}}]); } }
+"#,
+        r#"let table = nested(Number::from(7)).unwrap(); let Some(blkit_core::Cell::Dictionary(ref payload)) = table.rows()[0][0] else { panic!("payload should be a dictionary"); }; assert!(matches!(payload.get("day"), Some(blkit_core::Cell::Date(_)))); assert_eq!(payload.get("amount"), Some(&blkit_core::Cell::Number(Number::from(7)))); let quoted = quoted(Number::ZERO).unwrap(); let Some(blkit_core::Cell::Dictionary(ref fields)) = quoted.rows()[0][0] else { panic!("payload should be a dictionary"); }; assert!(matches!(fields.get("day label"), Some(blkit_core::Cell::Date(_))));"#,
+    );
+}
+
+#[test]
+fn generated_table_constructors_in_iteration_bodies_keep_binding_scope() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Row = {n: Number};
+decision_task nested { input unused: Number; output result: List<Table<Row>> = value; literal_expression value { output result: List<Table<Row>>; expression for n in [1, 2] return table(["n"], [n]); } }
+"#,
+        r#"let tables = nested(Number::ZERO).unwrap(); assert_eq!(tables.len(), 2); assert_eq!(serde_json::to_value(&tables).unwrap(), serde_json::json!([{"columns":["n"],"rows":[{"n":1}]},{"columns":["n"],"rows":[{"n":2}]}]));"#,
+    );
+}
+
+#[test]
+fn generated_table_constructors_reject_invalid_headers_rows_and_types() {
+    for expression in [
+        "table([\"a\", \"a\"])",
+        "table([\"a\"], [1, 2])",
+        "table([\"a\"], [1], [\"wrong\"])",
+        "tableFromDicts([{a: 1}, {b: 2}])",
+        "tableFromDicts([{a: 1}, {a: \"wrong\"}])",
+    ] {
+        let source = format!(
+            "namespace tables; version \"1\"; A = {{a: Number}}; decision_task invalid {{ input unused: Number; output result: Table<A> = value; literal_expression value {{ output result: Table<A>; expression {expression}; }} }}"
+        );
+        assert!(transpile(&source).is_err(), "{expression}");
+    }
+    for expression in [
+        "table(1)",
+        "table([1])",
+        "table([\"a\"], 1)",
+        "tableFromDicts([1])",
+    ] {
+        let source = format!(
+            "namespace tables; version \"1\"; A = {{a: Number}}; decision_task invalid {{ input unused: Number; output result: Table<A> = value; literal_expression value {{ output result: Table<A>; expression {expression}; }} }}"
+        );
+        assert!(transpile(&source).is_err(), "{expression}");
+    }
+}
+
+#[test]
+fn table_ports_require_declared_row_shape() {
+    let source = "namespace tables; version \"1\"; Order = {id: Number, price: Number?}; decision_task echo { input data: Table<Order>; output result: Table<Order> = value; literal_expression value { output result: Table<Order>; expression data; } }";
+    assert!(transpile(source).is_ok());
+    for ty in ["Table", "Table<Number>", "Table<Missing>"] {
+        assert!(
+            transpile(&source.replace("input data: Table<Order>;", &format!("input data: {ty};")))
+                .is_err(),
+            "{ty} must not be accepted as a typed table input"
+        );
+    }
+    assert!(
+        transpile(&source.replace(
+            "output result: Table<Order> = value;",
+            "output result: Table = value;"
+        ))
+        .is_err()
+    );
+    let enum_row = "namespace tables; version \"1\"; enum State:\n  ready;\ndecision_task echo { input data: Table<State>; output result: Table<State> = value; literal_expression value { output result: Table<State>; expression data; } }";
+    let error = transpile(enum_row).unwrap_err();
+    assert!(error.contains("row schema"), "{error}");
+}
+
+#[test]
+fn declared_table_ports_check_column_references_at_transpilation() {
+    let source = "namespace tables; version \"1\"; Order = {id: Number, price: Number?}; decision_task check { input data: Table<Order>; output result: List<Number?> = value; literal_expression value { output result: List<Number?>; expression data.price; } }";
+    compile_and_test(
+        source,
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":2},{"id":3,"price":null}]})).unwrap(); assert_eq!(check(data).unwrap(), vec![Some(Number::from(2)),None]);"#,
+    );
+    assert!(
+        transpile(&source.replace("data.price", "data.missing"))
+            .unwrap_err()
+            .to_string()
+            .contains("unknown table column")
+    );
+}
+
+#[test]
+fn declared_table_outputs_check_constructor_columns_and_cell_types() {
+    let source = "namespace tables; version \"1\"; Order = {id: Number, price: Number?}; decision_task make { input id: Number; output result: Table<Order> = value; literal_expression value { output result: Table<Order>; expression table([\"id\",\"price\"],[id,20]); } }";
+    compile_and_test(
+        source,
+        r#"assert_eq!(serde_json::to_value(make(Number::ONE).unwrap()).unwrap(), serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":20}]}));"#,
+    );
+    for invalid in [
+        "table([\"id\",\"price\"],[id,\"bad\"])",
+        "table([\"price\",\"id\"],[20,id])",
+        "table([\"id\",\"price\"],[id])",
+    ] {
+        assert!(
+            transpile(&source.replace("table([\"id\",\"price\"],[id,20])", invalid)).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn declared_table_selectors_keep_shape_and_reject_unknown_columns() {
+    let source = "namespace tables; version \"1\"; Order = {id: Number, price: Number?}; Price = {price: Number?}; decision_task select_price { input data: Table<Order>; output result: Table<Price> = value; literal_expression value { output result: Table<Price>; expression data[, price]; } }";
+    compile_and_test(
+        source,
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":null}]})).unwrap(); assert_eq!(serde_json::to_value(select_price(data).unwrap()).unwrap(), serde_json::json!({"columns":["price"],"rows":[{"price":null}]}));"#,
+    );
+    assert!(
+        transpile(&source.replace("data[, price]", "data[, missing]"))
+            .unwrap_err()
+            .to_string()
+            .contains("unknown table column")
+    );
+    assert!(
+        transpile(&source.replace("Price = {price: Number?}", "Price = {price: Number}")).is_err(),
+        "nullable price cannot satisfy Number"
+    );
+}
+
+#[test]
+fn declared_table_ports_validate_rows_and_preserve_empty_column_order() {
+    compile_and_test(
+        "namespace tables; version \"1\"; Order = {id: Number, price: Number?}; decision_task echo { input data: Table<Order>; output result: Table<Order> = value; literal_expression value { output result: Table<Order>; expression data; } }",
+        r###"let valid = serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":null},{"id":2,"price":0.1234567890123456789012345678}]}); let input: Table = serde_json::from_value(valid.clone()).unwrap(); assert_eq!(serde_json::to_value(echo(input).unwrap()).unwrap(), valid);
+let empty: Table = serde_json::from_value(serde_json::json!({"columns":["id","price"],"rows":[]})).unwrap(); assert_eq!(echo(empty).unwrap().columns(), &["id", "price"]);
+for bad in [serde_json::json!({"columns":["id","price"],"rows":[{"id":null,"price":1}]}),serde_json::json!({"columns":["id","price"],"rows":[{"id":1}]}),serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":"wrong"}]}),serde_json::json!({"columns":["price","id"],"rows":[]}),serde_json::json!({"columns":["id","price","extra"],"rows":[]})] { if let Ok(input) = serde_json::from_value::<Table>(bad) { assert!(echo(input).is_err()); } }"###,
+    );
+}
+
+#[test]
+fn table_ports_round_trip_order_empty_schemas_and_exact_decimals() {
+    compile_and_test(
+        "namespace tables; version \"1\"; RegionRate = {region: String, rate: Number}; Rate = {rate: Number}; Empty = {}; decision_task echo_rr { input data: Table<RegionRate>; output result: Table<RegionRate> = value; literal_expression value { output result: Table<RegionRate>; expression data; } } decision_task echo_rate { input data: Table<Rate>; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression data; } } decision_task echo_empty { input data: Table<Empty>; output result: Table<Empty> = value; literal_expression value { output result: Table<Empty>; expression data; } }",
+        r###"let json = r#"{"columns":["region","rate"],"rows":[{"rate":0.1234567890123456789012345678,"region":"eu"}]}"#; let input: Table = serde_json::from_str(json).unwrap(); assert_eq!(serde_json::to_string(&echo_rr(input).unwrap()).unwrap(), json);
+let json = r#"{"columns":["rate"],"rows":[]}"#; let input: Table = serde_json::from_str(json).unwrap(); assert_eq!(serde_json::to_string(&echo_rate(input).unwrap()).unwrap(), json);
+let json = r#"{"columns":[],"rows":[{}]}"#; let input: Table = serde_json::from_str(json).unwrap(); assert_eq!(serde_json::to_string(&echo_empty(input).unwrap()).unwrap(), json);"###,
+    );
+}
+
+#[test]
+fn table_ports_reject_malformed_shapes_and_null_cells_without_coercing_lists() {
+    compile_and_test(
+        "namespace tables; version \"1\"; A = {a: Number}; decision_task echo { input data: Table<A>; output result: Table<A> = value; literal_expression value { output result: Table<A>; expression data; } } decision_task list_echo { input data: List<Dictionary>; output result: List<Dictionary> = value; literal_expression value { output result: List<Dictionary>; expression data; } }",
+        r###"for json in [r#"{}"#, r#"{"columns":[],"rows":[{"extra":1}]}"#, r#"{"columns":["a","a"],"rows":[]}"#, r#"{"columns":["a","a"],"rows":[{"a":1,"b":2}]}"#, r#"{"columns":["a"],"rows":[{}]}"#, r#"{"columns":["a"],"rows":[{"a":1},{"a":"wrong"}]}"#, r#"{"columns":["a"],"rows":[{"a":null}]}"#, r#"{"columns":["a"],"rows":[],"extra":true}"#, r#"[{"a":1}]"#] { if let Ok(input) = serde_json::from_str::<Table>(json) { assert!(echo(input).is_err(), "{json}"); } } let list = serde_json::json!([{"a":1}]); assert_eq!(serde_json::to_value(list_echo(serde_json::from_value(list.clone()).unwrap()).unwrap()).unwrap(), list);"###,
+    );
+}
+
+#[test]
+fn declared_table_input_preserves_temporal_and_enum_cell_types() {
+    compile_and_test(
+        "namespace tables; version \"1\"; enum State:\n  ready;\nEvent = {day: Date, state: State}; decision_task echo { input data: Table<Event>; output result: Table<Event> = value; literal_expression value { output result: Table<Event>; expression data; } }",
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["day","state"],"rows":[{"day":"2026-10-02","state":"ready"}]})).unwrap(); let result = echo(data).unwrap(); assert!(matches!(result.rows()[0][0], Some(blkit_core::Cell::Date(_)))); assert_eq!(result.column_types(), &[Some(blkit_core::CellType::Date),Some(blkit_core::CellType::Enum("State".into()))]); let native = Table::new(vec!["day".into(),"state".into()],vec![vec![serde_json::from_str::<blkit_core::temporal::Date>("\"2026-10-02\"").unwrap().into(),blkit_core::Cell::Enum {kind:"State".into(),variant:"ready".into()}]]).unwrap(); assert_eq!(echo(native).unwrap().column_types()[1], Some(blkit_core::CellType::Enum("State".into())));"#,
+    );
+    compile_and_test(
+        "namespace tables; version \"1\"; Detail = {day: Date, amount: Number?}; Row = {detail: Detail}; decision_task echo { input data: Table<Row>; output result: Table<Row> = value; literal_expression value { output result: Table<Row>; expression data; } }",
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["detail"],"rows":[{"detail":{"day":"2026-10-02","amount":null}}]})).unwrap(); let result = echo(data).unwrap(); let Some(blkit_core::Cell::Dictionary(ref detail)) = result.rows()[0][0] else { panic!("missing dictionary"); }; assert!(matches!(detail.get("day"), Some(blkit_core::Cell::Date(_)))); assert_eq!(detail.get("amount"), Some(&blkit_core::Cell::Null));"#,
+    );
+}
+
+#[test]
+fn declared_table_graph_ports_check_json_before_routing() {
+    compile_and_test_graph(
+        r#"namespace tables; version "1";
+Order = {id: Number, price: Number?};
+start_event start { output data: Table<Order>; }
+decision_task echo { input data: Table<Order>; output result: Table<Order> = value; literal_expression value { output result: Table<Order>; expression data; } }
+end_event done { input result: Table<Order>; }
+process route { flow start -> echo; flow echo -> done; bind start.data -> echo.data; bind echo.result -> done.result; }"#,
+        r###"let graph = named_graph_definitions().remove(0);
+let valid = serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":null}]});
+let input = serde_json::json!({"data":valid.clone()});
+let mut state = graph.checkpoint(&input).unwrap();
+assert_eq!(graph.run(&input, &mut state).unwrap(), valid);
+for data in [serde_json::json!({"columns":["id","price"],"rows":[{"id":null,"price":1}]}),serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":"wrong"}]}),serde_json::json!({"columns":["price","id"],"rows":[]})] { assert!((graph.decode_input)(serde_json::json!({"data":data})).is_err()); }"###,
+    );
+}
+
+#[test]
+fn table_graph_ports_preserve_schema_and_reject_invalid_input() {
+    compile_and_test_graph(
+        r#"namespace tables; version "1";
+Rate = {rate: Number};
+start_event start { output data: Table<Rate>; }
+decision_task echo { input data: Table<Rate>; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression data; } }
+end_event done { input result: Table<Rate>; }
+process route { flow start -> echo; flow echo -> done; bind start.data -> echo.data; bind echo.result -> done.result; }"#,
+        r###"let graph = named_graph_definitions().remove(0);
+for data in [r#"{"columns":["rate"],"rows":[{"rate":0.1234567890123456789012345678}]}"#, r#"{"columns":["rate"],"rows":[]}"#] {
+    let data: serde_json::Value = serde_json::from_str(data).unwrap();
+    let input = serde_json::json!({"data": data.clone()});
+    let mut state = graph.checkpoint(&input).unwrap();
+    assert_eq!(graph.run(&input, &mut state).unwrap(), data);
+}
+for data in [serde_json::json!([{"rate":1}]), serde_json::json!({"columns":["rate"],"rows":[{"rate":null}]}), serde_json::json!({"columns":["rate"],"rows":[{"other":1}]})] {
+    assert!((graph.decode_input)(serde_json::json!({"data":data})).is_err());
+}"###,
+    );
+}
+
+#[test]
 fn direct_source_compiles_with_core_without_transpiler_dependency() {
     let source = "namespace orders; version \"1\"; start_event start { output value: Number; } end_event done { input result: Number; } process route { flow start -> done; bind start.value -> done.result; }";
     let generated = transpile(source).unwrap();
@@ -971,6 +1242,8 @@ fn generated_numeric_aggregates_handle_empty_lists_and_sample_stddev() {
     ] {
         let output = if name == "mode" {
             "List<Number>"
+        } else if name == "mean" {
+            "Number?"
         } else {
             "Number"
         };
@@ -978,7 +1251,7 @@ fn generated_numeric_aggregates_handle_empty_lists_and_sample_stddev() {
     }
     compile_and_test_graph(
         &source,
-        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; let list = |v: &[&str]| v.iter().map(|s| n(s)).collect(); assert_eq!(min_values(list(&["3","1","2"])).unwrap(), n("1")); assert_eq!(max_values(list(&["3","1","2"])).unwrap(), n("3")); assert_eq!(sum_values(list(&["1","2","3"])).unwrap(), n("6")); assert_eq!(mean_values(list(&["1","2","3"])).unwrap(), n("2")); assert_eq!(median_values(list(&["1","2","3","4"])).unwrap(), n("2.5")); assert_eq!(product_values(list(&["2","3","4"])).unwrap(), n("24")); assert_eq!(product_values(list(&["-0.5","2","3"])).unwrap(), n("-3")); assert_eq!(stddev_values(list(&["1","2","3"])).unwrap(), n("1")); assert_eq!(mode_values(list(&["3","2","3","2"])).unwrap(), list(&["2","3"])); assert_eq!(mode_values(list(&["3","2","3","1"])).unwrap(), list(&["3"])); assert_eq!(mode_values(list(&["6","1","6","1"])).unwrap(), list(&["1","6"])); assert_eq!(sum_values(vec![]).unwrap(), Number::ZERO); assert_eq!(product_values(vec![]).unwrap(), Number::ONE); for result in [min_values(vec![]), max_values(vec![]), mean_values(vec![]), median_values(vec![]), stddev_values(vec![]), stddev_values(vec![n("5")]), sum_values(vec![Number::MAX, Number::ONE]), product_values(vec![Number::MAX, n("2")]), stddev_values(vec![Number::MAX, -Number::MAX])] { assert!(result.is_err()); } assert!(mode_values(vec![]).is_err());"#,
+        r#"let n = |s: &str| -> Number { s.parse().unwrap() }; let list = |v: &[&str]| v.iter().map(|s| n(s)).collect(); assert_eq!(min_values(list(&["3","1","2"])).unwrap(), n("1")); assert_eq!(max_values(list(&["3","1","2"])).unwrap(), n("3")); assert_eq!(sum_values(list(&["1","2","3"])).unwrap(), n("6")); assert_eq!(mean_values(list(&["1","2","3"])).unwrap(), Some(n("2"))); assert_eq!(median_values(list(&["1","2","3","4"])).unwrap(), n("2.5")); assert_eq!(product_values(list(&["2","3","4"])).unwrap(), n("24")); assert_eq!(product_values(list(&["-0.5","2","3"])).unwrap(), n("-3")); assert_eq!(stddev_values(list(&["1","2","3"])).unwrap(), n("1")); assert_eq!(mode_values(list(&["3","2","3","2"])).unwrap(), list(&["2","3"])); assert_eq!(mode_values(list(&["3","2","3","1"])).unwrap(), list(&["3"])); assert_eq!(mode_values(list(&["6","1","6","1"])).unwrap(), list(&["1","6"])); assert_eq!(sum_values(vec![]).unwrap(), Number::ZERO); assert_eq!(mean_values(vec![]).unwrap(), None); assert_eq!(product_values(vec![]).unwrap(), Number::ONE); for result in [min_values(vec![]), max_values(vec![]), median_values(vec![]), stddev_values(vec![]), stddev_values(vec![n("5")]), sum_values(vec![Number::MAX, Number::ONE]), product_values(vec![Number::MAX, n("2")]), stddev_values(vec![Number::MAX, -Number::MAX])] { assert!(result.is_err()); } assert!(mode_values(vec![]).is_err());"#,
     );
 }
 
@@ -2164,6 +2437,34 @@ process route {
            graph.complete_request(&input, &mut state, &id.to_string(), response).unwrap();
            assert_eq!(state.outcome, Some(serde_json::json!(true)));
         "#,
+    );
+}
+
+#[test]
+fn generated_table_input_request_validates_response_before_routing() {
+    compile_and_test_graph(
+        r#"namespace requests; version "1";
+Rate = {rate: Number};
+start_event start {}
+input_request review { prompt "Table?"; output data: Table<Rate>; }
+end_event done { input result: Table<Rate>; }
+process route { flow start -> review; flow review -> done; bind review.data -> done.result; }"#,
+        r###"let graph = named_graph_definitions().remove(0);
+for data in [r#"{"columns":["rate"],"rows":[{"rate":0.1234567890123456789012345678}]}"#, r#"{"columns":["rate"],"rows":[]}"#] {
+    let data: serde_json::Value = serde_json::from_str(data).unwrap();
+    let input = serde_json::json!({});
+    let mut state = graph.checkpoint(&input).unwrap();
+    let id = graph.ready_activations(&state)[0].0;
+    graph.complete_request(&input, &mut state, &id.to_string(), serde_json::json!({"data":data.clone()})).unwrap();
+    assert_eq!(state.outcome, Some(data));
+}
+let input = serde_json::json!({});
+let mut state = graph.checkpoint(&input).unwrap();
+let id = graph.ready_activations(&state)[0].0;
+for data in [serde_json::json!([{"rate":1}]), serde_json::json!({}), serde_json::json!({"columns":["rate"],"rows":[],"extra":true}), serde_json::json!({"columns":["rate"],"rows":[{"other":1}]}), serde_json::json!({"columns":["rate"],"rows":[{"rate":null}]})] {
+    assert!(graph.complete_request(&input, &mut state, &id.to_string(), serde_json::json!({"data":data})).is_err());
+    assert_eq!(graph.ready_activations(&state), vec![(id, "review")]);
+}"###,
     );
 }
 
@@ -3901,5 +4202,1096 @@ fn generated_list_dictionary_fixture_compiles() {
         "List<Dictionary<Number>>",
         "input",
         "let original: Vec<std::collections::BTreeMap<String, Number>> = vec![[(String::from(\"x\"), Number::from(1))].into()]; assert_eq!(evaluate(original.clone(), Number::ZERO).unwrap(), original);",
+    );
+}
+
+#[test]
+fn generated_table_row_selection_projection_and_conversion() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Row = {region: String, rate: Number};
+Rate = {rate: Number};
+decision_task selected { input data: Table<Row>; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression data[[3, 1, 3:3], rate]; } }
+decision_task predicate { input data: Table<Row>; input rate: Number; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression data[rate > var(rate), rate]; } }
+decision_task projected { input data: Table<Row>; output result: List<Number> = value; literal_expression value { output result: List<Number>; expression data.rate; } }
+decision_task cell { input data: Table<Row>; output result: Number = value; literal_expression value { output result: Number; expression data[1, rate].toValue(); } }
+decision_task row { input data: Table<Row>; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression data[1].toDict(); } }
+decision_task rows { input data: Table<Row>; output result: List<Dictionary> = value; literal_expression value { output result: List<Dictionary>; expression data.toList(); } }
+decision_task names { input data: Table<Row>; output result: List<String> = value; literal_expression value { output result: List<String>; expression data.colNames; } }
+"#,
+        r#"let t = blkit_core::Table::new(vec!["region".into(),"rate".into()], vec![vec!["a".into(),Number::from(1).into()],vec!["b".into(),Number::from(2).into()],vec!["c".into(),Number::from(3).into()]]).unwrap();
+assert_eq!(serde_json::to_value(selected(t.clone()).unwrap()).unwrap(), serde_json::json!({"columns":["rate"],"rows":[{"rate":3},{"rate":1}]}));
+assert_eq!(serde_json::to_value(predicate(t.clone(), Number::from(1)).unwrap()).unwrap(), serde_json::json!({"columns":["rate"],"rows":[{"rate":2},{"rate":3}]}));
+assert_eq!(projected(t.clone()).unwrap(), vec![Number::from(1),Number::from(2),Number::from(3)]);
+assert_eq!(cell(t.clone()).unwrap(), Number::ONE);
+assert_eq!(serde_json::to_value(row(t.clone()).unwrap()).unwrap(), serde_json::json!({"rate":1,"region":"a"}));
+assert_eq!(rows(t.clone()).unwrap().len(),3);
+assert_eq!(names(t.clone()).unwrap(), vec!["rate", "region"]);
+assert!(cell(blkit_core::Table::new(vec!["rate".into()],vec![]).unwrap()).is_err());
+assert!(row(t.clone()).is_err() == false);
+assert!(selected(blkit_core::Table::new(vec!["other".into()],vec![vec![Number::ONE.into()]]).unwrap()).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_table_shape_equality_and_row_iteration() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {rate: Number};
+decision_task equal { input data: Table<Rate>; input other: Table<Rate>; output result: Bool = value; literal_expression value { output result: Bool; expression data = other; } }
+decision_task unequal { input data: Table<Rate>; input other: Table<Rate>; output result: Bool = value; literal_expression value { output result: Bool; expression data != other; } }
+decision_task shape { input data: Table<Rate>; output result: Number = value; literal_expression value { output result: Number; expression data.nRows + data.nCols; } }
+decision_task has { input data: Table<Rate>; output result: Bool = value; literal_expression value { output result: Bool; expression hasColumn(data, "rate"); } }
+decision_task empty { input data: Table<Rate>; output result: Bool = value; literal_expression value { output result: Bool; expression isEmpty(data); } }
+decision_task rates { input data: Table<Rate>; output result: List<Number> = value; literal_expression value { output result: List<Number>; expression for r in data return r.rate; } }
+decision_task some_rate { input data: Table<Rate>; output result: Bool = value; literal_expression value { output result: Bool; expression some r in data satisfies r.rate > 2; } }
+decision_task every_rate { input data: Table<Rate>; output result: Bool = value; literal_expression value { output result: Bool; expression every r in data satisfies r.rate > 0; } }
+decision_task contains { input data: Table<Rate>; input row: Dictionary; output result: Bool = value; literal_expression value { output result: Bool; expression some r in data satisfies r = row; } }
+"#,
+        r#"let t = blkit_core::Table::new(vec!["rate".into()],vec![vec![Number::ONE.into()],vec![Number::from(3).into()]]).unwrap();
+let rev = blkit_core::Table::new(vec!["rate".into()],vec![vec![Number::from(3).into()],vec![Number::ONE.into()]]).unwrap();
+assert!(equal(t.clone(),t.clone()).unwrap()); assert!(unequal(t.clone(),rev).unwrap()); assert_eq!(shape(t.clone()).unwrap(),Number::from(3)); assert!(has(t.clone()).unwrap()); assert!(!empty(t.clone()).unwrap());
+assert_eq!(rates(t.clone()).unwrap(),vec![Number::ONE,Number::from(3)]); assert!(some_rate(t.clone()).unwrap()); assert!(every_rate(t.clone()).unwrap());
+assert!(contains(t.clone(),std::collections::BTreeMap::from([("rate".into(),serde_json::json!(3))])).unwrap());
+let e = blkit_core::Table::new(vec!["rate".into()],vec![]).unwrap(); assert!(empty(e.clone()).unwrap()); assert!(!some_rate(e.clone()).unwrap()); assert!(every_rate(e).unwrap());"#,
+    );
+}
+
+#[test]
+fn generated_table_projected_lists_and_selector_errors() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {rate: Number};
+decision_task first { input data: Table<Rate>; output result: Number = value; literal_expression value { output result: Number; expression data.rate[1]; } }
+decision_task total { input data: Table<Rate>; output result: Number = value; literal_expression value { output result: Number; expression sum(data.rate); } }
+decision_task values { input data: Table<Rate>; output result: List<Number> = value; literal_expression value { output result: List<Number>; expression data[, rate].toList(); } }
+decision_task whole_column { input data: Table<Rate>; output result: List<Number> = value; literal_expression value { output result: List<Number>; expression data.toList(); } }
+decision_task bad_row { input data: Table<Rate>; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression data[5]; } }
+decision_task bad_range { input data: Table<Rate>; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression data[1:1000001, rate]; } }
+"#,
+        r#"let t = blkit_core::Table::new(vec!["rate".into()],vec![vec![Number::from(2).into()],vec![Number::from(3).into()]]).unwrap();
+assert_eq!(first(t.clone()).unwrap(),Number::from(2)); assert_eq!(total(t.clone()).unwrap(),Number::from(5)); assert_eq!(values(t.clone()).unwrap(),vec![Number::from(2),Number::from(3)]);
+assert_eq!(whole_column(t.clone()).unwrap(),vec![Number::from(2),Number::from(3)]);
+assert!(bad_row(t.clone()).is_err()); assert!(bad_range(t).is_err());"#,
+    );
+    for selector in ["data[, missing]", "data[missing > 0]"] {
+        let source = format!(
+            "namespace tables; version \"1\"; Rate = {{rate: Number}}; decision_task invalid {{ input data: Table<Rate>; output result: Table<Rate> = value; literal_expression value {{ output result: Table<Rate>; expression {selector}; }} }}"
+        );
+        assert!(
+            transpile(&source)
+                .unwrap_err()
+                .contains("unknown table column")
+        );
+    }
+}
+
+#[test]
+fn generated_table_node_selector_dependencies_and_outer_variable() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {rate: Number};
+decision_task filtered { input minimum: Number; output result: Table<Rate> = selected;
+literal_expression selected { output result: Table<Rate>; expression source[rate > var(minimum)]; }
+literal_expression source { output result: Table<Rate>; expression table(["rate"], [1], [3]); }
+}"#,
+        r#"assert_eq!(serde_json::to_value(filtered(Number::from(2)).unwrap()).unwrap(), serde_json::json!({"columns":["rate"],"rows":[{"rate":3}]}));"#,
+    );
+}
+
+#[test]
+fn generated_nullable_arithmetic_comparisons_and_three_valued_logic() {
+    let source = r#"namespace orders; version "1";
+Order = {id: Number, price: Number?, flag: Bool?, other: Bool?};
+decision_task add { input order: Order; output result: Number? = result; literal_expression result { output result: Number?; expression order.price + 2; } }
+decision_task compare { input order: Order; output result: Bool? = result; literal_expression result { output result: Bool?; expression order.price > 10; } }
+decision_task negate { input order: Order; output result: Bool? = result; literal_expression result { output result: Bool?; expression not order.flag; } }
+decision_task both { input order: Order; output result: Bool? = result; literal_expression result { output result: Bool?; expression order.flag and false; } }
+decision_task either { input order: Order; output result: Bool? = result; literal_expression result { output result: Bool?; expression order.flag or true; } }
+decision_task unknown_and_true { input order: Order; output result: Bool? = result; literal_expression result { output result: Bool?; expression order.flag and true; } }
+decision_task unknown_or_false { input order: Order; output result: Bool? = result; literal_expression result { output result: Bool?; expression order.flag or false; } }
+decision_task both_nullable { input order: Order; output result: Bool? = result; literal_expression result { output result: Bool?; expression order.flag and order.other; } }
+decision_task or_nullable { input order: Order; output result: Bool? = result; literal_expression result { output result: Bool?; expression order.flag or order.other; } }
+decision_task short_and { input order: Order; output result: Bool? = result; literal_expression result { output result: Bool?; expression false and order.price / order.id > 0; } }
+decision_task short_or { input order: Order; output result: Bool? = result; literal_expression result { output result: Bool?; expression true or order.price / order.id > 0; } }
+"#;
+    compile_and_test(
+        source,
+        r#"let unknown = Order {id:Number::ZERO,price:None,flag:None,other:Some(false)}; assert_eq!(add(unknown.clone()).unwrap(),None); assert_eq!(compare(unknown.clone()).unwrap(),None); assert_eq!(negate(unknown.clone()).unwrap(),None); assert_eq!(both(unknown.clone()).unwrap(),Some(false)); assert_eq!(either(unknown.clone()).unwrap(),Some(true)); assert_eq!(unknown_and_true(unknown.clone()).unwrap(),None); assert_eq!(unknown_or_false(unknown.clone()).unwrap(),None); assert_eq!(both_nullable(unknown.clone()).unwrap(),Some(false)); assert_eq!(or_nullable(unknown.clone()).unwrap(),None); assert_eq!(short_and(unknown.clone()).unwrap(),Some(false)); assert_eq!(short_or(unknown.clone()).unwrap(),Some(true)); let known = Order {id:Number::from(2),price:Some(Number::from(20)),flag:Some(true),other:None}; assert_eq!(add(known.clone()).unwrap(),Some(Number::from(22))); assert_eq!(compare(known.clone()).unwrap(),Some(true)); assert_eq!(negate(known.clone()).unwrap(),Some(false)); assert_eq!(both(known.clone()).unwrap(),Some(false)); assert_eq!(either(known.clone()).unwrap(),Some(true)); assert_eq!(both_nullable(known.clone()).unwrap(),None); assert_eq!(or_nullable(known).unwrap(),Some(true));"#,
+    );
+    assert!(
+        transpile(&source.replace(
+            "output result: Number? = result",
+            "output result: Number = result"
+        ))
+        .is_err(),
+        "nullable result cannot satisfy nonnull port"
+    );
+}
+
+#[test]
+fn generated_nullable_numeric_aggregates_ignore_null_and_mean_empty_is_null() {
+    let source = r#"namespace tables; version "1";
+Rate = {price: Number?};
+decision_task total { input data: Table<Rate>; output result: Number = result; literal_expression result { output result: Number; expression sum(data.price); } }
+decision_task average { input data: Table<Rate>; output result: Number? = result; literal_expression result { output result: Number?; expression mean(data.price); } }
+decision_task safe_average { input data: Table<Rate>; output result: Number = result; literal_expression result { output result: Number; expression coalesce(mean(data.price), 0); } }
+decision_task empty_mean { input data: List<Number>; output result: Number? = result; literal_expression result { output result: Number?; expression mean(data); } }
+decision_task literal_empty_mean { input unused: Number; output result: Number? = result; literal_expression result { output result: Number?; expression mean([]); } }
+decision_task empty_fallback { input unused: Number; output result: Number = result; literal_expression result { output result: Number; expression coalesce(mean([]), 0); } }
+decision_task optional_sum { input data: List<Number?>; output result: Number = result; literal_expression result { output result: Number; expression sum(data); } }
+decision_task optional_mean { input data: List<Number?>; output result: Number? = result; literal_expression result { output result: Number?; expression mean(data); } }
+"#;
+    compile_and_test(
+        source,
+        r#"let mixed: Table = serde_json::from_value(serde_json::json!({"columns":["price"],"rows":[{"price":20},{"price":null}]})).unwrap(); assert_eq!(total(mixed.clone()).unwrap(),Number::from(20)); assert_eq!(average(mixed.clone()).unwrap(),Some(Number::from(20))); assert_eq!(safe_average(mixed).unwrap(),Number::from(20)); for json in [serde_json::json!({"columns":["price"],"rows":[{"price":null}]}),serde_json::json!({"columns":["price"],"rows":[]})] { let data: Table = serde_json::from_value(json).unwrap(); assert_eq!(total(data.clone()).unwrap(),Number::ZERO); assert_eq!(average(data.clone()).unwrap(),None); assert_eq!(safe_average(data).unwrap(),Number::ZERO); } assert_eq!(empty_mean(Vec::new()).unwrap(),None); assert_eq!(literal_empty_mean(Number::ZERO).unwrap(),None); assert_eq!(empty_fallback(Number::ZERO).unwrap(),Number::ZERO); assert_eq!(empty_mean(vec![Number::from(2),Number::from(4)]).unwrap(),Some(Number::from(3))); assert_eq!(optional_sum(vec![Some(Number::from(20)), None]).unwrap(),Number::from(20)); assert_eq!(optional_mean(vec![Some(Number::from(20)), None]).unwrap(),Some(Number::from(20))); assert_eq!(optional_mean(vec![None]).unwrap(),None);"#,
+    );
+    assert!(
+        transpile(&source.replace(
+            "output result: Number? = result",
+            "output result: Number = result"
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn generated_empty_iteration_constrains_static_table_projection() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+decision_task empty { input unused: Number; output result: List<List<Number>> = value; literal_expression value { output result: List<List<Number>>; expression for x in [] return table(["rate"], [x]).rate; } }
+"#,
+        r#"assert!(empty(Number::ZERO).unwrap().is_empty());"#,
+    );
+}
+
+#[test]
+fn generated_empty_named_table_uses_declared_selection_and_projection_types() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {price: Number};
+decision_task selection { input unused: Number; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression table(["price"])[, price]; } }
+decision_task projection { input unused: Number; output result: List<Number> = value; literal_expression value { output result: List<Number>; expression table(["price"]).price; } }
+"#,
+        r#"assert_eq!(serde_json::to_value(selection(Number::ZERO).unwrap()).unwrap(),serde_json::json!({"columns":["price"],"rows":[]})); assert!(projection(Number::ZERO).unwrap().is_empty());"#,
+    );
+}
+
+#[test]
+fn generated_inferred_table_columns_shadow_outer_names_in_selectors() {
+    let source = r#"namespace tables; version "1";
+Rate = {price: Number};
+decision_task greater { input price: Number; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression table(["price"], [10], [20])[price > var(price), price]; } }
+"#;
+    compile_and_test(
+        source,
+        r#"let result = greater(Number::from(15)).unwrap(); assert_eq!(serde_json::to_value(result).unwrap(), serde_json::json!({"columns":["price"],"rows":[{"price":20}]}));"#,
+    );
+    assert!(
+        transpile(&source.replace("price > var(price)", "missing > var(price)"))
+            .unwrap_err()
+            .to_string()
+            .contains("unknown table column")
+    );
+}
+
+#[test]
+fn generated_grouped_output_outer_vars_track_decision_dependencies() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {region: String, rate: Number};
+Summary = {region: String, total: Number};
+decision_task summary { input data: Table<Rate>; output result: Table<Summary> = value;
+literal_expression value { output result: Table<Summary>; expression source.groupBy(region).agg(total = sum(rate) + var(adjustment)); }
+literal_expression source { output result: Table<Rate>; expression data; }
+literal_expression adjustment { output result: Number; expression 2; }
+}"#,
+        r#"let input: Table = serde_json::from_value(serde_json::json!({"columns":["region","rate"],"rows":[{"region":"eu","rate":10}]})).unwrap(); let result = summary(input).unwrap(); assert_eq!(serde_json::to_value(result).unwrap(),serde_json::json!({"columns":["region","total"],"rows":[{"region":"eu","total":12}]}));"#,
+    );
+}
+
+#[test]
+fn generated_grouped_aggregates_preserve_first_seen_keys_and_null_aware_values() {
+    let source = r#"namespace tables; version "1";
+Rate = {region: String, rate: Number?};
+Summary = {region: String, total: Number, average: Number?, n: Number};
+decision_task summary { input data: Table<Rate>; output result: Table<Summary> = value; literal_expression value { output result: Table<Summary>; expression data.groupBy(region).agg(total = sum(rate), average = mean(rate), n = count()); } }
+"#;
+    compile_and_test(
+        source,
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["region","rate"],"rows":[{"region":"us","rate":null},{"region":"eu","rate":20},{"region":"eu","rate":null},{"region":"us","rate":null}]})).unwrap(); let result = summary(data.clone()).unwrap(); assert_eq!(serde_json::to_value(result).unwrap(),serde_json::json!({"columns":["region","total","average","n"],"rows":[{"region":"us","total":0,"average":null,"n":2},{"region":"eu","total":20,"average":20,"n":2}]})); assert_eq!(data.rows().len(),4); let empty: Table = serde_json::from_value(serde_json::json!({"columns":["region","rate"],"rows":[]})).unwrap(); assert_eq!(summary(empty).unwrap().columns(), &["region","total","average","n"]);"#,
+    );
+    assert!(transpile(&source.replace("average: Number?", "average: Number")).is_err());
+    assert!(transpile(&source.replace("sum(rate)", "sum(region)")).is_err());
+}
+
+#[test]
+fn generated_keyed_and_cross_joins_propagate_nullable_unmatched_columns() {
+    let source = r#"namespace tables; version "1";
+LeftRow = {id: Number, region: String, amount: Number};
+RightRow = {region: String, id: Number, fee: Number};
+OuterRow = {region: String, id: Number, amount: Number?, fee: Number?};
+InnerRow = {region: String, id: Number, amount: Number, fee: Number};
+decision_task outer { input left: Table<LeftRow>; input right: Table<RightRow>; output result: Table<OuterRow> = value; literal_expression value { output result: Table<OuterRow>; expression join(left, right, [region, id], "outer"); } }
+decision_task inner { input left: Table<LeftRow>; input right: Table<RightRow>; output result: Table<InnerRow> = value; literal_expression value { output result: Table<InnerRow>; expression left.join(right, [region, id]); } }
+decision_task fees { input left: Table<LeftRow>; input right: Table<RightRow>; output result: List<Number?> = value; literal_expression value { output result: List<Number?>; expression join(left, right, [region, id], "outer").fee; } }
+Single = {id: Number};
+Label = {label: String};
+Cross = {id: Number, label: String};
+decision_task cross { input left: Table<Single>; input right: Table<Label>; output result: Table<Cross> = value; literal_expression value { output result: Table<Cross>; expression left.join(right, [], "cross"); } }
+"#;
+    compile_and_test(
+        source,
+        r#"let left: Table = serde_json::from_value(serde_json::json!({"columns":["id","region","amount"],"rows":[{"id":1,"region":"eu","amount":10},{"id":1,"region":"eu","amount":20},{"id":2,"region":"us","amount":30}]})).unwrap(); let right: Table = serde_json::from_value(serde_json::json!({"columns":["region","id","fee"],"rows":[{"region":"eu","id":1,"fee":1},{"region":"eu","id":1,"fee":2},{"region":"other","id":3,"fee":3}]})).unwrap(); let result = outer(left.clone(),right.clone()).unwrap(); assert_eq!(result.columns(), &["region","id","amount","fee"]); assert_eq!(result.rows().len(),6); assert_eq!(result.rows()[4][3],None); assert_eq!(result.rows()[5][2],None); assert_eq!(inner(left.clone(),right.clone()).unwrap().rows().len(),4); assert_eq!(fees(left,right).unwrap().len(),6); let one: Table = serde_json::from_value(serde_json::json!({"columns":["id"],"rows":[{"id":1},{"id":2}]})).unwrap(); let labels: Table = serde_json::from_value(serde_json::json!({"columns":["label"],"rows":[{"label":"a"},{"label":"b"},{"label":"c"}]})).unwrap(); assert_eq!(cross(one,labels).unwrap().rows().len(),6);"#,
+    );
+    assert!(
+        transpile(&source.replace("[region, id], \"outer\"", "[region, missing], \"outer\""))
+            .is_err()
+    );
+    assert!(transpile(&source.replace("[region, id], \"outer\"", "[], \"outer\"")).is_err());
+    assert!(
+        transpile(&source.replace("[region, id], \"outer\"", "[region, id], \"invalid\"")).is_err()
+    );
+    assert!(
+        transpile(&source.replace(
+            "RightRow = {region: String, id: Number, fee: Number}",
+            "RightRow = {region: String, id: Number, amount: Number}"
+        ))
+        .unwrap_err()
+        .contains("noncolliding")
+    );
+    assert!(
+        transpile(&source.replace(
+            "OuterRow = {region: String, id: Number, amount: Number?, fee: Number?}",
+            "OuterRow = {region: String, id: Number, amount: Number, fee: Number?}"
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn generated_table_union_modes_preserve_rows_order_and_nullable_missing_cells() {
+    let source = r#"namespace tables; version "1";
+LeftRow = {id: Number, price: Number};
+RightRow = {id: Number, region: String};
+AllRow = {id: Number, price: Number?, region: String?};
+OnlyId = {id: Number};
+decision_task combined { input left: Table<LeftRow>; output result: Table<LeftRow> = value; literal_expression value { output result: Table<LeftRow>; expression union(left, left); } }
+decision_task combined_method { input left: Table<LeftRow>; output result: Table<LeftRow> = value; literal_expression value { output result: Table<LeftRow>; expression left.union(left).distinct(); } }
+decision_task all_rows { input left: Table<LeftRow>; input right: Table<RightRow>; output result: Table<AllRow> = value; literal_expression value { output result: Table<AllRow>; expression union(left, right, "all"); } }
+decision_task common_rows { input left: Table<LeftRow>; input right: Table<RightRow>; output result: Table<OnlyId> = value; literal_expression value { output result: Table<OnlyId>; expression left.union(right, "common"); } }
+"#;
+    compile_and_test(
+        source,
+        r#"let left: Table = serde_json::from_value(serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":20}]})).unwrap(); let right: Table = serde_json::from_value(serde_json::json!({"columns":["id","region"],"rows":[{"id":2,"region":"eu"}]})).unwrap(); assert_eq!(combined(left.clone()).unwrap().rows().len(),2); assert_eq!(combined_method(left.clone()).unwrap().rows().len(),1); assert_eq!(serde_json::to_value(all_rows(left.clone(),right.clone()).unwrap()).unwrap(),serde_json::json!({"columns":["id","price","region"],"rows":[{"id":1,"price":20,"region":null},{"id":2,"price":null,"region":"eu"}]})); assert_eq!(common_rows(left,right).unwrap().columns(), &["id"]);"#,
+    );
+    assert!(
+        transpile(&source.replace("union(left, right, \"all\")", "union(left, right)")).is_err()
+    );
+    assert!(
+        transpile(&source.replace(
+            "union(left, right, \"all\")",
+            "union(left, right, \"unknown\")"
+        ))
+        .is_err()
+    );
+    assert!(
+        transpile(&source.replace(
+            "AllRow = {id: Number, price: Number?, region: String?}",
+            "AllRow = {id: Number, price: Number, region: String?}"
+        ))
+        .is_err()
+    );
+    assert!(
+        transpile(&source.replace(
+            "RightRow = {id: Number, region: String}",
+            "RightRow = {id: Number, region: String?}"
+        ))
+        .is_ok()
+    );
+}
+
+#[test]
+fn generated_table_sort_is_stable_multikey_and_ranked() {
+    let source = r#"namespace tables; version "1";
+Rate = {region: String, rate: Number};
+decision_task sorted { input data: Table<Rate>; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression data.sort(region, desc(rate)); } }
+decision_task ranked { input data: Table<Rate>; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression data.sort(inOrder(region, ["b", "a"]), desc(rate)); } }
+Nullable = {price: Number?};
+decision_task null_rank { input data: Table<Nullable>; input order: List<Number?>; output result: Table<Nullable> = value; literal_expression value { output result: Table<Nullable>; expression data.sort(inOrder(price, var(order))); } }
+"#;
+    compile_and_test(
+        source,
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["region","rate"],"rows":[{"region":"b","rate":1},{"region":"a","rate":2},{"region":"b","rate":3},{"region":"a","rate":1}]})).unwrap(); let sorted = sorted(data.clone()).unwrap(); assert_eq!(serde_json::to_value(sorted).unwrap(), serde_json::json!({"columns":["region","rate"],"rows":[{"region":"a","rate":2},{"region":"a","rate":1},{"region":"b","rate":3},{"region":"b","rate":1}]})); let ranked = ranked(data).unwrap(); assert_eq!(ranked.rows()[0][0], Some(blkit_core::Cell::from("b"))); let optional: Table = serde_json::from_value(serde_json::json!({"columns":["price"],"rows":[{"price":10},{"price":null},{"price":20}]})).unwrap(); let ranked = null_rank(optional,vec![None,Some(Number::from(20))]).unwrap(); assert_eq!(ranked.rows()[0][0],None); assert_eq!(ranked.rows()[1][0],Some(blkit_core::Cell::from(Number::from(20))));"#,
+    );
+    for invalid in [
+        "data.sort()",
+        "data.sort(missing)",
+        "data.sort(inOrder(region, [1]))",
+    ] {
+        assert!(
+            transpile(&source.replace("data.sort(region, desc(rate))", invalid)).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn generated_table_rename_and_with_column_chain_preserves_schema_and_nulls() {
+    let source = r#"namespace tables; version "1";
+Rate = {region: String, rate: Number?};
+Priced = {region: String, price: Number?, with_tax: Number?};
+Swapped = {rate: String, region: Number?};
+decision_task transformed { input data: Table<Rate>; output result: Table<Priced> = value; literal_expression value { output result: Table<Priced>; expression data.select(region, rate).rename(rate -> price).withColumn(with_tax = price * 1.2); } }
+decision_task swapped { input data: Table<Rate>; output result: Table<Swapped> = value; literal_expression value { output result: Table<Swapped>; expression data.rename(region -> rate, rate -> region); } }
+decision_task replaced { input data: Table<Rate>; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression data.withColumn(rate = coalesce(rate, 0) * 2); } }
+"#;
+    compile_and_test(
+        source,
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["region","rate"],"rows":[{"region":"eu","rate":null},{"region":"us","rate":10}]})).unwrap(); let changed = transformed(data.clone()).unwrap(); assert_eq!(serde_json::to_value(changed).unwrap(),serde_json::json!({"columns":["region","price","with_tax"],"rows":[{"region":"eu","price":null,"with_tax":null},{"region":"us","price":10,"with_tax":12.0}]})); assert_eq!(swapped(data.clone()).unwrap().columns(), &["rate","region"]); assert_eq!(replaced(data.clone()).unwrap().rows()[0][1],Some(blkit_core::Cell::from(Number::ZERO))); assert_eq!(data.columns(), &["region","rate"]);"#,
+    );
+    for invalid in [
+        "data.rename(rate -> region)",
+        "data.rename(missing -> other)",
+        "data.withColumn(rate = \"wrong\")",
+    ] {
+        assert!(transpile(&source.replace("data.select(region, rate).rename(rate -> price).withColumn(with_tax = price * 1.2)", invalid)).is_err(), "{invalid}");
+    }
+    assert!(
+        transpile(&source.replace(
+            "data.withColumn(rate = coalesce(rate, 0) * 2)",
+            "data.withColumn(rate = \"wrong\")"
+        ))
+        .is_err()
+    );
+    assert!(
+        transpile(&source.replace(
+            "data.withColumn(rate = coalesce(rate, 0) * 2)",
+            "data.withColumn(rate = missing + 1)"
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn generated_table_row_transforms_filter_select_slice_and_distinct() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {id: Number, price: Number?};
+Price = {price: Number?};
+decision_task matching { input data: Table<Rate>; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression data.filter(price > 10); } }
+decision_task inverse { input data: Table<Rate>; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression data.filterOut(price > 10); } }
+decision_task prices { input data: Table<Rate>; output result: Table<Price> = value; literal_expression value { output result: Table<Price>; expression data.select(price); } }
+decision_task first_two { input data: Table<Rate>; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression data.slice(1:2); } }
+decision_task unique { input data: Table<Rate>; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression data.distinct(); } }
+"#,
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":null},{"id":2,"price":20},{"id":2,"price":20},{"id":3,"price":5}]})).unwrap(); assert_eq!(matching(data.clone()).unwrap().rows().len(),2); assert_eq!(inverse(data.clone()).unwrap().rows().len(),1); assert_eq!(prices(data.clone()).unwrap().columns(), &["price"]); assert_eq!(first_two(data.clone()).unwrap().rows().len(),2); assert_eq!(unique(data).unwrap().rows().len(),3);"#,
+    );
+}
+
+#[test]
+fn generated_nullable_table_projection_and_cell_conversion() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {price: Number?};
+decision_task projected { input data: Table<Rate>; output result: List<Number?> = value; literal_expression value { output result: List<Number?>; expression data.price; } }
+decision_task values { input data: Table<Rate>; output result: List<Number?> = value; literal_expression value { output result: List<Number?>; expression data[, price].toList(); } }
+decision_task cell { input data: Table<Rate>; output result: Number? = value; literal_expression value { output result: Number?; expression data[1, price].toValue(); } }
+"#,
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["price"],"rows":[{"price":null},{"price":20}]})).unwrap(); assert_eq!(projected(data.clone()).unwrap(),vec![None,Some(Number::from(20))]); assert_eq!(values(data.clone()).unwrap(),vec![None,Some(Number::from(20))]); assert_eq!(cell(data).unwrap(),None);"#,
+    );
+}
+
+#[test]
+fn generated_table_iteration_uses_declared_row_types() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {price: Number?};
+decision_task prices { input data: Table<Rate>; output result: List<Number?> = value; literal_expression value { output result: List<Number?>; expression for r in data return r.price; } }
+decision_task any_high { input data: Table<Rate>; output result: Bool = value; literal_expression value { output result: Bool; expression some r in data satisfies coalesce(r.price, 0) > 10; } }
+decision_task all_positive { input data: Table<Rate>; output result: Bool = value; literal_expression value { output result: Bool; expression every r in data satisfies coalesce(r.price, 0) > 0; } }
+"#,
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["price"],"rows":[{"price":null},{"price":20}]})).unwrap(); assert_eq!(prices(data.clone()).unwrap(), vec![None, Some(Number::from(20))]); assert!(any_high(data.clone()).unwrap()); assert!(!all_positive(data).unwrap());"#,
+    );
+}
+
+#[test]
+fn generated_table_filters_exclude_unknown_predicates() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {id: Number, price: Number?};
+decision_task filtered { input data: Table<Rate>; output result: Table<Rate> = result; literal_expression result { output result: Table<Rate>; expression data[price > 10]; } }
+decision_task negative { input data: Table<Rate>; output result: Table<Rate> = result; literal_expression result { output result: Table<Rate>; expression data[not(price > 10)]; } }
+"#,
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":20},{"id":2,"price":null},{"id":3,"price":5}]})).unwrap(); assert_eq!(serde_json::to_value(filtered(data.clone()).unwrap()).unwrap(),serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":20}]})); assert_eq!(serde_json::to_value(negative(data).unwrap()).unwrap(),serde_json::json!({"columns":["id","price"],"rows":[{"id":3,"price":5}]}));"#,
+    );
+}
+
+#[test]
+fn generated_coalesce_is_lazy_and_requires_matching_nonnull_fallback() {
+    let source = r#"namespace orders; version "1";
+Order = {id: Number, price: Number?};
+decision_task value { input order: Order; output result: Number = result; literal_expression result { output result: Number; expression coalesce(order.price, 100 / order.id); } }"#;
+    compile_and_test(
+        source,
+        r#"let known = Order {id:Number::ZERO,price:Some(Number::from(20))}; assert_eq!(value(known).unwrap(),Number::from(20)); let missing = Order {id:Number::from(2),price:None}; assert_eq!(value(missing).unwrap(),Number::from(50));"#,
+    );
+    assert!(transpile(&source.replace("100 / order.id", "\"wrong\"")).is_err());
+    assert!(transpile(&source.replace("order.price, 100", "order.id, 100")).is_err());
+    assert!(transpile(&source.replace("100 / order.id", "order.price")).is_err());
+}
+
+#[test]
+fn generated_nullable_named_dictionary_and_scalar_roundtrip() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+Order = {id: Number, price: Number?};
+decision_task echo { input order: Order; output result: Order = value; literal_expression value { output result: Order; expression order; } }
+decision_task price { input order: Order; output result: Number? = value; literal_expression value { output result: Number?; expression order.price; } }
+decision_task literal { input amount: Number; output result: Order = value; literal_expression value { output result: Order; expression {id: amount, price: 20}; } }
+"#,
+        r#"assert_eq!(literal(Number::ONE).unwrap().price, Some(Number::from(20)));
+for (input, expected) in [(serde_json::json!({"id":"1","price":null}), serde_json::Value::Null), (serde_json::json!({"id":"1","price":"20"}), serde_json::json!("20"))] {
+    let order: Order = serde_json::from_value(input.clone()).unwrap();
+    assert_eq!(serde_json::to_value(echo(order.clone()).unwrap()).unwrap(), input);
+    assert_eq!(serde_json::to_value(price(order).unwrap()).unwrap(), expected);
+}
+for bad in [serde_json::json!({"id":"1"}), serde_json::json!({"id":null,"price":"20"}), serde_json::json!({"id":"1","price":"wrong"}), serde_json::json!({"id":"1","price":true})] {
+    assert!(serde_json::from_value::<Order>(bad.clone()).is_err(), "accepted {bad}");
+}"#,
+    );
+}
+
+#[test]
+fn generated_nullable_request_schema_requires_fields_and_checks_nonnull_types() {
+    compile_and_test_graph(
+        r#"namespace orders; version "1";
+Order = {id: Number, price: Number?};
+start_event start {}
+input_request review { prompt "Order?"; output order: Order; }
+end_event done { input order: Order; }
+process route { flow start -> review; flow review -> done; bind review.order -> done.order; }"#,
+        r#"let graph = named_graph_definitions().remove(0);
+let blkit::compiled_graph::GraphNodeKind::InputRequest { schema, decode_response, .. } = &graph.nodes.iter().find(|n| n.name == "review").unwrap().kind else { panic!("missing request") };
+for good in [serde_json::json!({"order":{"id":"1","price":null}}), serde_json::json!({"order":{"id":"1","price":"20"}})] {
+    assert!(schema.validate_response(&good).is_ok());
+    assert_eq!(decode_response(good.clone()).unwrap(), good);
+}
+for bad in [serde_json::json!({"order":{"id":"1"}}), serde_json::json!({"order":{"id":null,"price":null}}), serde_json::json!({"order":{"id":"1","price":false}}), serde_json::json!({"order":{"id":"1","price":"bad"}})] {
+    assert!(schema.validate_response(&bad).is_err(), "API accepted {bad}");
+    assert!(decode_response(bad.clone()).is_err(), "worker accepted {bad}");
+}"#,
+    );
+}
+
+#[test]
+fn generated_nullable_project_decision_path_preserves_present_null() {
+    compile_and_test_graph(
+        r#"namespace orders; version "1";
+Order = {id: Number, price: Number?};
+start_event start { output order: Order; }
+decision_task echo { input order: Order; output result: Order = value; literal_expression value { output result: Order; expression order; } }
+end_event done { input result: Order; }
+process route { flow start -> echo; flow echo -> done; bind start.order -> echo.order; bind echo.result -> done.result; }"#,
+        r#"let graph = named_graph_definitions().remove(0);
+for price in [serde_json::Value::Null, serde_json::json!("20")] {
+    let input = serde_json::json!({"order":{"id":"1","price":price}});
+    let mut state = graph.checkpoint(&input).unwrap();
+    assert_eq!(graph.run(&input, &mut state).unwrap(), input["order"]);
+}
+for order in [serde_json::json!({"id":"1"}), serde_json::json!({"id":null,"price":null}), serde_json::json!({"id":"1","price":true})] {
+    assert!((graph.decode_input)(serde_json::json!({"order":order})).is_err());
+}"#,
+    );
+}
+
+#[test]
+fn generated_nullable_scalar_input_output_passes_null_without_losing_number() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+decision_task echo { input value: Number?; output result: Number? = result; literal_expression result { output result: Number?; expression value; } }"#,
+        r#"assert_eq!(echo(None).unwrap(), None);
+assert_eq!(echo(Some(Number::from(20))).unwrap(), Some(Number::from(20)));
+assert_eq!(serde_json::to_value(echo(None).unwrap()).unwrap(), serde_json::Value::Null);"#,
+    );
+}
+
+#[test]
+fn generated_nullable_recursive_named_dictionary_keeps_required_nested_fields() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+Order = {price: Number?, children: List<Order>};
+decision_task echo { input order: Order; output result: Order = value; literal_expression value { output result: Order; expression order; } }"#,
+        r#"let input = serde_json::json!({"price":null,"children":[{"price":"5","children":[]}]});
+let order: Order = serde_json::from_value(input.clone()).unwrap();
+assert_eq!(serde_json::to_value(echo(order).unwrap()).unwrap(), input);
+assert!(serde_json::from_value::<Order>(serde_json::json!({"price":null,"children":[{"children":[]}]})).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_nullable_nested_literal_emits_typed_dictionary_and_null() {
+    compile_and_test(
+        r#"namespace orders; version "1";
+Detail = {amount: Number};
+Order = {detail: Detail?};
+decision_task make { input amount: Number; output result: Order = value; literal_expression value { output result: Order; expression {detail: {amount: amount}}; } }
+decision_task echo { input order: Order; output result: Order = value; literal_expression value { output result: Order; expression order; } }"#,
+        r#"assert_eq!(make(Number::ONE).unwrap().detail.unwrap().amount, Number::ONE);
+let input = serde_json::json!({"detail":null});
+let order: Order = serde_json::from_value(input.clone()).unwrap();
+assert_eq!(serde_json::to_value(echo(order).unwrap()).unwrap(), input);"#,
+    );
+}
+
+#[test]
+fn generated_table_nullable_constructor_cells_preserve_validated_sources() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Price = {price: Number?};
+decision_task positional { input price: Number?; output result: Table<Price> = value; literal_expression value { output result: Table<Price>; expression table(["price"], [price]); } }
+decision_task dictionaries { input price: Number?; output result: Table<Price> = value; literal_expression value { output result: Table<Price>; expression tableFromDicts([{price: price}]); } }
+decision_task dynamic_row { input prices: List<Number?>; output result: Table<Price> = value; literal_expression value { output result: Table<Price>; expression table(["price"], prices); } }
+decision_task dynamic_dicts { input prices: List<Price>; output result: Table<Price> = value; literal_expression value { output result: Table<Price>; expression tableFromDicts(prices); } }
+"#,
+        r#"for price in [None, Some(Number::from(7))] {
+    let expected = serde_json::json!({"columns":["price"],"rows":[{"price":price.map(|_| 7)}]});
+    for table in [positional(price).unwrap(), dictionaries(price).unwrap(), dynamic_row(vec![price]).unwrap(), dynamic_dicts(vec![Price {price}]).unwrap()] {
+        assert_eq!(serde_json::to_value(&table).unwrap(), expected);
+        assert_eq!(table.rows()[0][0].is_none(), price.is_none());
+    }
+}"#,
+    );
+    for expression in [
+        "table([\"price\"], [null])",
+        "table([\"price\"], [[null]])",
+        "tableFromDicts([{price: null}])",
+        "tableFromDicts([{price: [null]}])",
+    ] {
+        let source = format!(
+            "namespace tables; version \"1\"; Price = {{price: Number?}}; decision_task invalid {{ input unused: Number; output result: Table<Price> = value; literal_expression value {{ output result: Table<Price>; expression {expression}; }} }}"
+        );
+        assert!(transpile(&source).is_err(), "accepted {expression}");
+    }
+}
+
+#[test]
+fn generated_table_recursive_declared_constructor_cells_keep_tables_and_nulls() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Price = {price: Number?};
+Bundle = {nested: Table<Price>, nullable_table: Table<Price>?, records: List<Price>, lookup: Dictionary<Number?>, maybe: Price?, prices: List<Number?>, optional_lookup: Dictionary<Number?>?};
+Row = {lookup: Dictionary<Table<Price>?>, payload: Bundle, tables: List<Table<Price>>};
+decision_task positional { input bundle: Bundle; input tables: List<Table<Price>>; input lookup: Dictionary<Table<Price>?>; output result: Table<Row> = value; literal_expression value { output result: Table<Row>; expression table(["lookup", "payload", "tables"], [lookup, bundle, tables]); } }
+decision_task dictionaries { input bundle: Bundle; input tables: List<Table<Price>>; input lookup: Dictionary<Table<Price>?>; output result: Table<Row> = value; literal_expression value { output result: Table<Row>; expression tableFromDicts([{payload: bundle, tables: tables, lookup: lookup}]); } }
+"#,
+        r#"let nested: Table = serde_json::from_value(serde_json::json!({"columns":["price"],"rows":[{"price":null},{"price":7}]})).unwrap();
+for present in [false, true] {
+    let bundle = Bundle {nested: nested.clone(), nullable_table: present.then(|| nested.clone()), records: vec![Price {price: None}, Price {price: Some(Number::from(7))}], lookup: std::collections::BTreeMap::from([("missing".into(), None), ("known".into(), Some(Number::from(7)))]), maybe: present.then_some(Price {price: None}), prices: vec![None, Some(Number::from(7))], optional_lookup: present.then_some(std::collections::BTreeMap::from([("price".into(), None)]))};
+    let tables = vec![nested.clone()];
+    let lookup = std::collections::BTreeMap::from([("missing".into(), None), ("known".into(), Some(nested.clone()))]);
+    for table in [positional(bundle.clone(), tables.clone(), lookup.clone()).unwrap(), dictionaries(bundle, tables, lookup).unwrap()] {
+        let Some(blkit_core::Cell::Dictionary(payload)) = &table.rows()[0][1] else { panic!("expected record cell"); };
+        assert!(matches!(payload["nested"], blkit_core::Cell::Table(_)));
+        assert_eq!(matches!(payload["nullable_table"], blkit_core::Cell::Table(_)), present);
+        let blkit_core::Cell::List(records) = &payload["records"] else { panic!("expected records"); };
+        let blkit_core::Cell::Dictionary(record) = &records[0] else { panic!("expected record"); };
+        assert_eq!(record["price"], blkit_core::Cell::Null);
+        let blkit_core::Cell::Dictionary(values) = &payload["lookup"] else { panic!("expected lookup"); };
+        assert_eq!(values["missing"], blkit_core::Cell::Null);
+        assert_eq!(values["known"], blkit_core::Cell::Number(Number::from(7)));
+        assert_eq!(payload["prices"], blkit_core::Cell::List(vec![blkit_core::Cell::Null, blkit_core::Cell::Number(Number::from(7))]));
+        assert_eq!(matches!(payload["optional_lookup"], blkit_core::Cell::Dictionary(_)), present);
+        assert_eq!(matches!(payload["maybe"], blkit_core::Cell::Dictionary(_)), present);
+        let Some(blkit_core::Cell::List(tables)) = &table.rows()[0][2] else { panic!("expected table list"); };
+        assert!(matches!(tables[0], blkit_core::Cell::Table(_)));
+        let Some(blkit_core::Cell::Dictionary(lookup)) = &table.rows()[0][0] else { panic!("expected table lookup"); };
+        assert_eq!(lookup["missing"], blkit_core::Cell::Null);
+        assert!(matches!(lookup["known"], blkit_core::Cell::Table(_)));
+    }
+}"#,
+    );
+}
+
+#[test]
+fn generated_table_dictionary_outputs_preserve_nulls_without_weakening_inputs() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Row = {id: Number, price: Number?};
+Envelope = {data: Table<Row>, payload: Dictionary};
+decision_task rows { input data: Table<Row>; output result: List<Dictionary> = value; literal_expression value { output result: List<Dictionary>; expression data.toList(); } }
+decision_task row { input data: Table<Row>; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression data.toDict(); } }
+decision_task wrapped { input data: Table<Row>; output result: Envelope = value; literal_expression value { output result: Envelope; expression {data: data, payload: data.toDict()}; } }
+decision_task input_dictionary { input data: Dictionary; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression data; } }
+decision_task input_value { input data: Value; output result: Value = value; literal_expression value { output result: Value; expression data; } }
+decision_task input_record { input data: Envelope; output result: Envelope = value; literal_expression value { output result: Envelope; expression data; } }
+decision_task introduced { input unused: Number; output result: List<Dictionary> = value; literal_expression value { output result: List<Dictionary>; expression table(["id"], [1]).union(table(["price"], [7]), "all").toList(); } }
+"#,
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":null},{"id":2,"price":7}]})).unwrap();
+assert_eq!(serde_json::to_value(rows(data.clone()).unwrap()).unwrap(), serde_json::json!([{"id":1,"price":null},{"id":2,"price":7}]));
+let single = data.select(&[0], &["id".into(), "price".into()]).unwrap();
+assert_eq!(serde_json::to_value(row(single.clone()).unwrap()).unwrap(), serde_json::json!({"id":1,"price":null}));
+let envelope = wrapped(single.clone()).unwrap();
+assert_eq!(envelope.payload["price"], serde_json::Value::Null);
+assert_eq!(serde_json::to_value(&envelope.data).unwrap(), serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":null}]}));
+assert!(input_record(envelope).is_err(), "dynamic dictionary input must still reject null");
+assert!(row(data).is_err(), "toDict still requires one row");
+assert_eq!(serde_json::to_value(introduced(Number::ZERO).unwrap()).unwrap(), serde_json::json!([{"id":1,"price":null},{"id":null,"price":7}]));
+for bad in [serde_json::json!({"nested":{"price":null}}), serde_json::json!({"nested":[null]})] {
+    assert!(input_dictionary(serde_json::from_value(bad.clone()).unwrap()).is_err());
+    assert!(input_value(bad).is_err());
+}
+for bad in [serde_json::json!({"columns":["id","price"],"rows":[{"id":null,"price":7}]}), serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":"wrong"}]}), serde_json::json!({"columns":["price","id"],"rows":[{"id":1,"price":7}]})] {
+    let bad: Table = serde_json::from_value(bad).unwrap();
+    assert!(__bl_check_output_Envelope(&Envelope {data: bad.clone(), payload: std::collections::BTreeMap::new()}).is_err(), "named output must retain nested table shape/type checks");
+    assert!(rows(bad).is_err(), "declared table input checks must remain");
+}"#,
+    );
+}
+
+#[test]
+fn generated_table_dictionary_outputs_preserve_nulls_in_project_decisions() {
+    compile_and_test_graph(
+        r#"namespace tables; version "1";
+Row = {id: Number, price: Number?};
+start_event start { output data: Table<Row>; }
+decision_task rows { input data: Table<Row>; output result: List<Dictionary> = value; literal_expression value { output result: List<Dictionary>; expression data.toList(); } }
+decision_task row { input data: Table<Row>; output result: Dictionary = value; literal_expression value { output result: Dictionary; expression data.toDict(); } }
+end_event list_done { input result: List<Dictionary>; }
+end_event dict_done { input result: Dictionary; }
+process list_route { flow start -> rows; flow rows -> list_done; bind start.data -> rows.data; bind rows.result -> list_done.result; }
+process dict_route { flow start -> row; flow row -> dict_done; bind start.data -> row.data; bind row.result -> dict_done.result; }
+"#,
+        r#"for graph in named_graph_definitions() {
+    let input = serde_json::json!({"data":{"columns":["id","price"],"rows":[{"id":1,"price":null}]}});
+    let mut state = graph.checkpoint(&input).unwrap();
+    let expected = if graph.name == "list_route" { serde_json::json!([{"id":1,"price":null}]) } else { serde_json::json!({"id":1,"price":null}) };
+    assert_eq!(graph.run(&input, &mut state).unwrap(), expected);
+    for bad in [serde_json::json!({"columns":["id","price"],"rows":[{"id":null,"price":null}]}), serde_json::json!({"columns":["id","price"],"rows":[{"id":1,"price":false}]}), serde_json::json!({"columns":["id"],"rows":[{"id":1}]})] {
+        assert!((graph.decode_input)(serde_json::json!({"data":bad})).is_err());
+    }
+}"#,
+    );
+}
+
+#[test]
+fn generated_table_row_selector_bounds_cumulative_expansion_before_extension() {
+    // Reuse 1,000 rows: the RED probe expands only about 8 MB of indices, not huge tables.
+    let ranges = vec!["1:1000"; 1000].join(",");
+    let source = format!(
+        r#"namespace tables; version "1";
+Row = {{id: Number}};
+decision_task at_limit {{ input data: Table<Row>; output result: Table<Row> = value; literal_expression value {{ output result: Table<Row>; expression data[[{ranges}]]; }} }}
+decision_task ranges_over {{ input data: Table<Row>; output result: Table<Row> = value; literal_expression value {{ output result: Table<Row>; expression data[[{ranges}, 1:1000]]; }} }}
+decision_task index_over {{ input data: Table<Row>; output result: Table<Row> = value; literal_expression value {{ output result: Table<Row>; expression data[[{ranges}, 1]]; }} }}
+decision_task mixed_over {{ input data: Table<Row>; output result: Table<Row> = value; literal_expression value {{ output result: Table<Row>; expression data[[1, {ranges}]]; }} }}
+decision_task ordered {{ input data: Table<Row>; output result: Table<Row> = value; literal_expression value {{ output result: Table<Row>; expression data[[3, 1, 3:4, -1:-2]]; }} }}
+"#
+    );
+    compile_and_test(
+        &source,
+        r#"let data = Table::new(vec!["id".into()], (1..=1000).map(|id| vec![blkit_core::Cell::Number(Number::from(id))]).collect()).unwrap();
+for result in [ranges_over(data.clone()), index_over(data.clone()), mixed_over(data.clone())] {
+    assert!(result.expect_err("cumulative selector expansion must be bounded").contains("resource limit"));
+}
+let result = at_limit(data.clone()).unwrap();
+assert_eq!(result.rows().len(), 1000);
+assert_eq!(result.rows()[0][0], Some(blkit_core::Cell::Number(Number::ONE)));
+assert_eq!(result.rows()[999][0], Some(blkit_core::Cell::Number(Number::from(1000))));
+assert_eq!(serde_json::to_value(ordered(data).unwrap()).unwrap(), serde_json::json!({"columns":["id"],"rows":[{"id":3},{"id":1},{"id":4},{"id":1000},{"id":999}]}));"#,
+    );
+}
+
+#[test]
+fn generated_table_dictionary_with_column_lowers_nested_row_expressions() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {rate: Number}; Payload = {rate: Number, payload: Dictionary};
+decision_task check { input data: Table<Rate>; input adjustment: Number; output result: Table<Payload> = value;
+literal_expression value { output result: Table<Payload>; expression data.withColumn(payload = {amount: rate, nested: {adjusted: rate + var(adjustment)}, values: [rate]}); } }"#,
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["rate"],"rows":[{"rate":2},{"rate":7}]})).unwrap();
+assert_eq!(serde_json::to_value(check(data, Number::from(3)).unwrap()).unwrap(), serde_json::json!({"columns":["rate","payload"],"rows":[{"rate":2,"payload":{"amount":2,"nested":{"adjusted":5},"values":[2]}},{"rate":7,"payload":{"amount":7,"nested":{"adjusted":10},"values":[7]}}]}));"#,
+    );
+}
+
+#[test]
+fn generated_table_conversion_nonnull_value_arithmetic_uses_inferred_number() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {rate: Number};
+decision_task plus { input data: Table<Rate>; output result: Number = value; literal_expression value { output result: Number; expression data[1, rate].toValue() + 1; } }
+decision_task whole { input data: Table<Rate>; output result: Number = value; literal_expression value { output result: Number; expression data.toValue() + 1; } }
+"#,
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["rate"],"rows":[{"rate":2.5}]})).unwrap();
+assert_eq!(plus(data.clone()).unwrap(), Number::new(35, 1));
+assert_eq!(whole(data.clone()).unwrap(), Number::new(35, 1));
+assert!(whole(data.union(&[data.clone()], "error").unwrap()).unwrap_err().contains("toValue"));
+assert!(whole(Table::new(vec!["rate".into()], vec![]).unwrap()).is_err());"#,
+    );
+}
+
+#[test]
+fn generated_table_conversion_nullable_value_arithmetic_preserves_some_and_none() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {rate: Number?};
+decision_task plus { input data: Table<Rate>; output result: Number? = value; literal_expression value { output result: Number?; expression data[1, rate].toValue() + 1; } }
+decision_task coalesced { input data: Table<Rate>; output result: Number = value; literal_expression value { output result: Number; expression coalesce(data[1, rate].toValue() + 1, 0); } }
+decision_task whole { input data: Table<Rate>; output result: Number? = value; literal_expression value { output result: Number?; expression data.toValue() + 1; } }
+"#,
+        r#"for (rate, expected) in [(serde_json::json!(2.5), Some(Number::new(35, 1))), (serde_json::Value::Null, None)] {
+    let data: Table = serde_json::from_value(serde_json::json!({"columns":["rate"],"rows":[{"rate":rate}]})).unwrap();
+    assert_eq!(plus(data.clone()).unwrap(), expected);
+    assert_eq!(whole(data.clone()).unwrap(), expected);
+    assert_eq!(coalesced(data.clone()).unwrap(), expected.unwrap_or(Number::ZERO));
+    assert!(whole(data.union(&[data.clone()], "error").unwrap()).unwrap_err().contains("toValue"));
+}"#,
+    );
+}
+
+#[test]
+fn generated_table_conversion_list_consumers_keep_inferred_cells_and_nulls() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {rate: Number}; MaybeRate = {rate: Number?};
+decision_task first { input data: Table<Rate>; output result: Number = value; literal_expression value { output result: Number; expression data.toList()[1] + 1; } }
+decision_task total { input data: Table<Rate>; output result: Number = value; literal_expression value { output result: Number; expression sum(data.toList()) + 1; } }
+decision_task maybe_first { input data: Table<MaybeRate>; output result: Number? = value; literal_expression value { output result: Number?; expression data.toList()[1] + 1; } }
+decision_task fallback { input data: Table<MaybeRate>; output result: Number = value; literal_expression value { output result: Number; expression coalesce(data.toList()[1], 0) + 1; } }
+decision_task maybe_total { input data: Table<MaybeRate>; output result: Number = value; literal_expression value { output result: Number; expression sum(data.toList()) + 1; } }
+decision_task average { input data: Table<MaybeRate>; output result: Number = value; literal_expression value { output result: Number; expression coalesce(mean(data.toList()), 0) + 1; } }
+"#,
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["rate"],"rows":[{"rate":2.5},{"rate":3.5}]})).unwrap();
+assert_eq!(first(data.clone()).unwrap(), Number::new(35, 1));
+assert_eq!(total(data.clone()).unwrap(), Number::from(7));
+assert_eq!(maybe_first(data.clone()).unwrap(), Some(Number::new(35, 1)));
+assert_eq!(fallback(data).unwrap(), Number::new(35, 1));
+for (rows, total, expected_average) in [(serde_json::json!([{"rate":null},{"rate":2.5},{"rate":3.5}]), 7, 4), (serde_json::json!([{"rate":null}]), 1, 1)] {
+    let data: Table = serde_json::from_value(serde_json::json!({"columns":["rate"],"rows":rows})).unwrap();
+    assert_eq!(maybe_first(data.clone()).unwrap(), None);
+    assert_eq!(fallback(data.clone()).unwrap(), Number::ONE);
+    assert_eq!(maybe_total(data.clone()).unwrap(), Number::from(total));
+    assert_eq!(average(data).unwrap(), Number::from(expected_average));
+}
+let empty = Table::new(vec!["rate".into()], vec![]).unwrap();
+assert_eq!(maybe_total(empty.clone()).unwrap(), Number::ONE);
+assert_eq!(average(empty).unwrap(), Number::ONE);"#,
+    );
+}
+
+#[test]
+fn generated_table_conversion_unknown_cell_types_keep_dynamic_fallback() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+decision_task empty_list { input unused: Number; output result: Number = value; literal_expression value { output result: Number; expression count(table(["a", "b"]).toList()); } }
+decision_task empty_value { input unused: Number; output result: Number = value; literal_expression value { output result: Number; expression table(["rate"]).toValue() + 1; } }
+"#,
+        r#"assert_eq!(empty_list(Number::ZERO).unwrap(), Number::ZERO);
+assert!(empty_value(Number::ZERO).unwrap_err().contains("toValue"));"#,
+    );
+}
+
+#[test]
+fn generated_recursive_record_table_cells_use_runtime_recursion() {
+    const CHILD: &str = "BLKIT_RECURSIVE_TABLE_CELL_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "generated_recursive_record_table_cells_use_runtime_recursion",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "recursive-cell child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    compile_and_test(
+        r#"namespace tables; version "1";
+Node = {amount: Number, children: List<Node>}; Row = {node: Node};
+decision_task build { input node: Node; output result: Table<Row> = value; literal_expression value { output result: Table<Row>; expression table(["node"], [node]); } }"#,
+        r#"let node = Node { amount: Number::ONE, children: vec![Node { amount: Number::from(2), children: vec![] }] }; let table = build(node).unwrap(); assert_eq!(serde_json::to_value(table).unwrap(), serde_json::json!({"columns":["node"],"rows":[{"node":{"amount":1,"children":[{"amount":2,"children":[]}]}}]}));"#,
+    );
+}
+
+#[test]
+fn generated_table_projection_index_arithmetic_keeps_inferred_number() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Rate = {rate: Number}; Maybe = {rate: Number?};
+decision_task plus { input data: Table<Rate>; output result: Number = value; literal_expression value { output result: Number; expression data.rate[1] + 1; } }
+decision_task maybe { input data: Table<Maybe>; output result: Number? = value; literal_expression value { output result: Number?; expression data.rate[1] + 1; } }"#,
+        r#"let table = |value| serde_json::from_value(serde_json::json!({"columns":["rate"],"rows":[{"rate":value}]})).unwrap(); assert_eq!(plus(table(serde_json::json!(2.5))).unwrap(), Number::new(35,1)); assert_eq!(maybe(table(serde_json::json!(2.5))).unwrap(), Some(Number::new(35,1))); assert_eq!(maybe(table(serde_json::Value::Null)).unwrap(), None);"#,
+    );
+}
+
+#[test]
+fn generated_nested_table_inputs_restore_declared_temporal_cells() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Event = {day: Date, clock: Time, when: DateTime}; Envelope = {events: Table<Event>, children: List<Envelope>};
+decision_task listed { input data: List<Table<Event>>; output result: List<Table<Event>> = value; literal_expression value { output result: List<Table<Event>>; expression for t in data return t.sort(when); } }
+decision_task mapped { input data: Dictionary<Table<Event>>; output result: List<Table<Event>> = value; literal_expression value { output result: List<Table<Event>>; expression for t in values(data) return t.sort(when); } }
+decision_task optional { input data: Table<Event>?; output result: Table<Event>? = value; literal_expression value { output result: Table<Event>?; expression data; } }
+decision_task named { input data: Envelope; output result: Table<Event> = value; literal_expression events { output result: Table<Event>; expression data.events; } literal_expression value { output result: Table<Event>; expression events.sort(when); } }
+decision_task by_day { input data: Envelope; output result: Table<Event> = value; literal_expression events { output result: Table<Event>; expression data.events; } literal_expression value { output result: Table<Event>; expression events.sort(day); } }
+decision_task by_clock { input data: Envelope; output result: Table<Event> = value; literal_expression events { output result: Table<Event>; expression data.events; } literal_expression value { output result: Table<Event>; expression events.sort(clock); } }"#,
+        r#"let raw = serde_json::json!({"columns":["day","clock","when"],"rows":[{"day":"2026-01-01","clock":"09:30:00","when":"2026-01-01T09:30:00Z"},{"day":"2026-01-02","clock":"10:00:00","when":"2026-01-01T10:00:00+02:00"}]});
+let table = || serde_json::from_value::<Table>(raw.clone()).unwrap();
+let envelope = || Envelope { events: table(), children: vec![Envelope { events: table(), children: vec![] }] };
+for result in [listed(vec![table()]).unwrap().remove(0), mapped([("a".into(),table())].into()).unwrap().remove(0), named(envelope()).unwrap()] {
+ assert!(matches!(&result.rows()[0][2], Some(blkit_core::Cell::DateTime(value)) if value.to_string() == "2026-01-01T10:00:00+02:00"), "{result:?}");
+ assert!(matches!(&result.rows()[0][0], Some(blkit_core::Cell::Date(_)))); assert!(matches!(&result.rows()[0][1], Some(blkit_core::Cell::Time(_))));
+}
+assert!(matches!(optional(Some(table())).unwrap().unwrap().rows()[0][2], Some(blkit_core::Cell::DateTime(_)))); assert!(optional(None).unwrap().is_none());
+for (field, naive) in [("when","2026-01-01T10:00:00"), ("day","2026-01-01Z"), ("clock","10:00:00Z")] {
+ let mut bad = raw.clone(); bad["rows"][1][field] = serde_json::json!(naive);
+ let bad: Table = serde_json::from_value(bad).unwrap();
+ let result = match field { "when" => named(Envelope { events: bad, children: vec![] }), "day" => by_day(Envelope { events: bad, children: vec![] }), _ => by_clock(Envelope { events: bad, children: vec![] }) }; assert!(result.is_err(), "mixed zones in {field} must fail");
+}
+let mut bad = raw.clone(); bad["rows"][0]["when"] = serde_json::Value::Null;
+let mut data = envelope(); data.children[0].events = serde_json::from_value(bad).unwrap(); assert!(named(data).is_err(), "recursive named input must be checked even when unused");"#,
+    );
+}
+
+#[test]
+fn generated_project_nested_table_input_containers_decode_before_evaluation() {
+    compile_and_test_graph(
+        r#"namespace tables; version "1";
+Event = {when: DateTime}; Envelope = {events: List<Table<Event>>, lookup: Dictionary<Table<Event>>, optional: Table<Event>?};
+start_event start { output data: Envelope; }
+decision_task sorted { input data: Envelope; output result: List<Table<Event>> = value; literal_expression value { output result: List<Table<Event>>; expression for t in data.events return t.sort(when); } }
+end_event done { input result: List<Table<Event>>; }
+process route { flow start -> sorted; flow sorted -> done; bind start.data -> sorted.data; bind sorted.result -> done.result; }"#,
+        r#"let graph = named_graph_definitions().remove(0);
+let table = serde_json::json!({"columns":["when"],"rows":[{"when":"2026-01-01T09:30:00Z"},{"when":"2026-01-01T10:00:00+02:00"}]});
+let input = serde_json::json!({"data":{"events":[table.clone()],"lookup":{"a":table.clone()},"optional":table}});
+let mut state = graph.checkpoint(&input).unwrap();
+let result = graph.run(&input, &mut state).unwrap(); assert_eq!(result[0]["rows"][0]["when"], "2026-01-01T10:00:00+02:00");
+let mut mixed = input.clone(); mixed["data"]["events"][0]["rows"][1]["when"] = serde_json::json!("2026-01-01T10:00:00"); let mut state = graph.checkpoint(&mixed).unwrap(); assert!(graph.run(&mixed, &mut state).is_err());
+for container in ["events", "lookup", "optional"] {
+ let mut bad = input.clone(); let table = match container { "events" => &mut bad["data"][container][0], "lookup" => &mut bad["data"][container]["a"], _ => &mut bad["data"][container] }; table["rows"][0]["when"] = serde_json::Value::Null; assert!((graph.decode_input)(bad).is_err(), "unchecked {container}");
+}"#,
+    );
+}
+
+#[test]
+fn generated_dictionary_entry_table_boundaries_check_even_unused_values() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Row = {id: Number}; Event = {when: DateTime}; Wrapper = {entry: DictionaryEntry<Table<Row>>};
+decision_task wrapped { input data: Wrapper; output result: Number = value; literal_expression value { output result: Number; expression 1; } }
+decision_task constant { input data: DictionaryEntry<Table<Row>>; output result: Number = value; literal_expression value { output result: Number; expression 1; } }
+decision_task sorted { input data: DictionaryEntry<Table<Event>>; output result: Table<Event> = value; literal_expression events { output result: Table<Event>; expression data.value; } literal_expression value { output result: Table<Event>; expression events.sort(when); } }
+"#,
+        r#"for id in [serde_json::Value::Null, serde_json::json!(false), serde_json::json!("wrong")] {
+ let bad: Table = serde_json::from_value(serde_json::json!({"columns":["id"],"rows":[{"id":id}]})).unwrap();
+ assert!(constant(DictionaryEntry { key: "x".into(), value: bad.clone() }).is_err(), "unused entry input must reject malformed cells");
+ assert!(wrapped(Wrapper { entry: DictionaryEntry { key: "x".into(), value: bad.clone() } }).is_err());
+ let entry = DictionaryEntry { key: "x".into(), value: bad }; assert!(__bl_check_output_Wrapper(&Wrapper { entry }).is_err(), "declared table output in entry must be checked");
+}
+let data = serde_json::from_value(serde_json::json!({"key":"x","value":{"columns":["when"],"rows":[{"when":"2026-01-01T09:30:00Z"},{"when":"2026-01-01T10:00:00+02:00"}]}})).unwrap();
+let result = sorted(data).unwrap(); assert!(matches!(result.rows()[0][0], Some(blkit_core::Cell::DateTime(_)))); assert_eq!(serde_json::to_value(result).unwrap()["rows"][0]["when"], "2026-01-01T10:00:00+02:00");"#,
+    );
+}
+
+fn check_composite_numeric_table_extraction(expression: &str, output: &str) {
+    let source = format!(
+        r#"namespace tables; version "1";
+enum Status:
+  ready;
+Inner = {{when: DateTime}};
+Payload = {{xs: List<Number>, lookup: Dictionary<Number?>, maybe: List<Number>?, children: List<Payload>, day: Date, clock: Time, state: Status, nested: Table<Inner>, dynamic: Dictionary}};
+Row = {{payload: Payload}};
+decision_task extract {{ input data: Table<Row>; output result: {output} = value; literal_expression value {{ output result: {output}; expression {expression}; }} }}
+decision_task rebuild {{ input payload: Payload; output result: Table<Row> = value; literal_expression value {{ output result: Table<Row>; expression table(["payload"], [payload]); }} }}"#
+    );
+    let scalar = if output == "Payload" {
+        "result"
+    } else {
+        "result.into_iter().next().unwrap()"
+    };
+    compile_and_test(
+        &source,
+        &format!(
+            r####"
+let raw: serde_json::Value = serde_json::from_str(r###"{{"columns":["payload"],"rows":[{{"payload":{{"xs":[123456789012345678.123456789,2],"lookup":{{"a":3.125,"n":null}},"maybe":[4.25],"children":[{{"xs":[5.5],"lookup":{{}},"maybe":null,"children":[],"day":"2026-01-02","clock":"12:00:00","state":"ready","nested":{{"columns":["when"],"rows":[]}},"dynamic":{{"n":6}}}}],"day":"2026-01-01","clock":"09:30:00","state":"ready","nested":{{"columns":["when"],"rows":[{{"when":"2026-01-01T10:00:00+02:00"}}]}},"dynamic":{{"n":7.5,"text":"8"}}}}}}]}}"###).unwrap();
+let input: Table = serde_json::from_value(raw).unwrap();
+let result = extract(input).unwrap(); let value: Payload = {scalar};
+assert_eq!(value.xs[0].to_string(), "123456789012345678.123456789"); assert_eq!(value.xs[1], Number::from(2)); assert_eq!(value.lookup["a"], Some(Number::new(3125,3))); assert_eq!(value.lookup["n"], None); assert_eq!(value.maybe, Some(vec![Number::new(425,2)])); assert_eq!(value.children[0].xs, vec![Number::new(55,1)]); assert_eq!(value.children[0].maybe, None);
+assert_eq!(value.day.to_string(), "2026-01-01"); assert_eq!(value.clock.to_string(), "09:30:00"); assert_eq!(value.state, Status::ready); assert!(matches!(value.nested.rows()[0][0], Some(blkit_core::Cell::DateTime(_)))); assert!(value.dynamic["n"].is_number()); assert_eq!(value.dynamic["text"], "8");
+let expected = value.clone(); let result = extract(rebuild(value).unwrap()).unwrap(); let again: Payload = {scalar}; assert_eq!(again, expected);
+"####
+        ),
+    );
+}
+
+#[test]
+fn generated_composite_numeric_table_projection_extracts_declared_leaves() {
+    check_composite_numeric_table_extraction("data.payload", "List<Payload>");
+}
+
+#[test]
+fn generated_composite_numeric_table_to_list_extracts_declared_leaves() {
+    check_composite_numeric_table_extraction("data.toList()", "List<Payload>");
+}
+
+#[test]
+fn generated_composite_numeric_table_to_value_extracts_declared_leaves() {
+    check_composite_numeric_table_extraction("data.toValue()", "Payload");
+}
+
+#[test]
+fn generated_composite_numeric_table_iteration_extracts_declared_leaves() {
+    check_composite_numeric_table_extraction("for row in data return row.payload", "List<Payload>");
+}
+
+#[test]
+fn generated_typed_table_inequality_uses_structural_rows_not_storage_order() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+A = {x: Number?, y: String}; B = {y: String, x: Number?}; C = {z: Number};
+decision_task equal { input left: Table<A>; input right: Table<B>; output result: Bool = value; literal_expression value { output result: Bool; expression left = right; } }
+decision_task unequal { input left: Table<A>; input right: Table<B>; output result: Bool = value; literal_expression value { output result: Bool; expression left != right; } }
+decision_task different { input left: Table<A>; input right: Table<C>; output result: Bool = value; literal_expression value { output result: Bool; expression left != right; } }
+decision_task different_equal { input left: Table<A>; input right: Table<C>; output result: Bool = value; literal_expression value { output result: Bool; expression left = right; } }
+decision_task ordinary { input unused: Number; output result: Bool = value; literal_expression value { output result: Bool; expression 1 != 2 and [1] != [2]; } }"#,
+        r#"let left: Table = serde_json::from_value(serde_json::json!({"columns":["x","y"],"rows":[{"x":1,"y":"a"},{"x":null,"y":"b"}]})).unwrap();
+let mut rows = serde_json::json!([{"x":1,"y":"a"},{"x":null,"y":"b"}]);
+let right: Table = serde_json::from_value(serde_json::json!({"columns":["y","x"],"rows":rows})).unwrap(); assert!(equal(left.clone(), right.clone()).unwrap()); assert!(!unequal(left.clone(), right).unwrap());
+rows.as_array_mut().unwrap().reverse(); let right: Table = serde_json::from_value(serde_json::json!({"columns":["y","x"],"rows":rows})).unwrap(); assert!(!equal(left.clone(),right.clone()).unwrap()); assert!(unequal(left.clone(),right).unwrap());
+let other = Table::new(vec!["z".into()], vec![]).unwrap(); assert!(different(left.clone(), other.clone()).unwrap()); assert!(!different_equal(left, other).unwrap()); assert!(ordinary(Number::ZERO).unwrap());"#,
+    );
+}
+
+#[test]
+fn generated_dynamic_multicolumn_rows_keep_runtime_width_and_cell_checks() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Pair = {a: Number, b: Number}; MaybePair = {a: Number?, b: Number?};
+decision_task build { input values: List<Number>; output result: Table<Pair> = value; literal_expression value { output result: Table<Pair>; expression table(["a","b"], values); } }
+decision_task maybe { input values: List<Number?>; output result: Table<MaybePair> = value; literal_expression value { output result: Table<MaybePair>; expression table(["a","b"], values); } }
+decision_task next { input values: List<Number>; output result: Number = value; literal_expression value { output result: Number; expression table(["a","b"], values).b[1] + 1; } }"#,
+        r#"assert_eq!(serde_json::to_value(build(vec![Number::ONE, Number::from(2)]).unwrap()).unwrap(), serde_json::json!({"columns":["a","b"],"rows":[{"a":1,"b":2}]})); assert_eq!(next(vec![Number::ONE, Number::from(2)]).unwrap(), Number::from(3)); assert_eq!(serde_json::to_value(maybe(vec![None,Some(Number::new(125,2))]).unwrap()).unwrap(), serde_json::json!({"columns":["a","b"],"rows":[{"a":null,"b":1.25}]}));
+for values in [vec![], vec![Number::ONE], vec![Number::ONE;3]] { assert!(build(values.clone()).is_err()); assert!(next(values).is_err()); }"#,
+    );
+    for (row, element) in [
+        ("a: Number, b: String", "Number"),
+        ("a: Number, b: Number", "Number?"),
+    ] {
+        let source = format!(
+            r#"namespace tables; version "1"; Pair = {{{row}}}; decision_task bad {{ input values: List<{element}>; output result: Table<Pair> = value; literal_expression value {{ output result: Table<Pair>; expression table(["a","b"], values); }} }}"#
+        );
+        assert!(transpile(&source).is_err());
+    }
+}
+
+#[test]
+fn generated_named_dictionary_adoption_is_canonical_and_structural() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Input = {z: Number, a: String}; MaybeInput = {z: Number?, a: String}; Canonical = {a: String, z: Number}; MaybeCanonical = {a: String, z: Number?};
+decision_task adopt { input rows: List<Input>; output result: Table<Canonical> = value; literal_expression value { output result: Table<Canonical>; expression tableFromDicts(rows); } }
+decision_task literal { input row: Input; output result: Table<Canonical> = value; literal_expression value { output result: Table<Canonical>; expression tableFromDicts([row]); } }
+decision_task widen { input rows: List<Input>; output result: Table<MaybeCanonical> = value; literal_expression value { output result: Table<MaybeCanonical>; expression tableFromDicts(rows); } }
+decision_task nullable { input rows: List<MaybeInput>; output result: Table<MaybeCanonical> = value; literal_expression value { output result: Table<MaybeCanonical>; expression tableFromDicts(rows); } }"#,
+        r#"let row = Input { z: Number::new(125,2), a: "first".into() }; let expected = serde_json::json!({"columns":["a","z"],"rows":[{"a":"first","z":1.25}]}); for table in [adopt(vec![row.clone()]).unwrap(),literal(row.clone()).unwrap(),widen(vec![row]).unwrap()] { assert_eq!(serde_json::to_value(table).unwrap(), expected); } assert_eq!(serde_json::to_value(nullable(vec![MaybeInput { z: None, a: "null".into() }]).unwrap()).unwrap(), serde_json::json!({"columns":["a","z"],"rows":[{"a":"null","z":null}]}));"#,
+    );
+    for fields in [
+        "a: String, z: String",
+        "a: String",
+        "a: String, z: Number, extra: Bool",
+        "z: Number, a: String",
+    ] {
+        let source = format!(
+            r#"namespace tables; version "1"; Input = {{z: Number, a: String}}; Canonical = {{{fields}}}; decision_task bad {{ input rows: List<Input>; output result: Table<Canonical> = value; literal_expression value {{ output result: Table<Canonical>; expression tableFromDicts(rows); }} }}"#
+        );
+        assert!(transpile(&source).is_err());
+    }
+}
+
+#[test]
+fn generated_table_boolean_filters_exclude_unknown_and_keep_positional_slice() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Row = {rate: Number, keep: Bool?};
+decision_task yes { input data: Table<Row>; output result: Table<Row> = value; literal_expression value { output result: Table<Row>; expression data.filter(keep); } }
+decision_task no { input data: Table<Row>; output result: Table<Row> = value; literal_expression value { output result: Table<Row>; expression data.filterOut(keep); } }
+decision_task sliced { input data: Table<Row>; output result: Table<Row> = value; literal_expression value { output result: Table<Row>; expression data.slice(1); } }
+decision_task outer { input data: Table<Row>; input rate: Number; output result: Table<Row> = value; literal_expression value { output result: Table<Row>; expression data[[var(rate), var(rate):2]]; } }"#,
+        r#"let data: Table = serde_json::from_value(serde_json::json!({"columns":["rate","keep"],"rows":[{"rate":1,"keep":true},{"rate":2,"keep":false},{"rate":3,"keep":null}]})).unwrap(); for (result, expected) in [(yes(data.clone()).unwrap(),1), (no(data.clone()).unwrap(),2), (sliced(data.clone()).unwrap(),1)] { assert_eq!(result.rows().len(),1); assert_eq!(result.project::<serde_json::Value>("rate").unwrap(),vec![serde_json::json!(expected)]); } assert_eq!(outer(data,Number::ONE).unwrap().rows().len(),2);"#,
+    );
+    for expression in [
+        "data.filter(1)",
+        "data.filterOut(1)",
+        "data.filter(rate)",
+        "data[[rate]]",
+        "data[rate:rate]",
+    ] {
+        let source = format!(
+            r#"namespace tables; version "1"; Row = {{rate: Number}}; decision_task bad {{ input data: Table<Row>; output result: Table<Row> = value; literal_expression value {{ output result: Table<Row>; expression {expression}; }} }}"#
+        );
+        assert!(transpile(&source).is_err());
+    }
+}
+
+#[test]
+fn generated_get_value_restores_declared_tables_without_changing_lookup_policy() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Event = {when: DateTime}; Envelope = {events: Table<Event>, amount: Number, dynamic: Dictionary};
+decision_task sorted { input data: Dictionary<Table<Event>>; input key: String; output result: Table<Event> = value; literal_expression events { output result: Table<Event>; expression getValue(data, key); } literal_expression value { output result: Table<Event>; expression events.sort(when); } }
+decision_task nested { input data: Dictionary<Dictionary<Table<Event>>>; input key: String; output result: Table<Event> = value; literal_expression events { output result: Table<Event>; expression getValue(data, ["outer", key]); } literal_expression value { output result: Table<Event>; expression events.sort(when); } }
+decision_task named { input data: Dictionary<Envelope>; output result: Envelope = value; literal_expression value { output result: Envelope; expression getValue(data, "a"); } }
+decision_task optional { input data: Dictionary<Table<Event>?>; output result: Table<Event>? = value; literal_expression value { output result: Table<Event>?; expression getValue(data, "a"); } }
+decision_task numeric { input data: Dictionary<Number>; input path: List<String>; output result: Number = value; literal_expression value { output result: Number; expression getValue(data, path); } }
+decision_task dynamic { input data: Dictionary; output result: Value = value; literal_expression value { output result: Value; expression getValue(data, "a"); } }"#,
+        r#"let raw = serde_json::json!({"columns":["when"],"rows":[{"when":"2026-01-01T09:30:00Z"},{"when":"2026-01-01T10:00:00+02:00"}]});
+let table = || serde_json::from_value::<Table>(raw.clone()).unwrap();
+let dictionary = || std::collections::BTreeMap::from([("a".to_owned(), table())]);
+for result in [sorted(dictionary(), "a".into()).unwrap(), nested([("outer".into(),dictionary())].into(), "a".into()).unwrap()] { assert!(matches!(result.rows()[0][0], Some(blkit_core::Cell::DateTime(_)))); assert_eq!(serde_json::to_value(result).unwrap()["rows"][0]["when"], "2026-01-01T10:00:00+02:00"); }
+assert!(sorted(dictionary(), "missing".into()).unwrap_err().contains("missing dictionary key")); assert!(nested([("outer".into(),dictionary())].into(), "missing".into()).unwrap_err().contains("missing dictionary key"));
+let restored = named([("a".into(),Envelope { events: table(), amount: Number::new(125,2), dynamic: [("n".into(),serde_json::json!(7.5))].into() })].into()).unwrap(); assert_eq!(restored.amount, Number::new(125,2)); assert!(matches!(restored.events.rows()[0][0], Some(blkit_core::Cell::DateTime(_)))); assert!(restored.dynamic["n"].is_number());
+assert!(optional([("a".into(),None)].into()).unwrap().is_none()); assert!(matches!(optional([("a".into(),Some(table()))].into()).unwrap().unwrap().rows()[0][0], Some(blkit_core::Cell::DateTime(_))));
+let mut mixed = raw; mixed["rows"][1]["when"] = serde_json::json!("2026-01-01T10:00:00"); assert!(sorted([("a".into(),serde_json::from_value(mixed).unwrap())].into(), "a".into()).is_err());
+assert_eq!(numeric([("a".into(),Number::new(125,2))].into(),vec!["a".into()]).unwrap(), Number::new(125,2)); assert!(numeric([].into(),vec!["a".into()]).is_err()); assert!(numeric([].into(),vec![]).is_err()); assert_eq!(dynamic([("a".into(),serde_json::json!(7.5))].into()).unwrap(),serde_json::json!(7.5));"#,
+    );
+}
+
+#[test]
+fn generated_table_declared_field_discovery_uses_decoded_temporal_and_nullable_cells() {
+    compile_and_test(
+        r#"namespace tables; version "1";
+Event = {when: DateTime, amount: Number?}; Selected = {amount: Number?, when: DateTime}; Holder = {events: Table<Event>}; Envelope = {holder: Holder};
+decision_task direct { input holder: Holder; output result: Table<Event> = value; literal_expression value { output result: Table<Event>; expression holder.events.sort(when); } }
+decision_task nested { input data: Envelope; output result: Table<Selected> = value; literal_expression value { output result: Table<Selected>; expression data.holder.events.sort(when).select(amount, when); } }
+decision_task entry { input data: DictionaryEntry<Table<Event>>; output result: Table<Event> = value; literal_expression value { output result: Table<Event>; expression data.value.sort(when); } }
+decision_task projected { input data: Envelope; output result: Number? = value; literal_expression value { output result: Number?; expression data.holder.events.sort(when).amount[1] + 1; } }
+decision_task selected { input holder: Holder; output result: List<Number?> = value; literal_expression value { output result: List<Number?>; expression holder.events[amount > 0, amount].toList(); } }"#,
+        r#"let raw = serde_json::json!({"columns":["when","amount"],"rows":[{"when":"2026-01-01T09:30:00Z","amount":2.5},{"when":"2026-01-01T10:00:00+02:00","amount":null}]});
+let table = || serde_json::from_value::<Table>(raw.clone()).unwrap();
+let holder = || Holder { events: table() };
+let envelope = || Envelope { holder: holder() };
+for result in [direct(holder()).unwrap(), entry(DictionaryEntry { key: "x".into(), value: table() }).unwrap()] {
+ assert_eq!(result.columns(), &["when", "amount"]);
+ assert!(matches!(result.rows()[0][0], Some(blkit_core::Cell::DateTime(_))));
+ assert_eq!(serde_json::to_value(result).unwrap()["rows"][0]["when"], "2026-01-01T10:00:00+02:00");
+}
+let result = nested(envelope()).unwrap(); assert_eq!(result.columns(), &["amount", "when"]); assert!(result.rows()[0][0].is_none()); assert!(matches!(result.rows()[0][1], Some(blkit_core::Cell::DateTime(_))));
+assert_eq!(projected(envelope()).unwrap(), None);
+let mut non_null = envelope(); non_null.holder.events = serde_json::from_value(serde_json::json!({"columns":["when","amount"],"rows":[{"when":"2026-01-01T00:00:00Z","amount":2.5}]})).unwrap(); assert_eq!(projected(non_null).unwrap(), Some(Number::new(35,1)));
+assert_eq!(selected(holder()).unwrap(), vec![Some(Number::new(25,1))]);
+let mut mixed = raw.clone(); mixed["rows"][1]["when"] = serde_json::json!("2026-01-01T10:00:00");
+let mixed = || serde_json::from_value::<Table>(mixed.clone()).unwrap();
+for error in [direct(Holder { events: mixed() }).unwrap_err(), nested(Envelope { holder: Holder { events: mixed() } }).unwrap_err(), entry(DictionaryEntry { key: "x".into(), value: mixed() }).unwrap_err()] { assert!(error.contains("temporal zones"), "{error}"); }
+let mut invalid = raw; invalid["rows"][0]["when"] = serde_json::Value::Null;
+let invalid = || serde_json::from_value::<Table>(invalid.clone()).unwrap();
+assert!(direct(Holder { events: invalid() }).is_err()); assert!(entry(DictionaryEntry { key: "x".into(), value: invalid() }).is_err());"#,
     );
 }

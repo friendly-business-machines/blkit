@@ -189,6 +189,134 @@ fn emit_table(
     code
 }
 
+pub(super) fn validate_input_nulls(value: &str, ty: &Type, program: &Program) -> String {
+    validate_boundary_value(value, ty, program, true)
+}
+
+pub(super) fn validate_output(value: &str, ty: &Type, program: &Program) -> String {
+    validate_boundary_value(value, ty, program, false)
+}
+
+fn validate_boundary_value(
+    value: &str,
+    ty: &Type,
+    program: &Program,
+    reject_untyped_nulls: bool,
+) -> String {
+    match ty {
+        Type::Generic(kind, inner) if kind == "Nullable" => {
+            format!(
+                "if let Some(__bl_item) = &{value} {{ {} }}",
+                validate_boundary_value("__bl_item", inner, program, reject_untyped_nulls)
+            )
+        }
+        Type::Generic(kind, inner) if kind == "Table" => {
+            let Type::Named(row) = inner.as_ref() else {
+                unreachable!("validated table row type")
+            };
+            format!("__bl_check_table_{row}(&{value})?;")
+        }
+        Type::Generic(kind, inner) if kind == "List" || kind == "Dictionary" => {
+            let iter = if kind == "List" {
+                format!("{value}.iter()")
+            } else {
+                format!("{value}.values()")
+            };
+            format!(
+                "for __bl_item in {iter} {{ {} }}",
+                validate_boundary_value("__bl_item", inner, program, reject_untyped_nulls)
+            )
+        }
+        Type::Generic(kind, inner) if kind == "DictionaryEntry" => validate_boundary_value(
+            &format!("{value}.value"),
+            inner,
+            program,
+            reject_untyped_nulls,
+        ),
+        Type::Named(name) if program.records.iter().any(|record| record.name == *name) => {
+            let boundary = if reject_untyped_nulls {
+                "input"
+            } else {
+                "output"
+            };
+            format!("__bl_check_{boundary}_{name}(&{value})?;")
+        }
+        Type::Named(name)
+            if reject_untyped_nulls && matches!(name.as_str(), "Dictionary" | "Value") =>
+        {
+            format!("blkit_core::dictionary::reject_null(&{value})?;")
+        }
+        _ => String::new(),
+    }
+}
+
+// Decode through typed containers before any expression can inspect their tables.
+pub(super) fn decode_input_value(
+    value: &str,
+    ty: &Type,
+    program: &Program,
+    reject_untyped_nulls: &str,
+) -> String {
+    match ty {
+        Type::Generic(kind, inner) if kind == "Table" => {
+            let Type::Named(row) = inner.as_ref() else {
+                unreachable!("validated table row type")
+            };
+            format!("*{value} = __bl_decode_table_{row}({value})?;")
+        }
+        Type::Generic(kind, inner) if kind == "DictionaryEntry" => {
+            format!(
+                "{{ let __bl_item = &mut {value}.value; {} }}",
+                decode_input_value("__bl_item", inner, program, reject_untyped_nulls)
+            )
+        }
+        Type::Generic(kind, inner)
+            if matches!(kind.as_str(), "Nullable" | "List" | "Dictionary") =>
+        {
+            let body = decode_input_value("__bl_item", inner, program, reject_untyped_nulls);
+            if body.is_empty() {
+                return String::new();
+            }
+            match kind.as_str() {
+                "Nullable" => format!("if let Some(__bl_item) = {value}.as_mut() {{ {body} }}"),
+                "List" => format!("for __bl_item in {value}.iter_mut() {{ {body} }}"),
+                _ => format!("for __bl_item in {value}.values_mut() {{ {body} }}"),
+            }
+        }
+        Type::Named(name) if program.records.iter().any(|record| record.name == *name) => {
+            format!("__bl_decode_input_{name}({value}, {reject_untyped_nulls})?;")
+        }
+        Type::Named(name) if matches!(name.as_str(), "Dictionary" | "Value") => {
+            format!(
+                "if {reject_untyped_nulls} {{ blkit_core::dictionary::reject_null(&*{value})?; }}"
+            )
+        }
+        _ => String::new(),
+    }
+}
+
+pub(super) fn decode_input(
+    value: &str,
+    ty: &Type,
+    program: &Program,
+    reject_untyped_nulls: bool,
+) -> String {
+    let body = decode_input_value(
+        "__bl_input",
+        ty,
+        program,
+        if reject_untyped_nulls {
+            "true"
+        } else {
+            "false"
+        },
+    );
+    if body.is_empty() {
+        return body;
+    }
+    format!("let mut {value} = {value}; {{ let __bl_input = &mut {value}; {body} }}")
+}
+
 pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut String) {
     let inputs = if model.braced {
         model
@@ -211,11 +339,7 @@ pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut 
     ));
     let body_start = out.len();
     for (name, ty) in &model.inputs {
-        if matches!(ty, Type::Named(kind) if kind == "Value" || kind == "Dictionary" || program.records.iter().any(|record| record.name == *kind))
-            || matches!(ty, Type::Generic(kind, _) if kind == "List" || kind == "Dictionary")
-        {
-            out.push_str(&format!("blkit_core::dictionary::reject_null(&{name})?;\n"));
-        }
+        out.push_str(&decode_input(name, ty, program, true));
     }
     let mut env: HashMap<String, Type> = model.inputs.iter().cloned().collect();
     env.extend(
@@ -317,7 +441,8 @@ pub(super) fn emit_decision(model: &DecisionModel, program: &Program, out: &mut 
             .join(", ");
         out.push_str(&format!("Ok(serde_json::json!({{{fields}}}))\n}}\n"));
     } else {
-        out.push_str(&format!("Ok({})\n}}\n", model.output_node));
+        let validation = validate_output(&model.output_node, &model.output, program);
+        out.push_str(&format!("{validation}Ok({})\n}}\n", model.output_node));
     }
     if out[body_start..].contains("__bl_temporal_clock") {
         out.insert_str(

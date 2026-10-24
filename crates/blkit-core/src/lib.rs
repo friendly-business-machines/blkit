@@ -36,7 +36,9 @@ pub mod server;
 mod store;
 pub use store::Attachment;
 pub mod string_ops;
+pub mod table;
 pub mod temporal;
+pub use table::{Cell, CellType, Table};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetryPolicy {

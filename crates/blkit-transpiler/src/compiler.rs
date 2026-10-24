@@ -258,6 +258,7 @@ impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Named(name) => write!(f, "{name}"),
+            Self::Generic(name, inner) if name == "Nullable" => write!(f, "{inner}?"),
             Self::Generic(name, inner) => write!(f, "{name}<{inner}>"),
         }
     }
@@ -309,6 +310,9 @@ pub struct Program {
 }
 
 pub(crate) fn type_ref(text: &str) -> Result<Type, String> {
+    if let Some(inner) = text.strip_suffix('?') {
+        return Ok(Type::Generic("Nullable".into(), Box::new(type_ref(inner)?)));
+    }
     if let Some((name, rest)) = text.split_once('<') {
         let inner = rest.strip_suffix('>').ok_or("unclosed type argument")?;
         if name.is_empty() || inner.is_empty() {
@@ -404,6 +408,11 @@ pub(crate) fn type_parser<'a, S: chumsky::inspector::Inspector<'a, Tokens<'a>> +
             .map(|(name, inner)| match inner {
                 Some(inner) => Type::Generic(name, Box::new(inner)),
                 None => Type::Named(name),
+            })
+            .then(just(Token::Question).or_not())
+            .map(|(ty, nullable)| match nullable {
+                Some(_) => Type::Generic("Nullable".into(), Box::new(ty)),
+                None => ty,
             })
     })
 }

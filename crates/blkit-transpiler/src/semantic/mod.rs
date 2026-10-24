@@ -14,7 +14,7 @@ use crate::{
 mod constraints;
 mod decision;
 mod graph;
-mod types;
+pub(crate) mod types;
 
 use decision::check_decision;
 pub(crate) use graph::named_scopes;
@@ -28,7 +28,7 @@ fn resolve_request_type<'a>(
     names: &HashSet<&str>,
     checked: &mut HashSet<&'a str>,
 ) -> Result<(), String> {
-    resolve(ty, names)?;
+    resolve(ty, names, program)?;
     match ty {
         Type::Named(name) if name == "DictionaryEntry" => {
             return Err("DictionaryEntry requires a type argument in input_request output".into());
@@ -62,6 +62,7 @@ pub fn validate(program: &Program) -> Result<(), String> {
         "List",
         "Dictionary",
         "DictionaryEntry",
+        "Table",
         "Value",
     ]
     .into_iter()
@@ -94,8 +95,8 @@ pub fn validate(program: &Program) -> Result<(), String> {
     request_types.extend(program.records.iter().map(|record| record.name.as_str()));
     request_types.extend(program.enums.iter().map(|item| item.name.as_str()));
     for (task, definition) in &program.external_tasks {
-        resolve(&definition.input, &names).map_err(|e| format!("{task}: {e}"))?;
-        resolve(&definition.output, &names).map_err(|e| format!("{task}: {e}"))?;
+        resolve(&definition.input, &names, program).map_err(|e| format!("{task}: {e}"))?;
+        resolve(&definition.output, &names, program).map_err(|e| format!("{task}: {e}"))?;
     }
     for record in &program.records {
         let mut fields = HashSet::new();
@@ -106,7 +107,7 @@ pub fn validate(program: &Program) -> Result<(), String> {
             if !fields.insert(name) {
                 return Err(format!("duplicate field: {name}"));
             }
-            resolve(ty, &names)?;
+            resolve(ty, &names, program)?;
         }
     }
     let mut visited = HashSet::new();
@@ -114,6 +115,15 @@ pub fn validate(program: &Program) -> Result<(), String> {
         if record_cycle(index, program, &mut HashSet::new(), &mut visited) {
             return Err(format!(
                 "recursive by-value record: {}",
+                program.records[index].name
+            ));
+        }
+    }
+    let mut visited = HashSet::new();
+    for index in 0..program.records.len() {
+        if table_schema_cycle(index, program, &mut HashSet::new(), &mut visited) {
+            return Err(format!(
+                "recursive inline Table schema: {}; break the cycle between Table row schemas",
                 program.records[index].name
             ));
         }
@@ -164,7 +174,7 @@ pub fn validate(program: &Program) -> Result<(), String> {
             if matches!(peer.kind, PeerKind::InputRequest { .. }) {
                 resolve_request_type(ty, program, &request_types, &mut checked_records)?;
             } else {
-                resolve(ty, &names)?;
+                resolve(ty, &names, program)?;
             }
         }
     }
@@ -185,8 +195,8 @@ pub fn validate(program: &Program) -> Result<(), String> {
             continue;
         }
         check_name(&process.input)?;
-        resolve(&process.input_type, &names)?;
-        resolve(&process.output, &names)?;
+        resolve(&process.input_type, &names, program)?;
+        resolve(&process.output, &names, program)?;
         if let Some(graph) = &process.named_graph {
             check_named_graph(graph, process.deadline.is_some())?;
             named_scopes(graph, process, program)?;

@@ -38,6 +38,8 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
                     | "dictionaryPut"
                     | "dictionaryMerge"
                     | "dictionaryRemove"
+                    | "table"
+                    | "tableFromDicts"
             ) || name.starts_with("__bl_sort_")
                 || name.starts_with("__bl_calendar_")
                 || matches!(
@@ -136,7 +138,11 @@ fn expr_fallible(expr: &Expr, knowledge: &[Knowledge]) -> bool {
                 || shadowed.is_some_and(|item| expr_fallible(&item.body, knowledge))
                 || args.iter().any(|arg| expr_fallible(arg, knowledge))
         }
-        Expr::Field(_, _) => true,
+        Expr::Field(_, _)
+        | Expr::TableSelect { .. }
+        | Expr::TableMethod { .. }
+        | Expr::TableJoin(..)
+        | Expr::TableEqual(..) => true,
         Expr::Index(_, _) | Expr::Sequence(_, _) => true,
         Expr::InlinePredicate { body, .. } | Expr::NamedArgument(_, body) => {
             expr_fallible(body, knowledge)
@@ -225,6 +231,23 @@ fn specialize_expr(
             Expr::Binary(left, op, right) => {
                 let lhs = semantic::infer_with(left, None, env, program, knowledge).ok();
                 let rhs = semantic::infer_with(right, None, env, program, knowledge).ok();
+                if op == "!="
+                    && lhs.as_ref().is_some_and(semantic::is_table_type)
+                    && rhs.as_ref().is_some_and(semantic::is_table_type)
+                {
+                    let code = format!(
+                        "!{}",
+                        emit_table_expr(
+                            &Expr::TableEqual(left.clone(), right.clone()),
+                            program,
+                            knowledge,
+                            env,
+                            None
+                        )
+                    );
+                    *expr = Expr::Call("__bl_emitted_table".into(), vec![Expr::String(code)]);
+                    return;
+                }
                 if lhs == Some(Type::Named("Value".into()))
                     && let Some(target) = &rhs
                     && *target != Type::Named("Value".into())
@@ -332,12 +355,50 @@ fn specialize_expr(
                     Some(&Type::Named("Number".into())),
                 );
             }
+            Expr::TableSelect { .. }
+            | Expr::TableMethod { .. }
+            | Expr::TableJoin(..)
+            | Expr::TableEqual(..) => {
+                let emitted = emit_table_expr(expr, program, knowledge, env, expected);
+                *expr = Expr::Call("__bl_emitted_table".into(), vec![Expr::String(emitted)]);
+            }
+            Expr::Index(base, key) if matches!((base.as_ref(), key.as_ref()), (Expr::Name(row), Expr::String(field)) if env.contains_key(&format!("#table_row:{row}")) || env.contains_key(&format!("#table_cell:{row}:{field}"))) =>
+            {
+                let emitted = emit_typed_expr(
+                    &Expr::Index(base.clone(), key.clone()),
+                    program,
+                    knowledge,
+                    env,
+                    expected,
+                );
+                *expr = Expr::Call("__bl_emitted_table".into(), vec![Expr::String(emitted)]);
+            }
+            Expr::Index(base, key)
+                if semantic::infer_with(base, None, env, program, knowledge)
+                    .ok()
+                    .is_some_and(|ty| semantic::is_table_type(&ty)) =>
+            {
+                let table = Expr::TableSelect {
+                    base: base.clone(),
+                    rows: Some(Box::new(
+                        crate::expr::table_row(*key.clone()).expect("validated table selector"),
+                    )),
+                    columns: None,
+                };
+                let emitted = emit_table_expr(&table, program, knowledge, env, expected);
+                *expr = Expr::Call("__bl_emitted_table".into(), vec![Expr::String(emitted)]);
+            }
             Expr::Index(base, key) => {
                 let empty_base = matches!(base.as_ref(), Expr::List(items) if items.is_empty());
+                let projection_hint =
+                    expected.map(|ty| Type::Generic("List".into(), Box::new(ty.clone())));
                 let base_expected = if empty_base
                     && matches!(expected, Some(Type::Generic(kind, _)) if kind == "List")
                 {
                     expected
+                } else if matches!(base.as_ref(), Expr::Field(table, _) if semantic::infer_with(table, None, env, program, knowledge).ok().is_some_and(|ty| semantic::is_table_type(&ty)))
+                {
+                    projection_hint.as_ref()
                 } else {
                     None
                 };
@@ -349,7 +410,7 @@ fn specialize_expr(
                         == Some(Type::Named("Number".into()));
                     let mut local = env.clone();
                     local.insert(".item".into(), *element.clone());
-                    visit(base, program, knowledge, env, None);
+                    visit(base, program, knowledge, env, base_expected);
                     if empty_base {
                         **base = Expr::Call(
                             format!("__bl_list_type_{}", rust_type(&element)),
@@ -402,6 +463,82 @@ fn specialize_expr(
                 );
             }
             Expr::Call(name, args) => {
+                if name == "union"
+                    && !knowledge.iter().any(|item| item.name == *name)
+                    && args.first().is_some_and(|table| {
+                        semantic::infer_with(table, None, env, program, knowledge)
+                            .ok()
+                            .is_some_and(|ty| semantic::is_table_type(&ty))
+                    })
+                {
+                    let code = emit_typed_expr(expr, program, knowledge, env, expected);
+                    *expr = Expr::Call("__bl_emitted_table".into(), vec![Expr::String(code)]);
+                    return;
+                }
+                if name == "coalesce" && !knowledge.iter().any(|item| item.name == *name) {
+                    let code = emit_typed_expr(expr, program, knowledge, env, expected);
+                    *expr = Expr::Call("__bl_emitted_table".into(), vec![Expr::String(code)]);
+                    return;
+                }
+                if name == "getValue"
+                    && !knowledge.iter().any(|item| item.name == *name)
+                    && let Ok(ty) = semantic::infer_with(
+                        &Expr::Call(name.clone(), args.clone()),
+                        None,
+                        env,
+                        program,
+                        knowledge,
+                    )
+                    && !matches!(&ty, Type::Named(name) if matches!(name.as_str(), "Dictionary" | "Value"))
+                {
+                    let decoding = decision::decode_input("__bl_lookup", &ty, program, false);
+                    if !decoding.is_empty() {
+                        let base = emit_typed_expr(&args[0], program, knowledge, env, None);
+                        let key = emit_typed_expr(&args[1], program, knowledge, env, None);
+                        let path = if matches!(semantic::infer_with(&args[1], None, env, program, knowledge), Ok(Type::Generic(kind, _)) if kind == "List")
+                        {
+                            key
+                        } else {
+                            format!("vec![{key}]")
+                        };
+                        let code = format!(
+                            "{{ let __bl_lookup: {} = blkit_core::dictionary::get({base}, &{path})?; {decoding} __bl_lookup }}",
+                            rust_type(&ty)
+                        );
+                        *expr = Expr::Call("__bl_emitted_table".into(), vec![Expr::String(code)]);
+                        return;
+                    }
+                }
+                if name == "hasColumn" && !knowledge.iter().any(|item| item.name == *name) {
+                    let code = format!(
+                        "({}).columns().contains(&{})",
+                        emit_typed_expr(&args[0], program, knowledge, env, None),
+                        emit_typed_expr(&args[1], program, knowledge, env, None)
+                    );
+                    *expr = Expr::Call("__bl_emitted_table".into(), vec![Expr::String(code)]);
+                    return;
+                }
+                if name == "isEmpty"
+                    && args.first().is_some_and(|base| {
+                        semantic::infer_with(base, None, env, program, knowledge)
+                            .ok()
+                            .is_some_and(|ty| semantic::is_table_type(&ty))
+                    })
+                {
+                    let code = format!(
+                        "({}).rows().is_empty()",
+                        emit_typed_expr(&args[0], program, knowledge, env, None)
+                    );
+                    *expr = Expr::Call("__bl_emitted_table".into(), vec![Expr::String(code)]);
+                    return;
+                }
+                if matches!(name.as_str(), "table" | "tableFromDicts")
+                    && !knowledge.iter().any(|item| item.name == *name)
+                {
+                    let emitted = emit_table_constructor(name, args, program, knowledge, env);
+                    *expr = Expr::Call("__bl_emitted_table".into(), vec![Expr::String(emitted)]);
+                    return;
+                }
                 if matches!(name.as_str(), "remove" | "listReplace")
                     && !knowledge.iter().any(|item| item.name == *name)
                     && let Some(Expr::InlinePredicate { binding, .. }) = args.get(1)
@@ -446,7 +583,9 @@ fn specialize_expr(
                 { *name = "__bl_dict_isEmpty".into(); }
                 let aggregate_empty =
                     matches!(args.first(), Some(Expr::List(items)) if items.is_empty());
+                let table_projection = matches!(args.first(), Some(Expr::Field(base, _)) if semantic::infer_with(base, None, env, program, knowledge).ok().is_some_and(|ty| semantic::is_table_type(&ty)));
                 let aggregate_hint = (aggregate_empty
+                    || table_projection
                     || matches!(args.first(), Some(Expr::Iteration { .. })))
                 .then(|| {
                     Type::Generic(
@@ -456,6 +595,8 @@ fn specialize_expr(
                                 Some(Type::Generic(_, inner)) => *inner.clone(),
                                 _ => Type::Named("Number".into()),
                             }
+                        } else if name == "mean" {
+                            Type::Named("Number".into())
                         } else {
                             expected.cloned().unwrap_or(Type::Named("Number".into()))
                         }),
@@ -494,6 +635,10 @@ fn specialize_expr(
                             Type::Named(kind) if kind == "DTDuration" => "dt",
                             Type::Named(kind) if kind == "YMDuration" => "ym",
                             Type::Named(kind) if kind == "Number" => "number",
+                            Type::Generic(kind, inner)
+                                if kind == "Nullable"
+                                    && inner.as_ref() == &Type::Named("Number".into()) =>
+                                "nullableNumber",
                             _ => "other",
                         }
                     );
@@ -672,6 +817,22 @@ fn specialize_expr(
                         return;
                     }
                 }
+                if matches!(name.as_str(), "values" | "getEntries")
+                    && args.len() == 1
+                    && !knowledge.iter().any(|item| item.name == *name)
+                    && matches!(semantic::infer_with(&args[0], None, env, program, knowledge), Ok(Type::Generic(ref kind, _)) if kind == "Dictionary")
+                {
+                    let base = emit_typed_expr(&args[0], program, knowledge, env, None);
+                    let code = if name == "values" {
+                        format!("({base}).into_values().collect::<Vec<_>>()")
+                    } else {
+                        format!(
+                            "({base}).into_iter().map(|(key, value)| DictionaryEntry {{ key, value }}).collect::<Vec<_>>()"
+                        )
+                    };
+                    *expr = Expr::Call("__bl_emitted_table".into(), vec![Expr::String(code)]);
+                    return;
+                }
                 if (matches!(name.as_str(), "values" | "getEntries")
                     || name == "getValue"
                         && matches!(semantic::infer_with(&Expr::Call(name.clone(), args.clone()), None, env, program, knowledge), Ok(Type::Named(ref ty)) if ty == "Value"))
@@ -801,13 +962,28 @@ fn specialize_expr(
             } => {
                 let mut local = env.clone();
                 for ((binding, source), resolved) in bindings.iter_mut().zip(resolved_some) {
+                    let table_source =
+                        semantic::infer_with(source, None, &local, program, knowledge)
+                            .ok()
+                            .is_some_and(|ty| semantic::is_table_type(&ty));
                     let element = resolved
                         .map(|item| Type::Generic("List".into(), Box::new(item)))
                         .or_else(|| {
                             semantic::infer_with(source, None, &local, program, knowledge).ok()
                         });
                     visit(source, program, knowledge, &local, element.as_ref());
-                    if let Some(Type::Generic(_, inner)) = element {
+                    if table_source {
+                        if let Ok(Type::Generic(_, row)) =
+                            semantic::infer_with(source, None, &local, program, knowledge)
+                        {
+                            local.insert(format!("#table_row:{binding}"), *row);
+                        }
+                        *source = Expr::Call("__bl_table_rows".into(), vec![source.clone()]);
+                        local.insert(binding.clone(), Type::Named("Dictionary".into()));
+                    }
+                    if let Some(Type::Generic(kind, inner)) = element.filter(|_| !table_source)
+                        && kind == "List"
+                    {
                         *source = Expr::Call(
                             format!("__bl_list_type_{}", rust_type(&inner)),
                             vec![source.clone()],
@@ -870,6 +1046,9 @@ fn specialize_expr(
                 source,
                 body,
             } => {
+                let table_source = semantic::infer_with(source, None, env, program, knowledge)
+                    .ok()
+                    .is_some_and(|ty| semantic::is_table_type(&ty));
                 let boolean = Type::Named("Bool".into());
                 let body_expected = if *every {
                     Some(&boolean)
@@ -899,16 +1078,46 @@ fn specialize_expr(
                 };
                 visit(source, program, knowledge, env, None);
                 let mut local = env.clone();
-                if let Some(Type::Generic(_, inner)) = element {
+                if table_source {
+                    if let Some(Type::Generic(_, row)) = &element {
+                        local.insert(format!("#table_row:{binding}"), *row.clone());
+                    }
+                    **source = Expr::Call("__bl_table_rows".into(), vec![*source.clone()]);
+                    local.insert(binding.clone(), Type::Named("Dictionary".into()));
+                }
+                if let Some(Type::Generic(kind, inner)) = element.filter(|_| !table_source)
+                    && kind == "List"
+                {
                     **source = Expr::Call(
                         format!("__bl_list_type_{}", rust_type(&inner)),
                         vec![*source.clone()],
                     );
                     local.insert(binding.clone(), *inner);
                 }
-                visit(body, program, knowledge, &local, body_expected);
+                if table_source && body_expected.is_some() && !*every {
+                    let code = emit_typed_expr(body, program, knowledge, &local, body_expected);
+                    **body = Expr::Call("__bl_emitted_table".into(), vec![Expr::String(code)]);
+                } else {
+                    visit(body, program, knowledge, &local, body_expected);
+                }
             }
             Expr::Field(base, field) => {
+                if let Expr::Name(row) = base.as_ref()
+                    && env.contains_key(&format!("#table_row:{row}"))
+                {
+                    let cell = Expr::Index(base.clone(), Box::new(Expr::String(field.clone())));
+                    let emitted = emit_typed_expr(&cell, program, knowledge, env, expected);
+                    *expr = Expr::Call("__bl_emitted_table".into(), vec![Expr::String(emitted)]);
+                    return;
+                }
+                if semantic::infer_with(base, None, env, program, knowledge)
+                    .ok()
+                    .is_some_and(|ty| semantic::is_table_type(&ty))
+                {
+                    let emitted = emit_table_expr(expr, program, knowledge, env, expected);
+                    *expr = Expr::Call("__bl_emitted_table".into(), vec![Expr::String(emitted)]);
+                    return;
+                }
                 if let Ok(Type::Generic(kind, element)) =
                     semantic::infer_with(base, None, env, program, knowledge)
                     && kind == "List"
@@ -1081,6 +1290,734 @@ fn dynamic_wrapper(
     Expr::Call(method, vec![expr])
 }
 
+fn emit_table_cell_type(source: &str, ty: &Type, program: &Program) -> String {
+    match ty {
+        Type::Generic(kind, inner) if kind == "Nullable" => {
+            let cell = emit_table_cell_type("value", inner, program);
+            format!("match {source} {{ Some(value) => {cell}, None => blkit_core::Cell::Null }}")
+        }
+        Type::Generic(kind, _) if kind == "Table" => {
+            format!("blkit_core::Cell::Table(Box::new({source}))")
+        }
+        Type::Generic(kind, inner) if kind == "List" => {
+            let cell = emit_table_cell_type("value", inner, program);
+            format!(
+                "blkit_core::Cell::List(({source}).into_iter().map(|value| Ok({cell})).collect::<Result<Vec<_>, String>>()?)"
+            )
+        }
+        Type::Generic(kind, inner) if kind == "Dictionary" => {
+            let cell = emit_table_cell_type("value", inner, program);
+            format!(
+                "blkit_core::Cell::Dictionary(({source}).into_iter().map(|(key, value)| Ok((key, {cell}))).collect::<Result<std::collections::BTreeMap<_, _>, String>>()?)"
+            )
+        }
+        Type::Generic(kind, inner) if kind == "DictionaryEntry" => {
+            let cell = emit_table_cell_type("value.value", inner, program);
+            format!(
+                "{{ let value = {source}; blkit_core::Cell::Dictionary(std::collections::BTreeMap::from([(\"key\".into(), blkit_core::Cell::String(value.key)), (\"value\".into(), {cell})])) }}"
+            )
+        }
+        Type::Named(name) if name == "Dictionary" => {
+            format!(
+                "blkit_core::Cell::Dictionary(({source}).into_iter().map(|(key, value)| Ok((key, blkit_core::Cell::try_from(value)?))).collect::<Result<std::collections::BTreeMap<_, _>, String>>()?)"
+            )
+        }
+        Type::Named(name) if name == "Value" => {
+            format!("blkit_core::Cell::try_from({source})?")
+        }
+        Type::Named(name) if name == "Table" => {
+            format!("blkit_core::Cell::Table(Box::new({source}))")
+        }
+        Type::Named(name) if program.records.iter().any(|record| &record.name == name) => {
+            format!("__bl_into_cell_{name}({source})?")
+        }
+        Type::Named(name) if program.enums.iter().any(|item| item.name == *name) => {
+            format!(
+                "blkit_core::Cell::Enum {{ kind: {name:?}.into(), variant: serde_json::to_value({source}).and_then(serde_json::from_value::<String>).map_err(|error| error.to_string())? }}"
+            )
+        }
+        _ => format!("blkit_core::Cell::from({source})"),
+    }
+}
+
+fn emit_table_cell_decode(source: &str, ty: &Type, program: &Program) -> String {
+    match ty {
+        Type::Named(name) if name == "Number" => {
+            format!("blkit_core::dictionary::cast_number({source})?")
+        }
+        Type::Named(name) if program.records.iter().any(|record| record.name == *name) => {
+            format!("__bl_from_cell_{name}({source})?")
+        }
+        Type::Generic(kind, inner) if kind == "Nullable" => {
+            let decode = emit_table_cell_decode("__bl_value", inner, program);
+            format!(
+                "{{ let __bl_value = {source}; if __bl_value.is_null() {{ None }} else {{ Some({decode}) }} }}"
+            )
+        }
+        Type::Generic(kind, inner) if kind == "List" || kind == "Dictionary" => {
+            let decode = emit_table_cell_decode("__bl_value", inner, program);
+            if kind == "List" {
+                format!(
+                    "serde_json::from_value::<Vec<serde_json::Value>>({source}).map_err(|error| error.to_string())?.into_iter().map(|__bl_value| Ok({decode})).collect::<Result<Vec<_>, String>>()?"
+                )
+            } else {
+                format!(
+                    "serde_json::from_value::<std::collections::BTreeMap<String, serde_json::Value>>({source}).map_err(|error| error.to_string())?.into_iter().map(|(__bl_key, __bl_value)| Ok((__bl_key, {decode}))).collect::<Result<std::collections::BTreeMap<_, _>, String>>()?"
+                )
+            }
+        }
+        Type::Generic(kind, inner) if kind == "DictionaryEntry" => {
+            let decode = emit_table_cell_decode("__bl_entry.value", inner, program);
+            format!(
+                "{{ let __bl_entry = serde_json::from_value::<DictionaryEntry<serde_json::Value>>({source}).map_err(|error| error.to_string())?; DictionaryEntry {{ key: __bl_entry.key, value: {decode} }} }}"
+            )
+        }
+        Type::Generic(kind, inner) if kind == "Table" => {
+            let Type::Named(row) = inner.as_ref() else {
+                unreachable!("validated table row type")
+            };
+            format!(
+                "__bl_decode_table_{row}(&serde_json::from_value::<blkit_core::Table>({source}).map_err(|error| error.to_string())?)?"
+            )
+        }
+        _ => format!(
+            "serde_json::from_value::<{}>({source}).map_err(|error| error.to_string())?",
+            rust_type(ty)
+        ),
+    }
+}
+
+fn emit_table_projection(table: &str, column: &str, ty: &Type, program: &Program) -> String {
+    let decode = emit_table_cell_decode("__bl_value", ty, program);
+    format!(
+        "({table}).project::<serde_json::Value>({column})?.into_iter().map(|__bl_value| Ok({decode})).collect::<Result<Vec<_>, String>>()?"
+    )
+}
+
+// Keep each literal field's typed value for later fields and its Cell for table construction.
+fn emit_table_literal_pair(
+    expr: &Expr,
+    program: &Program,
+    knowledge: &[Knowledge],
+    env: &HashMap<String, Type>,
+) -> String {
+    let mut statements = String::new();
+    let mut cells = Vec::new();
+    let mut scope = env.clone();
+    let mut aliases = Vec::new();
+    let values: Vec<_> = match expr {
+        Expr::Dictionary(entries) => entries
+            .iter()
+            .map(|(key, value)| (Some(key.as_str()), value))
+            .collect(),
+        Expr::List(items) => items.iter().map(|value| (None, value)).collect(),
+        _ => unreachable!("table literal pair requires a dictionary or list"),
+    };
+    for (index, (key, value)) in values.iter().enumerate() {
+        let name = key
+            .filter(|name| crate::compiler::identifier(name) && semantic::check_name(name).is_ok())
+            .map_or_else(
+                || fresh_local(expr, &format!("__bl_table_field_{index}"), knowledge),
+                str::to_owned,
+            );
+        let mut cell_name = fresh_local(expr, &format!("__bl_table_cell_{index}"), knowledge);
+        while values
+            .iter()
+            .any(|(key, _)| *key == Some(cell_name.as_str()))
+        {
+            cell_name.push('_');
+        }
+        let ty = semantic::infer_with(value, None, &scope, program, knowledge).unwrap();
+        if matches!(value, Expr::Dictionary(_) | Expr::List(_)) {
+            statements.push_str(&format!(
+                "let ({name}, {cell_name}) = {}; ",
+                emit_table_literal_pair(value, program, knowledge, &scope)
+            ));
+        } else {
+            let emitted = emit_typed_expr(value, program, knowledge, &scope, Some(&ty));
+            let cell = emit_table_cell_type(&format!("{name}.clone()"), &ty, program);
+            statements.push_str(&format!(
+                "let {name} = {emitted}; let {cell_name} = {cell}; "
+            ));
+        }
+        aliases.push((key.map(str::to_owned), Expr::Name(name)));
+        cells.push((key.map(str::to_owned), cell_name));
+        if let Some(key) = key
+            && crate::compiler::identifier(key)
+        {
+            scope.insert((*key).to_owned(), ty);
+        }
+    }
+    let ty = semantic::infer_with(expr, None, env, program, knowledge).unwrap();
+    let typed = match expr {
+        Expr::Dictionary(_) => emit_typed_expr(
+            &Expr::Dictionary(
+                aliases
+                    .into_iter()
+                    .map(|(key, value)| (key.unwrap(), value))
+                    .collect(),
+            ),
+            program,
+            knowledge,
+            &scope,
+            Some(&ty),
+        ),
+        Expr::List(_) => format!(
+            "vec![{}]",
+            aliases
+                .into_iter()
+                .map(|(_, value)| {
+                    let Expr::Name(name) = value else {
+                        unreachable!()
+                    };
+                    format!("{name}.clone()")
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => unreachable!(),
+    };
+    let cell = match expr {
+        Expr::Dictionary(_) => format!(
+            "blkit_core::Cell::Dictionary(std::collections::BTreeMap::from([{}]))",
+            cells
+                .iter()
+                .map(|(key, cell)| format!("({:?}.to_owned(), {cell})", key.as_ref().unwrap()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Expr::List(_) => format!(
+            "blkit_core::Cell::List(vec![{}])",
+            cells
+                .iter()
+                .map(|(_, cell)| cell.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => unreachable!(),
+    };
+    format!("{{ {statements} ({typed}, {cell}) }}")
+}
+
+fn emit_table_cell(
+    expr: &Expr,
+    program: &Program,
+    knowledge: &[Knowledge],
+    env: &HashMap<String, Type>,
+) -> String {
+    if let Expr::Dictionary(entries) = expr {
+        let mut scope = env.clone();
+        let mut statements = String::new();
+        let mut fields = Vec::new();
+        for (index, (key, value)) in entries.iter().enumerate() {
+            let name = if crate::compiler::identifier(key) && semantic::check_name(key).is_ok() {
+                key.clone()
+            } else {
+                format!("__bl_table_field_{index}")
+            };
+            let ty = semantic::infer_with(value, None, &scope, program, knowledge).unwrap();
+            if matches!(value, Expr::Dictionary(_) | Expr::List(_)) {
+                let cell_name = fresh_local(expr, &format!("__bl_table_cell_{index}"), knowledge);
+                statements.push_str(&format!(
+                    "let ({name}, {cell_name}) = {}; ",
+                    emit_table_literal_pair(value, program, knowledge, &scope)
+                ));
+                fields.push(format!("({key:?}.to_owned(), {cell_name})"));
+            } else {
+                let emitted = emit_typed_expr(value, program, knowledge, &scope, Some(&ty));
+                let cell = emit_table_cell_type(&format!("{name}.clone()"), &ty, program);
+                statements.push_str(&format!("let {name} = {emitted}; "));
+                fields.push(format!("({key:?}.to_owned(), {cell})"));
+            }
+            if crate::compiler::identifier(key) {
+                scope.insert(key.clone(), ty);
+            }
+        }
+        return format!(
+            "{{ {statements} blkit_core::Cell::Dictionary(std::collections::BTreeMap::from([{}])) }}",
+            fields.join(", ")
+        );
+    }
+    if let Expr::List(items) = expr {
+        let cells = items
+            .iter()
+            .map(|item| emit_table_cell(item, program, knowledge, env))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!("blkit_core::Cell::List(vec![{cells}])");
+    }
+    let ty = semantic::infer_with(expr, None, env, program, knowledge).unwrap();
+    let value = emit_typed_expr(expr, program, knowledge, env, Some(&ty));
+    emit_table_cell_type(&value, &ty, program)
+}
+
+fn emit_table_constructor(
+    name: &str,
+    args: &[Expr],
+    program: &Program,
+    knowledge: &[Knowledge],
+    env: &HashMap<String, Type>,
+) -> String {
+    if name == "table" {
+        let (headers, rows) = args.split_first().unwrap();
+        let strings = Type::Generic("List".into(), Box::new(Type::Named("String".into())));
+        let columns = emit_typed_expr(headers, program, knowledge, env, Some(&strings));
+        let rows = rows.iter().map(|row| {
+            if let Expr::List(cells) = row {
+                format!("vec![{}]", cells.iter().map(|cell| format!("Some({})", emit_table_cell(cell, program, knowledge, env))).collect::<Vec<_>>().join(", "))
+            } else {
+                let ty = semantic::infer_with(row, None, env, program, knowledge).unwrap();
+                let Type::Generic(_, inner) = ty else { unreachable!() };
+                let value = emit_typed_expr(row, program, knowledge, env, Some(&Type::Generic("List".into(), inner.clone())));
+                let cell = emit_table_cell_type("value", &inner, program);
+                format!("({value}).into_iter().map(|value| Ok(Some({cell}))).collect::<Result<Vec<_>, String>>()?")
+            }
+        }).collect::<Vec<_>>().join(", ");
+        return format!("blkit_core::Table::from_optional({columns}, vec![{rows}])?");
+    }
+    let rows = &args[0];
+    let dicts = if let Expr::List(items) = rows {
+        let rows = items.iter().map(|item| {
+            let cell = emit_table_cell(item, program, knowledge, env);
+            format!("match {cell} {{ blkit_core::Cell::Dictionary(row) => row, _ => unreachable!() }}")
+        }).collect::<Vec<_>>().join(", ");
+        format!("vec![{rows}]")
+    } else {
+        let ty = semantic::infer_with(rows, None, env, program, knowledge).unwrap();
+        let Type::Generic(_, inner) = ty else {
+            unreachable!()
+        };
+        let value = emit_typed_expr(rows, program, knowledge, env, None);
+        let cell = emit_table_cell_type("value", &inner, program);
+        format!(
+            "({value}).into_iter().map(|value| match {cell} {{ blkit_core::Cell::Dictionary(row) => Ok(row), _ => Err(\"tableFromDicts requires dictionaries\".into()) }}).collect::<Result<Vec<_>, String>>()?"
+        )
+    };
+    format!(
+        "{{ let __bl_dicts: Vec<std::collections::BTreeMap<String, blkit_core::Cell>> = {dicts}; let __bl_columns: Vec<String> = __bl_dicts.first().map(|row| row.keys().cloned().collect()).unwrap_or_default(); let __bl_rows = __bl_dicts.into_iter().map(|row| {{ if row.keys().ne(__bl_columns.iter()) {{ return Err(\"table dictionaries must have identical keys\".to_owned()); }} Ok(row.into_values().map(Some).collect()) }}).collect::<Result<Vec<_>, String>>()?; blkit_core::Table::from_optional(__bl_columns, __bl_rows)? }}"
+    )
+}
+
+fn emit_table_row_indices(
+    selector: &Expr,
+    program: &Program,
+    knowledge: &[Knowledge],
+    env: &HashMap<String, Type>,
+) -> String {
+    let number = Type::Named("Number".into());
+    match selector {
+        Expr::TableRange(..) | Expr::List(_) => {
+            let items = if let Expr::List(items) = selector {
+                items.as_slice()
+            } else {
+                std::slice::from_ref(selector)
+            };
+            let parts = items
+                .iter()
+                .map(|item| match item {
+                    Expr::TableRange(start, end) => {
+                        let start = emit_typed_expr(
+                            &semantic::types::table_row_expr(start),
+                            program,
+                            knowledge,
+                            env,
+                            Some(&number),
+                        );
+                        let end = emit_typed_expr(
+                            &semantic::types::table_row_expr(end),
+                            program,
+                            knowledge,
+                            env,
+                            Some(&number),
+                        );
+                        format!(
+                            "{{ let __bl_start = __bl_table.row_index({start})?; let __bl_end = __bl_table.row_index({end})?; let __bl_count = __bl_start.abs_diff(__bl_end).checked_add(1).ok_or(\"table selector exceeds resource limit\")?; if __bl_count > 1_000_000usize.saturating_sub(__bl_indices.len()) {{ return Err(\"table selector exceeds resource limit\".into()); }} if __bl_start <= __bl_end {{ __bl_indices.extend(__bl_start..=__bl_end); }} else {{ __bl_indices.extend((__bl_end..=__bl_start).rev()); }} }}"
+                        )
+                    }
+                    _ => format!(
+                        "{{ let __bl_index = __bl_table.row_index({})?; if __bl_indices.len() >= 1_000_000 {{ return Err(\"table selector exceeds resource limit\".into()); }} __bl_indices.push(__bl_index); }}",
+                        emit_typed_expr(
+                            &semantic::types::table_row_expr(item),
+                            program,
+                            knowledge,
+                            env,
+                            Some(&number)
+                        )
+                    ),
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("{{ let mut __bl_indices = Vec::new(); {parts} __bl_indices }}")
+        }
+        other => {
+            let mut local = env.clone();
+            local.insert("__bl_row".into(), Type::Named("Dictionary".into()));
+            let row = semantic::types::table_row_expr(other);
+            let kind = semantic::infer_with(&row, None, &local, program, knowledge).ok();
+            if kind == Some(Type::Named("Bool".into()))
+                || kind
+                    == Some(Type::Generic(
+                        "Nullable".into(),
+                        Box::new(Type::Named("Bool".into())),
+                    ))
+            {
+                let predicate = emit_typed_expr(&row, program, knowledge, &local, kind.as_ref());
+                let check = if matches!(kind, Some(Type::Generic(_, _))) {
+                    format!("({predicate}) == Some(true)")
+                } else {
+                    predicate
+                };
+                format!(
+                    "{{ let mut __bl_indices = Vec::new(); for __bl_position in 0..__bl_table.rows().len() {{ let __bl_row = __bl_table.row_dict(__bl_position)?; if {check} {{ __bl_indices.push(__bl_position); }} }} __bl_indices }}"
+                )
+            } else {
+                format!(
+                    "vec![__bl_table.row_index({})?]",
+                    emit_typed_expr(&row, program, knowledge, env, Some(&number))
+                )
+            }
+        }
+    }
+}
+
+fn emit_table_expr(
+    expr: &Expr,
+    program: &Program,
+    knowledge: &[Knowledge],
+    env: &HashMap<String, Type>,
+    expected: Option<&Type>,
+) -> String {
+    match expr {
+        Expr::TableJoin(args) => {
+            let [left, right, on, mode @ ..] = args.as_slice() else {
+                unreachable!("validated join")
+            };
+            let mut args = vec![right.clone(), on.clone()];
+            args.extend_from_slice(mode);
+            emit_table_expr(
+                &Expr::TableMethod {
+                    base: Box::new(left.clone()),
+                    method: "join".into(),
+                    args,
+                },
+                program,
+                knowledge,
+                env,
+                expected,
+            )
+        }
+        Expr::TableSelect {
+            base,
+            rows,
+            columns,
+        } => {
+            let table = emit_typed_expr(base, program, knowledge, env, None);
+            let mut row_env = env.clone();
+            if let Some(fields) = semantic::types::table_fields_known(base, env, program, knowledge)
+            {
+                for (name, ty) in fields {
+                    row_env.insert(format!("#table_cell:__bl_row:{name}"), ty);
+                }
+            }
+            let indices = rows.as_ref().map_or_else(
+                || "(0..__bl_table.rows().len()).collect::<Vec<_>>()".into(),
+                |selector| emit_table_row_indices(selector, program, knowledge, &row_env),
+            );
+            let columns = columns.as_ref().map_or_else(
+                || "__bl_table.columns().to_vec()".into(),
+                |selector| {
+                    format!(
+                        "vec![{}]",
+                        semantic::types::table_column_names(selector)
+                            .expect("validated table columns")
+                            .iter()
+                            .map(|name| format!("{name:?}.to_owned()"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                },
+            );
+            format!(
+                "{{ let __bl_table = {table}; let __bl_indices = {indices}; __bl_table.select(&__bl_indices, &{columns})? }}"
+            )
+        }
+        Expr::Field(base, field) => {
+            let table = emit_typed_expr(base, program, knowledge, env, None);
+            match field.as_str() {
+                "nRows" => format!("Number::from(({table}).rows().len() as u64)"),
+                "nCols" => format!("Number::from(({table}).columns().len() as u64)"),
+                "colNames" => format!(
+                    "{{ let mut names = ({table}).columns().to_vec(); names.sort(); names }}"
+                ),
+                _ => {
+                    let inferred =
+                        semantic::infer_with(expr, expected, env, program, knowledge).ok();
+                    let ty = inferred
+                        .as_ref()
+                        .or(expected)
+                        .and_then(|ty| match ty {
+                            Type::Generic(kind, inner) if kind == "List" => Some(inner.as_ref()),
+                            _ => None,
+                        })
+                        .cloned()
+                        .unwrap_or_else(|| Type::Named("Value".into()));
+                    emit_table_projection(&table, &format!("{field:?}"), &ty, program)
+                }
+            }
+        }
+        Expr::TableMethod { base, method, args } => {
+            if matches!(method.as_str(), "filter" | "filterOut" | "select" | "slice") {
+                let select = match method.as_str() {
+                    "filter" | "filterOut" => Expr::TableSelect {
+                        base: base.clone(),
+                        rows: Some(Box::new(if method == "filterOut" {
+                            Expr::Not(Box::new(args[0].clone()))
+                        } else {
+                            args[0].clone()
+                        })),
+                        columns: None,
+                    },
+                    "slice" => Expr::TableSelect {
+                        base: base.clone(),
+                        rows: Some(Box::new(args[0].clone())),
+                        columns: None,
+                    },
+                    _ => Expr::TableSelect {
+                        base: base.clone(),
+                        rows: None,
+                        columns: Some(Box::new(Expr::List(args.clone()))),
+                    },
+                };
+                return emit_table_expr(&select, program, knowledge, env, expected);
+            }
+            if method == "agg" {
+                let Expr::TableMethod {
+                    base: input,
+                    method: grouped,
+                    args: keys,
+                } = base.as_ref()
+                else {
+                    unreachable!("validated groupBy")
+                };
+                assert_eq!(grouped, "groupBy");
+                let table = emit_typed_expr(input, program, knowledge, env, None);
+                let keys = keys
+                    .iter()
+                    .map(|key| {
+                        let Expr::Column(name) = key else {
+                            unreachable!("validated group key")
+                        };
+                        format!("{name:?}.to_owned()")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let mut local = env.clone();
+                local.insert("__bl_group".into(), Type::Named("Table".into()));
+                for (name, ty) in
+                    semantic::types::table_fields_known(input, env, program, knowledge)
+                        .expect("validated group columns")
+                {
+                    local.insert(format!("#table_cell:__bl_group:{name}"), ty);
+                }
+                let mut names = Vec::new();
+                let cells = args
+                    .iter()
+                    .map(|output| {
+                        let Expr::Output(name, value) = output else {
+                            unreachable!("validated group output")
+                        };
+                        names.push(format!("{name:?}.to_owned()"));
+                        let expr = semantic::types::table_group_expr(value);
+                        let ty = semantic::infer_with(&expr, None, &local, program, knowledge)
+                            .expect("validated group output type");
+                        let value = emit_typed_expr(&expr, program, knowledge, &local, Some(&ty));
+                        if let Type::Generic(kind, inner) = &ty
+                            && kind == "Nullable"
+                        {
+                            format!(
+                                "({value}).map(|value| {})",
+                                emit_table_cell_type("value", inner, program)
+                            )
+                        } else {
+                            format!("Some({})", emit_table_cell_type(&value, &ty, program))
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return format!(
+                    "({table}).aggregate(&[{keys}], &[{}], |__bl_group| Ok(vec![{cells}]))?",
+                    names.join(", ")
+                );
+            }
+            let inferred_conversion = if expected.is_none()
+                && matches!(method.as_str(), "toValue" | "toList")
+                && semantic::types::table_fields_known(base, env, program, knowledge)
+                    .is_some_and(|fields| fields.len() == 1)
+            {
+                semantic::infer_with(expr, None, env, program, knowledge).ok()
+            } else {
+                None
+            };
+            let expected = expected.or(inferred_conversion.as_ref());
+            let table = emit_typed_expr(base, program, knowledge, env, None);
+            match method.as_str() {
+                "join" => {
+                    let [other, on, mode @ ..] = args.as_slice() else {
+                        unreachable!("validated join")
+                    };
+                    let keys = semantic::types::table_column_names(on)
+                        .expect("validated join keys")
+                        .iter()
+                        .map(|name| format!("{name:?}.to_owned()"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let mode = match mode {
+                        [Expr::String(mode)] => mode.as_str(),
+                        [] => "inner",
+                        _ => unreachable!("validated join mode"),
+                    };
+                    let rhs = emit_typed_expr(other, program, knowledge, env, None);
+                    format!("({table}).join(&({rhs}), &[{keys}], {mode:?})?")
+                }
+                "union" => {
+                    let (others, mode) = match args.last() {
+                        Some(Expr::String(mode)) => (&args[..args.len() - 1], mode.as_str()),
+                        _ => (args.as_slice(), "error"),
+                    };
+                    let other_tables = others
+                        .iter()
+                        .map(|table| emit_typed_expr(table, program, knowledge, env, None))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("({table}).union(&[{other_tables}], {mode:?})?")
+                }
+                "sort" => {
+                    let fields = semantic::types::table_fields_known(base, env, program, knowledge)
+                        .expect("validated sort fields");
+                    let keys = args.iter().map(|arg| {
+                        let (name, order) = match arg {
+                            Expr::Column(name) => (name, &crate::expr::TableSortOrder::Asc),
+                            Expr::TableSortKey { column, order } => (column, order),
+                            _ => unreachable!("validated sort key"),
+                        };
+                        let variant = match order {
+                            crate::expr::TableSortOrder::Asc => "blkit_core::table::SortOrder::Asc".to_owned(),
+                            crate::expr::TableSortOrder::Desc => "blkit_core::table::SortOrder::Desc".to_owned(),
+                            crate::expr::TableSortOrder::InOrder(expr) => {
+                                let column_ty = &fields.iter().find(|(field, _)| field == name).expect("validated sort column").1;
+                                let list = Type::Generic("List".into(), Box::new(column_ty.clone()));
+                                let values = emit_typed_expr(&semantic::types::table_row_expr(expr), program, knowledge, env, Some(&list));
+                                let cell = if let Type::Generic(kind, inner) = column_ty && kind == "Nullable" {
+                                    format!("value.map(|value| {})", emit_table_cell_type("value", inner, program))
+                                } else {
+                                    format!("Some({})", emit_table_cell_type("value", column_ty, program))
+                                };
+                                format!("blkit_core::table::SortOrder::InOrder(({values}).into_iter().map(|value| {cell}).collect())")
+                            }
+                        };
+                        format!("({name:?}.to_owned(), {variant})")
+                    }).collect::<Vec<_>>().join(", ");
+                    format!("({table}).sort(&[{keys}])?")
+                }
+                "distinct" => format!("({table}).distinct()"),
+                "rename" => {
+                    let pairs = args
+                        .iter()
+                        .map(|arg| {
+                            let Expr::Rename(from, to) = arg else {
+                                unreachable!("validated rename")
+                            };
+                            format!("({from:?}.to_owned(), {to:?}.to_owned())")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("({table}).rename(&[{pairs}])?")
+                }
+                "withColumn" => {
+                    let [Expr::Output(name, value)] = args.as_slice() else {
+                        unreachable!("validated withColumn")
+                    };
+                    let mut local = env.clone();
+                    local.insert("__bl_row".into(), Type::Named("Dictionary".into()));
+                    for (column, ty) in
+                        semantic::types::table_fields_known(base, env, program, knowledge)
+                            .expect("validated withColumn fields")
+                    {
+                        local.insert(format!("#table_cell:__bl_row:{column}"), ty);
+                    }
+                    let expr = semantic::types::table_row_expr(value);
+                    let ty = semantic::infer_with(&expr, None, &local, program, knowledge)
+                        .expect("validated withColumn expression");
+                    let value = emit_typed_expr(&expr, program, knowledge, &local, Some(&ty));
+                    let cell = if let Type::Generic(kind, inner) = &ty
+                        && kind == "Nullable"
+                    {
+                        format!(
+                            "({value}).map(|value| {})",
+                            emit_table_cell_type("value", inner, program)
+                        )
+                    } else {
+                        format!("Some({})", emit_table_cell_type(&value, &ty, program))
+                    };
+                    format!(
+                        "{{ let __bl_table = {table}; let mut __bl_values = Vec::with_capacity(__bl_table.rows().len()); for __bl_index in 0..__bl_table.rows().len() {{ let __bl_row = __bl_table.row_dict(__bl_index)?; __bl_values.push({cell}); }} __bl_table.with_column({name:?}, __bl_values)? }}"
+                    )
+                }
+                "toDict" => format!("({table}).to_dict()?"),
+                "toValue" => {
+                    let ty = expected
+                        .cloned()
+                        .unwrap_or_else(|| Type::Named("Value".into()));
+                    emit_table_cell_decode(
+                        &format!("({table}).to_value::<serde_json::Value>()?"),
+                        &ty,
+                        program,
+                    )
+                }
+                "toList" => {
+                    let ty = expected.and_then(|ty| match ty {
+                        Type::Generic(kind, inner) if kind == "List" => Some(inner.as_ref()),
+                        _ => None,
+                    });
+                    if let Some(ty) = ty.filter(|ty| **ty != Type::Named("Dictionary".into())) {
+                        let conversion = emit_table_projection(
+                            "__bl_table",
+                            "&__bl_table.columns()[0]",
+                            ty,
+                            program,
+                        );
+                        format!(
+                            "{{ let __bl_table = {table}; if __bl_table.columns().len() != 1 {{ return Err(\"toList requires one column for cell values\".into()); }} {conversion} }}"
+                        )
+                    } else if ty.is_some_and(|ty| *ty == Type::Named("Dictionary".into())) {
+                        format!(
+                            "{{ let __bl_table = {table}; if __bl_table.columns().len() == 1 {{ __bl_table.project::<std::collections::BTreeMap<String, serde_json::Value>>(&__bl_table.columns()[0])? }} else {{ __bl_table.row_dicts()? }} }}"
+                        )
+                    } else {
+                        format!(
+                            "{{ let __bl_table = {table}; if __bl_table.columns().len() == 1 {{ __bl_table.project::<serde_json::Value>(&__bl_table.columns()[0])? }} else {{ __bl_table.row_dicts()?.into_iter().map(|row| serde_json::to_value(row).map_err(|error| error.to_string())).collect::<Result<Vec<_>, String>>()? }} }}"
+                        )
+                    }
+                }
+                _ => unreachable!("validated table method"),
+            }
+        }
+        Expr::TableEqual(left, right) => {
+            let lhs = emit_typed_expr(left, program, knowledge, env, None);
+            let rhs = emit_typed_expr(right, program, knowledge, env, None);
+            if semantic::infer_with(left, None, env, program, knowledge)
+                .ok()
+                .is_some_and(|ty| semantic::is_table_type(&ty))
+            {
+                format!("({lhs}).same_rows(&({rhs}))")
+            } else {
+                format!("({lhs}) == ({rhs})")
+            }
+        }
+        _ => unreachable!("validated table expression"),
+    }
+}
+
 fn emit_typed_expr(
     expr: &Expr,
     program: &Program,
@@ -1100,7 +2037,149 @@ fn emit_typed_expr(
                 .join(", ")
         );
     }
+    if let Expr::Field(base, field) = expr
+        && let Expr::Name(row) = base.as_ref()
+        && env.contains_key(&format!("#table_row:{row}"))
+    {
+        return emit_typed_expr(
+            &Expr::Index(base.clone(), Box::new(Expr::String(field.clone()))),
+            program,
+            knowledge,
+            env,
+            expected,
+        );
+    }
+    if let Expr::Index(base, key) = expr
+        && let Expr::Name(row) = base.as_ref()
+        && let Expr::String(field) = key.as_ref()
+        && let Some(ty) = env.get(&format!("#table_cell:{row}:{field}")).or_else(|| {
+            let Type::Named(schema) = env.get(&format!("#table_row:{row}"))? else {
+                return None;
+            };
+            program
+                .records
+                .iter()
+                .find(|item| item.name == *schema)?
+                .fields
+                .iter()
+                .find(|(name, _)| name == field)
+                .map(|(_, ty)| ty)
+        })
+    {
+        let decode = emit_table_cell_decode("__bl_cell", ty, program);
+        return format!(
+            "{{ let __bl_cell = {row}.get({field:?}).cloned().ok_or(\"missing table cell\")?; {decode} }}"
+        );
+    }
+
+    if let Expr::Call(name, args) = expr
+        && name == "coalesce"
+        && !knowledge.iter().any(|item| item.name == *name)
+    {
+        let [value, fallback] = args.as_slice() else {
+            unreachable!("validated coalesce")
+        };
+        let actual = semantic::infer_with(value, None, env, program, knowledge).unwrap();
+        let Type::Generic(_, ref inner) = actual else {
+            unreachable!("validated nullable argument")
+        };
+        return format!(
+            "match {} {{ Some(__bl_value) => __bl_value, None => {} }}",
+            emit_typed_expr(value, program, knowledge, env, Some(&actual)),
+            emit_typed_expr(fallback, program, knowledge, env, Some(inner))
+        );
+    }
+    if let Expr::Not(value) = expr
+        && matches!(semantic::infer_with(value, None, env, program, knowledge), Ok(Type::Generic(kind, _)) if kind == "Nullable")
+    {
+        return format!(
+            "({}).map(|value| !value)",
+            emit_typed_expr(value, program, knowledge, env, None)
+        );
+    }
+    if let Expr::Binary(left, op, right) = expr {
+        let left_ty = semantic::infer_with(left, None, env, program, knowledge).ok();
+        let right_ty = semantic::infer_with(right, None, env, program, knowledge).ok();
+        let is_nullable =
+            |ty: &Option<Type>| matches!(ty, Some(Type::Generic(kind, _)) if kind == "Nullable");
+        if is_nullable(&left_ty) || is_nullable(&right_ty) {
+            let left_inner = match left_ty.as_ref().unwrap() {
+                Type::Generic(_, inner) => inner.as_ref().clone(),
+                other => other.clone(),
+            };
+            let right_inner = match right_ty.as_ref().unwrap() {
+                Type::Generic(_, inner) => inner.as_ref().clone(),
+                other => other.clone(),
+            };
+            let left_code = emit_typed_expr(left, program, knowledge, env, None);
+            let right_code = emit_typed_expr(right, program, knowledge, env, None);
+            let lhs = if is_nullable(&left_ty) {
+                left_code
+            } else {
+                format!("Some({left_code})")
+            };
+            let rhs = if is_nullable(&right_ty) {
+                right_code
+            } else {
+                format!("Some({right_code})")
+            };
+            if op == "and" {
+                return format!(
+                    "{{ let __bl_left = {lhs}; if __bl_left == Some(false) {{ Some(false) }} else {{ let __bl_right = {rhs}; match (__bl_left, __bl_right) {{ (Some(true), right) => right, (_, Some(false)) => Some(false), _ => None }} }} }}"
+                );
+            }
+            if op == "or" {
+                return format!(
+                    "{{ let __bl_left = {lhs}; if __bl_left == Some(true) {{ Some(true) }} else {{ let __bl_right = {rhs}; match (__bl_left, __bl_right) {{ (Some(false), right) => right, (_, Some(true)) => Some(true), _ => None }} }} }}"
+                );
+            }
+            let mut scope = env.clone();
+            scope.insert("__bl_left".into(), left_inner);
+            scope.insert("__bl_right".into(), right_inner);
+            let nonnull = Expr::Binary(
+                Box::new(Expr::Name("__bl_left".into())),
+                op.clone(),
+                Box::new(Expr::Name("__bl_right".into())),
+            );
+            let code = emit_typed_expr(&nonnull, program, knowledge, &scope, None);
+            return format!(
+                "{{ let __bl_left = {lhs}; let __bl_right = {rhs}; match (__bl_left, __bl_right) {{ (Some(__bl_left), Some(__bl_right)) => Some({code}), _ => None }} }}"
+            );
+        }
+    }
+    if let Expr::Call(name, args) = expr
+        && name == "union"
+        && !knowledge.iter().any(|item| item.name == *name)
+        && args.first().is_some_and(|table| {
+            semantic::infer_with(table, None, env, program, knowledge)
+                .ok()
+                .is_some_and(|ty| semantic::is_table_type(&ty))
+        })
+    {
+        let [base, others @ ..] = args.as_slice() else {
+            unreachable!("validated table union")
+        };
+        return emit_table_expr(
+            &Expr::TableMethod {
+                base: Box::new(base.clone()),
+                method: "union".into(),
+                args: others.to_vec(),
+            },
+            program,
+            knowledge,
+            env,
+            expected,
+        );
+    }
+    if let Expr::Call(name, args) = expr
+        && matches!(name.as_str(), "table" | "tableFromDicts")
+        && !knowledge.iter().any(|item| item.name == *name)
+    {
+        return emit_table_constructor(name, args, program, knowledge, env);
+    }
     let cast = expected.filter(|target| **target != Type::Named("Value".into())
+        && !matches!(expr, Expr::TableMethod { method, .. } if method == "toValue")
+        && !matches!(expr, Expr::Index(base, _) if matches!(base.as_ref(), Expr::Field(table, _) if semantic::infer_with(table, None, env, program, knowledge).ok().is_some_and(|ty| semantic::is_table_type(&ty))))
         && matches!(semantic::infer_with(expr, None, env, program, knowledge), Ok(Type::Named(ref ty)) if ty == "Value"))
         .map(rust_type);
     let mut expr = expr.clone();
@@ -1127,10 +2206,51 @@ fn emit_typed_expr(
     if let (Expr::Dictionary(entries), Some(Type::Named(shape))) = (&expr, expected)
         && program.records.iter().any(|record| record.name == *shape)
     {
-        let (statements, fields) = emit_dictionary_entries(entries, program, knowledge);
+        let record = program
+            .records
+            .iter()
+            .find(|record| record.name == *shape)
+            .expect("validated dictionary shape");
+        let (statements, fields) =
+            emit_dictionary_entries(entries, program, knowledge, Some((record, env)));
+        let mut scope = env.clone();
         let members = fields
             .into_iter()
-            .map(|(key, value)| format!("{}: {value}", rust_record_field(program, shape, &key)))
+            .map(|(key, value)| {
+                let source = entries
+                    .iter()
+                    .find(|(field, _)| field == &key)
+                    .expect("validated field");
+                let field_type = record
+                    .fields
+                    .iter()
+                    .find(|(field, _)| field == &key)
+                    .map(|(_, ty)| ty);
+                let hint = match field_type {
+                    Some(Type::Generic(kind, inner)) if kind == "Nullable" => Some(inner.as_ref()),
+                    _ => field_type,
+                };
+                let actual = semantic::infer_with(&source.1, hint, &scope, program, knowledge).ok();
+                if let Some(ty) = &actual
+                    && crate::compiler::identifier(&key)
+                {
+                    scope.insert(key.clone(), ty.clone());
+                }
+                let nullable = field_type.and_then(|ty| match ty {
+                    Type::Generic(kind, inner)
+                        if kind == "Nullable" && actual.as_ref() == Some(inner.as_ref()) =>
+                    {
+                        Some(inner.as_ref())
+                    }
+                    _ => None,
+                });
+                let value = if nullable.is_some() {
+                    format!("Some({value})")
+                } else {
+                    value
+                };
+                format!("{}: {value}", rust_record_field(program, shape, &key))
+            })
             .collect::<Vec<_>>()
             .join(", ");
         return format!("{{ {statements} {shape} {{ {members} }} }}");
@@ -1171,6 +2291,7 @@ fn emit_calendar_target(expr: &Expr, program: &Program, knowledge: &[Knowledge])
 fn type_label(ty: &Type) -> String {
     match ty {
         Type::Named(name) => name.clone(),
+        Type::Generic(kind, inner) if kind == "Nullable" => format!("{}?", type_label(inner)),
         Type::Generic(kind, inner) => format!("{kind}<{}>", type_label(inner)),
     }
 }
@@ -1217,7 +2338,7 @@ fn uses_name(expr: &Expr, name: &str) -> bool {
         Expr::Name(value) => value == name,
         Expr::Field(base, _) | Expr::Not(base) => uses_name(base, name),
         Expr::InlinePredicate { binding, body } => binding == name || uses_name(body, name),
-        Expr::NamedArgument(_, value) => uses_name(value, name),
+        Expr::NamedArgument(_, value) | Expr::Output(_, value) => uses_name(value, name),
         Expr::Some {
             bindings,
             predicate,
@@ -1252,8 +2373,10 @@ fn emit_dictionary_entries(
     entries: &[(String, Expr)],
     program: &Program,
     knowledge: &[Knowledge],
+    named: Option<(&crate::Record, &HashMap<String, Type>)>,
 ) -> (String, Vec<(String, String)>) {
     let mut statements = String::new();
+    let mut scope = named.map(|(_, env)| env.clone()).unwrap_or_default();
     let mut fields = Vec::new();
     let mut used = std::collections::HashSet::new();
     for (index, (key, value)) in entries.iter().enumerate() {
@@ -1273,7 +2396,23 @@ fn emit_dictionary_entries(
             candidate
         };
         used.insert(binding.clone());
-        let (initial, mapped) = if let Expr::Call(wrapper, args) = value
+        let nested = named
+            .and_then(|(record, _)| record.fields.iter().find(|(field, _)| field == key))
+            .and_then(|(_, ty)| match ty {
+                Type::Generic(kind, inner)
+                    if kind == "Nullable"
+                        && matches!(value, Expr::Dictionary(_) | Expr::List(_)) =>
+                {
+                    Some(inner.as_ref())
+                }
+                _ => None,
+            });
+        let (initial, mapped) = if let Some(inner) = nested {
+            (
+                emit_typed_expr(value, program, knowledge, &scope, Some(inner)),
+                format!("({binding}).clone()"),
+            )
+        } else if let Expr::Call(wrapper, args) = value
             && (args.len() == 1
                 && (matches!(wrapper.as_str(), "__bl_number_as_value" | "__bl_as_value")
                     || wrapper.starts_with("__bl_named_as_value_"))
@@ -1296,6 +2435,12 @@ fn emit_dictionary_entries(
             )
         };
         statements.push_str(&format!("let {binding} = {initial}; "));
+        if named.is_some()
+            && let Ok(ty) = semantic::infer_with(value, None, &scope, program, knowledge)
+            && crate::compiler::identifier(key)
+        {
+            scope.insert(key.clone(), ty);
+        }
         fields.push((key.clone(), mapped));
     }
     (statements, fields)
@@ -1396,8 +2541,32 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
         Expr::Bool(value) => value.to_string(),
         Expr::Name(name) => format!("({name}).clone()"),
         Expr::FilterItem => unreachable!("filter item must be bound before emission"),
+        Expr::TableSelect { .. }
+        | Expr::Column(_)
+        | Expr::OuterVar(_)
+        | Expr::TableRange(..)
+        | Expr::TableMethod { .. }
+        | Expr::TableJoin(..)
+        | Expr::TableSortKey { .. }
+        | Expr::Rename(..)
+        | Expr::Output(..)
+        | Expr::TableEqual(..) => {
+            unreachable!("table expressions must be lowered before emission")
+        }
         Expr::InlinePredicate { binding, body } => {
             format!("|{binding}| {}", emit_expr_with(body, program, knowledge))
+        }
+        Expr::Call(name, args) if name == "__bl_table_rows" => {
+            format!(
+                "({}).row_dicts()?",
+                emit_expr_with(&args[0], program, knowledge)
+            )
+        }
+        Expr::Call(name, args) if name == "__bl_emitted_table" => {
+            let [Expr::String(emitted)] = args.as_slice() else {
+                unreachable!()
+            };
+            emitted.clone()
         }
         Expr::Call(name, args) if name == "__bl_path_list" => {
             emit_expr_with(&args[0], program, knowledge)
@@ -1529,7 +2698,7 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
             )
         }
         Expr::Dictionary(entries) => {
-            let (statements, fields) = emit_dictionary_entries(entries, program, knowledge);
+            let (statements, fields) = emit_dictionary_entries(entries, program, knowledge, None);
             let pairs = fields
                 .into_iter()
                 .map(|(key, value)| format!("({key:?}.to_owned(), {value})"))
@@ -2417,6 +3586,17 @@ fn emit_expr_with(expr: &Expr, program: &Program, knowledge: &[Knowledge]) -> St
                         "aggregate_ym"
                     }
                 ),
+                ("sum" | "mean", "nullableNumber") => format!(
+                    "{{ let __bl_values = ({values}).into_iter().flatten().collect::<Vec<Number>>(); {} }}",
+                    if operation == "sum" {
+                        "blkit_core::number_ops::aggregate(\"sum\", &__bl_values)?"
+                    } else {
+                        "if __bl_values.is_empty() { None } else { Some(blkit_core::number_ops::aggregate(\"mean\", &__bl_values)?) }"
+                    }
+                ),
+                ("mean", "number") => format!(
+                    "{{ let __bl_values = {values}; if __bl_values.is_empty() {{ None }} else {{ Some(blkit_core::number_ops::aggregate(\"mean\", &__bl_values)?) }} }}"
+                ),
                 _ => format!("blkit_core::number_ops::aggregate({operation:?}, &({values}))?"),
             }
         }
@@ -2832,9 +4012,12 @@ fn rust_type(ty: &Type) -> String {
             "String" => "String".into(),
             "Dictionary" => "std::collections::BTreeMap<String, serde_json::Value>".into(),
             "Value" => "serde_json::Value".into(),
+            "Table" => "blkit_core::Table".into(),
             _ => name.clone(),
         },
         Type::Generic(kind, inner) => match kind.as_str() {
+            "Nullable" => format!("Option<{}>", rust_type(inner)),
+            "Table" => "blkit_core::Table".into(),
             "Dictionary" => format!("std::collections::BTreeMap<String, {}>", rust_type(inner)),
             "DictionaryEntry" => format!("DictionaryEntry<{}>", rust_type(inner)),
             _ => format!("Vec<{}>", rust_type(inner)),
@@ -2900,7 +4083,7 @@ mod graph;
 
 pub fn generate(program: &Program) -> Result<String, String> {
     let mut out = format!(
-        "pub type Number = rust_decimal::Decimal;\n#[allow(unused_imports)] pub use blkit_core::temporal::{{Date, Time, DateTime, DTDuration, YMDuration, Calendar, CalendarEntry}};\npub const NAMESPACE: &str = {:?};\npub const VERSION: &str = {:?};\n",
+        "pub type Number = rust_decimal::Decimal;\n#[allow(unused_imports)] pub use blkit_core::Table;\n#[allow(unused_imports)] pub use blkit_core::temporal::{{Date, Time, DateTime, DTDuration, YMDuration, Calendar, CalendarEntry}};\npub const NAMESPACE: &str = {:?};\npub const VERSION: &str = {:?};\n",
         program.namespace, program.version,
     );
     for model in &program.decisions {
@@ -2912,6 +4095,14 @@ pub fn generate(program: &Program) -> Result<String, String> {
         .any(|item| item.named_graph.is_some() || item.source_graph.is_some());
     let serde = ", serde::Serialize, serde::Deserialize";
     out.push_str("#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]\n#[serde(deny_unknown_fields)]\npub struct DictionaryEntry<T> { pub key: String, pub value: T }\n");
+    if program.records.iter().any(|record| {
+        record
+            .fields
+            .iter()
+            .any(|(_, ty)| matches!(ty, Type::Generic(kind, _) if kind == "Nullable"))
+    }) {
+        out.push_str("fn __bl_required_nullable<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(deserializer: D) -> Result<Option<T>, D::Error> { <Option<T> as serde::Deserialize>::deserialize(deserializer) }\n");
+    }
     for record in &program.records {
         out.push_str(&format!(
             "#[derive(Debug, Clone, PartialEq{serde})]\n#[serde(deny_unknown_fields)]\npub struct {} {{\n",
@@ -2919,12 +4110,99 @@ pub fn generate(program: &Program) -> Result<String, String> {
         ));
         for (field, ty) in &record.fields {
             let rust_field = rust_record_field(program, &record.name, field);
+            let required_nullable = if matches!(ty, Type::Generic(kind, _) if kind == "Nullable") {
+                "#[serde(deserialize_with = \"__bl_required_nullable\")] "
+            } else {
+                ""
+            };
             out.push_str(&format!(
-                "  #[serde(rename = {field:?})] pub {rust_field}: {},\n",
+                "  {required_nullable}#[serde(rename = {field:?})] pub {rust_field}: {},\n",
                 rust_type(ty)
             ));
         }
         out.push_str("}\n");
+    }
+    for record in &program.records {
+        let fields = record
+            .fields
+            .iter()
+            .map(|(field, ty)| {
+                let cell = emit_table_cell_type(
+                    &format!("value.{}", rust_record_field(program, &record.name, field)),
+                    ty,
+                    program,
+                );
+                format!("({field:?}.to_owned(), {cell})")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!("#[allow(dead_code, unused_variables, non_snake_case)] fn __bl_into_cell_{}(value: {}) -> Result<blkit_core::Cell, String> {{ Ok(blkit_core::Cell::Dictionary(std::collections::BTreeMap::from([{fields}]))) }}\n", record.name, record.name));
+    }
+    for record in &program.records {
+        let fields = record
+            .fields
+            .iter()
+            .map(|(field, ty)| {
+                let source =
+                    format!("__bl_fields.remove({field:?}).ok_or(\"missing table record field\")?");
+                let decode = emit_table_cell_decode(&source, ty, program);
+                format!(
+                    "{}: {decode}",
+                    rust_record_field(program, &record.name, field)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!("#[allow(dead_code, unused_mut, non_snake_case)] fn __bl_from_cell_{}(value: serde_json::Value) -> Result<{}, String> {{ let mut __bl_fields: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_value(value).map_err(|error| error.to_string())?; if __bl_fields.len() != {} {{ return Err(\"invalid table record fields\".into()); }} Ok({} {{ {fields} }}) }}\n", record.name, record.name, record.fields.len(), record.name));
+    }
+    for record in &program.records {
+        let decoding = record
+            .fields
+            .iter()
+            .map(|(field, ty)| {
+                let body =
+                    decision::decode_input_value("__bl_item", ty, program, "reject_untyped_nulls");
+                if body.is_empty() {
+                    return body;
+                }
+                format!(
+                    "{{ let __bl_item = &mut value.{}; {body} }}",
+                    rust_record_field(program, &record.name, field)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        out.push_str(&format!("#[allow(dead_code, unused_variables, non_snake_case)] fn __bl_decode_input_{}(value: &mut {}, reject_untyped_nulls: bool) -> Result<(), String> {{ {decoding} Ok(()) }}\n", record.name, record.name));
+    }
+    for record in &program.records {
+        for boundary in ["input", "output"] {
+            let checks = record
+                .fields
+                .iter()
+                .map(|(field, ty)| {
+                    let value =
+                        format!("value.{}", rust_record_field(program, &record.name, field));
+                    if boundary == "input" {
+                        decision::validate_input_nulls(&value, ty, program)
+                    } else {
+                        decision::validate_output(&value, ty, program)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            out.push_str(&format!("#[allow(dead_code, unused_variables, non_snake_case)] fn __bl_check_{boundary}_{}(value: &{}) -> Result<(), String> {{ {checks} Ok(()) }}\n", record.name, record.name));
+        }
+    }
+    for record in &program.records {
+        let schema = graph::request_schema(
+            &[(
+                "value".into(),
+                Type::Generic("Table".into(), Box::new(Type::Named(record.name.clone()))),
+            )],
+            program,
+        );
+        out.push_str(&format!("#[allow(dead_code)] fn __bl_check_table_{}(value: &blkit_core::Table) -> Result<(), String> {{ {schema}.validate_response(&serde_json::json!({{\"value\": value}})) }}\n", record.name));
+        out.push_str(&format!("#[allow(dead_code)] fn __bl_decode_table_{}(value: &blkit_core::Table) -> Result<blkit_core::Table, String> {{ {schema}.decode_table_port(value, \"value\") }}\n", record.name));
     }
     for item in &program.enums {
         out.push_str(&format!("#[allow(non_camel_case_types)]\n#[derive(Debug, Clone, PartialEq, Eq{serde})]\npub enum {} {{\n", item.name));

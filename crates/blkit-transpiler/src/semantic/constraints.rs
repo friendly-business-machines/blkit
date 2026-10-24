@@ -113,18 +113,30 @@ pub(super) fn fixed_call_signatures(name: &str) -> Option<Vec<(Vec<Type>, Type)>
             "sum" | "mean" | "median" => &["Number", "DTDuration", "YMDuration"],
             _ => &["Number"],
         };
-        return Some(
-            kinds
-                .iter()
-                .map(|kind| {
-                    let element = named_type(kind);
-                    (
-                        vec![Type::Generic("List".into(), Box::new(element.clone()))],
-                        element,
-                    )
-                })
-                .collect(),
-        );
+        let mut signatures = kinds
+            .iter()
+            .map(|kind| {
+                let element = named_type(kind);
+                let result = if name == "mean" && *kind == "Number" {
+                    Type::Generic("Nullable".into(), Box::new(element.clone()))
+                } else {
+                    element.clone()
+                };
+                (
+                    vec![Type::Generic("List".into(), Box::new(element))],
+                    result,
+                )
+            })
+            .collect::<Vec<_>>();
+        if matches!(name, "sum" | "mean") {
+            let number = named_type("Number");
+            let nullable = Type::Generic("Nullable".into(), Box::new(number.clone()));
+            signatures.push((
+                vec![Type::Generic("List".into(), Box::new(nullable.clone()))],
+                if name == "mean" { nullable } else { number },
+            ));
+        }
+        return Some(signatures);
     }
     let mut signatures: Vec<(Vec<&str>, &str)> = match name {
         "date" => vec![
@@ -1034,7 +1046,18 @@ pub(super) fn expression_branches_with_bindings(
             Expr::FilterItem => Some(env.get(".item").map_or_else(Vec::new, |item| {
                 constrain(branches, result.clone(), item.clone())
             })),
-            Expr::InlinePredicate { .. } | Expr::NamedArgument(..) => Some(Vec::new()),
+            Expr::InlinePredicate { .. }
+            | Expr::NamedArgument(..)
+            | Expr::TableSelect { .. }
+            | Expr::Column(_)
+            | Expr::OuterVar(_)
+            | Expr::TableRange(..)
+            | Expr::TableMethod { .. }
+            | Expr::TableJoin(..)
+            | Expr::TableSortKey { .. }
+            | Expr::Rename(..)
+            | Expr::Output(..)
+            | Expr::TableEqual(..) => Some(Vec::new()),
             Expr::Some {
                 bindings: sources,
                 predicate,
@@ -1158,6 +1181,28 @@ pub(super) fn expression_branches_with_bindings(
                 visit(right, &rhs, env, context, bindings, next, branches)
             }
             Expr::Field(base, field) => {
+                if let Expr::Call(name, args) = base.as_ref()
+                    && name == "table"
+                    && !knowledge.iter().any(|definition| definition.name == *name)
+                    && let Some(Expr::List(headers)) = args.first()
+                    && let Some(index) = headers.iter().position(
+                        |header| matches!(header, Expr::String(column) if column == field),
+                    )
+                {
+                    let element = allocate();
+                    let mut branches =
+                        constrain(branches, result.clone(), generic("List", element.clone()));
+                    for row in &args[1..] {
+                        let Expr::List(cells) = row else {
+                            return Some(Vec::new());
+                        };
+                        let Some(cell) = cells.get(index) else {
+                            return Some(Vec::new());
+                        };
+                        branches = visit(cell, &element, env, context, bindings, next, branches)?;
+                    }
+                    return Some(branches);
+                }
                 if let Expr::Name(name) = base.as_ref()
                     && !env.contains_key(name)
                     && let Some(variant) = enums.iter().find(|item| item.name == *name)
@@ -1241,6 +1286,72 @@ pub(super) fn expression_branches_with_bindings(
                 }
                 Some(checked)
             }
+            Expr::Call(name, args)
+                if matches!(name.as_str(), "table" | "tableFromDicts")
+                    && !knowledge.iter().any(|definition| definition.name == *name) =>
+            {
+                let mut branches = constrain(branches, result.clone(), named("Table"));
+                if name == "table" {
+                    let (headers, rows) = args.split_first()?;
+                    branches = visit(
+                        headers,
+                        &generic("List", named("String")),
+                        env,
+                        context,
+                        bindings,
+                        next,
+                        branches,
+                    )?;
+                    for row in rows {
+                        if let Expr::List(cells) = row {
+                            for cell in cells {
+                                let cell_type = Term::Var(*next);
+                                *next += 1;
+                                branches = visit(
+                                    cell, &cell_type, env, context, bindings, next, branches,
+                                )?;
+                            }
+                        } else {
+                            let cell_type = Term::Var(*next);
+                            *next += 1;
+                            branches = visit(
+                                row,
+                                &generic("List", cell_type),
+                                env,
+                                context,
+                                bindings,
+                                next,
+                                branches,
+                            )?;
+                        }
+                    }
+                } else {
+                    let [rows] = args.as_slice() else {
+                        return Some(Vec::new());
+                    };
+                    if let Expr::List(items) = rows {
+                        for item in items {
+                            let dictionary = Term::Var(*next);
+                            *next += 1;
+                            branches =
+                                visit(item, &dictionary, env, context, bindings, next, branches)?;
+                        }
+                    } else {
+                        let dictionary = Term::Var(*next);
+                        *next += 1;
+                        branches = visit(
+                            rows,
+                            &generic("List", dictionary),
+                            env,
+                            context,
+                            bindings,
+                            next,
+                            branches,
+                        )?;
+                    }
+                }
+                Some(branches)
+            }
             Expr::Call(name, args) => {
                 if matches!(name.as_str(), "remove" | "listReplace")
                     && !knowledge.iter().any(|definition| definition.name == *name)
@@ -1269,6 +1380,25 @@ pub(super) fn expression_branches_with_bindings(
                     } else {
                         Some(branches)
                     };
+                }
+                if name == "coalesce"
+                    && !knowledge.iter().any(|definition| definition.name == *name)
+                {
+                    let [value, fallback] = args.as_slice() else {
+                        return Some(Vec::new());
+                    };
+                    let inner = allocate();
+                    let branches = constrain(branches, result.clone(), inner.clone());
+                    let branches = visit(
+                        value,
+                        &generic("Nullable", inner.clone()),
+                        env,
+                        context,
+                        bindings,
+                        next,
+                        branches,
+                    )?;
+                    return visit(fallback, &inner, env, context, bindings, next, branches);
                 }
                 if matches!(
                     name.as_str(),
@@ -1505,7 +1635,18 @@ pub(super) fn dictionary_literal_branches(
                 equations.clear();
                 break;
             };
-            equations.push((ty.clone(), Term::from(expected)));
+            let expected = Term::from(expected);
+            let nullable_inner = match &expected {
+                Term::Generic(kind, inner) if kind == "Nullable" => Some(inner.as_ref()),
+                _ => None,
+            };
+            equations.push((
+                ty.clone(),
+                nullable_inner
+                    .filter(|inner| *inner == ty)
+                    .cloned()
+                    .unwrap_or(expected),
+            ));
         }
         if !equations.is_empty() {
             branches.extend(base.branch(&equations));

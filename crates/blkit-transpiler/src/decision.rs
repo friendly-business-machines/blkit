@@ -87,7 +87,9 @@ fn infer_dependencies(
         Expr::Field(value, _) | Expr::Not(value) => {
             infer_dependencies(value, target, nodes, links)?
         }
-        Expr::NamedArgument(_, value) => infer_dependencies(value, target, nodes, links)?,
+        Expr::NamedArgument(_, value) | Expr::Output(_, value) => {
+            infer_dependencies(value, target, nodes, links)?
+        }
         Expr::Some {
             bindings,
             predicate,
@@ -107,9 +109,42 @@ fn infer_dependencies(
                 .collect();
             infer_dependencies(body, target, &scoped, links)?;
         }
-        Expr::Binary(left, _, right) | Expr::Index(left, right) | Expr::Sequence(left, right) => {
+        Expr::Binary(left, _, right)
+        | Expr::TableEqual(left, right)
+        | Expr::TableRange(left, right)
+        | Expr::Index(left, right)
+        | Expr::Sequence(left, right) => {
             infer_dependencies(left, target, nodes, links)?;
             infer_dependencies(right, target, nodes, links)?;
+        }
+        Expr::TableSelect { base, rows, .. } => {
+            infer_dependencies(base, target, nodes, links)?;
+            if let Some(rows) = rows {
+                infer_dependencies(rows, target, nodes, links)?;
+            }
+        }
+        Expr::TableJoin(args) => {
+            for arg in args {
+                infer_dependencies(arg, target, nodes, links)?;
+            }
+        }
+        Expr::TableSortKey {
+            order: crate::expr::TableSortOrder::InOrder(expr),
+            ..
+        } => {
+            infer_dependencies(expr, target, nodes, links)?;
+        }
+        Expr::TableMethod { base, args, .. } => {
+            infer_dependencies(base, target, nodes, links)?;
+            for arg in args {
+                infer_dependencies(arg, target, nodes, links)?;
+            }
+        }
+        Expr::OuterVar(name) if nodes.iter().any(|(node, _)| node == name) => {
+            let edge = (name.clone(), target.into());
+            if !links.contains(&edge) {
+                links.push(edge);
+            }
         }
         Expr::Dictionary(entries) => {
             let mut scoped = Vec::new();
@@ -308,15 +343,17 @@ fn sort_context_entries(entries: &mut Vec<(String, Type, Expr)>) -> Result<(), S
 fn expr_calls<'a>(expr: &'a Expr, found: &mut Vec<&'a str>) {
     match expr {
         Expr::Call(name, args) => {
-            found.push(name);
+            if name != "var" {
+                found.push(name);
+            }
             for arg in args {
                 expr_calls(arg, found);
             }
         }
         Expr::Field(value, _) | Expr::Not(value) => expr_calls(value, found),
-        Expr::InlinePredicate { body, .. } | Expr::NamedArgument(_, body) => {
-            expr_calls(body, found)
-        }
+        Expr::InlinePredicate { body, .. }
+        | Expr::NamedArgument(_, body)
+        | Expr::Output(_, body) => expr_calls(body, found),
         Expr::Some {
             bindings,
             predicate,
@@ -326,9 +363,36 @@ fn expr_calls<'a>(expr: &'a Expr, found: &mut Vec<&'a str>) {
             }
             expr_calls(predicate, found);
         }
-        Expr::Binary(left, _, right) | Expr::Index(left, right) | Expr::Sequence(left, right) => {
+        Expr::Binary(left, _, right)
+        | Expr::TableEqual(left, right)
+        | Expr::TableRange(left, right)
+        | Expr::Index(left, right)
+        | Expr::Sequence(left, right) => {
             expr_calls(left, found);
             expr_calls(right, found);
+        }
+        Expr::TableSelect { base, rows, .. } => {
+            expr_calls(base, found);
+            if let Some(rows) = rows {
+                expr_calls(rows, found);
+            }
+        }
+        Expr::TableJoin(args) => {
+            for arg in args {
+                expr_calls(arg, found);
+            }
+        }
+        Expr::TableSortKey {
+            order: crate::expr::TableSortOrder::InOrder(expr),
+            ..
+        } => {
+            expr_calls(expr, found);
+        }
+        Expr::TableMethod { base, args, .. } => {
+            expr_calls(base, found);
+            for arg in args {
+                expr_calls(arg, found);
+            }
         }
         Expr::List(args) => {
             for arg in args {
@@ -379,9 +443,9 @@ fn node_expressions(node: &DecisionNode) -> Vec<&Expr> {
 
 fn expr_names<'a>(expr: &'a Expr, found: &mut Vec<&'a str>) {
     match expr {
-        Expr::Name(name) => found.push(name),
+        Expr::Name(name) | Expr::OuterVar(name) => found.push(name),
         Expr::Field(value, _) | Expr::Not(value) => expr_names(value, found),
-        Expr::NamedArgument(_, value) => expr_names(value, found),
+        Expr::NamedArgument(_, value) | Expr::Output(_, value) => expr_names(value, found),
         Expr::Some {
             bindings,
             predicate,
@@ -402,9 +466,36 @@ fn expr_names<'a>(expr: &'a Expr, found: &mut Vec<&'a str>) {
             expr_names(body, &mut local);
             found.extend(local.into_iter().filter(|name| *name != binding));
         }
-        Expr::Binary(left, _, right) | Expr::Index(left, right) | Expr::Sequence(left, right) => {
+        Expr::Binary(left, _, right)
+        | Expr::TableEqual(left, right)
+        | Expr::TableRange(left, right)
+        | Expr::Index(left, right)
+        | Expr::Sequence(left, right) => {
             expr_names(left, found);
             expr_names(right, found);
+        }
+        Expr::TableSelect { base, rows, .. } => {
+            expr_names(base, found);
+            if let Some(rows) = rows {
+                expr_names(rows, found);
+            }
+        }
+        Expr::TableJoin(args) => {
+            for arg in args {
+                expr_names(arg, found);
+            }
+        }
+        Expr::TableSortKey {
+            order: crate::expr::TableSortOrder::InOrder(expr),
+            ..
+        } => {
+            expr_names(expr, found);
+        }
+        Expr::TableMethod { base, args, .. } => {
+            expr_names(base, found);
+            for arg in args {
+                expr_names(arg, found);
+            }
         }
         Expr::Call(_, args) | Expr::List(args) => {
             for arg in args {

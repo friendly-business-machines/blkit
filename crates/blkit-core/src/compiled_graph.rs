@@ -31,6 +31,8 @@ pub enum RequestType {
     List(Box<RequestType>),
     Dictionary(Box<RequestType>),
     DictionaryEntry(Box<RequestType>),
+    Nullable(Box<RequestType>),
+    Table(Vec<(String, RequestType)>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,12 +60,13 @@ impl RequestSchema {
                     | "List"
                     | "Dictionary"
                     | "DictionaryEntry"
+                    | "Table"
                     | "Value"
             ) || self.records.contains_key(*name) && self.enums.contains_key(*name)
         }) {
             return Err(format!("invalid response schema type: {name}"));
         }
-        self.validate_fields(&self.ports, response, "response")
+        self.validate_fields(&self.ports, response, "response", false)
     }
 
     fn validate_fields(
@@ -71,6 +74,7 @@ impl RequestSchema {
         fields: &BTreeMap<String, RequestType>,
         value: &Value,
         path: &str,
+        table_cell: bool,
     ) -> Result<(), String> {
         let object = value
             .as_object()
@@ -84,17 +88,23 @@ impl RequestSchema {
             let field = object
                 .get(name)
                 .ok_or_else(|| format!("missing field {path}.{name}"))?;
-            self.validate_type(ty, field, &format!("{path}.{name}"))?;
+            self.validate_type(ty, field, &format!("{path}.{name}"), table_cell)?;
         }
         Ok(())
     }
 
-    fn validate_type(&self, ty: &RequestType, value: &Value, path: &str) -> Result<(), String> {
+    fn validate_type(
+        &self,
+        ty: &RequestType,
+        value: &Value,
+        path: &str,
+        table_cell: bool,
+    ) -> Result<(), String> {
         let invalid = |error: String| format!("invalid {path}: {error}");
         match ty {
             RequestType::Named(name) => {
                 if let Some(fields) = self.records.get(name) {
-                    return self.validate_fields(fields, value, path);
+                    return self.validate_fields(fields, value, path, table_cell);
                 }
                 if let Some(variants) = self.enums.get(name) {
                     return if value
@@ -105,6 +115,14 @@ impl RequestSchema {
                     } else {
                         Err(invalid(format!("expected {name} variant")))
                     };
+                }
+                if name == "Number" && table_cell {
+                    let number = value
+                        .as_number()
+                        .ok_or_else(|| invalid("expected Number".into()))?;
+                    return Decimal::from_str_exact(&number.to_string())
+                        .map(|_| ())
+                        .map_err(|error| invalid(error.to_string()));
                 }
                 let result = match name.as_str() {
                     "Bool" => serde_json::from_value::<bool>(value.clone()).map(|_| ()),
@@ -119,6 +137,7 @@ impl RequestSchema {
                     "CalendarEntry" => {
                         serde_json::from_value::<CalendarEntry>(value.clone()).map(|_| ())
                     }
+                    "Table" => serde_json::from_value::<crate::Table>(value.clone()).map(|_| ()),
                     "Dictionary" => {
                         serde_json::from_value::<BTreeMap<String, Value>>(value.clone()).map(|_| ())
                     }
@@ -127,12 +146,19 @@ impl RequestSchema {
                 };
                 result.map_err(|e| invalid(e.to_string()))
             }
+            RequestType::Nullable(inner) => {
+                if value.is_null() {
+                    Ok(())
+                } else {
+                    self.validate_type(inner, value, path, table_cell)
+                }
+            }
             RequestType::List(inner) => {
                 let items = value
                     .as_array()
                     .ok_or_else(|| invalid("expected list".into()))?;
                 for (index, item) in items.iter().enumerate() {
-                    self.validate_type(inner, item, &format!("{path}[{index}]"))?;
+                    self.validate_type(inner, item, &format!("{path}[{index}]"), table_cell)?;
                 }
                 Ok(())
             }
@@ -141,7 +167,7 @@ impl RequestSchema {
                     .as_object()
                     .ok_or_else(|| invalid("expected dictionary".into()))?;
                 for (key, item) in entries {
-                    self.validate_type(inner, item, &format!("{path}.{key}"))?;
+                    self.validate_type(inner, item, &format!("{path}.{key}"), table_cell)?;
                 }
                 Ok(())
             }
@@ -155,8 +181,159 @@ impl RequestSchema {
                 {
                     return Err(invalid("expected exactly a string key and a value".into()));
                 }
-                self.validate_type(inner, &entry["value"], &format!("{path}.value"))
+                self.validate_type(inner, &entry["value"], &format!("{path}.value"), table_cell)
             }
+            RequestType::Table(fields) => {
+                serde_json::from_value::<crate::Table>(value.clone())
+                    .map_err(|error| invalid(error.to_string()))?;
+                let columns = value["columns"]
+                    .as_array()
+                    .ok_or_else(|| invalid("missing table columns".into()))?;
+                if columns.len() != fields.len()
+                    || !columns
+                        .iter()
+                        .zip(fields)
+                        .all(|(column, (name, _))| column.as_str() == Some(name))
+                {
+                    return Err(invalid(
+                        "table columns do not match declared row schema".into(),
+                    ));
+                }
+                let row_fields = fields.iter().cloned().collect();
+                for (index, row) in value["rows"]
+                    .as_array()
+                    .ok_or_else(|| invalid("missing table rows".into()))?
+                    .iter()
+                    .enumerate()
+                {
+                    self.validate_fields(&row_fields, row, &format!("{path}.rows[{index}]"), true)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Validate a declared table port and restore the declared temporal and enum cell types.
+    pub fn decode_table_port(
+        &self,
+        value: &crate::Table,
+        port: &str,
+    ) -> Result<crate::Table, String> {
+        let ty = self.ports.get(port).ok_or("unknown table port")?;
+        let RequestType::Table(fields) = ty else {
+            return Err("port is not a Table<Row>".into());
+        };
+        self.decode_table(value, fields)
+    }
+
+    fn decode_table(
+        &self,
+        value: &crate::Table,
+        fields: &[(String, RequestType)],
+    ) -> Result<crate::Table, String> {
+        self.validate_type(
+            &RequestType::Table(fields.to_vec()),
+            &serde_json::to_value(value).map_err(|error| error.to_string())?,
+            "table",
+            false,
+        )?;
+        let rows = value
+            .rows()
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .zip(fields)
+                    .map(|(cell, (_, ty))| {
+                        cell.as_ref()
+                            .map(|cell| self.decode_cell(ty, cell))
+                            .transpose()
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        crate::Table::from_optional(value.columns().to_vec(), rows)
+    }
+
+    fn decode_cell(&self, ty: &RequestType, cell: &crate::Cell) -> Result<crate::Cell, String> {
+        use crate::Cell;
+        let invalid = || format!("invalid declared table cell: {cell:?}");
+        match ty {
+            RequestType::Nullable(inner) if *cell == Cell::Null => Ok(Cell::Null),
+            RequestType::Nullable(inner) => self.decode_cell(inner, cell),
+            RequestType::Named(name) => {
+                if let Some(fields) = self.records.get(name) {
+                    let Cell::Dictionary(values) = cell else {
+                        return Err(invalid());
+                    };
+                    return values
+                        .iter()
+                        .map(|(key, value)| {
+                            Ok((
+                                key.clone(),
+                                self.decode_cell(fields.get(key).ok_or_else(invalid)?, value)?,
+                            ))
+                        })
+                        .collect::<Result<BTreeMap<_, _>, String>>()
+                        .map(Cell::Dictionary);
+                }
+                if self.enums.contains_key(name) {
+                    return match cell {
+                        Cell::String(variant) => Ok(Cell::Enum {
+                            kind: name.clone(),
+                            variant: variant.clone(),
+                        }),
+                        Cell::Enum { kind, .. } if kind == name => Ok(cell.clone()),
+                        _ => Err(invalid()),
+                    };
+                }
+                let json = serde_json::to_value(cell).map_err(|error| error.to_string())?;
+                match name.as_str() {
+                    "Date" => serde_json::from_value::<Date>(json).map(Cell::Date),
+                    "Time" => serde_json::from_value::<Time>(json).map(Cell::Time),
+                    "DateTime" => serde_json::from_value::<DateTime>(json).map(Cell::DateTime),
+                    "DTDuration" => {
+                        serde_json::from_value::<DTDuration>(json).map(Cell::DTDuration)
+                    }
+                    "YMDuration" => {
+                        serde_json::from_value::<YMDuration>(json).map(Cell::YMDuration)
+                    }
+                    "Calendar" => serde_json::from_value::<Calendar>(json).map(Cell::Calendar),
+                    "CalendarEntry" => {
+                        serde_json::from_value::<CalendarEntry>(json).map(Cell::CalendarEntry)
+                    }
+                    _ => return Ok(cell.clone()),
+                }
+                .map_err(|error| error.to_string())
+            }
+            RequestType::List(inner) => {
+                let Cell::List(values) = cell else {
+                    return Err(invalid());
+                };
+                values
+                    .iter()
+                    .map(|item| self.decode_cell(inner, item))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(Cell::List)
+            }
+            RequestType::Dictionary(inner) => {
+                let Cell::Dictionary(values) = cell else {
+                    return Err(invalid());
+                };
+                values
+                    .iter()
+                    .map(|(key, item)| Ok((key.clone(), self.decode_cell(inner, item)?)))
+                    .collect::<Result<BTreeMap<_, _>, String>>()
+                    .map(Cell::Dictionary)
+            }
+            RequestType::Table(fields) => {
+                let table: crate::Table = serde_json::from_value(
+                    serde_json::to_value(cell).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                self.decode_table(&table, fields)
+                    .map(|table| Cell::Table(Box::new(table)))
+            }
+            _ => Ok(cell.clone()),
         }
     }
 }

@@ -8,16 +8,16 @@ pub(super) fn check_decision(
     let mut names = HashSet::new();
     for (input, ty) in &model.inputs {
         check_name(input)?;
-        resolve(ty, types)?;
+        resolve(ty, types, program)?;
         if !names.insert(input.as_str()) {
             return Err(format!("duplicate decision input: {input}"));
         }
     }
     for (output, ty, _) in &model.outputs {
         check_name(output)?;
-        resolve(ty, types)?;
+        resolve(ty, types, program)?;
     }
-    resolve(&model.output, types)?;
+    resolve(&model.output, types, program)?;
     for knowledge in &model.knowledge {
         check_name(&knowledge.name)?;
         if knowledge.name == "function" {
@@ -27,7 +27,7 @@ pub(super) fn check_decision(
         if !names.insert(&knowledge.name) {
             return Err(format!("duplicate knowledge model: {}", knowledge.name));
         }
-        resolve(&knowledge.output, types)?;
+        resolve(&knowledge.output, types, program)?;
         let mut env: HashMap<_, _> = model.inputs.iter().cloned().collect();
         if model.braced {
             env.extend(
@@ -40,7 +40,7 @@ pub(super) fn check_decision(
         let mut params = HashSet::new();
         for (param, ty) in &knowledge.params {
             check_name(param)?;
-            resolve(ty, types)?;
+            resolve(ty, types, program)?;
             if !params.insert(param) {
                 return Err(format!("duplicate knowledge parameter: {param}"));
             }
@@ -62,7 +62,7 @@ pub(super) fn check_decision(
     }
     for node in &model.nodes {
         check_name(&node.name)?;
-        resolve(&node.output, types)?;
+        resolve(&node.output, types, program)?;
         if !names.insert(&node.name) {
             return Err(format!("duplicate decision node: {}", node.name));
         }
@@ -84,7 +84,9 @@ pub(super) fn check_decision(
     fn calls<'a>(expr: &'a Expr, found: &mut Vec<&'a str>) {
         match expr {
             Expr::Call(name, args) => {
-                found.push(name);
+                if name != "var" {
+                    found.push(name);
+                }
                 for arg in args {
                     calls(arg, found);
                 }
@@ -94,10 +96,35 @@ pub(super) fn check_decision(
             | Expr::InlinePredicate { body: base, .. }
             | Expr::NamedArgument(_, base) => calls(base, found),
             Expr::Binary(left, _, right)
+            | Expr::TableEqual(left, right)
+            | Expr::TableRange(left, right)
             | Expr::Index(left, right)
             | Expr::Sequence(left, right) => {
                 calls(left, found);
                 calls(right, found);
+            }
+            Expr::TableSelect { base, rows, .. } => {
+                calls(base, found);
+                if let Some(rows) = rows {
+                    calls(rows, found);
+                }
+            }
+            Expr::TableJoin(args) => {
+                for arg in args {
+                    calls(arg, found);
+                }
+            }
+            Expr::TableSortKey {
+                order: crate::expr::TableSortOrder::InOrder(expr),
+                ..
+            } => {
+                calls(expr, found);
+            }
+            Expr::TableMethod { base, args, .. } => {
+                calls(base, found);
+                for arg in args {
+                    calls(arg, found);
+                }
             }
             Expr::List(items) => {
                 for item in items {
@@ -249,7 +276,7 @@ pub(super) fn check_decision(
             DecisionKind::Context { entries, result } => {
                 for (key, ty, expr) in entries {
                     check_name(key)?;
-                    resolve(ty, types)?;
+                    resolve(ty, types, program)?;
                     if env.contains_key(key) {
                         return Err(format!("duplicate context entry: {key}"));
                     }
@@ -358,7 +385,7 @@ pub(super) fn check_table(
     }
     for (name, ty, expression) in &table.inputs {
         check_name(name)?;
-        resolve(ty, types)?;
+        resolve(ty, types, program)?;
         if env.contains_key(name) {
             return Err(format!("duplicate table input: {name}"));
         }
@@ -371,7 +398,7 @@ pub(super) fn check_table(
     let mut outputs = HashSet::new();
     for (name, ty) in &table.outputs {
         check_name(name)?;
-        resolve(ty, types)?;
+        resolve(ty, types, program)?;
         if !outputs.insert(name) {
             return Err(format!("duplicate table output: {name}"));
         }

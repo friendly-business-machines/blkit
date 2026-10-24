@@ -23,6 +23,8 @@ pub(crate) enum Token {
     CloseBracket,
     #[token(":")]
     Colon,
+    #[token("?")]
+    Question,
     #[token(";")]
     Semicolon,
     #[token(",")]

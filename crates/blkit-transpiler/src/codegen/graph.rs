@@ -1,21 +1,38 @@
 use super::*;
 
-fn request_type(ty: &Type) -> String {
+fn request_type(ty: &Type, program: &Program) -> String {
     match ty {
         Type::Named(name) => {
             format!("blkit_core::compiled_graph::RequestType::Named({name:?}.into())")
         }
+        Type::Generic(kind, inner) if kind == "Table" => {
+            let Type::Named(name) = inner.as_ref() else {
+                unreachable!("validated table row type")
+            };
+            let row = program
+                .records
+                .iter()
+                .find(|record| record.name == *name)
+                .expect("validated table row schema");
+            let fields = row
+                .fields
+                .iter()
+                .map(|(field, ty)| format!("({field:?}.into(), {})", request_type(ty, program)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("blkit_core::compiled_graph::RequestType::Table(vec![{fields}])")
+        }
         Type::Generic(kind, inner) => format!(
             "blkit_core::compiled_graph::RequestType::{kind}(Box::new({}))",
-            request_type(inner)
+            request_type(inner, program)
         ),
     }
 }
 
-fn request_schema(outputs: &[(String, Type)], program: &Program) -> String {
+pub(super) fn request_schema(outputs: &[(String, Type)], program: &Program) -> String {
     let ports = outputs
         .iter()
-        .map(|(name, ty)| format!("({name:?}.into(), {})", request_type(ty)))
+        .map(|(name, ty)| format!("({name:?}.into(), {})", request_type(ty, program)))
         .collect::<Vec<_>>()
         .join(", ");
     let mut records = std::collections::BTreeMap::new();
@@ -30,7 +47,9 @@ fn request_schema(outputs: &[(String, Type)], program: &Program) -> String {
                         let fields = record
                             .fields
                             .iter()
-                            .map(|(field, ty)| format!("({field:?}.into(), {})", request_type(ty)))
+                            .map(|(field, ty)| {
+                                format!("({field:?}.into(), {})", request_type(ty, program))
+                            })
                             .collect::<Vec<_>>()
                             .join(", ");
                         records.insert(name, format!("({name:?}.into(), [{fields}].into())"));
@@ -172,7 +191,8 @@ fn emit_source_graph(
     let deadline = process.deadline.as_ref().map_or("None".into(), |policy| format!("Some(blkit_core::DeadlinePolicy {{ origin: {:?}, duration: std::time::Duration::from_millis({}) }})", policy.origin, policy.duration.as_millis()));
     out.push_str(&format!("blkit_core::compiled_graph::GraphDefinition {{ namespace: NAMESPACE, version: VERSION, name: {:?}, retry: {retry}, deadline: {deadline}, decode_input: Box::new(|value| {{ let object = value.as_object().ok_or(\"start input must be an object\")?; if object.len() != {} {{ return Err(\"invalid start input ports\".into()); }} let mut result = serde_json::Map::new();\n", process.name, outputs.len()));
     for (name, ty) in outputs {
-        out.push_str(&format!("let typed: {} = serde_json::from_value(object.get({name:?}).ok_or(\"missing start input port: {name}\")?.clone()).map_err(|e| e.to_string())?; result.insert({name:?}.into(), serde_json::to_value(typed).map_err(|e| e.to_string())?);\n", rust_type(ty)));
+        let check = decision::decode_input("typed", ty, program, true);
+        out.push_str(&format!("let typed: {} = serde_json::from_value(object.get({name:?}).ok_or(\"missing start input port: {name}\")?.clone()).map_err(|e| e.to_string())?; {check} result.insert({name:?}.into(), serde_json::to_value(typed).map_err(|e| e.to_string())?);\n", rust_type(ty)));
     }
     out.push_str("Ok(serde_json::Value::Object(result)) }), nodes: vec![\n");
     let mut emitted = std::collections::HashSet::new();
@@ -221,7 +241,8 @@ fn emit_source_graph(
                 PeerKind::InputRequest { prompt, outputs } => {
                     let mut decoding = String::new();
                     for (port, ty) in outputs {
-                        decoding.push_str(&format!("let typed: {} = serde_json::from_value(object.get({port:?}).ok_or(\"missing response port: {port}\")?.clone()).map_err(|e| e.to_string())?; result.insert({port:?}.into(), serde_json::to_value(typed).map_err(|e| e.to_string())?);", rust_type(ty)));
+                        let check = decision::decode_input("typed", ty, program, false);
+                        decoding.push_str(&format!("let typed: {} = serde_json::from_value(object.get({port:?}).ok_or(\"missing response port: {port}\")?.clone()).map_err(|e| e.to_string())?; {check} result.insert({port:?}.into(), serde_json::to_value(typed).map_err(|e| e.to_string())?);", rust_type(ty)));
                     }
                     let schema = request_schema(outputs, program);
                     format!(
@@ -364,7 +385,8 @@ pub(super) fn emit_named_graphs(program: &Program, out: &mut String) -> Result<(
         };
         let retry = process.retry.as_ref().map_or("None".into(), |policy| format!("Some(blkit_core::RetryPolicy {{ max_retries: {}, retry_for: std::time::Duration::from_millis({}), retry_delay: std::time::Duration::from_millis({}), backoff: {:?} }})", policy.max_retries, policy.retry_for.as_millis(), policy.retry_delay.as_millis(), policy.backoff));
         let deadline = process.deadline.as_ref().map_or("None".into(), |policy| format!("Some(blkit_core::DeadlinePolicy {{ origin: {:?}, duration: std::time::Duration::from_millis({}) }})", policy.origin, policy.duration.as_millis()));
-        out.push_str(&format!("blkit_core::compiled_graph::GraphDefinition {{ namespace: NAMESPACE, version: VERSION, name: {:?}, retry: {retry}, deadline: {deadline}, decode_input: Box::new(|value| {{ let typed: {} = serde_json::from_value(value).map_err(|e| e.to_string())?; serde_json::to_value(typed).map_err(|e| e.to_string()) }}), nodes: vec![\n", process.name, rust_type(&process.input_type)));
+        let check = decision::decode_input("typed", &process.input_type, program, true);
+        out.push_str(&format!("blkit_core::compiled_graph::GraphDefinition {{ namespace: NAMESPACE, version: VERSION, name: {:?}, retry: {retry}, deadline: {deadline}, decode_input: Box::new(|value| {{ let typed: {} = serde_json::from_value(value).map_err(|e| e.to_string())?; {check} serde_json::to_value(typed).map_err(|e| e.to_string()) }}), nodes: vec![\n", process.name, rust_type(&process.input_type)));
         for node in &graph.nodes {
             let kind = match &node.kind {
                 NodeKind::Start => "blkit_core::compiled_graph::GraphNodeKind::Start".into(),

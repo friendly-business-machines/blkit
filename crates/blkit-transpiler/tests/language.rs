@@ -447,13 +447,26 @@ fn empty_iteration_source_combines_binding_with_independent_before_call() {
 
 #[test]
 fn empty_iteration_source_uses_all_existing_numeric_aggregates() {
-    for name in ["min", "max", "sum", "mean", "median", "product", "stddev"] {
+    for name in ["min", "max", "sum", "median", "product", "stddev"] {
         assert_valid_expression(
             "Number",
             "List<Number>",
             &format!("for x in [] return x + {name}([1, 2])"),
         );
     }
+    assert_valid_expression(
+        "Number",
+        "List<Number>",
+        "for x in [] return x + coalesce(mean([1, 2]), 0)",
+    );
+    assert!(
+        transpile(&decision_expression(
+            "Number",
+            "List<Number?>",
+            "for x in [] return x + mean([1, 2])"
+        ))
+        .is_err()
+    );
     assert!(
         transpile(&decision_expression(
             "Number",
@@ -579,6 +592,15 @@ fn empty_iteration_source_uses_result_type_to_disambiguate_zero_minus_duration()
 #[test]
 fn empty_iteration_source_uses_nested_numeric_result_constraint() {
     assert_valid_expression("Number", "List<Bool>", "for x in [] return x * 2 > 0");
+}
+
+#[test]
+fn empty_iteration_source_uses_static_table_projection_type() {
+    assert_valid_expression(
+        "Number",
+        "List<List<Number>>",
+        "for x in [] return table([\"rate\"], [x]).rate",
+    );
 }
 
 #[test]
@@ -2070,7 +2092,12 @@ fn numeric_aggregates_require_one_list_and_infer_empty_lists() {
         for argument in ["[1, 2, 3]", "[]"] {
             let expression = format!("{name}({argument})");
             assert!(
-                transpile(&decision_expression("Number", "Number", &expression)).is_ok(),
+                transpile(&decision_expression(
+                    "Number",
+                    if name == "mean" { "Number?" } else { "Number" },
+                    &expression
+                ))
+                .is_ok(),
                 "rejected: {expression}"
             );
         }
@@ -3599,6 +3626,21 @@ fn decision_table_rejects_entry_keyword_for_inputs() {
 }
 
 #[test]
+fn documented_table_row_operations_keep_declared_shapes() {
+    let source = r#"namespace tables; version "1";
+Rate = {region: String, rate: Number?};
+OnlyRate = {rate: Number?};
+Priced = {region: String, price: Number?, with_tax: Number?};
+decision_task choose { input data: Table<Rate>; input minimum: Number; output result: Table<OnlyRate> = value; literal_expression value { output result: Table<OnlyRate>; expression data[rate > var(minimum), rate]; } }
+decision_task cell { input data: Table<Rate>; output result: Number? = value; literal_expression value { output result: Number?; expression data[1, rate].toValue(); } }
+decision_task values { input data: Table<Rate>; output result: List<Number?> = value; literal_expression value { output result: List<Number?>; expression data[, rate].toList(); } }
+decision_task changed { input data: Table<Rate>; output result: Table<Priced> = value; literal_expression value { output result: Table<Priced>; expression data.select(region, rate).rename(rate -> price).withColumn(with_tax = price * 1.2); } }
+decision_task filtered { input data: Table<Rate>; input minimum: Number; output result: Table<Rate> = value; literal_expression value { output result: Table<Rate>; expression data.filterOut(rate > var(minimum)).slice(1:2).distinct(); } }
+"#;
+    assert!(transpile(source).is_ok());
+}
+
+#[test]
 fn table_rule_values_reject_condition_only_matches_syntax() {
     let source = format!(
         "{HEADER}decision_task check {{ input amount: Number; output result: Number = table; decision_table table {{ output result: Number; policy FIRST; input value: Number = amount; output score: Number; rule value matches (< 10) -> 1; default 0; }} }}"
@@ -3648,4 +3690,41 @@ fn context_ast_orders_dependencies_without_reordering_authored_nodes() {
         ["base", "total"]
     );
     assert_eq!(result, &Expr::Name("total".into()));
+}
+
+#[test]
+fn cyclic_inline_table_schemas_are_rejected_without_stack_exhaustion() {
+    const CHILD: &str = "BLKIT_CYCLIC_TABLE_SCHEMA";
+    if let Ok(schema) = std::env::var(CHILD) {
+        let source = format!("{HEADER}{schema}");
+        let error = blkit_transpiler::transpile(&source).unwrap_err();
+        assert!(error.contains("recursive inline Table schema"), "{error}");
+        return;
+    }
+    for schema in [
+        "Row = {children: Table<Row>};",
+        "Row = {children: List<Table<Row>>};",
+        "Row = {children: Dictionary<Table<Row>>?};",
+        "A = {children: Table<B>?}; B = {children: List<Table<A>>};",
+    ] {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cyclic_inline_table_schemas_are_rejected_without_stack_exhaustion",
+                "--nocapture",
+            ])
+            .env(CHILD, schema)
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{schema}: {}",
+            String::from_utf8_lossy(&child.stderr)
+        );
+    }
+    blkit_transpiler::transpile(&format!("{HEADER}Node = {{children: List<Node>}};")).unwrap();
+    blkit_transpiler::transpile(&format!(
+        "{HEADER}A = {{child: B}}; B = {{children: Table<A>}};"
+    ))
+    .unwrap();
 }

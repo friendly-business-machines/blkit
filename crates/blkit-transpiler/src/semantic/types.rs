@@ -14,6 +14,13 @@ pub(super) fn record_cycle(
         return true;
     }
     for (_, ty) in &program.records[index].fields {
+        let mut ty = ty;
+        while let Type::Generic(kind, inner) = ty {
+            if kind != "Nullable" {
+                break;
+            }
+            ty = inner;
+        }
         if let Type::Named(name) = ty
             && let Some(next) = program
                 .records
@@ -22,6 +29,42 @@ pub(super) fn record_cycle(
             && record_cycle(next, program, active, visited)
         {
             return true;
+        }
+    }
+    active.remove(&index);
+    visited.insert(index);
+    false
+}
+
+pub(super) fn table_schema_cycle(
+    index: usize,
+    program: &Program,
+    active: &mut HashSet<usize>,
+    visited: &mut HashSet<usize>,
+) -> bool {
+    if visited.contains(&index) {
+        return false;
+    }
+    if !active.insert(index) {
+        return true;
+    }
+    for (_, ty) in &program.records[index].fields {
+        let mut ty = ty;
+        // Named records are schema references; only Table rows expand inline, even in containers.
+        while let Type::Generic(kind, inner) = ty {
+            if kind == "Table" {
+                if let Type::Named(name) = inner.as_ref()
+                    && let Some(next) = program
+                        .records
+                        .iter()
+                        .position(|record| record.name == *name)
+                    && table_schema_cycle(next, program, active, visited)
+                {
+                    return true;
+                }
+                break;
+            }
+            ty = inner;
         }
     }
     active.remove(&index);
@@ -215,6 +258,839 @@ fn check_call_signature(
     Ok(output.clone())
 }
 
+pub(crate) fn is_table_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name) if name == "Table")
+        || matches!(ty, Type::Generic(kind, _) if kind == "Table")
+}
+
+pub(crate) fn table_columns_known(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    program: &Program,
+    knowledge: &[Knowledge],
+) -> Option<Vec<String>> {
+    match expr {
+        Expr::TableJoin(_) | Expr::Field(..) => table_fields_known(expr, env, program, knowledge)
+            .map(|fields| fields.into_iter().map(|(name, _)| name).collect()),
+        Expr::Call(name, _)
+            if name == "union" && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            table_fields_known(expr, env, program, knowledge)
+                .map(|fields| fields.into_iter().map(|(name, _)| name).collect())
+        }
+        Expr::Call(name, args)
+            if name == "table" && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let Expr::List(headers) = args.first()? else {
+                return None;
+            };
+            headers
+                .iter()
+                .map(|item| match item {
+                    Expr::String(name) => Some(name.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+        Expr::Call(name, args)
+            if name == "tableFromDicts" && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let rows = args.first()?;
+            let Expr::List(rows) = rows else {
+                let Type::Generic(kind, inner) =
+                    infer_with(rows, None, env, program, knowledge).ok()?
+                else {
+                    return None;
+                };
+                if kind != "List" {
+                    return None;
+                }
+                let Type::Named(row) = inner.as_ref() else {
+                    return None;
+                };
+                return program
+                    .records
+                    .iter()
+                    .find(|record| record.name == *row)
+                    .map(|record| {
+                        record
+                            .fields
+                            .iter()
+                            .map(|(field, _)| field.clone())
+                            .collect()
+                    });
+            };
+            if rows.is_empty() {
+                return Some(vec![]);
+            }
+            let first = rows.first()?;
+            if let Expr::Dictionary(entries) = first {
+                Some(entries.iter().map(|(name, _)| name.clone()).collect())
+            } else {
+                let Type::Named(row) = infer_with(first, None, env, program, knowledge).ok()?
+                else {
+                    return None;
+                };
+                program
+                    .records
+                    .iter()
+                    .find(|record| record.name == row)
+                    .map(|record| record.fields.iter().map(|(name, _)| name.clone()).collect())
+            }
+        }
+        Expr::TableMethod { method, args, .. } if method == "select" => {
+            selected_column_names(&Expr::List(args.clone())).ok()
+        }
+        Expr::TableMethod { base, method, .. }
+            if matches!(
+                method.as_str(),
+                "filter" | "filterOut" | "slice" | "distinct" | "sort"
+            ) =>
+        {
+            table_columns_known(base, env, program, knowledge)
+        }
+        Expr::TableMethod { method, .. }
+            if matches!(
+                method.as_str(),
+                "rename" | "withColumn" | "union" | "join" | "agg"
+            ) =>
+        {
+            table_fields_known(expr, env, program, knowledge)
+                .map(|fields| fields.into_iter().map(|(name, _)| name).collect())
+        }
+        Expr::TableSelect { base, columns, .. } => {
+            if let Some(columns) = columns {
+                Some(selected_column_names(columns).ok()?)
+            } else {
+                table_columns_known(base, env, program, knowledge)
+            }
+        }
+        Expr::Name(name) => match env.get(name)? {
+            Type::Generic(kind, inner) if kind == "Table" => {
+                let Type::Named(row) = inner.as_ref() else {
+                    return None;
+                };
+                program
+                    .records
+                    .iter()
+                    .find(|record| record.name == *row)
+                    .map(|record| record.fields.iter().map(|(name, _)| name.clone()).collect())
+            }
+            _ => None,
+        },
+        _ => {
+            let _ = program;
+            None
+        }
+    }
+}
+
+fn join_mode(args: &[Expr]) -> Option<&str> {
+    match args {
+        [] => Some("inner"),
+        [Expr::String(mode)]
+            if matches!(
+                mode.as_str(),
+                "inner" | "left" | "right" | "outer" | "cross"
+            ) =>
+        {
+            Some(mode)
+        }
+        _ => None,
+    }
+}
+
+fn join_fields_known(
+    left: &Expr,
+    right: &Expr,
+    on: &Expr,
+    mode: &str,
+    env: &HashMap<String, Type>,
+    program: &Program,
+    knowledge: &[Knowledge],
+) -> Option<Vec<(String, Type)>> {
+    let left_fields = table_fields_known(left, env, program, knowledge)?;
+    let right_fields = table_fields_known(right, env, program, knowledge)?;
+    let keys = table_column_names(on).ok()?;
+    let mut seen = HashSet::new();
+    if (mode == "cross") != keys.is_empty() || keys.iter().any(|name| !seen.insert(name)) {
+        return None;
+    }
+    let nullable = |ty: &Type| {
+        if matches!(ty, Type::Generic(kind, _) if kind == "Nullable") {
+            ty.clone()
+        } else {
+            Type::Generic("Nullable".into(), Box::new(ty.clone()))
+        }
+    };
+    let mut fields = Vec::new();
+    for name in &keys {
+        let left = &left_fields.iter().find(|(field, _)| field == name)?.1;
+        let right = &right_fields.iter().find(|(field, _)| field == name)?.1;
+        let left_inner = match left {
+            Type::Generic(kind, inner) if kind == "Nullable" => inner.as_ref(),
+            ty => ty,
+        };
+        let right_inner = match right {
+            Type::Generic(kind, inner) if kind == "Nullable" => inner.as_ref(),
+            ty => ty,
+        };
+        if left_inner != right_inner {
+            return None;
+        }
+        fields.push((
+            name.clone(),
+            if left != right {
+                nullable(left)
+            } else {
+                left.clone()
+            },
+        ));
+    }
+    for (name, ty) in left_fields.iter().filter(|(name, _)| !keys.contains(name)) {
+        fields.push((
+            name.clone(),
+            if matches!(mode, "right" | "outer") {
+                nullable(ty)
+            } else {
+                ty.clone()
+            },
+        ));
+    }
+    for (name, ty) in right_fields.iter().filter(|(name, _)| !keys.contains(name)) {
+        if fields.iter().any(|(existing, _)| existing == name) {
+            return None;
+        }
+        fields.push((
+            name.clone(),
+            if matches!(mode, "left" | "outer") {
+                nullable(ty)
+            } else {
+                ty.clone()
+            },
+        ));
+    }
+    Some(fields)
+}
+
+pub(crate) fn table_group_expr(expr: &Expr) -> Expr {
+    match expr {
+        Expr::Column(name) => Expr::Field(Box::new(Expr::Name("__bl_group".into())), name.clone()),
+        Expr::OuterVar(name) => Expr::Name(name.clone()),
+        Expr::Call(name, args) if name == "count" && args.is_empty() => {
+            Expr::Field(Box::new(Expr::Name("__bl_group".into())), "nRows".into())
+        }
+        Expr::Call(name, args) => {
+            Expr::Call(name.clone(), args.iter().map(table_group_expr).collect())
+        }
+        Expr::Binary(left, op, right) => Expr::Binary(
+            Box::new(table_group_expr(left)),
+            op.clone(),
+            Box::new(table_group_expr(right)),
+        ),
+        Expr::Field(base, field) => Expr::Field(Box::new(table_group_expr(base)), field.clone()),
+        Expr::Index(base, key) => Expr::Index(
+            Box::new(table_group_expr(base)),
+            Box::new(table_group_expr(key)),
+        ),
+        Expr::List(items) => Expr::List(items.iter().map(table_group_expr).collect()),
+        Expr::Dictionary(entries) => Expr::Dictionary(
+            entries
+                .iter()
+                .map(|(name, value)| (name.clone(), table_group_expr(value)))
+                .collect(),
+        ),
+        Expr::Not(value) => Expr::Not(Box::new(table_group_expr(value))),
+        other => other.clone(),
+    }
+}
+
+fn group_fields(
+    base: &Expr,
+    keys: &[Expr],
+    outputs: &[Expr],
+    env: &HashMap<String, Type>,
+    program: &Program,
+    knowledge: &[Knowledge],
+) -> Result<Vec<(String, Type)>, String> {
+    if keys.is_empty() || outputs.is_empty() {
+        return Err("groupBy requires keys and agg requires outputs".into());
+    }
+    if !is_table_type(&infer_with(base, None, env, program, knowledge)?) {
+        return Err("groupBy requires Table".into());
+    }
+    let source = table_fields_known(base, env, program, knowledge)
+        .ok_or("groupBy requires known table columns")?;
+    let names = source
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for key in keys {
+        let Expr::Column(name) = key else {
+            return Err("groupBy keys require unquoted names".into());
+        };
+        if !seen.insert(name) {
+            return Err(format!("duplicate group key: {name}"));
+        }
+        let ty = &source
+            .iter()
+            .find(|(column, _)| column == name)
+            .ok_or_else(|| format!("unknown table column: {name}"))?
+            .1;
+        result.push((name.clone(), ty.clone()));
+    }
+    let mut local = env.clone();
+    local.insert("__bl_group".into(), Type::Named("Table".into()));
+    for (name, ty) in &source {
+        local.insert(format!("#table_cell:__bl_group:{name}"), ty.clone());
+    }
+    for output in outputs {
+        let Expr::Output(name, value) = output else {
+            return Err("agg requires assigned output names".into());
+        };
+        if !seen.insert(name) {
+            return Err(format!("duplicate group output: {name}"));
+        }
+        check_table_columns(value, Some(&names))?;
+        let ty = infer_with(&table_group_expr(value), None, &local, program, knowledge)?;
+        result.push((name.clone(), ty));
+    }
+    Ok(result)
+}
+
+fn infer_table_join(
+    (left, right, on): (&Expr, &Expr, &Expr),
+    mode: &str,
+    expected: Option<&Type>,
+    env: &HashMap<String, Type>,
+    program: &Program,
+    knowledge: &[Knowledge],
+) -> Result<Type, String> {
+    if !is_table_type(&infer_with(left, None, env, program, knowledge)?)
+        || !is_table_type(&infer_with(right, None, env, program, knowledge)?)
+    {
+        return Err("join requires two Tables".into());
+    }
+    let fields = join_fields_known(left, right, on, mode, env, program, knowledge)
+        .ok_or("join requires known, compatible keys and noncolliding columns")?;
+    if let Some(Type::Generic(kind, inner)) = expected
+        && kind == "Table"
+    {
+        let Type::Named(name) = inner.as_ref() else {
+            return Err("table result requires declared row".into());
+        };
+        let record = program
+            .records
+            .iter()
+            .find(|record| record.name == *name)
+            .ok_or("unknown table row")?;
+        if fields != record.fields {
+            return Err(format!("join output does not match declared row {name}"));
+        }
+        return Ok(expected.unwrap().clone());
+    }
+    Ok(Type::Named("Table".into()))
+}
+
+fn infer_table_union(
+    tables: &[&Expr],
+    mode: &str,
+    expected: Option<&Type>,
+    env: &HashMap<String, Type>,
+    program: &Program,
+    knowledge: &[Knowledge],
+) -> Result<Type, String> {
+    if tables.is_empty() {
+        return Err("union requires at least one Table".into());
+    }
+    for table in tables {
+        if !is_table_type(&infer_with(table, None, env, program, knowledge)?) {
+            return Err("table union requires Tables".into());
+        }
+    }
+    let fields = union_fields_known(tables, mode, env, program, knowledge)
+        .ok_or("table union requires compatible statically known column types")?;
+    if let Some(Type::Generic(kind, inner)) = expected
+        && kind == "Table"
+    {
+        let Type::Named(name) = inner.as_ref() else {
+            return Err("table result requires declared row".into());
+        };
+        let record = program
+            .records
+            .iter()
+            .find(|record| record.name == *name)
+            .ok_or("unknown table row")?;
+        if fields != record.fields {
+            return Err(format!(
+                "table union output does not match declared row {name}"
+            ));
+        }
+        return Ok(expected.unwrap().clone());
+    }
+    Ok(Type::Named("Table".into()))
+}
+
+fn union_mode(args: &[Expr]) -> Option<(&[Expr], &str)> {
+    match args.last() {
+        Some(Expr::String(mode)) if matches!(mode.as_str(), "error" | "all" | "common") => {
+            Some((&args[..args.len() - 1], mode))
+        }
+        Some(Expr::String(_)) => None,
+        _ => Some((args, "error")),
+    }
+}
+
+fn union_fields_known(
+    tables: &[&Expr],
+    mode: &str,
+    env: &HashMap<String, Type>,
+    program: &Program,
+    knowledge: &[Knowledge],
+) -> Option<Vec<(String, Type)>> {
+    let mut fields = table_fields_known(tables.first()?, env, program, knowledge)?;
+    for table in &tables[1..] {
+        let other = table_fields_known(table, env, program, knowledge)?;
+        if mode == "error"
+            && (fields.len() != other.len()
+                || fields
+                    .iter()
+                    .any(|(name, _)| !other.iter().any(|(candidate, _)| candidate == name)))
+        {
+            return None;
+        }
+        for (name, ty) in &other {
+            if let Some((_, previous)) = fields.iter_mut().find(|(column, _)| column == name) {
+                let (left, nullable_left) = match &*previous {
+                    Type::Generic(kind, inner) if kind == "Nullable" => (inner.as_ref(), true),
+                    ty => (ty, false),
+                };
+                let (right, nullable_right) = match ty {
+                    Type::Generic(kind, inner) if kind == "Nullable" => (inner.as_ref(), true),
+                    ty => (ty, false),
+                };
+                if left != right {
+                    return None;
+                }
+                if nullable_right && !nullable_left {
+                    *previous = ty.clone();
+                }
+            } else if mode == "all" {
+                fields.push((
+                    name.clone(),
+                    if matches!(ty, Type::Generic(kind, _) if kind == "Nullable") {
+                        ty.clone()
+                    } else {
+                        Type::Generic("Nullable".into(), Box::new(ty.clone()))
+                    },
+                ));
+            }
+        }
+        if mode == "all" {
+            for (name, ty) in &mut fields {
+                if !other.iter().any(|(column, _)| column == name)
+                    && !matches!(ty, Type::Generic(kind, _) if kind == "Nullable")
+                {
+                    *ty = Type::Generic("Nullable".into(), Box::new(ty.clone()));
+                }
+            }
+        }
+        if mode == "common" {
+            fields.retain(|(name, _)| other.iter().any(|(column, _)| column == name));
+        }
+    }
+    Some(fields)
+}
+
+pub(crate) fn table_fields_known(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    program: &Program,
+    knowledge: &[Knowledge],
+) -> Option<Vec<(String, Type)>> {
+    match expr {
+        Expr::TableJoin(args) => {
+            let [left, right, on, mode @ ..] = args.as_slice() else {
+                return None;
+            };
+            join_fields_known(left, right, on, join_mode(mode)?, env, program, knowledge)
+        }
+        Expr::TableMethod { base, method, args } if method == "agg" => {
+            let Expr::TableMethod {
+                base: table,
+                method: grouped,
+                args: keys,
+            } = base.as_ref()
+            else {
+                return None;
+            };
+            if grouped != "groupBy" {
+                return None;
+            }
+            group_fields(table, keys, args, env, program, knowledge).ok()
+        }
+        Expr::TableMethod { base, method, args } if method == "join" => {
+            let [other, on, mode @ ..] = args.as_slice() else {
+                return None;
+            };
+            join_fields_known(base, other, on, join_mode(mode)?, env, program, knowledge)
+        }
+        Expr::Call(name, args)
+            if name == "union" && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let (tables, mode) = union_mode(args)?;
+            union_fields_known(
+                &tables.iter().collect::<Vec<_>>(),
+                mode,
+                env,
+                program,
+                knowledge,
+            )
+        }
+        Expr::TableMethod { base, method, args } if method == "union" => {
+            let (others, mode) = union_mode(args)?;
+            let mut tables = vec![base.as_ref()];
+            tables.extend(others.iter());
+            union_fields_known(&tables, mode, env, program, knowledge)
+        }
+        Expr::Call(name, args)
+            if name == "table" && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let names = table_columns_known(expr, env, program, knowledge)?;
+            let mut fields = names
+                .into_iter()
+                .map(|name| (name, None))
+                .collect::<Vec<_>>();
+            for row in &args[1..] {
+                let cells = if let Expr::List(cells) = row {
+                    if cells.len() != fields.len() {
+                        return None;
+                    }
+                    cells
+                        .iter()
+                        .map(|cell| infer_with(cell, None, env, program, knowledge).ok())
+                        .collect::<Option<Vec<_>>>()?
+                } else {
+                    let Type::Generic(kind, element) =
+                        infer_with(row, None, env, program, knowledge).ok()?
+                    else {
+                        return None;
+                    };
+                    if kind != "List" {
+                        return None;
+                    }
+                    vec![*element; fields.len()]
+                };
+                for ((_, current), actual) in fields.iter_mut().zip(cells) {
+                    match current {
+                        None => *current = Some(actual),
+                        Some(existing) if *existing == actual => (),
+                        Some(existing)
+                            if actual
+                                == Type::Generic("Nullable".into(), Box::new(existing.clone())) =>
+                        {
+                            *existing = actual
+                        }
+                        Some(Type::Generic(kind, inner))
+                            if kind == "Nullable" && inner.as_ref() == &actual => {}
+                        _ => return None,
+                    }
+                }
+            }
+            fields
+                .into_iter()
+                .map(|(name, ty)| Some((name, ty?)))
+                .collect()
+        }
+        Expr::Call(name, args)
+            if name == "tableFromDicts" && !knowledge.iter().any(|item| item.name == *name) =>
+        {
+            let rows = args.first()?;
+            let Type::Generic(kind, inner) =
+                infer_with(rows, None, env, program, knowledge).ok()?
+            else {
+                return None;
+            };
+            if kind != "List" {
+                return None;
+            }
+            if let Type::Named(row) = inner.as_ref() {
+                return program
+                    .records
+                    .iter()
+                    .find(|record| record.name == *row)
+                    .map(|record| {
+                        let mut fields = record.fields.clone();
+                        fields.sort_by(|a, b| a.0.cmp(&b.0));
+                        fields
+                    });
+            }
+            let Expr::List(rows) = rows else { return None };
+            let Expr::Dictionary(entries) = rows.first()? else {
+                return None;
+            };
+            let mut fields = entries
+                .iter()
+                .map(|(name, value)| {
+                    Some((
+                        name.clone(),
+                        infer_with(value, None, env, program, knowledge).ok()?,
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            fields.sort_by(|a, b| a.0.cmp(&b.0));
+            for row in &rows[1..] {
+                let Expr::Dictionary(entries) = row else {
+                    return None;
+                };
+                let mut other = entries
+                    .iter()
+                    .map(|(name, value)| {
+                        Some((
+                            name.clone(),
+                            infer_with(value, None, env, program, knowledge).ok()?,
+                        ))
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                other.sort_by(|a, b| a.0.cmp(&b.0));
+                if other.len() != fields.len() {
+                    return None;
+                }
+                for ((name, ty), (other_name, other_ty)) in fields.iter_mut().zip(other) {
+                    if *name != other_name {
+                        return None;
+                    }
+                    if *ty != other_ty {
+                        if other_ty == Type::Generic("Nullable".into(), Box::new(ty.clone())) {
+                            *ty = other_ty;
+                        } else if !matches!(ty, Type::Generic(kind, inner) if kind == "Nullable" && inner.as_ref() == &other_ty)
+                        {
+                            return None;
+                        }
+                    }
+                }
+            }
+            Some(fields)
+        }
+        Expr::Name(_) | Expr::Field(..) => {
+            let Type::Generic(kind, inner) =
+                infer_with(expr, None, env, program, knowledge).ok()?
+            else {
+                return None;
+            };
+            if kind != "Table" {
+                return None;
+            }
+            let Type::Named(row) = inner.as_ref() else {
+                return None;
+            };
+            program
+                .records
+                .iter()
+                .find(|record| record.name == *row)
+                .map(|record| record.fields.clone())
+        }
+        Expr::TableMethod { base, method, .. } if method == "select" => {
+            let fields = table_fields_known(base, env, program, knowledge)?;
+            table_columns_known(expr, env, program, knowledge)?
+                .iter()
+                .map(|name| fields.iter().find(|(field, _)| field == name).cloned())
+                .collect()
+        }
+        Expr::TableMethod { base, method, .. }
+            if matches!(
+                method.as_str(),
+                "filter" | "filterOut" | "slice" | "distinct" | "sort"
+            ) =>
+        {
+            table_fields_known(base, env, program, knowledge)
+        }
+        Expr::TableMethod { base, method, args } if method == "rename" => {
+            let mut fields = table_fields_known(base, env, program, knowledge)?;
+            if args.is_empty() {
+                return None;
+            }
+            let originals = fields
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>();
+            let mut sources = HashSet::new();
+            for arg in args {
+                let Expr::Rename(from, to) = arg else {
+                    return None;
+                };
+                if !sources.insert(from) {
+                    return None;
+                }
+                let index = originals.iter().position(|name| name == from)?;
+                fields[index].0 = to.clone();
+            }
+            let mut names = HashSet::new();
+            fields
+                .iter()
+                .all(|(name, _)| names.insert(name))
+                .then_some(fields)
+        }
+        Expr::TableMethod { base, method, args } if method == "withColumn" => {
+            let [Expr::Output(name, value)] = args.as_slice() else {
+                return None;
+            };
+            let mut fields = table_fields_known(base, env, program, knowledge)?;
+            let names = fields
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>();
+            check_table_columns(value, Some(&names)).ok()?;
+            let mut local = env.clone();
+            local.insert("__bl_row".into(), Type::Named("Dictionary".into()));
+            for (column, ty) in &fields {
+                local.insert(format!("#table_cell:__bl_row:{column}"), ty.clone());
+            }
+            let ty = infer_with(&table_row_expr(value), None, &local, program, knowledge).ok()?;
+            if let Some((_, existing)) = fields.iter_mut().find(|(column, _)| column == name) {
+                *existing = ty;
+            } else {
+                fields.push((name.clone(), ty));
+            }
+            Some(fields)
+        }
+        Expr::TableSelect { base, columns, .. } => {
+            let fields = table_fields_known(base, env, program, knowledge)?;
+            let names = columns
+                .as_ref()
+                .map(|columns| selected_column_names(columns))
+                .transpose()
+                .ok()?
+                .unwrap_or_else(|| fields.iter().map(|(name, _)| name.clone()).collect());
+            names
+                .into_iter()
+                .map(|name| fields.iter().find(|(field, _)| field == &name).cloned())
+                .collect()
+        }
+        _ => None,
+    }
+}
+
+fn selected_column_names(columns: &Expr) -> Result<Vec<String>, String> {
+    let mut names = table_column_names(columns)?;
+    let mut seen = HashSet::new();
+    names.retain(|name| seen.insert(name.clone()));
+    Ok(names)
+}
+
+pub(crate) fn table_column_names(columns: &Expr) -> Result<Vec<String>, String> {
+    match columns {
+        Expr::Column(name) => Ok(vec![name.clone()]),
+        Expr::List(items) => items
+            .iter()
+            .map(|item| match item {
+                Expr::Column(name) => Ok(name.clone()),
+                _ => Err("table columns require unquoted names".into()),
+            })
+            .collect(),
+        _ => Err("table columns require unquoted names".into()),
+    }
+}
+
+pub(crate) fn check_table_columns(expr: &Expr, known: Option<&[String]>) -> Result<(), String> {
+    match expr {
+        Expr::Column(name) => {
+            if !known.is_some_and(|names| names.contains(name)) {
+                return Err(format!("unknown table column: {name}"));
+            }
+        }
+        Expr::OuterVar(_) => {}
+        Expr::Field(base, _) | Expr::Not(base) => check_table_columns(base, known)?,
+        Expr::Index(base, key)
+        | Expr::Binary(base, _, key)
+        | Expr::TableEqual(base, key)
+        | Expr::TableRange(base, key)
+        | Expr::Sequence(base, key) => {
+            check_table_columns(base, known)?;
+            check_table_columns(key, known)?;
+        }
+        Expr::Call(_, args) | Expr::List(args) => {
+            for arg in args {
+                check_table_columns(arg, known)?;
+            }
+        }
+        Expr::Dictionary(entries) => {
+            for (_, value) in entries {
+                check_table_columns(value, known)?;
+            }
+        }
+        Expr::Range(lower, upper, _, _) => {
+            for bound in lower.iter().chain(upper) {
+                check_table_columns(bound, known)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub(crate) fn contains_column(expr: &Expr) -> bool {
+    match expr {
+        Expr::Column(_) => true,
+        Expr::Binary(left, _, right)
+        | Expr::Index(left, right)
+        | Expr::TableEqual(left, right)
+        | Expr::TableRange(left, right) => contains_column(left) || contains_column(right),
+        Expr::Field(base, _) | Expr::Not(base) => contains_column(base),
+        Expr::List(items) | Expr::Call(_, items) => items.iter().any(contains_column),
+        Expr::Dictionary(entries) => entries.iter().any(|(_, value)| contains_column(value)),
+        Expr::Range(lower, upper, _, _) => lower
+            .iter()
+            .chain(upper)
+            .any(|bound| contains_column(bound)),
+        _ => false,
+    }
+}
+
+pub(crate) fn table_row_expr(expr: &Expr) -> Expr {
+    match expr {
+        Expr::Column(name) => Expr::Index(
+            Box::new(Expr::Name("__bl_row".into())),
+            Box::new(Expr::String(name.clone())),
+        ),
+        Expr::OuterVar(name) => Expr::Name(name.clone()),
+        Expr::Binary(left, op, right) => Expr::Binary(
+            Box::new(table_row_expr(left)),
+            op.clone(),
+            Box::new(table_row_expr(right)),
+        ),
+        Expr::TableEqual(left, right) => Expr::TableEqual(
+            Box::new(table_row_expr(left)),
+            Box::new(table_row_expr(right)),
+        ),
+        Expr::Field(base, field) => Expr::Field(Box::new(table_row_expr(base)), field.clone()),
+        Expr::Index(base, key) => Expr::Index(
+            Box::new(table_row_expr(base)),
+            Box::new(table_row_expr(key)),
+        ),
+        Expr::Call(name, args) => {
+            Expr::Call(name.clone(), args.iter().map(table_row_expr).collect())
+        }
+        Expr::List(items) => Expr::List(items.iter().map(table_row_expr).collect()),
+        Expr::Dictionary(entries) => Expr::Dictionary(
+            entries
+                .iter()
+                .map(|(key, value)| (key.clone(), table_row_expr(value)))
+                .collect(),
+        ),
+        Expr::Not(value) => Expr::Not(Box::new(table_row_expr(value))),
+        Expr::Range(lower, upper, a, b) => Expr::Range(
+            lower.as_ref().map(|v| Box::new(table_row_expr(v))),
+            upper.as_ref().map(|v| Box::new(table_row_expr(v))),
+            *a,
+            *b,
+        ),
+        _ => expr.clone(),
+    }
+}
+
 fn binding_used(expr: &Expr, name: &str) -> bool {
     match expr {
         Expr::Name(value) => value == name,
@@ -225,7 +1101,7 @@ fn binding_used(expr: &Expr, name: &str) -> bool {
             ..
         } => binding_used(source, name) || binding != name && binding_used(body, name),
         Expr::InlinePredicate { binding, body } => binding != name && binding_used(body, name),
-        Expr::NamedArgument(_, value) => binding_used(value, name),
+        Expr::NamedArgument(_, value) | Expr::Output(_, value) => binding_used(value, name),
         Expr::Some {
             bindings,
             predicate,
@@ -392,6 +1268,430 @@ pub(crate) fn infer_with(
             Err("inline predicate requires remove or listReplace match argument".into())
         }
         NamedArgument(..) => Err("named argument requires a calendar transformation".into()),
+        TableSelect {
+            base,
+            rows,
+            columns,
+        } => {
+            if !is_table_type(&infer_with(base, None, env, program, knowledge)?) {
+                return Err("table selector requires Table".into());
+            }
+            let known = table_columns_known(base, env, program, knowledge);
+            if let Some(columns) = columns {
+                let names = known
+                    .as_ref()
+                    .ok_or("table columns require a statically known schema")?;
+                for column in table_column_names(columns)? {
+                    if !names.contains(&column) {
+                        return Err(format!("unknown table column: {column}"));
+                    }
+                }
+            }
+            if let Some(rows) = rows {
+                let mut local = env.clone();
+                local.insert("__bl_row".into(), named("Dictionary"));
+                if let Some(fields) = table_fields_known(base, env, program, knowledge) {
+                    for (name, ty) in fields {
+                        local.insert(format!("#table_cell:__bl_row:{name}"), ty);
+                    }
+                }
+                check_table_columns(rows, known.as_deref())?;
+                let row = table_row_expr(rows);
+                if matches!(rows.as_ref(), TableRange(..) | List(_)) && contains_column(rows) {
+                    return Err(
+                        "table positional selectors cannot reference current-row columns".into(),
+                    );
+                }
+                match rows.as_ref() {
+                    TableRange(start, end) => {
+                        for bound in [start, end] {
+                            if infer_with(
+                                &table_row_expr(bound),
+                                Some(&named("Number")),
+                                &local,
+                                program,
+                                knowledge,
+                            )? != named("Number")
+                            {
+                                return Err("table range bounds require Number".into());
+                            }
+                        }
+                    }
+                    List(items) => {
+                        for item in items {
+                            match item {
+                                TableRange(start, end) => {
+                                    for bound in [start, end] {
+                                        if infer_with(
+                                            &table_row_expr(bound),
+                                            Some(&named("Number")),
+                                            &local,
+                                            program,
+                                            knowledge,
+                                        )? != named("Number")
+                                        {
+                                            return Err("table range bounds require Number".into());
+                                        }
+                                    }
+                                }
+                                _ if infer_with(
+                                    &table_row_expr(item),
+                                    Some(&named("Number")),
+                                    &local,
+                                    program,
+                                    knowledge,
+                                )? == named("Number") => {}
+                                _ => return Err("table row list requires indices or ranges".into()),
+                            }
+                        }
+                    }
+                    _ => {
+                        let ty = infer_with(&row, None, &local, program, knowledge)?;
+                        let nullable_bool =
+                            Type::Generic("Nullable".into(), Box::new(named("Bool")));
+                        if ty != named("Number") && ty != named("Bool") && ty != nullable_bool
+                            || contains_column(rows) && ty != named("Bool") && ty != nullable_bool
+                        {
+                            return Err(
+                                "table row selector requires Number or Bool predicate".into()
+                            );
+                        }
+                        if ty == named("Number")
+                            && constant_number(&row).is_some_and(|result| {
+                                result.is_ok_and(|number| {
+                                    !number.fract().is_zero() || number.is_zero()
+                                })
+                            })
+                        {
+                            return Err("table index must be a nonzero integer".into());
+                        }
+                    }
+                }
+            }
+            if let Some(Type::Generic(kind, inner)) = expected
+                && kind == "Table"
+                && let Type::Named(row) = inner.as_ref()
+                && let Some(record) = program.records.iter().find(|item| item.name == *row)
+            {
+                let fields = table_fields_known(expr, env, program, knowledge)
+                    .or_else(|| {
+                        (matches!(base.as_ref(), Expr::Call(name, args) if name == "table" && args.len() == 1)
+                            && table_columns_known(expr, env, program, knowledge) == Some(record.fields.iter().map(|(name, _)| name.clone()).collect()))
+                            .then(|| record.fields.clone())
+                    })
+                    .ok_or("table output columns require a statically known schema")?;
+                if fields != record.fields {
+                    return Err(format!("table output does not match declared row {row}"));
+                }
+                return Ok(expected.unwrap().clone());
+            }
+            Ok(named("Table"))
+        }
+        TableEqual(left, right) => {
+            let lhs = infer_with(left, None, env, program, knowledge)?;
+            let rhs = infer_with(
+                right,
+                (!is_table_type(&lhs)).then_some(&lhs),
+                env,
+                program,
+                knowledge,
+            )?;
+            let row = matches!(left.as_ref(), Expr::Name(name) if env.contains_key(&format!("#table_row:{name}")))
+                || matches!(right.as_ref(), Expr::Name(name) if env.contains_key(&format!("#table_row:{name}")));
+            if is_table_type(&lhs) && is_table_type(&rhs)
+                || row && lhs == named("Dictionary") && lhs == rhs
+            {
+                Ok(named("Bool"))
+            } else {
+                Err("= requires two Tables or a table iteration row and a Dictionary".into())
+            }
+        }
+        TableMethod { base, method, args }
+            if matches!(method.as_str(), "filter" | "filterOut" | "select" | "slice") =>
+        {
+            let select = match method.as_str() {
+                "filter" | "filterOut" if args.len() == 1 => {
+                    let mut local = env.clone();
+                    local.insert("__bl_row".into(), named("Dictionary"));
+                    if let Some(fields) = table_fields_known(base, env, program, knowledge) {
+                        for (name, ty) in fields {
+                            local.insert(format!("#table_cell:__bl_row:{name}"), ty);
+                        }
+                    }
+                    let predicate =
+                        infer_with(&table_row_expr(&args[0]), None, &local, program, knowledge)?;
+                    if predicate != named("Bool")
+                        && predicate != Type::Generic("Nullable".into(), Box::new(named("Bool")))
+                    {
+                        return Err(format!("{method} requires Bool or Bool? row predicate"));
+                    }
+                    TableSelect {
+                        base: base.clone(),
+                        rows: Some(Box::new(if method == "filterOut" {
+                            Not(Box::new(args[0].clone()))
+                        } else {
+                            args[0].clone()
+                        })),
+                        columns: None,
+                    }
+                }
+                "slice" if args.len() == 1 => TableSelect {
+                    base: base.clone(),
+                    rows: Some(Box::new(args[0].clone())),
+                    columns: None,
+                },
+                "select" if !args.is_empty() => TableSelect {
+                    base: base.clone(),
+                    rows: None,
+                    columns: Some(Box::new(List(args.clone()))),
+                },
+                _ => return Err(format!("invalid {method} arguments")),
+            };
+            infer_with(&select, expected, env, program, knowledge)
+        }
+        TableMethod { base, method, args }
+            if matches!(method.as_str(), "rename" | "withColumn") =>
+        {
+            if !is_table_type(&infer_with(base, None, env, program, knowledge)?) {
+                return Err(format!("{method} requires Table"));
+            }
+            let fields = table_fields_known(expr, env, program, knowledge)
+                .ok_or_else(|| format!("{method} requires known columns and valid arguments"))?;
+            if let Some(Type::Generic(kind, row)) = expected
+                && kind == "Table"
+            {
+                let Type::Named(name) = row.as_ref() else {
+                    return Err("table result requires declared row".into());
+                };
+                let record = program
+                    .records
+                    .iter()
+                    .find(|record| record.name == *name)
+                    .ok_or("unknown table row")?;
+                if fields.len() != record.fields.len() || fields.iter().zip(&record.fields).any(|((field, actual), (required_name, required))| {
+                    field != required_name || actual != required
+                        && !matches!(required, Type::Generic(kind, inner) if kind == "Nullable" && inner.as_ref() == actual)
+                }) {
+                    return Err(format!("{method} output does not match declared row {name}"));
+                }
+                return Ok(expected.unwrap().clone());
+            }
+            Ok(named("Table"))
+        }
+        TableJoin(args) => {
+            let [left, right, on, mode @ ..] = args.as_slice() else {
+                return Err("invalid join arguments".into());
+            };
+            infer_table_join(
+                (left, right, on),
+                join_mode(mode).ok_or("invalid join mode")?,
+                expected,
+                env,
+                program,
+                knowledge,
+            )
+        }
+        TableMethod { base, method, args } if method == "agg" => {
+            let TableMethod {
+                base: table,
+                method: grouped,
+                args: keys,
+            } = base.as_ref()
+            else {
+                return Err("agg requires groupBy".into());
+            };
+            if grouped != "groupBy" {
+                return Err("agg requires groupBy".into());
+            }
+            let fields = group_fields(table, keys, args, env, program, knowledge)?;
+            if let Some(Type::Generic(kind, inner)) = expected
+                && kind == "Table"
+            {
+                let Type::Named(name) = inner.as_ref() else {
+                    return Err("table result requires declared row".into());
+                };
+                let record = program
+                    .records
+                    .iter()
+                    .find(|record| record.name == *name)
+                    .ok_or("unknown table row")?;
+                if fields != record.fields {
+                    return Err(format!("group output does not match declared row {name}"));
+                }
+                return Ok(expected.unwrap().clone());
+            }
+            Ok(named("Table"))
+        }
+        TableMethod { method, .. } if method == "groupBy" => {
+            Err("groupBy requires agg(...)".into())
+        }
+        TableMethod { base, method, args } if method == "join" => {
+            let [other, on, mode @ ..] = args.as_slice() else {
+                return Err("invalid join arguments".into());
+            };
+            infer_table_join(
+                (base, other, on),
+                join_mode(mode).ok_or("invalid join mode")?,
+                expected,
+                env,
+                program,
+                knowledge,
+            )
+        }
+        TableMethod { base, method, args } if method == "union" => {
+            let (others, mode) = union_mode(args).ok_or("invalid table union mode")?;
+            let mut tables = vec![base.as_ref()];
+            tables.extend(others.iter());
+            infer_table_union(&tables, mode, expected, env, program, knowledge)
+        }
+        TableMethod { base, method, args } if method == "sort" => {
+            if args.is_empty() || args.len() > 1024 {
+                return Err("sort requires one or more keys within resource limit".into());
+            }
+            let actual = infer_with(base, None, env, program, knowledge)?;
+            if !is_table_type(&actual) {
+                return Err("sort requires Table".into());
+            }
+            let fields = table_fields_known(base, env, program, knowledge)
+                .ok_or("sort requires statically known column types")?;
+            for key in args {
+                let (column, rank) = match key {
+                    Column(name) => (name, None),
+                    TableSortKey { column, order } => (
+                        column,
+                        match order {
+                            crate::expr::TableSortOrder::InOrder(expr) => Some(expr.as_ref()),
+                            _ => None,
+                        },
+                    ),
+                    _ => return Err("sort requires unquoted column keys".into()),
+                };
+                let ty = &fields
+                    .iter()
+                    .find(|(name, _)| name == column)
+                    .ok_or_else(|| format!("unknown table column: {column}"))?
+                    .1;
+                let inner = match ty {
+                    Type::Generic(kind, inner) if kind == "Nullable" => inner.as_ref(),
+                    _ => ty,
+                };
+                if !matches!(inner, Type::Named(name) if matches!(name.as_str(), "String" | "Bool" | "Number" | "Date" | "Time" | "DateTime" | "DTDuration" | "YMDuration"))
+                {
+                    return Err(format!("sort column {column} is not comparable"));
+                }
+                if let Some(rank) = rank {
+                    let expected_list = Type::Generic("List".into(), Box::new(ty.clone()));
+                    if infer_with(
+                        &table_row_expr(rank),
+                        Some(&expected_list),
+                        env,
+                        program,
+                        knowledge,
+                    )? != expected_list
+                    {
+                        return Err(format!("sort order for {column} requires {expected_list}"));
+                    }
+                }
+            }
+            if let Some(Type::Generic(kind, row)) = expected
+                && kind == "Table"
+            {
+                let Type::Named(name) = row.as_ref() else {
+                    return Err("table result requires declared row".into());
+                };
+                let record = program
+                    .records
+                    .iter()
+                    .find(|record| record.name == *name)
+                    .ok_or("unknown table row")?;
+                if fields != record.fields {
+                    return Err("sort output does not match declared row".into());
+                }
+                return Ok(expected.unwrap().clone());
+            }
+            Ok(actual)
+        }
+        TableMethod { base, method, args } if method == "distinct" => {
+            if !args.is_empty() {
+                return Err("distinct takes no arguments".into());
+            }
+            let actual = infer_with(base, None, env, program, knowledge)?;
+            if !is_table_type(&actual) {
+                return Err("distinct requires Table".into());
+            }
+            if let Some(Type::Generic(kind, row)) = expected
+                && kind == "Table"
+            {
+                let Type::Named(name) = row.as_ref() else {
+                    return Err("table result requires declared row".into());
+                };
+                let record = program
+                    .records
+                    .iter()
+                    .find(|record| record.name == *name)
+                    .ok_or("unknown table row")?;
+                if table_fields_known(base, env, program, knowledge).as_deref()
+                    != Some(record.fields.as_slice())
+                {
+                    return Err("distinct output does not match declared row".into());
+                }
+                return Ok(expected.unwrap().clone());
+            }
+            Ok(actual)
+        }
+        TableMethod { base, method, args }
+            if matches!(method.as_str(), "toList" | "toDict" | "toValue") =>
+        {
+            if !is_table_type(&infer_with(base, None, env, program, knowledge)?) || !args.is_empty()
+            {
+                return Err("table conversion requires a Table and no arguments".into());
+            }
+            let fields = table_fields_known(base, env, program, knowledge);
+            let cell_type = fields.as_deref().and_then(|fields| match fields {
+                [(_, ty)] => Some(ty.clone()),
+                _ => None,
+            });
+            Ok(match (method.as_str(), cell_type) {
+                ("toList", Some(ty)) => Type::Generic("List".into(), Box::new(ty)),
+                ("toValue", Some(ty)) => ty,
+                ("toList", _) => {
+                    let known = table_columns_known(base, env, program, knowledge);
+                    let result = expected
+                        .cloned()
+                        .filter(|ty| matches!(ty, Type::Generic(kind, _) if kind == "List"))
+                        .unwrap_or_else(|| {
+                            Type::Generic(
+                                "List".into(),
+                                Box::new(named(
+                                    if known.as_ref().is_some_and(|names| names.len() != 1) {
+                                        "Dictionary"
+                                    } else {
+                                        "Value"
+                                    },
+                                )),
+                            )
+                        });
+                    if known.as_ref().is_some_and(|names| names.len() != 1)
+                        && result != Type::Generic("List".into(), Box::new(named("Dictionary")))
+                        && result != Type::Generic("List".into(), Box::new(named("Value")))
+                    {
+                        return Err(
+                            "toList on a multi-column table requires List<Dictionary>".into()
+                        );
+                    }
+                    result
+                }
+                ("toDict", _) => named("Dictionary"),
+                _ => expected.cloned().unwrap_or_else(|| named("Value")),
+            })
+        }
+        Column(_)
+        | OuterVar(_)
+        | TableRange(..)
+        | TableMethod { .. }
+        | TableSortKey { .. }
+        | Rename(..)
+        | Output(..) => Err("unsupported table expression".into()),
         Some {
             bindings,
             predicate,
@@ -408,13 +1708,16 @@ pub(crate) fn infer_with(
                     None
                 };
                 let ty = infer_with(source, hint.as_ref(), &local, program, knowledge)?;
-                let Type::Generic(kind, element) = ty else {
-                    return Err("iteration source must be List".into());
+                let element = match ty {
+                    Type::Generic(kind, element) if kind == "List" => *element,
+                    Type::Named(kind) if kind == "Table" => named("Dictionary"),
+                    Type::Generic(kind, inner) if kind == "Table" => {
+                        local.insert(format!("#table_row:{binding}"), *inner);
+                        named("Dictionary")
+                    }
+                    _ => return Err("iteration source must be List or Table".into()),
                 };
-                if kind != "List" {
-                    return Err("iteration source must be List".into());
-                }
-                local.insert(binding.clone(), *element);
+                local.insert(binding.clone(), element);
             }
             if infer_with(predicate, Some(&named("Bool")), &local, program, knowledge)?
                 != named("Bool")
@@ -451,17 +1754,13 @@ pub(crate) fn infer_with(
                 if schema.is_some() && field_type.is_none() {
                     return Err(format!("unknown dictionary field: {key}"));
                 }
-                let ty = infer_with(
-                    value,
-                    field_type.or(element_type),
-                    &scope,
-                    program,
-                    knowledge,
-                )?;
-                if field_type
-                    .or(element_type)
-                    .is_some_and(|wanted| wanted != &ty)
-                {
+                let wanted = field_type.or(element_type);
+                let hint = match wanted {
+                    Some(Type::Generic(kind, inner)) if kind == "Nullable" => Some(inner.as_ref()),
+                    _ => wanted,
+                };
+                let ty = infer_with(value, hint, &scope, program, knowledge)?;
+                if wanted.is_some_and(|expected| expected != &ty && !matches!(expected, Type::Generic(kind, inner) if kind == "Nullable" && inner.as_ref() == &ty)) {
                     return Err(format!(
                         "dictionary field {key} has incompatible type: {ty}"
                     ));
@@ -514,14 +1813,50 @@ pub(crate) fn infer_with(
             Ok(Type::Generic("List".into(), Box::new(named("Number"))))
         }
         Index(base, key) => {
+            if let Name(row) = base.as_ref()
+                && let Expr::String(field) = key.as_ref()
+                && let Some(ty) = env.get(&format!("#table_cell:{row}:{field}"))
+            {
+                return Ok(ty.clone());
+            }
+            if let Name(row) = base.as_ref()
+                && let Some(Type::Named(schema)) = env.get(&format!("#table_row:{row}"))
+                && let Expr::String(field) = key.as_ref()
+                && let Some(record) = program.records.iter().find(|record| record.name == *schema)
+            {
+                return record
+                    .fields
+                    .iter()
+                    .find(|(name, _)| name == field)
+                    .map(|(_, ty)| ty.clone())
+                    .ok_or_else(|| format!("unknown table column: {field}"));
+            }
+            let projection_hint =
+                expected.map(|ty| Type::Generic("List".into(), Box::new(ty.clone())));
             let base_expected = if matches!(base.as_ref(), List(elements) if elements.is_empty())
                 && matches!(expected, Some(Type::Generic(kind, _)) if kind == "List")
             {
                 expected
+            } else if matches!(base.as_ref(), Field(table, _) if infer_with(table, None, env, program, knowledge).ok().as_ref().is_some_and(is_table_type))
+            {
+                projection_hint.as_ref()
             } else {
                 None
             };
             let base_type = infer_with(base, base_expected, env, program, knowledge)?;
+            if is_table_type(&base_type) {
+                return infer_with(
+                    &Expr::TableSelect {
+                        base: base.clone(),
+                        rows: Some(Box::new(crate::expr::table_row(*key.clone())?)),
+                        columns: None,
+                    },
+                    expected,
+                    env,
+                    program,
+                    knowledge,
+                );
+            }
             if let Type::Generic(kind, element) = &base_type
                 && kind == "List"
             {
@@ -641,6 +1976,213 @@ pub(crate) fn infer_with(
             }
         }
         Call(name, args) => {
+            if name == "union"
+                && !knowledge.iter().any(|item| item.name == *name)
+                && args.first().is_some_and(|table| {
+                    infer_with(table, None, env, program, knowledge)
+                        .ok()
+                        .as_ref()
+                        .is_some_and(is_table_type)
+                })
+            {
+                let (tables, mode) = union_mode(args).ok_or("invalid table union mode")?;
+                return infer_table_union(
+                    &tables.iter().collect::<Vec<_>>(),
+                    mode,
+                    expected,
+                    env,
+                    program,
+                    knowledge,
+                );
+            }
+            if name == "coalesce" && !knowledge.iter().any(|item| item.name == *name) {
+                let [value, fallback] = args.as_slice() else {
+                    return Err("coalesce requires a nullable value and fallback".into());
+                };
+                let value_type = infer_with(value, None, env, program, knowledge)?;
+                let Type::Generic(kind, inner) = value_type else {
+                    return Err("coalesce requires a nullable value".into());
+                };
+                if kind != "Nullable"
+                    || matches!(inner.as_ref(), Type::Generic(kind, _) if kind == "Nullable")
+                {
+                    return Err("coalesce requires a nullable value and non-null fallback".into());
+                }
+                let fallback_type = infer_with(fallback, Some(&inner), env, program, knowledge)?;
+                if fallback_type != *inner {
+                    return Err(format!(
+                        "coalesce requires {inner} fallback, got {fallback_type}"
+                    ));
+                }
+                return Ok(*inner);
+            }
+            if matches!(name.as_str(), "hasColumn" | "isEmpty")
+                && !knowledge.iter().any(|item| item.name == *name)
+                && args.first().is_some_and(|base| {
+                    infer_with(base, None, env, program, knowledge)
+                        .ok()
+                        .as_ref()
+                        .is_some_and(is_table_type)
+                })
+            {
+                if (name == "isEmpty" && args.len() != 1)
+                    || (name == "hasColumn"
+                        && (args.len() != 2
+                            || infer_with(
+                                &args[1],
+                                Some(&named("String")),
+                                env,
+                                program,
+                                knowledge,
+                            )? != named("String")))
+                {
+                    return Err(format!("invalid {name} table arguments"));
+                }
+                return Ok(named("Bool"));
+            }
+            if matches!(name.as_str(), "table" | "tableFromDicts")
+                && !knowledge.iter().any(|definition| definition.name == *name)
+            {
+                let strings = Type::Generic("List".into(), Box::new(named("String")));
+                if name == "table" {
+                    let Some((headers, rows)) = args.split_first() else {
+                        return Err("table requires column names".into());
+                    };
+                    if infer_with(headers, Some(&strings), env, program, knowledge)? != strings {
+                        return Err("table headers must be List<String>".into());
+                    }
+                    for row in rows {
+                        if let List(cells) = row {
+                            for cell in cells {
+                                infer_with(cell, None, env, program, knowledge)?;
+                            }
+                        } else if !matches!(infer_with(row, None, env, program, knowledge)?, Type::Generic(kind, _) if kind == "List")
+                        {
+                            return Err("table rows must be lists".into());
+                        }
+                    }
+                } else {
+                    let [rows] = args.as_slice() else {
+                        return Err("tableFromDicts requires one list of dictionaries".into());
+                    };
+                    let dictionaries = Type::Generic("List".into(), Box::new(named("Dictionary")));
+                    if let List(items) = rows {
+                        for item in items {
+                            let ty = infer_with(item, None, env, program, knowledge)?;
+                            if !matches!(ty, Type::Generic(ref kind, _) if kind == "Dictionary")
+                                && !matches!(ty, Type::Named(ref kind) if kind == "Dictionary" || program.records.iter().any(|record| &record.name == kind))
+                            {
+                                return Err("tableFromDicts requires dictionaries".into());
+                            }
+                        }
+                    } else if !matches!(infer_with(rows, Some(&dictionaries), env, program, knowledge)?, Type::Generic(kind, inner) if kind == "List" && (matches!(*inner, Type::Generic(ref kind, _) if kind == "Dictionary") || matches!(*inner, Type::Named(ref kind) if kind == "Dictionary" || program.records.iter().any(|record| &record.name == kind))))
+                    {
+                        return Err("tableFromDicts requires a list of dictionaries".into());
+                    }
+                }
+                if let Some(Type::Generic(kind, inner)) = expected
+                    && kind == "Table"
+                    && let Type::Named(row) = inner.as_ref()
+                    && let Some(record) = program.records.iter().find(|item| item.name == *row)
+                {
+                    let mut columns = table_columns_known(expr, env, program, knowledge)
+                        .ok_or("typed table constructor requires statically known columns")?;
+                    if name == "tableFromDicts" {
+                        columns.sort();
+                    }
+                    if columns
+                        != record
+                            .fields
+                            .iter()
+                            .map(|(field, _)| field.clone())
+                            .collect::<Vec<_>>()
+                    {
+                        return Err(format!("table output does not match declared row {row}"));
+                    }
+                    if name == "table" {
+                        for value in &args[1..] {
+                            let elements = if let List(elements) = value {
+                                Some(elements)
+                            } else {
+                                None
+                            };
+                            if let Some(elements) = elements
+                                && elements.len() != record.fields.len()
+                            {
+                                return Err("table row has wrong width".into());
+                            }
+                            for (index, (_, required)) in record.fields.iter().enumerate() {
+                                let actual = if let Some(elements) = elements {
+                                    infer_with(
+                                        &elements[index],
+                                        Some(required),
+                                        env,
+                                        program,
+                                        knowledge,
+                                    )?
+                                } else {
+                                    let Type::Generic(kind, element) =
+                                        infer_with(value, None, env, program, knowledge)?
+                                    else {
+                                        unreachable!("validated table row list")
+                                    };
+                                    if kind != "List" {
+                                        return Err(
+                                            "typed table row requires positional values".into()
+                                        );
+                                    }
+                                    *element
+                                };
+                                if actual != *required
+                                    && !matches!(required, Type::Generic(kind, inner) if kind == "Nullable" && inner.as_ref() == &actual)
+                                {
+                                    return Err(format!(
+                                        "table column {} requires {required}, got {actual}",
+                                        record.fields[index].0
+                                    ));
+                                }
+                            }
+                        }
+                    } else {
+                        let compatible_row = |actual: &Type| {
+                            let Type::Named(name) = actual else {
+                                return false;
+                            };
+                            program.records.iter().find(|record| record.name == *name).is_some_and(|actual| {
+                                actual.fields.len() == record.fields.len()
+                                    && record.fields.iter().all(|(name, required)| {
+                                        actual.fields.iter().any(|(field, actual)| {
+                                            field == name && (actual == required
+                                                || matches!(required, Type::Generic(kind, inner) if kind == "Nullable" && inner.as_ref() == actual))
+                                        })
+                                    })
+                            })
+                        };
+                        if let List(rows) = &args[0] {
+                            for item in rows {
+                                let actual = infer_with(
+                                    item,
+                                    Some(&Type::Named(row.clone())),
+                                    env,
+                                    program,
+                                    knowledge,
+                                )?;
+                                if !compatible_row(&actual) {
+                                    return Err(format!("table row must match {row}"));
+                                }
+                            }
+                        } else {
+                            let actual = infer_with(&args[0], None, env, program, knowledge)?;
+                            if !matches!(actual, Type::Generic(kind, inner) if kind == "List" && compatible_row(&inner))
+                            {
+                                return Err(format!("table row must match {row}"));
+                            }
+                        }
+                    }
+                    return Ok(expected.unwrap().clone());
+                }
+                return Ok(named("Table"));
+            }
             if matches!(
                 name.as_str(),
                 "insertBefore" | "insertAfter" | "remove" | "listReplace"
@@ -1685,6 +3227,10 @@ pub(crate) fn infer_with(
                 let hint = expected.and_then(|ty| {
                     if name == "mode" {
                         matches!(ty, Type::Generic(kind, _) if kind == "List").then_some(ty.clone())
+                    } else if name == "mean"
+                        && matches!(ty, Type::Generic(kind, _) if kind == "Nullable")
+                    {
+                        Some(Type::Generic("List".into(), Box::new(number.clone())))
                     } else {
                         Some(Type::Generic("List".into(), Box::new(ty.clone())))
                     }
@@ -1694,6 +3240,7 @@ pub(crate) fn infer_with(
                     values,
                     if matches!(values, Expr::List(items) if items.is_empty())
                         || matches!(values, Expr::Iteration { .. })
+                        || matches!(values, Expr::Field(base, _) if infer_with(base, None, env, program, knowledge).ok() == Some(named("Table")))
                     {
                         Some(hint.as_ref().unwrap_or(&default))
                     } else {
@@ -1706,6 +3253,23 @@ pub(crate) fn infer_with(
                 let Type::Generic(kind, element) = &actual else {
                     return Err(format!("{name} requires a List"));
                 };
+                if kind == "List" && matches!(name.as_str(), "sum" | "mean") {
+                    if element.as_ref() == &number {
+                        return Ok(if name == "mean" {
+                            Type::Generic("Nullable".into(), Box::new(number))
+                        } else {
+                            number
+                        });
+                    }
+                    if matches!(element.as_ref(), Type::Generic(kind, inner) if kind == "Nullable" && inner.as_ref() == &number)
+                    {
+                        return Ok(if name == "mean" {
+                            Type::Generic("Nullable".into(), Box::new(number))
+                        } else {
+                            number
+                        });
+                    }
+                }
                 if kind != "List"
                     || (name != "mode"
                         && !call_types_match(name, std::slice::from_ref(&actual), element))
@@ -1931,6 +3495,60 @@ pub(crate) fn infer_with(
             Ok(output)
         }
         Field(base, field) => {
+            if let Name(group) = base.as_ref()
+                && let Some(ty) = env.get(&format!("#table_cell:{group}:{field}"))
+                && env.get(group).is_some_and(is_table_type)
+            {
+                return Ok(Type::Generic("List".into(), Box::new(ty.clone())));
+            }
+            if let Name(row) = base.as_ref()
+                && let Some(Type::Named(schema)) = env.get(&format!("#table_row:{row}"))
+                && let Some(record) = program.records.iter().find(|record| record.name == *schema)
+            {
+                return record
+                    .fields
+                    .iter()
+                    .find(|(name, _)| name == field)
+                    .map(|(_, ty)| ty.clone())
+                    .ok_or_else(|| format!("unknown table column: {field}"));
+            }
+            let base_type = infer_with(base, None, env, program, knowledge).ok();
+            if base_type.as_ref().is_some_and(is_table_type) {
+                let known = table_columns_known(base, env, program, knowledge);
+                match field.as_str() {
+                    "nRows" | "nCols" => return Ok(named("Number")),
+                    "colNames" => {
+                        return Ok(Type::Generic("List".into(), Box::new(named("String"))));
+                    }
+                    _ if !known.as_ref().is_some_and(|names| names.contains(field)) => {
+                        return Err(format!("unknown table column: {field}"));
+                    }
+                    _ => {
+                        if let Some(Type::Generic(kind, inner)) = &base_type
+                            && kind == "Table"
+                            && let Type::Named(row) = inner.as_ref()
+                            && let Some(record) =
+                                program.records.iter().find(|item| item.name == *row)
+                            && let Some((_, ty)) =
+                                record.fields.iter().find(|(name, _)| name == field)
+                        {
+                            return Ok(Type::Generic("List".into(), Box::new(ty.clone())));
+                        }
+                        if let Some((_, ty)) = table_fields_known(base, env, program, knowledge)
+                            .and_then(|fields| fields.into_iter().find(|(name, _)| name == field))
+                        {
+                            return Ok(Type::Generic("List".into(), Box::new(ty)));
+                        }
+                        if matches!(base.as_ref(), Expr::Call(name, args) if name == "table" && args.len() == 1)
+                            && let Some(Type::Generic(kind, _)) = expected
+                            && kind == "List"
+                        {
+                            return Ok(expected.unwrap().clone());
+                        }
+                        return Err(format!("table column type cannot be resolved: {field}"));
+                    }
+                }
+            }
             if let Dictionary(entries) = base.as_ref() {
                 infer_with(base, None, env, program, knowledge)?;
                 let mut local = env.clone();
@@ -2146,16 +3764,21 @@ pub(crate) fn infer_with(
             } else {
                 None
             };
-            let Type::Generic(kind, element) =
-                infer_with(source, context, env, program, knowledge)?
-            else {
-                return Err("iteration source must be List".into());
+            let source_type = infer_with(source, context, env, program, knowledge)?;
+            let table_row = match &source_type {
+                Type::Generic(kind, inner) if kind == "Table" => Some(*inner.clone()),
+                _ => None,
             };
-            if kind != "List" {
-                return Err("iteration source must be List".into());
-            }
+            let (binding_type, _) = match source_type {
+                Type::Generic(kind, element) if kind == "List" => (*element, false),
+                Type::Named(kind) if kind == "Table" => (named("Dictionary"), true),
+                Type::Generic(kind, _) if kind == "Table" => (named("Dictionary"), true),
+                _ => return Err("iteration source must be List or Table".into()),
+            };
             let mut local = env.clone();
-            let binding_type = *element;
+            if let Some(row) = table_row {
+                local.insert(format!("#table_row:{binding}"), row);
+            }
             local.insert(binding.clone(), binding_type.clone());
             let boolean = named("Bool");
             let result_type = if *every {
@@ -2250,6 +3873,10 @@ pub(crate) fn infer_with(
         }
         Not(value) => {
             let ty = infer_with(value, None, env, program, knowledge)?;
+            if matches!(&ty, Type::Generic(kind, inner) if kind == "Nullable" && inner.as_ref() == &named("Bool"))
+            {
+                return Ok(ty);
+            }
             if constraints::not_branches(
                 &Constraints::default(),
                 &Term::from(&ty),
@@ -2319,6 +3946,14 @@ pub(crate) fn infer_with(
                     lhs = infer_with(left, Some(&other), env, program, knowledge)?;
                 }
             }
+            if op == "!=" && is_table_type(&lhs) {
+                let rhs = infer_with(right, None, env, program, knowledge)?;
+                return if is_table_type(&rhs) {
+                    Ok(named("Bool"))
+                } else {
+                    Err("table != requires two Tables".into())
+                };
+            }
             let duration = |ty: &Type| matches!(ty, Type::Named(name) if matches!(name.as_str(), "DTDuration" | "YMDuration"));
             let number = named("Number");
             let rhs = infer_with(
@@ -2333,6 +3968,36 @@ pub(crate) fn infer_with(
                 knowledge,
             )?;
             let result = Term::Var(usize::MAX);
+            let (base_left, left_nullable) = match &lhs {
+                Type::Generic(kind, inner) if kind == "Nullable" => (inner.as_ref(), true),
+                ty => (ty, false),
+            };
+            let (base_right, right_nullable) = match &rhs {
+                Type::Generic(kind, inner) if kind == "Nullable" => (inner.as_ref(), true),
+                ty => (ty, false),
+            };
+            if left_nullable || right_nullable {
+                let branches = constraints::binary_branches(
+                    &Constraints::default(),
+                    op,
+                    false,
+                    &Term::from(base_left),
+                    &Term::from(base_right),
+                    &result,
+                );
+                if let Some(ty) = Constraints::unique_type(&branches, &result)
+                    && ((ty == named("Number")
+                        && matches!(op.as_str(), "+" | "-" | "*" | "/" | "**" | "mod"))
+                        || (ty == named("Bool")
+                            && matches!(
+                                op.as_str(),
+                                "==" | "!=" | "<" | "<=" | ">" | ">=" | "and" | "or"
+                            )))
+                {
+                    return Ok(Type::Generic("Nullable".into(), Box::new(ty)));
+                }
+                return Err(format!("{op} does not support nullable {lhs} and {rhs}"));
+            }
             let branches = constraints::binary_branches(
                 &Constraints::default(),
                 op,
@@ -2382,7 +4047,10 @@ pub(crate) fn infer_with(
 pub(crate) fn builtin(name: &str) -> bool {
     matches!(
         name,
-        "keys"
+        "table"
+            | "tableFromDicts"
+            | "hasColumn"
+            | "keys"
             | "values"
             | "getEntries"
             | "size"
@@ -2423,6 +4091,7 @@ pub(crate) fn builtin(name: &str) -> bool {
             | "calendarKeep"
             | "calendarMerge"
             | "pattern"
+            | "coalesce"
             | "count"
             | "listContains"
             | "sublist"
@@ -2572,15 +4241,30 @@ pub(super) fn reversed_constants(a: &Expr, b: &Expr, ty: &Type) -> bool {
     }
 }
 
-pub(super) fn resolve(ty: &Type, names: &HashSet<&str>) -> Result<(), String> {
+pub(super) fn resolve(ty: &Type, names: &HashSet<&str>, program: &Program) -> Result<(), String> {
     match ty {
+        Type::Named(name) if name == "Table" => {
+            Err("Table ports require a named row schema: Table<Row>".into())
+        }
         Type::Named(name) if names.contains(name.as_str()) && name != "List" => Ok(()),
         Type::Generic(name, inner)
-            if matches!(name.as_str(), "List" | "Dictionary" | "DictionaryEntry") =>
+            if name == "Table"
+                && matches!(inner.as_ref(), Type::Named(row) if program.records.iter().any(|record| record.name == *row)) =>
         {
-            resolve(inner, names)
+            Ok(())
+        }
+        Type::Generic(name, inner)
+            if matches!(
+                name.as_str(),
+                "List" | "Dictionary" | "DictionaryEntry" | "Nullable"
+            ) =>
+        {
+            resolve(inner, names, program)
         }
         Type::Named(name) => Err(format!("unknown type: {name}")),
+        Type::Generic(name, _) if name == "Table" => Err(format!(
+            "unsupported type: {ty}; Table<Row> requires a declared dictionary row schema"
+        )),
         Type::Generic(_, _) => Err(format!("unsupported type: {ty}")),
     }
 }
