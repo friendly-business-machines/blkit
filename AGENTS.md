@@ -1,5 +1,14 @@
 # Agent workflow
 
+- **Explicit slash-command requests** select the named workflow even when the
+  command appears inside a sentence (for example, “Please continue to
+  `/opsx-implement add-business-language-tables`”). If its prompt has not been
+  expanded into the message, locate and read the actual prompt template
+  (project templates live in `.pi/prompts/<command>.md`) before choosing an
+  execution method or acting. Follow that prompt; do not infer its behavior
+  from its name or substitute a similar skill or command. If the template
+  cannot be found, ask rather than silently falling back. Mere discussion of
+  a command is not a request to execute it.
 - **OpenSpec** owns requirements and change artifacts for the project itself.
   For non-trivial project changes, start with `openspec` (in Pi, `/opsx-propose`)
   and treat the approved change in `openspec/changes/` as the planning source
