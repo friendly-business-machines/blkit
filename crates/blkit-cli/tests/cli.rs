@@ -1,28 +1,112 @@
-use std::process::Command;
+use std::{fs, path::PathBuf, process::Command};
+
+struct DiscoveryDirectory(PathBuf);
+
+impl DiscoveryDirectory {
+    fn new(case: &str) -> Self {
+        let path =
+            std::env::temp_dir().join(format!("blkit-cli-discovery-{case}-{}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        fs::create_dir(path.join("work")).unwrap();
+        fs::create_dir(path.join("bin")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            for tool in ["git", "cargo", "rustc"] {
+                let executable = path.join("bin").join(tool);
+                fs::write(
+                    &executable,
+                    "#!/bin/sh\nprintf '%s\\n' \"$0 $*\" >> \"$BLKIT_TEST_TOOL_LOG\"\nexit 99\n",
+                )
+                .unwrap();
+                fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        Self(path)
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_blkit"));
+        command
+            .current_dir(self.0.join("work"))
+            .env("PATH", self.0.join("bin"))
+            .env("BLKIT_TEST_TOOL_LOG", self.0.join("tool-calls"));
+        command
+    }
+
+    fn assert_untouched(&self) {
+        assert_eq!(fs::read_dir(self.0.join("work")).unwrap().count(), 0);
+        let mut entries: Vec<_> = fs::read_dir(&self.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        entries.sort();
+        assert_eq!(entries, ["bin", "work"], "unexpected files or tool calls");
+    }
+}
+
+impl Drop for DiscoveryDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
 
 const SOURCE: &str = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } process route { flow start -> done; bind start.input -> done.result; }";
 
 #[test]
-fn help_explains_source_and_output() {
-    let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
-        .arg("--help")
-        .output()
-        .unwrap();
+fn help_explains_source_output_and_init_without_side_effects() {
+    let directory = DiscoveryDirectory::new("help");
+    let result = directory.command().arg("--help").output().unwrap();
     assert!(result.status.success());
     let text = String::from_utf8(result.stdout).unwrap();
     assert!(text.contains("SOURCE.bl"));
     assert!(text.contains("OUTPUT.rs"));
     assert!(text.contains("transpile"));
     assert!(text.contains("update"));
+    assert!(text.contains("init") && text.contains("standalone local project"));
+    assert!(text.contains("--no-vcs"));
+    assert!(!text.contains("--vcs"));
+    assert!(result.stderr.is_empty());
+    directory.assert_untouched();
+}
+
+#[test]
+fn init_help_explains_destination_and_no_vcs_without_side_effects() {
+    let directory = DiscoveryDirectory::new("init-help");
+    for args in [
+        vec!["init", "--help"],
+        vec!["init", "new-project", "--help"],
+        vec!["init", "new-project", "--no-vcs", "--help"],
+    ] {
+        let result = directory.command().args(&args).output().unwrap();
+        assert!(
+            result.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let text = String::from_utf8(result.stdout).unwrap();
+        for requirement in ["PROJECT_DIR", "--no-vcs", "current directory", "Git"] {
+            assert!(
+                text.contains(requirement),
+                "help omits {requirement}: {text}"
+            );
+        }
+        assert!(!text.contains("--vcs"));
+        assert!(
+            !text.contains("--no-vcs <"),
+            "flag must not take a value: {text}"
+        );
+        assert!(result.stderr.is_empty());
+        directory.assert_untouched();
+    }
 }
 
 #[test]
 fn subcommand_help_and_version_do_not_run_projects() {
+    let directory = DiscoveryDirectory::new("subcommand-help");
     for command in [["transpile", "--help"], ["update", "--help"]] {
-        let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
-            .args(command)
-            .output()
-            .unwrap();
+        let result = directory.command().args(command).output().unwrap();
         assert!(
             result.status.success(),
             "{command:?}: {}",
@@ -30,44 +114,74 @@ fn subcommand_help_and_version_do_not_run_projects() {
         );
         assert!(String::from_utf8_lossy(&result.stdout).contains("PROJECT_DIR"));
     }
-    let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
-        .arg("--version")
-        .output()
-        .unwrap();
+    let result = directory.command().arg("--version").output().unwrap();
     assert!(result.status.success());
     assert!(String::from_utf8_lossy(&result.stdout).contains("0.1.0"));
+    directory.assert_untouched();
 }
 
 #[test]
-fn bash_completion_is_printed_without_a_project() {
-    let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
-        .args(["--completions", "bash"])
-        .output()
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let script = String::from_utf8(result.stdout).unwrap();
-    assert!(script.contains("transpile") && script.contains("update"));
-    assert!(!script.contains("_blkit__build"));
-    assert!(script.contains("--completions"));
-    assert!(result.stderr.is_empty());
+fn completions_expose_init_and_no_vcs_without_side_effects() {
+    let directory = DiscoveryDirectory::new("completions");
+    for shell in ["bash", "elvish", "fish", "powershell", "zsh"] {
+        let result = directory
+            .command()
+            .args(["--completions", shell])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{shell}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let script = String::from_utf8(result.stdout).unwrap();
+        for requirement in ["init", "transpile", "update"] {
+            assert!(script.contains(requirement), "{shell} omits {requirement}");
+        }
+        let flag = if shell == "fish" {
+            "-l no-vcs"
+        } else {
+            "--no-vcs"
+        };
+        assert!(script.contains(flag), "{shell} omits {flag}");
+        let legacy_option = if shell == "fish" { "-l vcs" } else { "--vcs" };
+        assert!(
+            !script.contains(legacy_option),
+            "{shell} retains {legacy_option}"
+        );
+        if shell == "bash" {
+            assert!(!script.contains("_blkit__build"));
+            assert!(script.contains("--completions"));
+        }
+        assert!(result.stderr.is_empty());
+        directory.assert_untouched();
+    }
 }
 
 #[test]
-fn invalid_cli_combinations_fail_before_writing_output() {
+fn invalid_cli_combinations_fail_without_side_effects_or_echoing_arguments() {
+    let directory = DiscoveryDirectory::new("invalid");
+    let credential = "postgresql://user:init-credential-sentinel@localhost/db";
     for args in [
         vec!["missing.bl"],
         vec!["missing.bl", "output.rs", "transpile"],
         vec!["transpile", "project", "extra"],
         vec!["--completions", "no-such-shell"],
+        vec!["init", "new-project", "--vcs", "git"],
+        vec!["init", "new-project", "--vcs", "none"],
+        vec!["init", "new-project", "--vcs", "hg"],
+        vec!["init", "new-project", "--vcs"],
+        vec!["init", "new-project", "--no-vcs=none"],
+        vec!["init", "--no-vcs=git"],
+        vec!["init", "--no-vcs=true"],
+        vec!["init", "--no-vcs=false"],
+        vec!["init", "new-project", "extra-argument-sentinel"],
+        vec!["init", "new-project", "--no-vcs", "extra-argument-sentinel"],
+        vec!["init", credential],
+        vec!["init", "new-project", "--vcs", credential],
+        vec!["init", "new-project", "--no-vcs", credential],
     ] {
-        let result = Command::new(env!("CARGO_BIN_EXE_blkit"))
-            .args(&args)
-            .output()
-            .unwrap();
+        let result = directory.command().args(&args).output().unwrap();
         assert!(!result.status.success(), "{args:?}");
         assert!(result.stdout.is_empty(), "{args:?}");
         let stderr = String::from_utf8_lossy(&result.stderr);
@@ -75,6 +189,11 @@ fn invalid_cli_combinations_fail_before_writing_output() {
             stderr.contains("Usage:") || stderr.contains("For more information, try '--help'."),
             "{args:?}: {stderr}"
         );
+        assert!(stderr.contains("invalid arguments; use --help"), "{stderr}");
+        for secret in ["init-credential-sentinel", "extra-argument-sentinel"] {
+            assert!(!stderr.contains(secret), "argument was echoed: {stderr}");
+        }
+        directory.assert_untouched();
     }
 }
 

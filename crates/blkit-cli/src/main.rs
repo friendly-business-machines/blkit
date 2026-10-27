@@ -10,11 +10,13 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use indicatif::ProgressBar;
 
+mod init;
+
 #[derive(Parser)]
 #[command(
     version,
     about = "Transpile .bl sources and projects to Rust; administer PostgreSQL deployments",
-    after_help = format!("Database administration:\n  blkit db init     Initialize schema and managed roles\n  blkit db migrate  Upgrade schema and reconcile grants\n\n{DB_HELP}"),
+    after_help = format!("Project initialization:\n  blkit init [PROJECT_DIR] [--no-vcs]\n\nDatabase administration:\n  blkit db init     Initialize schema and managed roles\n  blkit db migrate  Upgrade schema and reconcile grants\n\n{DB_HELP}"),
     args_conflicts_with_subcommands = true,
     arg_required_else_help = true,
     disable_help_subcommand = true
@@ -40,6 +42,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Operation {
+    /// Create a standalone local project
+    Init {
+        /// Destination directory (defaults to the current directory)
+        project_dir: Option<PathBuf>,
+        /// Skip Git repository initialization
+        #[arg(long)]
+        no_vcs: bool,
+    },
     Transpile {
         project_dir: Option<PathBuf>,
     },
@@ -226,6 +236,10 @@ fn main() {
             administer_database(command);
             return;
         }
+        Some(Operation::Init {
+            project_dir,
+            no_vcs,
+        }) => init::initialize(project_dir.as_deref(), no_vcs),
         Some(Operation::Transpile { project_dir }) => project("transpile", project_dir.as_deref()),
         Some(Operation::Update { project_dir }) => project("update", project_dir.as_deref()),
         None => {

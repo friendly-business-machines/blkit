@@ -244,6 +244,52 @@ fn completed(bind: &str, id: &str, expected: &str) -> Value {
 }
 
 #[test]
+fn initialized_project_builds_and_completes_local_echo_without_postgres() {
+    let name = format!("local-init-echo-{}", std::process::id());
+    let root = std::env::temp_dir().join(&name);
+    fs::create_dir(&root).unwrap();
+    let project = GeneratedLocal { root, name };
+    let initialized = Command::new(env!("CARGO_BIN_EXE_blkit"))
+        .current_dir(&project.root)
+        .args(["init", "--no-vcs"])
+        .output()
+        .unwrap();
+    assert!(initialized.status.success(), "{initialized:?}");
+    assert!(project.root.join("blkit.toml").is_file());
+    assert!(project.root.join("main.bl").is_file());
+    for path in [".git", "Cargo.toml", "Cargo.lock", ".blkit", "local.db"] {
+        assert!(!project.root.join(path).exists(), "unexpected {path}");
+    }
+
+    let transpiled = Command::new(env!("CARGO_BIN_EXE_blkit"))
+        .current_dir(&project.root)
+        .env("PATH", "")
+        .arg("transpile")
+        .output()
+        .unwrap();
+    assert!(transpiled.status.success(), "{transpiled:?}");
+    assert!(project.root.join(".blkit/Cargo.toml").is_file());
+    assert!(!project.root.join("local.db").exists());
+    let binaries = project.build(true);
+    let binary = binaries.join(format!("{}-api-worker", project.name));
+    let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+    let bind = socket.local_addr().unwrap().to_string();
+    drop(socket);
+    let mut process = Process::start(&project, &binary, &bind, "initialized");
+    process.wait_ready(&bind);
+    assert!(project.root.join("local.db").is_file());
+    let admitted = request(
+        &bind,
+        "POST",
+        "/processes/example/1/echo/instances",
+        r#"{"input":"42"}"#,
+    );
+    let row = completed(&bind, admitted["id"].as_str().unwrap(), "42");
+    assert_eq!(row["input"], json!({"input": "42"}));
+    println!("initialized project: local example/1/echo completed with input and result 42");
+}
+
+#[test]
 fn generated_reusable_crate_builds_without_backend_or_administration_dependencies() {
     let project = GeneratedLocal::new("crate");
     project.build(false);
