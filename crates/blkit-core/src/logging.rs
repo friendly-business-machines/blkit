@@ -4,7 +4,11 @@ use std::{env, fs::OpenOptions, sync::Mutex, time::Duration};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider};
-use tracing_subscriber::{filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{
+    filter::{LevelFilter, Targets},
+    layer::SubscriberExt,
+    util::SubscriberInitExt,
+};
 
 pub use tracing;
 
@@ -31,7 +35,7 @@ pub fn init(service_name: &str) -> Result<Logging, String> {
         "info" => LevelFilter::INFO,
         "warn" => LevelFilter::WARN,
         "error" => LevelFilter::ERROR,
-        _ => return Err(format!("invalid BLKIT_LOG_LEVEL: {level}")),
+        _ => return Err("invalid BLKIT_LOG_LEVEL: expected trace|debug|info|warn|error".into()),
     };
     let outputs = match env::var("BLKIT_LOG_OUTPUTS") {
         Ok(value) => value,
@@ -46,10 +50,14 @@ pub fn init(service_name: &str) -> Result<Logging, String> {
             "stdout" => &mut stdout,
             "file" => &mut file,
             "otlp" => &mut otlp,
-            _ => return Err(format!("invalid BLKIT_LOG_OUTPUTS: {outputs}")),
+            _ => {
+                return Err(
+                    "invalid BLKIT_LOG_OUTPUTS: expected stdout,file,otlp selections".into(),
+                );
+            }
         };
         if *selected {
-            return Err(format!("duplicate BLKIT_LOG_OUTPUTS: {outputs}"));
+            return Err("duplicate BLKIT_LOG_OUTPUTS selection".into());
         }
         *selected = true;
     }
@@ -63,7 +71,7 @@ pub fn init(service_name: &str) -> Result<Logging, String> {
                 .create(true)
                 .append(true)
                 .open(&path)
-                .map_err(|e| format!("BLKIT_LOG_FILE {path}: {e}"))?,
+                .map_err(|_| "BLKIT_LOG_FILE must name a writable log file")?,
         ))
     } else {
         None
@@ -84,7 +92,7 @@ pub fn init(service_name: &str) -> Result<Logging, String> {
             .with_http()
             .with_endpoint(endpoint)
             .build()
-            .map_err(|e| format!("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: {e}"))?;
+            .map_err(|_| "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT exporter initialization failed")?;
         Some(
             SdkLoggerProvider::builder()
                 .with_resource(
@@ -101,12 +109,17 @@ pub fn init(service_name: &str) -> Result<Logging, String> {
     let otel_layer = provider.as_ref().map(OpenTelemetryTracingBridge::new);
     let console = stdout.then(|| tracing_subscriber::fmt::layer().with_writer(std::io::stdout));
     let file_layer = file.map(|file| tracing_subscriber::fmt::layer().with_writer(file));
+    // The driver logs raw SQL (including role passwords) and server notice contents.
+    // Apply before all sinks, including OTLP; application debug/trace stays available.
+    let filter = Targets::new()
+        .with_default(filter)
+        .with_target("tokio_postgres", LevelFilter::OFF);
     tracing_subscriber::registry()
         .with(filter)
         .with(console)
         .with(file_layer)
         .with(otel_layer)
         .try_init()
-        .map_err(|e| format!("logging subscriber: {e}"))?;
+        .map_err(|_| "logging subscriber initialization failed")?;
     Ok(Logging(provider))
 }

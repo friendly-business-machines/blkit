@@ -1,5 +1,12 @@
 use std::time::Duration;
 
+// Compile the CLI's canonical preparation helper in core's unit tests too.
+#[cfg(all(test, feature = "remote-persistence"))]
+extern crate self as blkit_core;
+#[cfg(all(test, feature = "remote-persistence"))]
+#[path = "../../blkit-cli/tests/support/postgres.rs"]
+mod postgres_preparation;
+
 #[cfg(all(
     any(feature = "attachment-local", feature = "attachment-cloud"),
     any(feature = "local-persistence", feature = "remote-persistence")
@@ -22,7 +29,15 @@ pub mod logging;
 pub mod multipart;
 pub mod number_ops;
 #[cfg(feature = "remote-persistence")]
+pub mod postgres_config;
+#[cfg(feature = "remote-persistence")]
+pub mod postgres_connection;
+#[cfg(feature = "remote-persistence")]
+pub mod postgres_schema;
+#[cfg(feature = "remote-persistence")]
 pub mod postgres_store;
+#[cfg(feature = "remote-persistence")]
+pub mod remote_executable;
 #[cfg(feature = "worker")]
 pub mod runtime;
 #[cfg(all(

@@ -12,6 +12,8 @@ use testcontainers_modules::{
     testcontainers::{ImageExt, runners::AsyncRunner},
 };
 
+#[path = "../../../tools/test-support/managed_runtime.rs"]
+mod managed_runtime;
 #[path = "../../../tools/test-support/seaweed.rs"]
 mod seaweed;
 
@@ -46,25 +48,9 @@ async fn main() {
     println!("{}", serde_json::to_string(&files).unwrap());
 }
 "#;
-const REMOTE_READER: &str = r#"
-use blkit_core::{attachment_reader::AttachmentReader, attachment_store::{AttachmentStore, AttachmentRole}, postgres_store::PostgresStore};
-#[tokio::main]
-async fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let reader = AttachmentReader::remote(
-        PostgresStore::connect(&args[1]).await.unwrap(),
-        AttachmentStore::remote_from_env(AttachmentRole::Worker).await.unwrap(),
-    );
-    let scope = (args[3] != "-").then_some(args[3].as_str());
-    let mut files = Vec::new();
-    for entry in reader.list(&args[2], scope).await.unwrap() {
-        let bytes = reader.read(&args[2], scope, entry.ordinal).await.unwrap().unwrap();
-        files.push(serde_json::json!({"ordinal": entry.ordinal, "filename": entry.filename,
-            "media_type": entry.media_type, "byte_length": entry.byte_length, "bytes": bytes}));
-    }
-    println!("{}", serde_json::to_string(&files).unwrap());
-}
-"#;
+#[path = "../../../tools/test-support/remote_attachment_reader.rs"]
+mod remote_attachment_reader;
+use remote_attachment_reader::SOURCE as REMOTE_READER;
 
 struct Server(Child);
 impl Drop for Server {
@@ -157,7 +143,7 @@ fn generate(root: &Path, name: &str, target: &str, reader: &str, local: bool) {
     }
 }
 
-fn launch(root: &Path, name: &str, args: &[&str], cloud: Option<&str>) -> Server {
+fn launch(root: &Path, name: &str, args: &[&str], cloud: Option<&str>, database: &str) -> Server {
     let mut command = Command::new(binary(root, name));
     command
         .args(args)
@@ -165,6 +151,14 @@ fn launch(root: &Path, name: &str, args: &[&str], cloud: Option<&str>) -> Server
         .stderr(Stdio::inherit());
     if let Some(endpoint) = cloud {
         seaweed::configure(&mut command, endpoint);
+        let roles: &[&str] = if name.ends_with("-api-worker") {
+            &["api", "worker"]
+        } else if name.ends_with("-api") {
+            &["api"]
+        } else {
+            &["worker"]
+        };
+        managed_runtime::configure(&mut command, database, roles);
     }
     Server(command.spawn().unwrap())
 }
@@ -239,9 +233,12 @@ fn inspect(
     cloud: Option<&str>,
 ) -> Value {
     let mut command = Command::new(binary(root, &format!("{name}-attachment-inspect")));
-    command.args([database, id, scope]);
     if let Some(endpoint) = cloud {
+        command.args([id, scope]);
         seaweed::configure(&mut command, endpoint);
+        managed_runtime::configure(&mut command, database, &["worker"]);
+    } else {
+        command.args([database, id, scope]);
     }
     let output = command.output().unwrap();
     assert!(
@@ -394,8 +391,9 @@ async fn scenario(root: &Path, database: &str, name: &str, target: &str, cloud: 
         Some(launch(
             root,
             &format!("{name}-worker"),
-            &[database, "2", "1000"],
+            &["2", "1000"],
             cloud,
+            database,
         ))
     } else {
         None
@@ -406,13 +404,13 @@ async fn scenario(root: &Path, database: &str, name: &str, target: &str, cloud: 
         format!("{name}-api-worker")
     };
     let args: Vec<&str> = if target == "api-worker-split" {
-        vec![database, &bind]
+        vec![&bind]
     } else if is_local {
         vec![database, "2", &bind]
     } else {
-        vec![database, "2", "1000", &bind]
+        vec!["2", "1000", &bind]
     };
-    let mut server = Some(launch(root, &server_name, &args, cloud));
+    let mut server = Some(launch(root, &server_name, &args, cloud, database));
     let first = root.join("first.txt");
     let second = root.join("second.txt");
     let reply = root.join("reply.txt");
@@ -459,14 +457,15 @@ async fn scenario(root: &Path, database: &str, name: &str, target: &str, cloud: 
     drop(worker.take());
     if target != "api-worker-split" {
         drop(server.take());
-        server = Some(launch(root, &server_name, &args, cloud));
+        server = Some(launch(root, &server_name, &args, cloud, database));
     }
     if target == "api-worker-split" {
         worker = Some(launch(
             root,
             &format!("{name}-worker"),
-            &[database, "2", "1000"],
+            &["2", "1000"],
             cloud,
+            database,
         ));
     }
     tokio::time::timeout(Duration::from_secs(20), async {
@@ -504,7 +503,7 @@ async fn scenario(root: &Path, database: &str, name: &str, target: &str, cloud: 
         expected_start
     );
     if is_local {
-        server = Some(launch(root, &server_name, &args, cloud));
+        server = Some(launch(root, &server_name, &args, cloud, database));
         tokio::time::timeout(Duration::from_secs(10), async {
             while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -687,6 +686,7 @@ async fn generated_combined_and_split_remote_multipart_survive_worker_handoff_vi
         "postgres://postgres:postgres@{host}:{}/postgres",
         postgres.get_host_port_ipv4(5432).await.unwrap()
     );
+    managed_runtime::prepare(&url).await;
     for (target, name) in [
         ("api-worker", "attachment_combined_fixture"),
         ("api-worker-split", "attachment_split_fixture"),

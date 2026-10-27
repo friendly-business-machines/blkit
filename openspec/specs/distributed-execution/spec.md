@@ -119,7 +119,7 @@ Distributed checkpoints SHALL persist separate identities and progress for repea
 - **THEN** the new owner resumes only unfinished items and returns the final result in original input order
 
 ### Requirement: Remote roles use bounded PostgreSQL connection pools
-Each PostgreSQL-backed API and worker role SHALL serve concurrent store operations through a pool with a positive, bounded maximum rather than requiring all operations of that role to wait for one shared client. The default maximum SHALL be four connections per role; a Rust consumer SHALL be able to set an explicit maximum while retaining the existing `PostgresStore::connect` call shape. Generated remote executables SHALL accept independent optional `BLKIT_API_DB_POOL_MAX` and `BLKIT_WORKER_DB_POOL_MAX` positive-integer environment settings for their respective roles, without changing existing positional arguments. API-only and split API binaries SHALL use the API budget, worker-only and split worker binaries SHALL use the worker budget, and a combined remote API/worker binary SHALL use separate API and worker budgets. A role SHALL NOT maintain more simultaneously managed PostgreSQL sessions than its maximum; it SHALL NOT require all allowed connections to be open at startup. Local-persistence and reusable-crate targets SHALL NOT gain a PostgreSQL dependency solely for pooling.
+Each PostgreSQL-backed API and worker role SHALL serve concurrent store operations through a pool with a positive, bounded maximum rather than requiring all operations of that role to wait for one shared client. The default maximum SHALL be four connections per role; a Rust consumer SHALL be able to set an explicit maximum while retaining the existing `PostgresStore::connect` call shape. Generated remote executables SHALL accept independent optional `BLKIT_API_DB_POOL_MAX` and `BLKIT_WORKER_DB_POOL_MAX` positive-integer environment settings for their respective roles. PostgreSQL connection credentials SHALL be supplied only through the environment/file configuration contract, not positional arguments. API-only and split API binaries SHALL use the API budget and API login, worker-only and split worker binaries SHALL use the worker budget and worker login, and a combined remote API/worker binary SHALL use separate API and worker logins and budgets. A role SHALL NOT maintain more simultaneously managed PostgreSQL sessions than its maximum; it SHALL NOT require all allowed connections to be open at startup. Local-persistence and reusable-crate targets SHALL NOT gain a PostgreSQL dependency solely for pooling.
 
 #### Scenario: Concurrent API calls
 - **WHEN** an API role has a maximum of two and one store operation is waiting on PostgreSQL while another independent operation can complete on a different session
@@ -131,14 +131,14 @@ Each PostgreSQL-backed API and worker role SHALL serve concurrent store operatio
 
 #### Scenario: Combined roles under load
 - **WHEN** a generated combined remote binary runs concurrent API requests and worker persistence with distinct configured API and worker maxima
-- **THEN** the roles draw from independent pools bounded by their own maxima; exhausting the worker budget does not consume API connections
+- **THEN** the roles draw from independent pools authenticated with their respective logins and bounded by their own maxima; exhausting the worker budget does not consume API connections
 
 #### Scenario: Defaults and overrides
 - **WHEN** a generated remote binary starts without pool settings, or starts with positive integer settings for its active roles
 - **THEN** each active role uses a default maximum of four or its configured maximum, independently of the worker task limit and CPU count
 
 ### Requirement: PostgreSQL pool failures preserve distributed safety
-Generated remote executables SHALL reject a nonpositive or malformed pool limit for any active role with a diagnostic that identifies the setting. PostgreSQL-backed store initialization SHALL still establish a usable connection and perform required schema setup before reporting startup success. Connection checkout SHALL have a bounded wait and SHALL report an error if capacity or a working connection is unavailable; a failed or discarded connection SHALL NOT permanently consume pool capacity. Pooling SHALL preserve single-connection transaction ownership and the existing claim/drain serialization, lease renewal, checkpoint fencing, cancellation, and recovery semantics; it SHALL NOT acknowledge a database operation that was not committed.
+Generated remote executables SHALL reject a nonpositive or malformed pool limit for any active role with a diagnostic that identifies the setting. PostgreSQL-backed store initialization SHALL establish a usable connection and validate an already initialized compatible schema before reporting startup success; it SHALL NOT create or alter schema objects, execute migrations, perform migration backfills, or repair permissions. Missing, older unsupported, newer unsupported, or inconsistent schemas SHALL fail startup with an instruction to use the matching CLI administration workflow. Connection checkout SHALL have a bounded wait and SHALL report an error if capacity or a working connection is unavailable; a failed or discarded connection SHALL NOT permanently consume pool capacity. Pooling SHALL preserve single-connection transaction ownership and the existing claim/drain serialization, lease renewal, checkpoint fencing, cancellation, and recovery semantics; it SHALL NOT acknowledge a database operation that was not committed.
 
 #### Scenario: Invalid configuration or unavailable startup database
 - **WHEN** an active remote role is configured with zero or an invalid maximum, or the database is unavailable during store initialization
@@ -155,6 +155,14 @@ Generated remote executables SHALL reject a nonpositive or malformed pool limit 
 #### Scenario: Contended active worker
 - **WHEN** worker persistence and maintenance compete for the bounded worker pool while claims are active
 - **THEN** the worker continues to enforce its task limit and existing lease/generation safety rather than double-claiming or committing a stale update
+
+#### Scenario: Schema requires administration
+- **WHEN** an application starts against an empty, inconsistent, or unsupported-version PostgreSQL schema
+- **THEN** startup fails with a redacted diagnostic pointing to `blkit db init` or `blkit db migrate`, without mutating schema or persisted application data
+
+#### Scenario: Prepared schema without DDL permission
+- **WHEN** a remote binary starts with its provisioned operational login on a compatible prepared schema
+- **THEN** startup succeeds without schema-owner privileges or any runtime schema mutation
 
 ### Requirement: Distributed input responses retain claim and deadline safety
 PostgreSQL SHALL persist requests, portable response type metadata, replies, and matching graph checkpoints so an unowned input-waiting instance remains inspectable and is not claimed until a valid response makes work eligible. A worker-owned request/checkpoint transition SHALL be fenced by the current lease and generation. A concurrent response SHALL NOT be lost by a worker's later checkpoint; acceptance and resumption SHALL be serialized with cancellation, deadlines, and terminal transitions. Resuming after an input wait SHALL NOT count as an execution failure or consume a retry merely because the worker released its claim; only workers advertising the same process identity MAY resume it. An instance with parallel runnable work MAY remain claimed while a request is outstanding.
@@ -200,3 +208,26 @@ Each distributed API replica SHALL establish and commit its LISTEN registration 
 #### Scenario: Rollback and notification failure
 - **WHEN** a request-state transaction rolls back or the database cannot commit its notification-bearing transaction
 - **THEN** neither a successful request-state change nor a success acknowledgment is reported for that transaction
+
+### Requirement: Every PostgreSQL connection uses verified TLS by default
+PostgreSQL-backed runtimes and CLI administration SHALL require TLS with certificate-chain and server-hostname verification by default, without opportunistic plaintext fallback. The policy SHALL cover every pooled session, replacement session, dedicated notification listener, listener reconnect, and administrative session. Deployments SHALL be able to trust enterprise CAs through the platform trust store or an explicitly configured PEM CA bundle without editing or rebuilding generated code. Missing, unreadable, malformed, or untrusted certificate configuration and hostname mismatches SHALL fail closed with redacted, actionable diagnostics. A connection-string setting SHALL NOT weaken the policy. An explicit development/testing-only plaintext opt-out SHALL be supported and SHALL produce a visible warning; no default, build mode, loopback address, or environment detection SHALL implicitly enable it. There SHALL be no certificate-verification bypass mode.
+
+#### Scenario: Verified default
+- **WHEN** a runtime or administrative operation connects without a development override
+- **THEN** it succeeds only over TLS to a server whose certificate chain and hostname validate, and a server without TLS support is rejected
+
+#### Scenario: Corporate certificate authority
+- **WHEN** the server certificate is signed by an enterprise CA supplied through the trust store or configured PEM bundle
+- **THEN** API pools, worker pools, and notification listeners connect without regenerating the application, provided the certificate also matches the requested server hostname
+
+#### Scenario: Invalid trust or weaker URL setting
+- **WHEN** a CA bundle is missing, unreadable, or malformed, a certificate is expired/untrusted or names a different host, or a URL requests a weaker TLS mode without the explicit development opt-out
+- **THEN** the connection is rejected without plaintext fallback or disclosure of credentials
+
+#### Scenario: Explicit local test setup
+- **WHEN** development/testing explicitly enables the plaintext override
+- **THEN** connections can use a non-TLS PostgreSQL fixture and startup emits a warning identifying that database transport is insecure without printing credentials
+
+#### Scenario: Pool and listener recovery
+- **WHEN** a pooled session or notification listener reconnects after an outage
+- **THEN** the replacement uses the same trust and transport policy as startup, and a newly invalid certificate cannot trigger a plaintext downgrade

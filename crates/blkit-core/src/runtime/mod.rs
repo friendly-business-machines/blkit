@@ -1004,7 +1004,19 @@ mod tests {
             "postgres://postgres:postgres@{host}:{}/postgres",
             node.get_host_port_ipv4(5432).await.unwrap()
         );
-        let store = PostgresStore::connect(&url).await.unwrap();
+        let options =
+            crate::postgres_connection::PostgresConnectionOptions::new(None, Some("true")).unwrap();
+        let (mut preparation, driver) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { driver.await.unwrap() });
+        crate::postgres_preparation::prepare_fresh_database(&mut preparation)
+            .await
+            .unwrap();
+        drop(preparation);
+        let store = PostgresStore::connect_with_options(&url, 4, &options)
+            .await
+            .unwrap();
         let invoked = Arc::new(AtomicBool::new(false));
         let graph = Arc::new(GraphDefinition {
             namespace: "test",

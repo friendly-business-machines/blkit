@@ -1,48 +1,64 @@
-use std::{env, sync::Arc, time::Duration};
-
 use blkit_core::{
-    attachment_store::{AttachmentRole, AttachmentStore},
+    attachment_store::{AttachmentRole, AttachmentStore, RemoteAttachmentConfig},
     distributed::DistributedControl,
-    postgres_store::PostgresStore,
+    postgres_config::{DatabaseRole, EffectivePostgresConfig},
+    remote_executable::{ExecutableError, ExecutableOperation, RemoteArgs, RemoteExecutable},
     server::router_distributed_with_attachments,
 };
+use std::{env, sync::Arc, time::Duration};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<_> = env::args().collect();
-    if args.get(1).is_some_and(|arg| arg == "--help") {
-        println!("usage: blkit-api POSTGRES_URL [BIND_ADDRESS]\nDefault bind: 127.0.0.1:3000");
+async fn main() -> Result<(), ExecutableError> {
+    let mode = RemoteExecutable::Api;
+    let Some(args) = RemoteArgs::parse(mode, env::args_os().skip(1))? else {
+        println!("{}", mode.usage());
         return Ok(());
+    };
+    let config = EffectivePostgresConfig::from_env(args.env_file.as_deref())?;
+    let options = config.connection_options()?;
+    let database = config.resolve_role(DatabaseRole::Api, &options)?;
+    let pool_max = config.api_pool_max()?;
+    let attachment_config = RemoteAttachmentConfig::from_lookup(|name| {
+        config.get(name).map(|value| value.map(str::to_owned))
+    })
+    .map_err(|_| ExecutableError::operation(ExecutableOperation::Attachments))?;
+    if let Some(warning) = options.warning() {
+        eprintln!("{warning}");
     }
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .init();
-    let url = args
-        .get(1)
-        .ok_or("usage: blkit-api POSTGRES_URL [BIND_ADDRESS]")?;
-    if args.len() > 3 {
-        return Err("usage: blkit-api POSTGRES_URL [BIND_ADDRESS]".into());
-    }
-    let bind = args.get(2).map_or("127.0.0.1:3000", String::as_str);
-    let attachments = AttachmentStore::remote_from_env(AttachmentRole::Api).await?;
-    let store = PostgresStore::connect(url).await?;
+    let _logging = blkit_core::logging::init("blkit-api")
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Logging))?;
+    let attachments = AttachmentStore::remote_with_config(AttachmentRole::Api, &attachment_config)
+        .await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Attachments))?;
+    let store = database
+        .connect_store(pool_max)
+        .await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Database))?;
     let control = Arc::new(DistributedControl::new(store));
     let reconciler = control.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
         loop {
             interval.tick().await;
-            if let Err(error) = reconciler.reconcile_once().await {
-                eprintln!("claim reconciliation failed: {error}");
+            if reconciler.reconcile_once().await.is_err() {
+                eprintln!("claim reconciliation failed");
             }
         }
     });
-    let listener = tokio::net::TcpListener::bind(bind).await?;
-    eprintln!("blkit-api listening on {}", listener.local_addr()?);
+    let listener = tokio::net::TcpListener::bind(&args.bind)
+        .await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Bind))?;
+    eprintln!(
+        "blkit-api listening on {}",
+        listener
+            .local_addr()
+            .map_err(|_| ExecutableError::operation(ExecutableOperation::Bind))?
+    );
     axum::serve(
         listener,
         router_distributed_with_attachments(control, attachments),
     )
-    .await?;
+    .await
+    .map_err(|_| ExecutableError::operation(ExecutableOperation::Serve))?;
     Ok(())
 }

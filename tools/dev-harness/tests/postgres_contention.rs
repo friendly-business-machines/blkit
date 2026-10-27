@@ -1,4 +1,8 @@
-//! Run only with BLKIT_MEASURE_DATABASE_URL set to a disposable PostgreSQL 17 database.
+//! Measurements require an already CLI-prepared disposable PostgreSQL 17 database,
+//! explicit plaintext test transport, pg_stat_statements preloaded, and the opt-in gates below.
+#[path = "../../../crates/blkit-cli/tests/support/postgres.rs"]
+mod postgres_fixture;
+
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -84,9 +88,10 @@ async fn single_connection_measurement_budget_is_enforced_under_concurrency() {
     );
     let (observer, connection) = tokio_postgres::connect(&tagged_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    let store = PostgresStore::connect_with_pool_size(&tagged_url, 1)
-        .await
-        .unwrap();
+    let store =
+        PostgresStore::connect_with_options(&tagged_url, 1, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let mut tasks = Vec::new();
     for _ in 0..32 {
         let store = store.clone();
@@ -155,17 +160,25 @@ async fn measure_api_worker_and_combined_connections() {
         );
         let tag = format!("blkit_task41_{mode}");
         let session_sql = "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND (application_name=$1 OR pid=pg_backend_pid())";
-        let store = PostgresStore::connect_with_pool_size(&mode_url, max)
-            .await
-            .unwrap();
+        let store = PostgresStore::connect_with_options(
+            &mode_url,
+            max,
+            &postgres_fixture::plaintext_options(),
+        )
+        .await
+        .unwrap();
         let api = router_distributed(Arc::new(DistributedControl::new(store.clone())));
         db.batch_execute("TRUNCATE instances, workers, process_policies CASCADE")
             .await
             .unwrap();
         let worker_store = if with_worker {
-            PostgresStore::connect_with_pool_size(&mode_url, max)
-                .await
-                .unwrap()
+            PostgresStore::connect_with_options(
+                &mode_url,
+                max,
+                &postgres_fixture::plaintext_options(),
+            )
+            .await
+            .unwrap()
         } else {
             store.clone()
         };
@@ -408,8 +421,15 @@ async fn concurrent_postgres_responses_have_one_committed_winner() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let first = PostgresStore::connect(&url).await.unwrap();
-    let second = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let first =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
+    let second =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     first
         .create(&blkit_core::runtime::Instance::new(
             "job",
@@ -461,8 +481,15 @@ async fn concurrent_postgres_cancel_and_reply_have_one_terminal_order() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let first = PostgresStore::connect(&url).await.unwrap();
-    let second = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let first =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
+    let second =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     first
         .create(&blkit_core::runtime::Instance::new(
             "job",

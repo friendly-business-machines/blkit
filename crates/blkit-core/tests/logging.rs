@@ -234,3 +234,126 @@ fn invalid_configuration_reports_error_before_events() {
         assert!(!String::from_utf8_lossy(&output.stdout).contains("ready"));
     }
 }
+
+#[test]
+fn logging_configuration_never_echoes_secret_values_or_paths() {
+    const SECRET: &str = "sentinel-logging-secret";
+    for vars in [
+        vec![("BLKIT_LOG_LEVEL", SECRET)],
+        vec![("BLKIT_LOG_OUTPUTS", SECRET)],
+        vec![("BLKIT_LOG_OUTPUTS", "stdout,stdout,sentinel-logging-secret")],
+        vec![
+            ("BLKIT_LOG_OUTPUTS", "file"),
+            (
+                "BLKIT_LOG_FILE",
+                "/no-such-blkit-dir/sentinel-logging-secret",
+            ),
+        ],
+        vec![
+            ("BLKIT_LOG_OUTPUTS", "otlp"),
+            (
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+                "https://sentinel-logging-secret@localhost/logs",
+            ),
+        ],
+    ] {
+        let output = run(&vars);
+        assert!(!output.status.success());
+        for bytes in [&output.stdout, &output.stderr] {
+            assert!(
+                !String::from_utf8_lossy(bytes).contains(SECRET),
+                "logging configuration leaked a supplied value"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "remote-persistence")]
+#[test]
+fn driver_logging_probe() {
+    if std::env::var_os("BLKIT_DRIVER_LOG_PROBE").is_none() {
+        return;
+    }
+    let _logging = blkit::logging::init("remote-probe").unwrap();
+    blkit::logging::tracing::debug!("application debug remains visible");
+    blkit::logging::tracing::warn!("application warning remains visible");
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        use blkit::postgres_connection::{PostgresConnection, PostgresConnectionOptions};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let options = PostgresConnectionOptions::new(None, Some("true")).unwrap();
+        for operation in ["simple", "batch", "prepare"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let size = stream.read_u32().await.unwrap();
+                let mut startup = vec![0; usize::try_from(size - 4).unwrap()];
+                stream.read_exact(&mut startup).await.unwrap();
+                stream
+                    .write_all(b"R\0\0\0\x08\0\0\0\0Z\0\0\0\x05I")
+                    .await
+                    .unwrap();
+                // The real client must send a credential-bearing utility statement.
+                let kind = stream.read_u8().await.unwrap();
+                assert_eq!(kind, if operation == "prepare" { b'P' } else { b'Q' });
+                let size = stream.read_u32().await.unwrap();
+                let mut query = vec![0; usize::try_from(size - 4).unwrap()];
+                stream.read_exact(&mut query).await.unwrap();
+                assert!(String::from_utf8_lossy(&query).contains("sentinel-driver-password"));
+            });
+            let connection = PostgresConnection::with_options(
+                &format!("host=127.0.0.1 port={port} user=test"),
+                &options,
+            )
+            .unwrap();
+            let (client, driver) = connection.connect().await.unwrap();
+            let driver = tokio::spawn(driver);
+            let sql = "ALTER ROLE test PASSWORD 'sentinel-driver-password'";
+            match operation {
+                "simple" => {
+                    let _ = client.simple_query(sql).await;
+                }
+                "batch" => {
+                    let _ = client.batch_execute(sql).await;
+                }
+                _ => {
+                    let _ = client.prepare(sql).await;
+                }
+            }
+            drop(client);
+            let _ = driver.await.unwrap();
+            server.await.unwrap();
+        }
+    });
+}
+
+#[cfg(feature = "remote-persistence")]
+#[test]
+fn debug_and_trace_keep_application_logs_but_never_log_driver_sql() {
+    for level in ["debug", "trace"] {
+        let file =
+            std::env::temp_dir().join(format!("blkit-driver-log-{}.txt", uuid::Uuid::new_v4()));
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "driver_logging_probe", "--nocapture"])
+            .env("BLKIT_DRIVER_LOG_PROBE", "1")
+            .env("BLKIT_LOG_LEVEL", level)
+            .env("BLKIT_LOG_OUTPUTS", "stdout,file")
+            .env("BLKIT_LOG_FILE", &file)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "driver probe failed");
+        for text in [
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            std::fs::read_to_string(&file).unwrap(),
+        ] {
+            assert!(text.contains("application debug remains visible"));
+            assert!(text.contains("application warning remains visible"));
+            assert!(
+                !text.contains("sentinel-driver-password") && !text.contains("ALTER ROLE"),
+                "driver SQL reached executable logs"
+            );
+        }
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("sentinel-driver-password"));
+        std::fs::remove_file(file).unwrap();
+    }
+}

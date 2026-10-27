@@ -1,5 +1,9 @@
 #![cfg(feature = "attachment-local")]
 
+#[cfg(feature = "remote-persistence")]
+#[path = "../../blkit-cli/tests/support/postgres.rs"]
+mod postgres_fixture;
+
 use blkit_core::{
     Attachment,
     attachment_reader::{AttachmentMetadata, AttachmentReader},
@@ -124,11 +128,15 @@ async fn separate_postgres_worker_reads_shared_objects_by_scope_and_reports_miss
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
+    postgres_fixture::prepare_fresh_database_url(&url).await;
     let directory =
         std::env::temp_dir().join(format!("blkit-reader-shared-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&directory).unwrap();
     let store_path = directory.join("instances.db");
-    let api_metadata = PostgresStore::connect(&url).await.unwrap();
+    let api_metadata =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     api_metadata
         .create(&Instance::new("one", "ns", "1", "p", json!({})))
         .await
@@ -166,7 +174,9 @@ async fn separate_postgres_worker_reads_shared_objects_by_scope_and_reports_miss
     drop(api_metadata);
     drop(api_objects);
     let worker = AttachmentReader::remote(
-        PostgresStore::connect(&url).await.unwrap(),
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap(),
         AttachmentStore::local(&store_path, None).await.unwrap(),
     );
     assert_eq!(worker.list("one", None).await.unwrap()[0].filename, "first");

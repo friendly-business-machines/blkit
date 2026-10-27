@@ -112,11 +112,11 @@ Choose one build target in `[project]` (all binaries use the `name` field; `orde
 
 All targets except `api-only` require at least one `.bl` file; every discovered file is validated. The split target retains the generated root library for Rust consumers but its API package neither links that library nor enables `worker`. Use `blkit transpile` before the build; it never invokes Cargo itself. Generated manifests pin `blkit-core` to the CLI version; when generated from a checkout, the manifest also contains a local path to `crates/blkit-core`. On another machine provide that source or a compatible published release. Direct-source consumers should replace `blkit` imports with `blkit_core` and pin the same version.
 
-For remote deployment, configure the shared cloud attachment store on every process first (see **Attachment storage and backups** below). Then start `orders-worker "$POSTGRES_URL" 32 5000` (maximum concurrent tasks and lease milliseconds are optional), then start `orders-api "$POSTGRES_URL" 127.0.0.1:3000` or the combined `orders-api-worker "$POSTGRES_URL" 32 5000 127.0.0.1:3000`. `POSTGRES_URL` is a writable PostgreSQL URL such as `postgres://postgres:postgres@127.0.0.1:5432/orders`. Without `CARGO_TARGET_DIR`, binaries built with the generated manifest live under `.blkit/target/debug/`; otherwise use `$CARGO_TARGET_DIR/debug/`. Worker registration advertises exact namespace/version/process capabilities and immutable retry/deadline policies. The graph-free API accepts syntactically valid JSON only when a matching worker is live, recently heartbeating, and not draining (otherwise HTTP 503); malformed JSON receives HTTP 400. Typed input validation and initial checkpointing occur on worker claim, **after** HTTP 202, and an invalid typed input is persisted as a terminal failure. A request admitted just before a worker exits stays pending until a capable worker returns, cancellation, or deadline expiration. Status and cancellation use `/instances/ID` and `/instances/ID/cancel`. Bind to loopback unless a trusted proxy supplies authentication and TLS.
+For remote deployment, first prepare the existing PostgreSQL database with the matching standalone CLI (see **PostgreSQL administration**), then supply each process's operational credentials and shared cloud attachment configuration (see **PostgreSQL credentials and explicit env files** and **Attachment storage and backups**). With role-specific settings injected into each process environment, start `orders-worker 32 5000`, then `orders-api 127.0.0.1:3000`; alternatively start the combined remote `orders-api-worker 32 5000 127.0.0.1:3000` with both roles. Database URLs are never arguments; legacy URL operands are rejected. Without `CARGO_TARGET_DIR`, binaries built with the generated manifest live under `.blkit/target/debug/`; otherwise use `$CARGO_TARGET_DIR/debug/`. Worker registration advertises exact namespace/version/process capabilities and immutable retry/deadline policies. The graph-free API accepts syntactically valid JSON only when a matching worker is live, recently heartbeating, and not draining (otherwise HTTP 503); malformed JSON receives HTTP 400. Typed input validation and initial checkpointing occur on worker claim, **after** HTTP 202, and an invalid typed input is persisted as a terminal failure. A request admitted just before a worker exits stays pending until a capable worker returns, cancellation, or deadline expiration. Status and cancellation use `/instances/ID` and `/instances/ID/cancel`. Bind to loopback unless a trusted proxy supplies authentication and TLS.
 
 Remote PostgreSQL binaries accept `BLKIT_API_DB_POOL_MAX` (API requests **and** reconciler) and `BLKIT_WORKER_DB_POOL_MAX` (worker persistence), defaulting to **4 connections per active role**. Set each active role's limit to a positive integer; a zero or malformed value fails startup with the setting name, while a setting for an inactive role is ignored. The combined remote `orders-api-worker` uses **separate** API and worker pools; `orders-api` reads only the API setting and `orders-worker` only the worker setting, including split builds. Local-persistence binaries ignore both settings. These limits are independent of the worker's `MAX_TASKS` positional argument, which remains unchanged.
 
-Budget PostgreSQL/proxy `max_connections` for the **sum of both role limits across all running processes**, plus **one dedicated LISTEN session per API replica that serves remote SSE**, observers, admin clients and other users. For example, two API-only replicas with `BLKIT_API_DB_POOL_MAX=4` can consume up to 10 sessions (2 × [4 request-pool connections + 1 listener]); a combined API/worker process also needs its worker pool budget. The listener is outside the bounded request pool and requires a session-persistent PostgreSQL connection (not a transaction/statement-pooled proxy). Pools open connections lazily but can reach their configured maxima under load. Each remote store checks out a connection and runs schema setup before startup succeeds, so an unavailable database or schema error fails startup. A saturated pool waits at most 1 second for checkout; creating a connection has a 2-second timeout and recycling one a 1-second timeout. Failed checkouts and database operations report errors rather than acknowledging uncommitted writes; outages or contention can still disrupt lease renewal, so size leases for expected pauses. On a connection-limited server, set the relevant limit(s) to `1` before rollout (both settings for combined mode) to keep the previous per-role session budget, then raise them only after checking capacity and workload. More connections do not guarantee faster execution. These pool settings require no database migration; input-request persistence does (see rollout below).
+Budget PostgreSQL/proxy `max_connections` for the **sum of both role limits across all running processes**, plus **one dedicated LISTEN session per API replica that serves remote SSE**, observers, admin clients and other users. For example, two API-only replicas with `BLKIT_API_DB_POOL_MAX=4` can consume up to 10 sessions (2 × [4 request-pool connections + 1 listener]); a combined API/worker process also needs its worker pool budget. The listener is outside the bounded request pool and requires a session-persistent PostgreSQL connection (not a transaction/statement-pooled proxy). Pools open connections lazily but can reach their configured maxima under load. Each remote store checks out a connection and performs read-only exact schema version/identity/checksum, coherent metadata and operability checks before startup succeeds. An unavailable database, empty/older/newer/inconsistent schema or unusable runtime objects fails startup; use the matching `blkit db init`/`blkit db migrate` workflow. Runtime startup never executes DDL, migration backfills or permission repair, and is not the CLI's complete structural/grant audit. A saturated pool waits at most 1 second for checkout; creating a connection has a 2-second timeout and recycling one a 1-second timeout. Failed checkouts and database operations report errors rather than acknowledging uncommitted writes; outages or contention can still disrupt lease renewal, so size leases for expected pauses. On a connection-limited server, set the relevant limit(s) to `1` before rollout (both settings for combined mode) to keep the previous per-role session budget, then raise them only after checking capacity and workload. More connections do not guarantee faster execution. These pool settings require no database migration; input-request persistence does (see rollout below).
 
 For one local server (no PostgreSQL or separate API), set `build_target = "server"` and transpile the `types.bl` and `process.bl` example above, then build it with Cargo:
 
@@ -142,7 +142,7 @@ curl -sS -X POST \
 
 The multipart contract requires exactly one `input` part for starts or one `response` part for replies, plus one or more `files` parts with nonempty filenames and content; other parts, duplicate/missing JSON, or invalid JSON return 400. The limits on either endpoint are **10 files**, **25 MiB per file**, and **100 MiB combined file bytes** (exceeding one returns 413). JSON parts have a 2 MiB limit; the whole multipart envelope has a 103 MiB limit. Uploads stream to private storage; JSON-only calls keep their original request format.
 
-The completed result is `{"amount":"5"}`. For the newer local `api-worker` target the same command uses `orders-api-worker` instead. Server arguments are optional: local database file (default `blkit.db`), concurrent task limit (default `32`), and bind address (default `127.0.0.1:3000`). If `CARGO_TARGET_DIR` is set, the binary is at `$CARGO_TARGET_DIR/debug/orders-server`. The local server validates process identity and typed input before accepting a request. It persists accepted work in the local database, and an in-process worker polls that durable queue to run eligible work under the configured task limit. Pending work remains claimable after restart; interrupted running work follows the checkpoint/retry recovery rules. There is no separate local worker executable or PostgreSQL queue. The HTTP router has no authentication; keep the default loopback bind unless a trusted proxy supplies access control and TLS.
+The completed result is `{"amount":"5"}`. For the newer local `api-worker` target the same command uses `orders-api-worker` instead. Server arguments are optional: local database file (default `blkit.db`), concurrent task limit (default `32`), and bind address (default `127.0.0.1:3000`). Both local targets automatically initialize/migrate Turso on open, with no `blkit db` preparation or PostgreSQL credentials. If `CARGO_TARGET_DIR` is set, the binary is at `$CARGO_TARGET_DIR/debug/orders-server`. The local server validates process identity and typed input before accepting a request. It persists accepted work in the local database, and an in-process worker polls that durable queue to run eligible work under the configured task limit. Pending work remains claimable after restart; interrupted running work follows the checkpoint/retry recovery rules. There is no separate local worker executable or PostgreSQL queue. The HTTP router has no authentication; keep the default loopback bind unless a trusted proxy supplies access control and TLS.
 
 ### Generated worker/server operational logs
 
@@ -150,7 +150,7 @@ Generated worker and server binaries log to **stdout at INFO level** by default.
 
 ```sh
 BLKIT_LOG_OUTPUTS=stdout,file BLKIT_LOG_FILE=./orders.log .blkit/target/debug/orders-server ./orders.db 32 127.0.0.1:3000
-BLKIT_LOG_OUTPUTS=stdout,file,otlp BLKIT_LOG_FILE=./worker.log OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:4318/v1/logs .blkit/target/debug/orders-worker "$POSTGRES_URL" 32 5000
+BLKIT_LOG_OUTPUTS=stdout,file,otlp BLKIT_LOG_FILE=./worker.log OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:4318/v1/logs .blkit/target/debug/orders-worker --env-file /run/secrets/blkit-worker.env 32 5000
 ```
 
 A selected output receives operational events independently of the others. OTLP export is best effort: collector outages and abrupt termination can lose records without stopping instance execution. Files append across restarts without rotation; operators own rotation and retention. Blkit logs do not contain process input or result payloads, but cannot sanitize logs from third-party task crates. **Persisted instance status, errors, and checkpoints** remain the source of truth for execution outcomes; operational logs are not an event history.
@@ -470,91 +470,247 @@ Project integration tests use distinct generated binary names, so test threads c
 Run isolated PostgreSQL tests with the Docker-compatible container-engine socket mounted in the selected devcontainer:
 
 ```sh
-cargo test --test postgres
+cargo test -p blkit-dev-harness --test postgres -- --test-threads=1
 ```
 
-The Podman devcontainer sets `BLKIT_TESTCONTAINERS_HOST=host.containers.internal`; the Docker Desktop option sets it to `host.docker.internal`. If using a container started before selecting the new configuration, rebuild/reopen it to get the right value. Outside a devcontainer, omit it to use Testcontainers' discovered host. The Rust Testcontainers PostgreSQL module launches a fresh `postgres:17.6-alpine` database for each test, waits for readiness, and removes it afterward. No system PostgreSQL or manually managed database is needed.
+The Podman devcontainer sets `BLKIT_TESTCONTAINERS_HOST=host.containers.internal`; the Docker Desktop option sets it to `host.docker.internal`. If using a container started before selecting the new configuration, rebuild/reopen it to get the right value. Outside a devcontainer, omit it to use Testcontainers' discovered host. The Rust Testcontainers PostgreSQL module launches a fresh `postgres:17.6-alpine` database for each test, waits for readiness, and removes it afterward. Store fixtures explicitly prepare the schema from CLI-owned assets; runtime-child fixtures provision real API/worker logins through the CLI administration API. Plaintext is selected explicitly for these disposable tests, never by runtime auto-detection. No system PostgreSQL or manually managed database is needed. Run serially to avoid exhausting container resources.
 
 To run the two-process failover example (kills the owner after B commits and proves C resumes without rerunning B):
 
 ```sh
-cargo test --test postgres second_worker_process_resumes_c_after_owner_killed_without_replaying_b -- --nocapture
+cargo test -p blkit-dev-harness --test postgres second_worker_process_resumes_c_after_owner_killed_without_replaying_b -- --test-threads=1 --nocapture
 ```
 
 PostgreSQL keeps each instance as a durable queue row: `pending` or eligible `retry-waiting` rows remain present when claimed, with exact process identity, checkpoint, attempt metadata, owner, lease deadline and incrementing claim generation. Claims use `FOR UPDATE SKIP LOCKED`; committed checkpoint/terminal updates and lease renewals require the current unexpired owner and generation. Expired owners are reconciled by the API and worker loops using the policy persisted with each instance; a capable worker is required to claim the retry. A worker takes a positive lease duration in milliseconds (default `5000`) and renews it while executing; configure it longer than expected transient database pauses. Claims are fenced by owner, unexpired lease and generation.
 
 ## Running distributed API and workers
 
-`tools/dev-harness/build.rs` compiles [`tools/dev-harness/examples/graph.bl`](tools/dev-harness/examples/graph.bl) ahead of time to Rust; the API uses `DistributedControl` without linked graphs, while `blkit-worker` links `named_graph_definitions()`. To deploy another graph, replace the `tools/dev-harness/build.rs` source with your `.bl` file and rebuild the worker. No worker compiles `.bl` at runtime. Use a new `.bl` `version` when changing graph semantics; same-identity graph compatibility is not checked. Keep old-version workers until their queued and claimed work finishes.
+Use generated projects for remote deployments, with the target/build commands above and role-specific launch configuration below. API-only is graph-free and source-free: in a separate project directory, this `blkit.toml` needs no `.bl` files:
 
-For an input-request rollout on an existing database with the `instances` table, apply these idempotent PostgreSQL additions **before** starting updated binaries (set `DATABASE_URL` to the same writable PostgreSQL URL used below):
-
-```sh
-psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" <<'SQL'
-ALTER TABLE instances ADD COLUMN IF NOT EXISTS input_resume BOOLEAN NOT NULL DEFAULT FALSE;
-CREATE TABLE IF NOT EXISTS input_requests (
-    instance_id TEXT NOT NULL REFERENCES instances(id), request_id TEXT NOT NULL,
-    prompt TEXT NOT NULL, schema TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'outstanding' CHECK (status IN ('outstanding','answered','consumed','retired')),
-    response TEXT, PRIMARY KEY (instance_id, request_id)
-);
-CREATE INDEX IF NOT EXISTS input_requests_answered ON input_requests(instance_id) WHERE status='answered';
-CREATE TABLE IF NOT EXISTS instance_attachments (
-    instance_id TEXT NOT NULL REFERENCES instances(id),
-    request_id TEXT,
-    ordinal BIGINT NOT NULL CHECK (ordinal >= 0),
-    object_key TEXT NOT NULL,
-    filename TEXT NOT NULL,
-    media_type TEXT,
-    byte_length BIGINT NOT NULL CHECK (byte_length >= 0),
-    FOREIGN KEY (instance_id, request_id) REFERENCES input_requests(instance_id, request_id)
-);
-CREATE UNIQUE INDEX IF NOT EXISTS instance_attachments_start ON instance_attachments(instance_id, ordinal) WHERE request_id IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS instance_attachments_reply ON instance_attachments(instance_id, request_id, ordinal) WHERE request_id IS NOT NULL;
-CREATE TABLE IF NOT EXISTS instance_interests (
-    instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
-    channel TEXT NOT NULL CHECK (octet_length(channel) BETWEEN 1 AND 63),
-    expires_at TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (instance_id, channel)
-);
-CREATE OR REPLACE FUNCTION notify_instance_interests() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE changed_id TEXT;
-BEGIN
-    IF TG_TABLE_NAME = 'instances' THEN
-        IF NEW.status NOT IN ('completed', 'business-error', 'cancelled', 'terminated', 'failed')
-            OR NEW.status = OLD.status THEN
-            RETURN NEW;
-        END IF;
-        changed_id := NEW.id;
-    ELSE
-        IF TG_OP = 'INSERT' THEN
-            IF NEW.status <> 'outstanding' THEN RETURN NEW; END IF;
-        ELSIF OLD.status <> 'outstanding' OR NEW.status NOT IN ('answered', 'retired') THEN
-            RETURN NEW;
-        END IF;
-        changed_id := NEW.instance_id;
-    END IF;
-    PERFORM pg_notify(interest.channel, changed_id)
-        FROM instance_interests interest
-        WHERE interest.instance_id = changed_id AND interest.expires_at > clock_timestamp();
-    RETURN NEW;
-END $$;
-DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='input_requests'::regclass AND tgname='input_request_interests_notify') THEN
-        CREATE TRIGGER input_request_interests_notify
-            AFTER INSERT OR UPDATE OF status ON input_requests
-            FOR EACH ROW EXECUTE FUNCTION notify_instance_interests();
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='instances'::regclass AND tgname='instance_terminal_interests_notify') THEN
-        CREATE TRIGGER instance_terminal_interests_notify
-            AFTER UPDATE OF status ON instances
-            FOR EACH ROW EXECUTE FUNCTION notify_instance_interests();
-    END IF;
-END $$;
-SQL
+```toml
+[project]
+name = "orders"
+blkit = "0.1.0"
+build_target = "api-only"
 ```
 
-These statements match `PostgresStore::connect_with_pool_size`; startup also runs schema setup, but that is not a substitute for sequencing a mixed-version rollout. Local Turso creates the same `instance_attachments` table and partial unique indexes when opening its database; reopen is safe. Each row contains an instance ID, optional request ID, nonnegative ordinal, opaque object key, display filename, optional media type and nonnegative byte length — **never file bytes**. A reply's `(instance_id, request_id)` must match an existing input request; start files use a NULL request ID. Ordinals are unique within each start or reply scope, including NULL start scope, and listing uses ordinal order. Consuming a response leaves its attachment rows available. Store attachment objects privately under the application-owned prefix `blkit/attachments/`, not under client filenames.
+Run `blkit transpile`, then `cargo build --manifest-path .blkit/Cargo.toml`; start `orders-api` with API credentials only. A matching independently built worker must advertise the process before admission succeeds. For `api-worker-split`, build the worker from `.blkit/Cargo.toml` and the API independently from `.blkit/api/Cargo.toml`; the API does not link the generated root definitions or worker execution dependencies. `worker-only` and compatibility `worker` both produce `orders-worker` with the same arguments and worker-only credentials. Combined `api-worker` requires `persistence = "remote"` and both operational roles; local `api-worker` remains a separate Turso lifecycle.
+
+No generated worker compiles `.bl` at runtime. Use a new `.bl` `version` when changing graph semantics; same-identity graph compatibility is not checked. Retain old business-version workers for their queued and claimed work, but use **rebuilt current-contract runtime binaries** carrying those identities, not pre-change executables that expect URL argv or connect-time DDL.
+
+### PostgreSQL TLS and corporate CAs
+
+PostgreSQL connections default to required TLS with certificate chain, validity and hostname verification, without plaintext fallback. API/worker pools and the dedicated LISTEN session share the resolved policy, including replacement connections and listener reconnects. CLI administration and generated remote entry points use the same policy; generated binaries load the role-specific configuration below and start against a CLI-prepared schema without DDL privileges. Rust callers currently resolve `PostgresConnectionOptions::new(ca_file, insecure_dev)` once and pass the options to `PostgresStore::connect_with_options` or `PostgresConnection::with_options`; low-level constructors do not read BLKIT environment settings.
+
+| Setting | Contract |
+| --- | --- |
+| `BLKIT_POSTGRES_CA_FILE` | Optional path to a certificate-only PEM CA bundle, added to platform roots. An explicitly configured unreadable, empty or malformed bundle fails; private keys and non-certificate content are rejected. |
+| `BLKIT_POSTGRES_INSECURE_DEV` | Absent or `false`: verified TLS. Only exactly `true` selects plaintext and emits a visible insecure-development warning; all other values (including empty, `TRUE`, `1` or surrounding whitespace) are invalid. Use only for disposable development/tests, never production. |
+
+For a corporate CA, install the trusted CA certificate in the platform trust store used by the service's **host/container**, following its OS certificate-installation procedure (not just the browser trust store). Alternatively, mount a readable certificate-only PEM bundle and supply its path; this also works for minimal containers without installed roots. For example, the secure PEM setting is:
+
+```dotenv
+BLKIT_POSTGRES_CA_FILE=/run/config/corporate-ca.pem
+```
+
+Native platform discovery also honors `SSL_CERT_FILE`/`SSL_CERT_DIR` from the **process environment** when options are resolved; these native overrides can replace normal platform discovery. They are not part of the BLKIT dotenv overlay: putting them only in a blkit dotenv file does not configure the native loader. Native trust-loading errors or an empty combined trust store fail secure setup rather than disabling verification. Trust is loaded once, not on each checkout/reconnect. **Restart after changing CA files, platform trust or native trust variables**; existing options retain their original trust snapshot.
+
+In secure mode, omit URL `sslmode` or use `sslmode=require`; the connector enforces verification even though the driver's mode is named `require`. Explicit `sslmode=disable` and `sslmode=prefer` are rejected. Unix-socket-only and hostaddr-only configurations without a verification hostname are unsupported; supply a TCP server hostname matching its certificate. There is no certificate-verification bypass. Deliberate plaintext mode rejects `BLKIT_POSTGRES_CA_FILE` and secure URL requirements such as `sslmode=require`; omitted, `disable` or `prefer` modes become plaintext, not opportunistic TLS.
+
+Only omitted/default or explicit `target_session_attrs=any` is accepted. Other parsed values are rejected before connecting in both verified-TLS and plaintext modes: the pinned driver can log startup notices while checking those modes. The connector never silently overrides the requested mode.
+
+### PostgreSQL credentials and explicit env files
+
+Generated remote binaries and `blkit db` resolve only the selected role's settings:
+
+| Consumer | URL setting | Mounted-secret alternative |
+| --- | --- | --- |
+| API runtime | `BLKIT_API_DATABASE_URL` | `BLKIT_API_DATABASE_URL_FILE` |
+| Worker runtime | `BLKIT_WORKER_DATABASE_URL` | `BLKIT_WORKER_DATABASE_URL_FILE` |
+| `blkit db` only | `BLKIT_ADMIN_DATABASE_URL` | `BLKIT_ADMIN_DATABASE_URL_FILE` |
+
+API-only reads only its own credential pair; worker-only reads only its own. Combined mode requires both, with distinct decoded login users and the same parsed host/port/database endpoint (harmless URL spelling differences are accepted, but DNS aliases are not guessed). There is no generic or administrative URL fallback. Keep administrative credentials out of runtime environments and mounts. CLI provisioning consumes API/worker URLs only for missing logins; they must match the administrative database endpoint and expected prefix-derived login names (see administration below).
+
+Supply a `postgres://` or `postgresql://` URL with an explicit nonempty user and host. URL-encode password special characters (for example, `@` as `%40`, `#` as `%23`); do not rely on shell or dotenv quoting to encode them. An omitted database name defaults to the parsed username; specify the shared database explicitly, especially with different role users. A `_FILE` is a path to one UTF-8 URL with one optional trailing LF or CRLF, **not** dotenv: no `KEY=value`, comments, extra lines or surrounding whitespace. Missing required settings, empty values/paths, missing or unreadable secret files, invalid UTF-8 and malformed URLs fail rather than falling back.
+
+`--env-file PATH` explicitly selects conventional dotenv data (quoting, escapes, comments and `export` syntax), not a shell script: `$NAME`, `${NAME}` and `$()` remain literal, with no expansion or execution. There is no implicit `.env` search and no global environment mutation. Process environment wins **by setting name**, including an empty value; empty required values remain invalid. After overlay, a required URL/`_FILE` pair fails if both names are present, even across sources or with empty values. The selected dotenv file must be readable, valid UTF-8 dotenv even if process values would suffice. Relative env-file, secret-file and CA-file paths all resolve from the **process working directory**, not the dotenv file's parent.
+
+The same effective overlay supplies `BLKIT_POSTGRES_CA_FILE`, `BLKIT_POSTGRES_INSECURE_DEV`, active-role pool limits and `BLKIT_ATTACHMENT_*` location settings through the existing configuration hooks. Attachment provider credentials still use provider-standard ambient discovery; putting AWS/GCP/Azure credentials only in dotenv does **not** configure provider authentication. Native `SSL_CERT_*` discovery remains process-only as described above.
+
+Environment-only example: inject these placeholder process settings using your deployment secret manager (no dotenv selection). For API-only or worker-only, provide only that role's URL and pool setting; combined mode uses both. Supply provider credentials separately through its standard discovery mechanism:
+
+```dotenv
+BLKIT_API_DATABASE_URL=postgres://blkit_api:REPLACE_API_PASSWORD@db.example.invalid:5432/orders
+BLKIT_WORKER_DATABASE_URL=postgres://blkit_worker:REPLACE_WORKER_PASSWORD@db.example.invalid:5432/orders
+BLKIT_API_DB_POOL_MAX=4
+BLKIT_WORKER_DB_POOL_MAX=4
+BLKIT_ATTACHMENT_BACKEND=s3
+BLKIT_ATTACHMENT_BUCKET=REPLACE_PRIVATE_BUCKET
+```
+
+Mounted-secret alternative: keep the pool/attachment settings above, **remove both direct URL settings**, and inject the following process settings (or put them in an explicitly selected dotenv file). The CA bundle is optional when platform trust already covers the server:
+
+```dotenv
+BLKIT_API_DATABASE_URL_FILE=/run/secrets/blkit-api-url
+BLKIT_WORKER_DATABASE_URL_FILE=/run/secrets/blkit-worker-url
+BLKIT_POSTGRES_CA_FILE=/run/config/corporate-ca.pem
+```
+
+`/run/secrets/blkit-api-url` contains only:
+
+```text
+postgres://blkit_api:REPLACE_API_PASSWORD@db.example.invalid:5432/orders
+```
+
+`/run/secrets/blkit-worker-url` contains only:
+
+```text
+postgres://blkit_worker:REPLACE_WORKER_PASSWORD@db.example.invalid:5432/orders
+```
+
+Use private mounted secrets with least-access permissions; keep credential files and values out of Git, argv and logs. On POSIX, prefer `0600` and `umask 077` for secret/dotenv files; use restrictive Windows ACLs on Windows. Environment and files remain accessible to the process and privileged host users: removing argv exposure does not secure a compromised host.
+
+### Generated remote launches
+
+Prepare PostgreSQL with **PostgreSQL administration** below before launching. The generated binaries' standalone `--help` prints these URL-free layouts (the actual binary names use your project name):
+
+```text
+usage: api [--env-file PATH] [BIND_ADDRESS]
+usage: worker [--env-file PATH] [MAX_TASKS] [LEASE_MS]
+usage: api-worker [--env-file PATH] [MAX_TASKS] [LEASE_MS] [BIND_ADDRESS]
+```
+
+Trailing operands are optional: task limit defaults to `32`, lease to `5000` milliseconds, bind to `127.0.0.1:3000`; task/lease values must be positive. Compatibility `worker` and split worker use the worker layout; source-free API-only and split API use the API layout. Local `server`/local `api-worker` instead retain their database-file, task-limit and bind operands shown above, not this remote parser.
+
+For mounted secrets plus explicit dotenv selection, give **only** `/run/secrets/blkit-api.env` and the API URL secret to each API process:
+
+```dotenv
+BLKIT_API_DATABASE_URL_FILE=/run/secrets/blkit-api-url
+BLKIT_API_DB_POOL_MAX=4
+BLKIT_ATTACHMENT_BACKEND=s3
+BLKIT_ATTACHMENT_BUCKET=REPLACE_PRIVATE_BUCKET
+BLKIT_POSTGRES_CA_FILE=/run/config/corporate-ca.pem
+```
+
+Give **only** `/run/secrets/blkit-worker.env` and the worker URL secret to each worker process:
+
+```dotenv
+BLKIT_WORKER_DATABASE_URL_FILE=/run/secrets/blkit-worker-url
+BLKIT_WORKER_DB_POOL_MAX=4
+BLKIT_ATTACHMENT_BACKEND=s3
+BLKIT_ATTACHMENT_BUCKET=REPLACE_PRIVATE_BUCKET
+BLKIT_POSTGRES_CA_FILE=/run/config/corporate-ca.pem
+```
+
+Use the URL-file contents above with privately supplied passwords. The optional CA lines illustrate corporate trust; omit them when platform roots suffice. Mount the same readable certificate-only CA bundle on each configured process; the server certificate must cover the URL hostname. Inject S3 credentials/region (or another backend's equivalent) through ambient provider discovery, **not** these dotenv files. Do not shell-source or evaluate the files. With binaries built as above, launch in separate service processes:
+
+```sh
+# Worker-only, compatibility worker, or split worker:
+.blkit/target/debug/orders-worker --env-file /run/secrets/blkit-worker.env 32 5000
+# Source-free API-only or independently built split API:
+.blkit/target/debug/orders-api --env-file /run/secrets/blkit-api.env 127.0.0.1:3000
+```
+
+Alternatively, for combined remote `api-worker`, give that process both operational URL secrets and `/run/secrets/blkit-combined.env`:
+
+```dotenv
+BLKIT_API_DATABASE_URL_FILE=/run/secrets/blkit-api-url
+BLKIT_WORKER_DATABASE_URL_FILE=/run/secrets/blkit-worker-url
+BLKIT_API_DB_POOL_MAX=4
+BLKIT_WORKER_DB_POOL_MAX=4
+BLKIT_ATTACHMENT_BACKEND=s3
+BLKIT_ATTACHMENT_BUCKET=REPLACE_PRIVATE_BUCKET
+BLKIT_POSTGRES_CA_FILE=/run/config/corporate-ca.pem
+```
+
+```sh
+.blkit/target/debug/orders-api-worker --env-file /run/secrets/blkit-combined.env 32 5000 127.0.0.1:3000
+```
+
+If `CARGO_TARGET_DIR` is set, use `$CARGO_TARGET_DIR/debug/` instead. For environment-only launch, have the service manager inject the appropriate role-specific settings above and omit `--env-file PATH` entirely. Do not mix direct URL and `_FILE` settings for an active role. Single-role processes need no opposite-role secrets; combined mode needs distinct parsed login users on the same endpoint/database. Runtime files, environments and mounts must contain **no admin credentials**. Keep the provisioning job's environment/mounts separate from runtime services; it alone receives the administrative/provisioning secrets below.
+
+### PostgreSQL administration
+
+Use the matching standalone `blkit` CLI in a **dedicated, already-existing database**. It does not create a server or database and needs no generated binary, Cargo, project manifest, `.bl` source or cloud attachment credentials. Local Turso initialization/migration remains on database open; `blkit db` is PostgreSQL-only.
+
+The administrator needs actual authority to create roles, assume/manage the non-login owner, create/manage the known objects (including transferring legacy ownership), and manage database/public-schema grants and owner default privileges. Superuser is **not mandatory**: non-superuser database-owner/CREATEROLE and NOINHERIT administrator paths are tested. Merely possessing CREATEROLE is insufficient without the object, schema, database and owner-assumption capabilities; restricted managed services may require DBA assistance.
+
+1. Back up PostgreSQL **and corresponding private attachment objects** with consistent retention (see below). Review existing ownership/grants, cluster-wide role-name availability, and the dedicated-database access-default changes below with your DBA.
+2. Schedule a maintenance window: stop admissions/uploads on every API replica, drain workers, then stop API/worker writers and quiesce the database before adoption. Coordinate other administrators; the migration advisory lock serializes CLI preparation, **not application writes**.
+3. Mount private secret files. For example, `/run/secrets/blkit-provision.env` contains only these configuration values (omit the optional CA line when platform trust suffices):
+
+   ```dotenv
+   BLKIT_ADMIN_DATABASE_URL_FILE=/run/secrets/blkit-admin-url
+   BLKIT_API_DATABASE_URL_FILE=/run/secrets/blkit-api-url
+   BLKIT_WORKER_DATABASE_URL_FILE=/run/secrets/blkit-worker-url
+   BLKIT_POSTGRES_CA_FILE=/run/config/corporate-ca.pem
+   ```
+
+   The API/worker secret contents are the placeholder URLs shown above. `/run/secrets/blkit-admin-url` contains only:
+
+   ```text
+   postgres://deployer:REPLACE_ADMIN_PASSWORD@db.example.invalid:5432/orders
+   ```
+
+   Replace passwords privately and URL-encode special characters; new login passwords must be nonempty and contain no NUL. All three URLs specify the **same explicit host/port/database** (`db.example.invalid:5432/orders` here); API/worker users must be `blkit_api`/`blkit_worker` for this prefix. Provisioning converts all supplied password bytes to SCRAM, treating even verifier-looking secrets as literal passwords, not precomputed verifiers. Use restrictive file permissions/ACLs as above; never commit or print the filled-in files. Secure TLS defaults apply; no plaintext override is enabled here.
+4. Run **one** of these commands, according to database state; argv contains only commands, private file paths and a nonsecret prefix:
+
+   ```sh
+   # New empty application database:
+   blkit db init --env-file /run/secrets/blkit-provision.env --role-prefix blkit
+   # Instead, adopt only the recognized current unversioned schema:
+   blkit db migrate --env-file /run/secrets/blkit-provision.env --role-prefix blkit
+   ```
+
+   `init` refuses recognized legacy schemas and directs you to `migrate`; `migrate` refuses empty databases and directs you to `init`. Success reports `Database initialized.`, `Database migrated.` or `Database already current.` only after commit. To reconcile a prepared database, `/run/secrets/blkit-admin-only.env` normally needs only `BLKIT_ADMIN_DATABASE_URL_FILE` and any CA setting:
+
+   ```sh
+   blkit db migrate --env-file /run/secrets/blkit-admin-only.env
+   ```
+
+   Omitted migrate prefix uses the persisted identity; omitted init prefix means `blkit` and must match an existing deployment. Runtime secret inputs are needed only when creating missing logins. Reruns preserve existing passwords: **no automatic password rotation**. Changing an existing login password is a separate DBA operation, not a way to update it through a new URL supplied to migrate.
+5. After successful preparation, regenerate/rebuild compatible runtimes and replace the old URL-argument launch configuration with the role-specific examples above. Run API/worker processes with only their operational secrets, **never** the provisioning env file or admin secret mount. Confirm worker advertisement, admission/execution and required application flows before reopening ingress. Retire broad legacy runtime logins/grants only after confirming they are not shared or still used. Pre-change binaries expecting connect-time DDL are not a supported rollback path; keep old business versions in rebuilt compatible workers instead.
+
+**Supported schema boundary.** The only legacy adoption supported is the repository's frozen current seven-table schema in `public`: `instances`, `input_requests`, `instance_attachments`, `instance_interests`, `workers`, `worker_capabilities`, `process_policies`, with their exact columns/types/defaults, constraints, indexes and notification function/triggers. The captured baseline is [`tests/fixtures/postgres-legacy/schema.sql`](crates/blkit-cli/tests/fixtures/postgres-legacy/schema.sql), not arbitrary historical schemas containing `instances`. The sole current migration is version **1**, identity **`blkit-postgres-v1`**, with an immutable asset checksum and owner-controlled `blkit_schema_migrations`/`blkit_deployment` metadata. Runtime compatibility is read-only and exact-version/identity/checksum with coherent deployment metadata, not an older or newer version range; it does not replace the CLI's full structural/grant validation. There are no arbitrary legacy or future-upgrade guarantees. Existing live fixtures verify PostgreSQL 17.6, not every PostgreSQL version.
+
+Preparation validates the known schema/history/deployment identity before mutation and again under the lock. Unknown/partial or unrecognized older schemas, newer versions, missing/inconsistent history, checksum/metadata/ownership drift and noncanonical shape are refused, not silently repaired. This includes changed replica identity, table reloptions or access method, rules, inheritance/partition edges and internal constraint-trigger state. Adoption preserves application rows, instance IDs/statuses, retry/deadline state, checkpoint bytes, requests/replies, attachment metadata and worker records. Its sole application-data backfill is `queued_at_ms = created_at * 1000` **only where queued_at_ms is NULL**; existing non-NULL values remain unchanged. Do not use ad-hoc rollout DDL as a second migration system.
+
+**Locking, failure and retry.** Administration has a 10-second whole-connection deadline (including TLS/authentication), a database-local migration-namespace advisory lock with a 5-second wait/polling every 50 ms, and per-session SQL `lock_timeout` of 1 second. The session holds the advisory lock through validation and COMMIT. Lock contention fails safely: coordinate with the other administrator and retry after it finishes; these bounds are not a total migration-duration deadline. Cancellation closes the session with bounded lock-wait cleanup and no detached background work. Schema/backfill, role creation, ownership/grants/defaults, deployment metadata and version record commit atomically. A pre-commit failure rolls back, records no failed version and leaves the prior committed version/data usable; correct the cause and rerun. A transport failure at COMMIT can leave the outcome uncertain: restore connectivity and rerun the matching CLI to resolve state through validated history, rather than assuming failure or success. There is no automatic downgrade, data drop or destructive repair. After a committed change, prefer roll-forward; incompatible application rollback requires a matching database/private-object backup and DBA coordination, not dropping request/history tables. Rehearse recovery on disposable targets as described below.
+
+**Password-statement logging risk.** Client diagnostics are redacted, but PostgreSQL server-side statement/error logging and audit extensions may capture role `PASSWORD` DDL containing SCRAM verifiers. Verifiers are sensitive too. Have the DBA review logging, auditing, access and retention **before provisioning**; do not enable verbose statement/driver diagnostics or promise server-side secrecy merely because URLs are absent from argv.
+
+### PostgreSQL roles and permissions
+
+`--role-prefix` defaults to `blkit` for init/new legacy adoption and produces `blkit_owner` (NOLOGIN), `blkit_api` and `blkit_worker` (LOGIN). Custom prefixes are 1–56 lowercase ASCII letters/digits/underscores, start with a letter or underscore, and cannot start with `pg_`; suffixes fit PostgreSQL's identifier limit without truncation. Choose a distinct cluster-wide prefix for each deployment. Prefix and derived names are persisted: explicit mismatches fail, and unrecorded existing names are a collision, never silently seized. Managed roles are NOINHERIT, NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOREPLICATION and NOBYPASSRLS. Runtime logins receive no memberships allowing owner/admin/opposite-role assumption; even unexpected NOINHERIT memberships are refused because they can permit SET ROLE. Non-superuser administrators can be granted membership in a newly created owner to administer it; runtime logins cannot.
+
+All nine managed tables below grant **SELECT to both roles**, including `instance_interests` for the `SECURITY INVOKER` notification trigger and both metadata tables for compatibility reads. All INSERT/UPDATE permissions are **column-scoped**, never table-wide. These are the complete writable columns; `—` means none:
+
+| Object / operation | API columns | Worker columns |
+| --- | --- | --- |
+| `instances` INSERT | `id, namespace, version, process, input, status, created_at, updated_at, retry_policy, queued_at_ms, deadline_origin, deadline_duration_ms, deadline_at_ms` | — |
+| `instances` UPDATE | `status, input_resume, updated_at, owner_id, lease_until, terminal_name, wake_at_ms, error, first_failure_at, next_eligible_at` | `status, owner_id, lease_until, generation, attempt, input_resume, next_eligible_at, wake_at_ms, first_claim_at_ms, deadline_at_ms, updated_at, input, checkpoint, error, first_failure_at, result, terminal_name` |
+| `input_requests` INSERT | — | `instance_id, request_id, prompt, schema` |
+| `input_requests` UPDATE | `status, response` | `status` |
+| `instance_attachments` INSERT | `instance_id, request_id, ordinal, object_key, filename, media_type, byte_length` | — |
+| `instance_interests` INSERT | `instance_id, channel, expires_at` | — |
+| `instance_interests` UPDATE | `expires_at` | — |
+| `workers` INSERT | — | `id, heartbeat_at` |
+| `workers` UPDATE | — | `heartbeat_at, draining` |
+| `worker_capabilities` INSERT | — | `worker_id, namespace, version, process` |
+| `process_policies` INSERT | — | `namespace, version, process, retry_policy, deadline_origin, deadline_duration_ms` |
+| `blkit_deployment`, `blkit_schema_migrations` writes | — | — |
+
+The only DELETE grants are API on `instance_interests` and worker on `workers` (capabilities are removed by the worker-delete cascade, not a capability DELETE grant). Unlisted writes are denied: API cannot update typed input/checkpoint/result or publish workers/capabilities/policies; worker cannot admit instances, insert/update reply response values, insert attachment metadata or mutate interests. Immutable `process_policies` are worker SELECT/INSERT only: **no UPDATE/DELETE and no policy UPDATE workaround**. Registration reads immutable policies without an unnecessary `FOR UPDATE` lock.
+
+Preparation transfers ownership of only the seven known application tables, two metadata tables and notification function to the non-login owner (indexes follow table ownership). Runtime roles have no managed-object grant options, TRUNCATE/REFERENCES/TRIGGER grants, schema DDL, owner assumption or history writes. The notification function stays invoker-security; trigger invocation is retained without granting direct function EXECUTE or definition/ownership changes.
+
+Preparation revokes **PUBLIC CREATE on schema `public` and PUBLIC CREATE/TEMP on the dedicated database**; runtime access to the deployment database/`public` is CONNECT/USAGE only. Review this database-wide change before adopting an existing public-schema deployment. Managed-object PUBLIC rights are revoked and the managed owner's default privileges deny implicit PUBLIC/runtime access to future objects (tables, sequences, functions, types and schemas), globally and in relevant existing schema scopes; migrations must explicitly grant new access. No blanket future-object grants are installed. Database-scoped managed-role search paths are `pg_catalog, public, pg_temp`.
+
+Reruns reconcile the exact managed policy, not unrelated applications. Unexpected elevated attributes, inherited/outward memberships, effective runtime DDL/ownership in the current database, or forbidden managed rights/grant options surviving through other grantors cause **DBA review and rollback**, not automatic privilege repair outside the managed boundary. Unrelated objects, owners, grants and other owners' defaults are not swept, re-owned or dropped; the CLI will not cascade away another grantor's rights to force success. This is not a cluster-wide security audit. The independent literal SQL matrix and real-login positive/negative tests live in [`tests/support/postgres_privileges.rs`](crates/blkit-cli/tests/support/postgres_privileges.rs).
+
+**No RLS, per-user authorization or per-worker-row isolation** is provided. Column grants reduce cross-role blast radius, but a compromised login can affect other rows within its permitted columns; authenticate and authorize users at the ingress/application boundary.
+
+PostgreSQL attachment metadata is installed by CLI preparation; local Turso creates `instance_attachments` and its partial unique indexes on open, and reopen is safe. Each row contains an instance ID, optional request ID, nonnegative ordinal, opaque object key, display filename, optional media type and nonnegative byte length — **never file bytes**. A reply's `(instance_id, request_id)` must match an existing input request; start files use a NULL request ID. Ordinals are unique within each start or reply scope, including NULL start scope, and listing uses ordinal order. Consuming a response leaves its attachment rows available. Store attachment objects privately under the application-owned prefix `blkit/attachments/`, not under client filenames.
 
 Trusted Rust worker code can construct `blkit_core::attachment_reader::AttachmentReader::local(LocalStore, AttachmentStore)` or `::remote(PostgresStore, AttachmentStore)` with the same durable database and object location as the API. Call `list(instance_id, None)` for ordered start-file metadata or `list(instance_id, Some(request_id))` for reply metadata (including consumed replies); `read(instance_id, request_id, ordinal)` returns `Ok(None)` only when that attachment record is absent, and an error if the referenced object cannot be read. Metadata returned by `list` excludes object keys and file bytes. Remote workers must use the same configured cloud store (`AttachmentStore::remote_from_env(AttachmentRole::Worker)`); the local filesystem store is for single-node deployments only. This Rust interface does not add an HTTP download route or a `.bl` file type.
 
@@ -572,13 +728,17 @@ For example, supply one of these provider-native credential sets alongside the m
 | GCS | `BLKIT_ATTACHMENT_BACKEND=gcs`, `BLKIT_ATTACHMENT_BUCKET=orders-private` | `GOOGLE_APPLICATION_CREDENTIALS=/secure/orders-gcs.json` for application default credentials (or `GOOGLE_SERVICE_ACCOUNT=/secure/orders-gcs.json`); workload identity also works where available. |
 | Azure Blob | `BLKIT_ATTACHMENT_BACKEND=azure`, `BLKIT_ATTACHMENT_CONTAINER=orders-private` | `AZURE_STORAGE_ACCOUNT_NAME=ordersaccount`, `AZURE_STORAGE_ACCOUNT_KEY` (or `AZURE_STORAGE_CLIENT_ID`, `AZURE_STORAGE_CLIENT_SECRET`, `AZURE_STORAGE_TENANT_ID` for a service principal). |
 
-The generated binaries use provider `object_store` builders' `from_env()` with the blkit bucket/container name; there is no `BLKIT_ATTACHMENT_CREDENTIALS` setting. For S3, for example, after exporting `BLKIT_ATTACHMENT_BACKEND=s3`, `BLKIT_ATTACHMENT_BUCKET=orders-private`, `AWS_DEFAULT_REGION=us-east-1` and valid AWS credentials in **both** shells, run `orders-api "$POSTGRES_URL" 127.0.0.1:3000` and `orders-worker "$POSTGRES_URL" 32 5000`; for split builds, build the API from `.blkit/api/Cargo.toml` and the worker from `.blkit/Cargo.toml` (both binaries are under `.blkit/target/debug/` by default). A combined remote `orders-api-worker "$POSTGRES_URL" 32 5000 127.0.0.1:3000` needs both permission sets. The same configuration applies to the dev-harness `blkit-api` and `blkit-worker` binaries.
+The generated binaries use provider `object_store` builders' `from_env()` with the blkit bucket/container name; there is no `BLKIT_ATTACHMENT_CREDENTIALS` setting. Inject provider authentication through the ambient provider-native mechanisms above on **each** process, separately from the BLKIT dotenv overlay. Use the role-specific launch examples above; a combined remote process needs both attachment permission sets. Split API and worker binaries both live under `.blkit/target/debug/` by default (or `$CARGO_TARGET_DIR/debug/`).
 
 Back up the database **and** the corresponding private objects together with compatible retention windows, including terminal and cancelled instances; retain a consistent database/object snapshot for restore. Restoring metadata without its objects breaks worker reads; restoring objects without rows creates orphans. Restrict access (no public URLs) and track storage capacity. There is no automatic orphan deletion or per-instance retention policy: lifecycle rules must **not** delete referenced files merely because an instance is terminal or cancelled.
 
+**Rehearse before rollout.** Stop admissions/uploads, drain and stop all API/worker writers, and wait for their database sessions and in-flight object writes to finish. With the deployment quiescent, use PostgreSQL backup tools (for example, `pg_dump --format=custom`) and copy the corresponding private object bytes into an access-restricted paired backup. A per-database dump does not include cluster roles or their per-database settings: coordinate those prerequisites with the DBA. Restore the archive with `pg_restore --exit-on-error --single-transaction` into a separate empty disposable database and restore its objects into a separate private location, preserving the original database, objects and sole backup. Use secrets through utility environment/secret files, never password-bearing argv or logs. Run the matching CLI's `migrate` for recognized unversioned state or to validate/reconcile restored current state; restart only compatible rebuilt runtimes with operational credentials, not an old schema-writing binary.
+
+Before reopening ingress, compare restored rows, checkpoint/request/reply TEXT and attachment references, and actually read every referenced object's bytes, including consumed replies and terminal/cancelled instances. Compare migration preservation before starting normal application reconciliation, which can legitimately advance expired legacy work. Do not purge original or newer referenced objects because an older restored snapshot lacks their rows; retain them and coordinate any recovery of later committed data with the DBA. The disposable PostgreSQL 17.6 rehearsal is [`tests/postgres_rehearsal.rs`](crates/blkit-cli/tests/postgres_rehearsal.rs); it restores real pre-adoption and managed archives plus private objects, not arbitrary historical schemas. There is no `blkit db` backup, restore or downgrade command.
+
 An API crash during upload or between upload and database commit can leave unreachable objects. For a manual orphan audit, first stop new admissions/uploads on **all** API replicas (or otherwise establish a quiescent, consistent database/object snapshot); wait for in-flight requests and uncertain commits to settle. Export all `instance_attachments.object_key` values from the authoritative database, list keys under `blkit/attachments/` in the corresponding private object location, and identify only keys absent from the export. Allow a conservative grace period for uploads, listing delays and backup/restore lag; immediately before deleting a candidate, check the authoritative database again for any association and skip deletion on a failed/inconclusive check. Never delete any key referenced by a committed row; retain uncertain candidates for another audit. Object-store lifecycle expiry independent of database retention is unsafe. JSON-only clients do not need to change their request format.
 
-Deploy updated API replicas first, then request-capable workers and compiled processes with a **new** namespace/version/process identity (normally a new `.bl` `version`), so old workers cannot claim request-bearing instances. Retain old workers for old-version backlog. Existing version-2 checkpoints without request fields remain readable; unsupported older checkpoint formats are rejected, not silently replayed. To roll back, stop admitting new request-using process versions, and keep capable workers and APIs running until outstanding requests drain or are cancelled. Do not drop the request schema or switch active request checkpoints to binaries that cannot read them.
+After the PostgreSQL preparation/compatible-runtime upgrade above, deploy updated API replicas first, then request-capable workers and compiled processes with a **new** namespace/version/process identity (normally a new `.bl` `version`), so workers with the old business identity cannot claim request-bearing instances. Retain rebuilt compatible workers carrying old business versions for their backlog, not old schema-writing executables. Existing version-2 checkpoints without request fields remain readable; unsupported older checkpoint formats are rejected, not silently replayed. To roll back, stop admitting new request-using process versions, and keep capable workers and APIs running until outstanding requests drain or are cancelled. Do not drop the request schema or switch active request checkpoints to binaries that cannot read them.
 
 Worker checkpoints and request records commit together in PostgreSQL: each outstanding request has a stable instance/request ID, prompt, and portable response schema with resolved named dictionary shapes. The persisted port types let a graph-free API validate responses through the HTTP reply route; the store validates accepted replies, and the worker checks again before consumption. An accepted reply is conditional and durable even while no matching worker is available. An idle instance reports `waiting-for-input` and releases its claim without a timer or retry; a matching worker resumes it after an answer, subject to the original deadline. GET, reply POST and SSE are available in both modes.
 
@@ -596,24 +756,38 @@ FROM instance_interests WHERE expires_at > clock_timestamp() GROUP BY channel;
 
 `pg_notification_queue_usage()` is a fraction, not a message count; repeat it during load and investigate sustained growth, long listener transactions and commit errors. A lost listener reconnects, re-registers interests and sends fresh persisted snapshots to attached clients; an expired live interest is renewed and resynchronized. During an outage hints can be missed and a new SSE subscription can fail until the listener returns. Clients should reconnect for a fresh snapshot or GET the current instance after interruption; do not rely on replay. If the database is unavailable, restore connectivity/session capacity first, then confirm listener reconnection and current GET state. Do not drop request rows or reset a notification queue as a recovery shortcut.
 
-For a local demonstration **outside the devcontainer**, start PostgreSQL with a loopback-only port and a non-example password, then in separate terminals run:
+### Remote development harness
+
+For development, `blkit-worker` links the fixed [`graph.bl`](tools/dev-harness/examples/graph.bl) processes (`orders/1.0/decide`, `parallel`, `offers`); `blkit-api` is graph-free. They use the same URL-free configuration and managed API/worker roles as generated remote binaries. For deployed applications, use the generated targets above; the local `blkit-dev` command and automatic Turso lifecycle remain unchanged.
+
+First prepare an **existing dedicated PostgreSQL database** using the matching CLI's `blkit db init --env-file /run/secrets/blkit-provision.env` (or the documented migration workflow for a recognized existing schema). Use the provisioning settings in **PostgreSQL administration**; neither harness binary initializes schema. Keep that administrative environment and secret mounts separate from runtime processes.
+
+Give each process only its own URL secret and role-specific env file from **Generated remote launches**: `/run/secrets/blkit-worker.env` for the worker and `/run/secrets/blkit-api.env` for the API. Both must select the same private cloud attachment location; filesystem storage is not a remote fallback. Inject provider credentials/region through standard **ambient provider discovery**, not dotenv. These files can also set the active role's pool limit and optional CA bundle. Verified PostgreSQL TLS remains the default, including listener reconnects; mount a trusted CA when platform roots do not cover the server.
+
+From the repository root, start these in separate terminals:
 
 ```sh
-# Terminal 1: PostgreSQL; remove the container when finished.
-docker run --rm --name blkit-postgres -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
-  -p 127.0.0.1:55432:5432 postgres:17.6-alpine
-
-# Other terminals, with DATABASE_URL set to the matching private PostgreSQL address
-# and the same cloud backend, bucket/container and provider credentials in each shell:
-export BLKIT_ATTACHMENT_BACKEND=s3 BLKIT_ATTACHMENT_BUCKET=orders-private AWS_DEFAULT_REGION=us-east-1
-# Supply valid AWS credentials or an IAM role with the API/worker permissions above.
-cargo build -p blkit-dev-harness --bin blkit-api --bin blkit-worker
-cargo run -p blkit-dev-harness --bin blkit-api -- "$DATABASE_URL"                  # default 127.0.0.1:3000
-cargo run -p blkit-dev-harness --bin blkit-worker -- "$DATABASE_URL" 32 5000      # start two terminals
+cargo run -p blkit-dev-harness --bin blkit-worker -- --env-file /run/secrets/blkit-worker.env 32 5000
+cargo run -p blkit-dev-harness --bin blkit-api -- --env-file /run/secrets/blkit-api.env 127.0.0.1:3000
 ```
 
-Set `DATABASE_URL=postgres://postgres:<password>@127.0.0.1:55432/postgres` on the same host; use URL-encoding for special password characters. In this devcontainer, the host Podman loopback is **not** reachable from inside the container: use a privately reachable PostgreSQL endpoint instead, or run the Testcontainers multi-worker command above. Start an instance with `curl -sS -H 'content-type: application/json' -d '{"total":"12"}' http://127.0.0.1:3000/processes/orders/1.0/parallel/instances`, then poll `/instances/ID`; its `result` is `{"left":"12","right":"12"}`. Queue rows remain inspectable even with no capable worker.
+Only file paths and nonsecret operands appear in argv. Do **not** pass a database URL or the provisioning env file. For environment-only launch, inject the corresponding role settings and omit `--env-file PATH`; there is no implicit `.env` search or generic/admin URL fallback. Worker operands default to `32` tasks and a `5000`ms lease; API bind defaults to loopback `127.0.0.1:3000`. Each active role's pool defaults to four connections, independently of task count; API SSE adds its separately budgeted LISTEN session. The worker reports `blkit-worker ID ready`; start it before admission, which returns HTTP 503 without a live matching worker.
 
-To drain a worker, read its ID from its `blkit-worker <id> ready` log line and execute `UPDATE workers SET draining=TRUE WHERE id='<id>';` in PostgreSQL. It stops claiming, renews existing leases until each attempt finishes or releases for retry, then unregisters and exits. Keep another worker with the **same exact namespace/version/process** for old-version backlog; new-version workers do not take it.
+For a **disposable non-TLS development/test database only**, explicitly add `BLKIT_POSTGRES_INSECURE_DEV=true` to each selected provisioning/API/worker env file; remove CA settings and conflicting secure URL requirements. Each startup emits an insecure-plaintext warning. The live integration fixtures test this explicit plaintext setup with provisioned roles; it is not a production recipe or a claim that this harness check qualifies deployment TLS. Production must retain verified TLS without this override.
 
-Both REST binaries bind to loopback by default. The API has **no built-in authentication or TLS**: for remote clients, put it behind an operator-managed authenticated TLS ingress; do not expose the listener or PostgreSQL port directly. Checkpoints prevent replay of committed tasks, but interrupted or uncommitted tasks and their external side effects are **at least once**. Make side-effecting tasks idempotent; lease fencing prevents stale database writes, not external effects.
+Submit and inspect a compiled process as with the local example:
+
+```sh
+curl -sS -H 'content-type: application/json' -d '{"total":"1200"}' \
+  http://127.0.0.1:3000/processes/orders/1.0/decide/instances
+# Copy the returned id; once completed, result is "review":
+curl -sS http://127.0.0.1:3000/instances/INSTANCE_ID
+```
+
+Keep both processes on the same prepared database and private object store across restarts; retain those objects consistently with database backups as described above. Only the matching worker executes compiled definitions; the API's acceptance is durable admission, not synchronous execution. The API is unauthenticated HTTP: retain loopback binding unless an authenticated TLS ingress protects remote clients.
+
+In this devcontainer, the host Podman loopback is **not** reachable from inside the container: use a privately reachable PostgreSQL endpoint. Keep development PostgreSQL ports loopback-only where services run on the same host; never expose them publicly. Queue rows remain inspectable even with no capable worker.
+
+To drain a worker, identify its ID in `workers` (standalone generated workers log `worker_id` on `worker ready`), then execute `UPDATE workers SET draining=TRUE WHERE id='<id>';` in PostgreSQL. It stops claiming, renews existing leases until each attempt finishes or releases for retry, then unregisters and exits. Keep another rebuilt compatible worker with the **same exact namespace/version/process** for old business-version backlog; new business-version workers do not take it.
+
+Generated API listeners bind to loopback by default. The API has **no built-in authentication or TLS**: for remote clients, put it behind an operator-managed authenticated TLS ingress; do not expose the listener or PostgreSQL port directly. Checkpoints prevent replay of committed tasks, but interrupted or uncommitted tasks and their external side effects are **at least once**. Make side-effecting tasks idempotent; lease fencing prevents stale database writes, not external effects.

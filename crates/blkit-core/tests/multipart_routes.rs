@@ -4,6 +4,10 @@
     feature = "local-persistence"
 ))]
 
+#[cfg(feature = "remote-persistence")]
+#[path = "../../blkit-cli/tests/support/postgres.rs"]
+mod postgres_fixture;
+
 use axum::{
     body::{Body, Bytes},
     http::{Request, StatusCode},
@@ -391,9 +395,11 @@ async fn distributed_multipart_start_requires_live_worker_and_defers_typed_input
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let metadata = PostgresStore::connect_with_pool_size(&url, 1)
-        .await
-        .unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let metadata =
+        PostgresStore::connect_with_options(&url, 1, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let root = std::env::temp_dir().join(format!("blkit-remote-start-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     let objects = AttachmentStore::local(&root.join("db"), None)
@@ -879,7 +885,11 @@ async fn distributed_multipart_reply_notifies_and_resumes_after_atomic_commit() 
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let metadata = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let metadata =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     metadata
         .register_worker("live", &[("demo", "1", "p")])
         .await

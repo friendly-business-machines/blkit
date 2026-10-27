@@ -622,121 +622,133 @@ impl Project {
 }
 
 const API_SOURCE: &str = r#"use std::{env, sync::Arc, time::Duration};
-use blkit_core::{attachment_store::{AttachmentRole, AttachmentStore}, distributed::DistributedControl, postgres_store::PostgresStore, server::router_distributed_with_attachments};
+use blkit_core::{attachment_store::{AttachmentRole, AttachmentStore, RemoteAttachmentConfig}, distributed::DistributedControl, postgres_config::{DatabaseRole, EffectivePostgresConfig}, remote_executable::{ExecutableError, ExecutableOperation, RemoteArgs, RemoteExecutable}, server::router_distributed_with_attachments};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<_> = env::args().collect();
-    if args.get(1).is_some_and(|arg| arg == "--help") {
-        println!("usage: api POSTGRES_URL [BIND_ADDRESS]");
+async fn main() -> Result<(), ExecutableError> {
+    let mode = RemoteExecutable::Api;
+    let Some(args) = RemoteArgs::parse(mode, env::args_os().skip(1))? else {
+        println!("{}", mode.usage());
         return Ok(());
-    }
-    let url = args.get(1).ok_or("usage: api POSTGRES_URL [BIND_ADDRESS]")?;
-    if args.len() > 3 { return Err("usage: api POSTGRES_URL [BIND_ADDRESS]".into()); }
-    let bind = args.get(2).map_or("127.0.0.1:3000", String::as_str);
-    let pool_max = env::var_os("BLKIT_API_DB_POOL_MAX").map_or(Ok(4), |value| value.to_str().and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0).ok_or("invalid BLKIT_API_DB_POOL_MAX"))?;
-    let attachments = AttachmentStore::remote_from_env(AttachmentRole::Api).await?;
-    let control = Arc::new(DistributedControl::new(PostgresStore::connect_with_pool_size(url, pool_max).await?));
-    let reconciler = control.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(100));
-        loop {
-            interval.tick().await;
-            if let Err(error) = reconciler.reconcile_once().await {
-                eprintln!("claim reconciliation failed: {error}");
-            }
-        }
-    });
-    let listener = tokio::net::TcpListener::bind(bind).await?;
-    axum::serve(listener, router_distributed_with_attachments(control, attachments)).await?;
-    Ok(())
-}
-"#;
-
-const API_WORKER_SOURCE: &str = r#"use std::{env, sync::Arc, time::Duration};
-use blkit_core::{attachment_store::{AttachmentRole, AttachmentStore}, distributed::{DistributedControl, DistributedWorker}, logging, postgres_store::PostgresStore, server::router_distributed_with_attachments};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<_> = env::args().collect();
-    if args.get(1).is_some_and(|arg| arg == "--help") {
-        println!("usage: api-worker POSTGRES_URL [MAX_TASKS] [LEASE_MS] [BIND_ADDRESS]");
-        return Ok(());
-    }
-    let _logging = logging::init(concat!(env!("CARGO_PKG_NAME"), "-api-worker"))?;
-    let url = args.get(1).ok_or("usage: api-worker POSTGRES_URL [MAX_TASKS] [LEASE_MS] [BIND_ADDRESS]")?;
-    if args.len() > 5 { return Err("too many arguments".into()); }
-    let limit = args.get(2).map_or(Ok(32), |n| n.parse::<usize>())?;
-    let lease_ms = args.get(3).map_or(Ok(5000), |n| n.parse::<i64>())?;
-    let bind = args.get(4).map_or("127.0.0.1:3000", String::as_str);
-    let api_pool_max = env::var_os("BLKIT_API_DB_POOL_MAX").map_or(Ok(4), |value| value.to_str().and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0).ok_or("invalid BLKIT_API_DB_POOL_MAX"))?;
-    let worker_pool_max = env::var_os("BLKIT_WORKER_DB_POOL_MAX").map_or(Ok(4), |value| value.to_str().and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0).ok_or("invalid BLKIT_WORKER_DB_POOL_MAX"))?;
-    let attachments = AttachmentStore::remote_from_env(AttachmentRole::Api).await?;
-    let _worker_attachments = AttachmentStore::remote_from_env(AttachmentRole::Worker).await?;
-    let store = PostgresStore::connect_with_pool_size(url, api_pool_max).await?;
-    let worker_store = PostgresStore::connect_with_pool_size(url, worker_pool_max).await?;
-    let worker = DistributedWorker::new(worker_store, &format!("worker-{}", std::process::id()), PROJECT_CRATE::named_graph_definitions(), limit, lease_ms)?;
-    worker.advertise().await?;
+    };
+    let config = EffectivePostgresConfig::from_env(args.env_file.as_deref())?;
+    let options = config.connection_options()?;
+    let database = config.resolve_role(DatabaseRole::Api, &options)?;
+    let pool_max = config.api_pool_max()?;
+    let attachment_config = RemoteAttachmentConfig::from_lookup(|name| config.get(name).map(|value| value.map(str::to_owned)))
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Attachments))?;
+    if let Some(warning) = options.warning() { eprintln!("{warning}"); }
+    let attachments = AttachmentStore::remote_with_config(AttachmentRole::Api, &attachment_config).await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Attachments))?;
+    let store = database.connect_store(pool_max).await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Database))?;
     let control = Arc::new(DistributedControl::new(store));
     let reconciler = control.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
         loop {
             interval.tick().await;
-            if let Err(error) = reconciler.reconcile_once().await { eprintln!("claim reconciliation failed: {error}"); }
+            if reconciler.reconcile_once().await.is_err() {
+                eprintln!("claim reconciliation failed");
+            }
         }
     });
-    let listener = tokio::net::TcpListener::bind(bind).await?;
+    let listener = tokio::net::TcpListener::bind(&args.bind).await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Bind))?;
+    axum::serve(listener, router_distributed_with_attachments(control, attachments)).await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Serve))?;
+    Ok(())
+}
+"#;
+
+const API_WORKER_SOURCE: &str = r#"use std::{env, sync::Arc, time::Duration};
+use blkit_core::{attachment_store::{AttachmentRole, AttachmentStore, RemoteAttachmentConfig}, distributed::{DistributedControl, DistributedWorker}, logging, postgres_config::EffectivePostgresConfig, remote_executable::{ExecutableError, ExecutableOperation, RemoteArgs, RemoteExecutable}, server::router_distributed_with_attachments};
+
+#[tokio::main]
+async fn main() -> Result<(), ExecutableError> {
+    let mode = RemoteExecutable::Combined;
+    let Some(args) = RemoteArgs::parse(mode, env::args_os().skip(1))? else {
+        println!("{}", mode.usage());
+        return Ok(());
+    };
+    let config = EffectivePostgresConfig::from_env(args.env_file.as_deref())?;
+    let options = config.connection_options()?;
+    let (api_database, worker_database) = config.resolve_combined(&options)?;
+    let api_pool_max = config.api_pool_max()?;
+    let worker_pool_max = config.worker_pool_max()?;
+    let attachment_config = RemoteAttachmentConfig::from_lookup(|name| config.get(name).map(|value| value.map(str::to_owned)))
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Attachments))?;
+    if let Some(warning) = options.warning() { eprintln!("{warning}"); }
+    let _logging = logging::init(concat!(env!("CARGO_PKG_NAME"), "-api-worker"))
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Logging))?;
+    let attachments = AttachmentStore::remote_with_config(AttachmentRole::Api, &attachment_config).await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Attachments))?;
+    let _worker_attachments = AttachmentStore::remote_with_config(AttachmentRole::Worker, &attachment_config).await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Attachments))?;
+    let store = api_database.connect_store(api_pool_max).await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Database))?;
+    let worker_store = worker_database.connect_store(worker_pool_max).await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Database))?;
+    let worker = DistributedWorker::new(worker_store, &format!("worker-{}", std::process::id()), PROJECT_CRATE::named_graph_definitions(), args.max_tasks, args.lease_ms)
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Worker))?;
+    worker.advertise().await.map_err(|_| ExecutableError::operation(ExecutableOperation::Worker))?;
+    let control = Arc::new(DistributedControl::new(store));
+    let reconciler = control.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            interval.tick().await;
+            if reconciler.reconcile_once().await.is_err() { eprintln!("claim reconciliation failed"); }
+        }
+    });
+    let listener = tokio::net::TcpListener::bind(&args.bind).await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Bind))?;
     let run = async move {
         loop {
-            worker.run_once().await?;
-            if worker.drain_if_requested().await? { return Ok::<(), String>(()); }
+            worker.run_once().await.map_err(|_| ExecutableError::operation(ExecutableOperation::Worker))?;
+            if worker.drain_if_requested().await.map_err(|_| ExecutableError::operation(ExecutableOperation::Worker))? { return Ok::<(), ExecutableError>(()); }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     };
     tokio::select! {
         result = run => result?,
-        result = axum::serve(listener, router_distributed_with_attachments(control, attachments)) => { result?; }
+        result = axum::serve(listener, router_distributed_with_attachments(control, attachments)) => { result.map_err(|_| ExecutableError::operation(ExecutableOperation::Serve))?; }
     }
     Ok(())
 }
 "#;
 
 const WORKER_SOURCE: &str = r#"use std::{env, time::Duration};
-use blkit_core::{attachment_store::{AttachmentRole, AttachmentStore}, distributed::DistributedWorker, logging::{self, tracing}, postgres_store::PostgresStore};
+use blkit_core::{attachment_store::{AttachmentRole, AttachmentStore, RemoteAttachmentConfig}, distributed::DistributedWorker, logging::{self, tracing}, postgres_config::{DatabaseRole, EffectivePostgresConfig}, remote_executable::{ExecutableError, ExecutableOperation, RemoteArgs, RemoteExecutable}};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<_> = env::args().collect();
-    if args.get(1).is_some_and(|arg| arg == "--help") {
-        println!("usage: worker POSTGRES_URL [MAX_TASKS] [LEASE_MS]");
+async fn main() -> Result<(), ExecutableError> {
+    let mode = RemoteExecutable::Worker;
+    let Some(args) = RemoteArgs::parse(mode, env::args_os().skip(1))? else {
+        println!("{}", mode.usage());
         return Ok(());
-    }
+    };
+    let config = EffectivePostgresConfig::from_env(args.env_file.as_deref())?;
+    let options = config.connection_options()?;
+    let database = config.resolve_role(DatabaseRole::Worker, &options)?;
+    let pool_max = config.worker_pool_max()?;
+    let attachment_config = RemoteAttachmentConfig::from_lookup(|name| config.get(name).map(|value| value.map(str::to_owned)))
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Attachments))?;
+    if let Some(warning) = options.warning() { eprintln!("{warning}"); }
     let _logging = logging::init(concat!(env!("CARGO_PKG_NAME"), "-worker"))
-        .map_err(|e| { eprintln!("logging configuration: {e}"); e })?;
-    let _attachments = AttachmentStore::remote_from_env(AttachmentRole::Worker).await?;
-    if let Err(reason) = run(&args).await {
-        tracing::error!(reason, "worker error");
-        return Err(reason.into());
-    }
-    Ok(())
-}
-
-async fn run(args: &[String]) -> Result<(), &'static str> {
-    let url = args.get(1).ok_or("usage: worker POSTGRES_URL [MAX_TASKS] [LEASE_MS]")?;
-    if args.len() > 4 { return Err("usage: worker POSTGRES_URL [MAX_TASKS] [LEASE_MS]"); }
-    let limit = args.get(2).map_or(Ok(32), |n| n.parse::<usize>()).map_err(|_| "invalid MAX_TASKS")?;
-    let lease_ms = args.get(3).map_or(Ok(5000), |n| n.parse::<i64>()).map_err(|_| "invalid LEASE_MS")?;
-    let pool_max = env::var_os("BLKIT_WORKER_DB_POOL_MAX").map_or(Ok(4), |value| value.to_str().and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0).ok_or("invalid BLKIT_WORKER_DB_POOL_MAX"))?;
-    let store = PostgresStore::connect_with_pool_size(url, pool_max).await.map_err(|_| "cannot connect to postgres")?;
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Logging))?;
+    let _attachments = AttachmentStore::remote_with_config(AttachmentRole::Worker, &attachment_config).await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Attachments))?;
+    let store = database.connect_store(pool_max).await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Database))?;
     let id = format!("worker-{}", std::process::id());
-    let worker = DistributedWorker::new(store, &id, PROJECT_CRATE::named_graph_definitions(), limit, lease_ms)
-        .map_err(|_| "invalid worker configuration")?;
-    worker.advertise().await.map_err(|_| "cannot register worker")?;
+    let worker = DistributedWorker::new(store, &id, PROJECT_CRATE::named_graph_definitions(), args.max_tasks, args.lease_ms)
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Worker))?;
+    worker.advertise().await.map_err(|_| ExecutableError::operation(ExecutableOperation::Worker))?;
     tracing::info!(worker_id = %id, "worker ready");
     loop {
-        worker.run_once().await.map_err(|_| "worker runtime failure")?;
-        if worker.drain_if_requested().await.map_err(|_| "cannot drain worker")? { return Ok(()); }
+        worker.run_once().await.map_err(|_| ExecutableError::operation(ExecutableOperation::Worker))?;
+        if worker.drain_if_requested().await.map_err(|_| ExecutableError::operation(ExecutableOperation::Worker))? { return Ok(()); }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

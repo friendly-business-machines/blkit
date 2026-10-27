@@ -9,18 +9,22 @@ name = "blkit"
 path = "src/main.rs"
 
 [dependencies]
+blkit-core = { version = "0.1.0", path = "../blkit-core", default-features = false, features = ["remote-persistence"] }
 blkit-transpiler = { version = "=0.1.0", path = "../blkit-transpiler" }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 console = "0.16"
 indicatif = "0.18"
 miette = "7"
+postgres-protocol = "0.6.12"
+sha2 = "0.11.0"
 thiserror = "2"
+tokio = { version = "1", features = ["time", "macros"] }
+tokio-postgres = "0.7.18"
 
 [dev-dependencies]
-blkit-core = { path = "../blkit-core", features = ["worker", "remote-persistence"] }
+blkit-core = { path = "../blkit-core", features = ["worker", "remote-persistence", "api-server"] }
 serde_json = "1"
 testcontainers-modules = { version = "=0.15.0", features = ["postgres"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-tokio-postgres = "0.7.18"
 turso = { version = "=0.7.2", default-features = false }

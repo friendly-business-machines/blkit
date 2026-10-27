@@ -1,3 +1,8 @@
+#[path = "../../../tools/test-support/managed_runtime.rs"]
+mod managed_runtime;
+#[path = "support/postgres.rs"]
+mod postgres_fixture;
+
 use blkit_transpiler as blkit;
 use std::{
     fs,
@@ -638,6 +643,7 @@ async fn generated_remote_roles_validate_only_active_pool_limits() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         postgres.get_host_port_ipv4(5432).await.unwrap()
     );
+    managed_runtime::prepare(&url).await;
     let (_cloud, endpoint) = seaweed::start().await;
     for (target, persistence, binary, active, inactive) in [
         (
@@ -713,7 +719,12 @@ async fn generated_remote_roles_validate_only_active_pool_limits() {
             .unwrap_or(root.join(".blkit/target"))
             .join("debug")
             .join(role.replacen("orders-", &format!("{name}-"), 1));
-        let mut args = vec![url.as_str()];
+        let mut args = Vec::new();
+        let roles: &[&str] = match role {
+            "orders-api" => &["api"],
+            "orders-worker" => &["worker"],
+            _ => &["api", "worker"],
+        };
         if role == "orders-worker" {
             args.extend(["2", "1000"]);
         }
@@ -728,6 +739,7 @@ async fn generated_remote_roles_validate_only_active_pool_limits() {
             let diagnostic_file = fs::File::create(&diagnostic_path).unwrap();
             let mut command = Command::new(&binary);
             seaweed::configure(&mut command, &endpoint);
+            managed_runtime::configure(&mut command, &url, roles);
             let mut child = Child(
                 command
                     .args(&args)
@@ -757,6 +769,7 @@ async fn generated_remote_roles_validate_only_active_pool_limits() {
         if target != "api-worker" {
             let mut command = Command::new(&binary);
             seaweed::configure(&mut command, &endpoint);
+            managed_runtime::configure(&mut command, &url, roles);
             let mut child = Child(
                 command
                     .args(&args)
@@ -805,6 +818,7 @@ async fn generated_remote_role_pool_budgets_are_bounded_independently() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         postgres.get_host_port_ipv4(5432).await.unwrap()
     );
+    managed_runtime::prepare(&base_url).await;
     let source = "namespace orders; version \"1\"; start_event start { output input: Number; } end_event done { input result: Number; } decision_task echo { input input: Number; output result: Number = value; literal_expression value { output result: Number; expression input; } } process route { flow start -> echo; flow echo -> done; bind start.input -> echo.input; bind echo.result -> done.result; }";
     let (_cloud, endpoint) = seaweed::start().await;
     for (target, persistence, binary, api_max, worker_max, expected_max) in [
@@ -920,18 +934,6 @@ pub fn named_graph_definitions() -> Vec<blkit_core::compiled_graph::GraphDefinit
             )
             .unwrap();
         }
-        if target == "api-worker" {
-            let entry = root.join(format!(".blkit/src/bin/{name}-api-worker.rs"));
-            let generated = fs::read_to_string(&entry).unwrap();
-            let api_call = "let store = PostgresStore::connect_with_pool_size(url, ";
-            let worker_call = "let worker_store = PostgresStore::connect_with_pool_size(url, ";
-            assert_eq!(generated.matches(api_call).count(), 1);
-            assert_eq!(generated.matches(worker_call).count(), 1);
-            let tagged = generated
-                .replace(api_call, &format!("let store = PostgresStore::connect_with_pool_size(&url.replace(\"application_name={app}\", \"application_name={app}_api\"), "))
-                .replace(worker_call, &format!("let worker_store = PostgresStore::connect_with_pool_size(&url.replace(\"application_name={app}\", \"application_name={app}_worker\"), "));
-            fs::write(entry, tagged).unwrap();
-        }
         cargo_build(&root).unwrap();
         if target == "api-worker-split" && binary == "orders-api" {
             let output = Command::new("cargo")
@@ -947,13 +949,25 @@ pub fn named_graph_definitions() -> Vec<blkit_core::compiled_graph::GraphDefinit
         }
         let url = format!("{base_url}?application_name={app}");
         if !worker_active {
-            let store = PostgresStore::connect(&base_url).await.unwrap();
+            let store = PostgresStore::connect_with_options(
+                &base_url,
+                4,
+                &postgres_fixture::plaintext_options(),
+            )
+            .await
+            .unwrap();
             store
                 .register_worker(&format!("{app}_fixture"), &[("orders", "1", "route")])
                 .await
                 .unwrap();
         } else {
-            let store = PostgresStore::connect(&base_url).await.unwrap();
+            let store = PostgresStore::connect_with_options(
+                &base_url,
+                4,
+                &postgres_fixture::plaintext_options(),
+            )
+            .await
+            .unwrap();
             for i in 0..12 {
                 let item = Instance::new(
                     &format!("{app}_{i}"),
@@ -975,7 +989,37 @@ pub fn named_graph_definitions() -> Vec<blkit_core::compiled_graph::GraphDefinit
         let bind = socket.local_addr().unwrap().to_string();
         drop(socket);
         let mut command = Command::new(bin);
-        command.arg(&url);
+        let roles: &[&str] = if target == "api-worker" {
+            &["api", "worker"]
+        } else if worker_active {
+            &["worker"]
+        } else {
+            &["api"]
+        };
+        managed_runtime::configure(&mut command, &url, roles);
+        // Role-specific URL tags preserve pool observation without rewriting generated sources.
+        if roles.contains(&"api") {
+            let tag = if target == "api-worker" {
+                format!("{app}_api")
+            } else {
+                app.clone()
+            };
+            command.env(
+                "BLKIT_API_DATABASE_URL",
+                managed_runtime::role_url(&format!("{base_url}?application_name={tag}"), "api"),
+            );
+        }
+        if roles.contains(&"worker") {
+            let tag = if target == "api-worker" {
+                format!("{app}_worker")
+            } else {
+                app.clone()
+            };
+            command.env(
+                "BLKIT_WORKER_DATABASE_URL",
+                managed_runtime::role_url(&format!("{base_url}?application_name={tag}"), "worker"),
+            );
+        }
         if worker_active {
             command.args(["4", "1000"]);
         }
@@ -1303,6 +1347,7 @@ async fn generated_role_executables_smoke() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         postgres.get_host_port_ipv4(5432).await.unwrap()
     );
+    managed_runtime::prepare(&url).await;
     for (target, persistence) in [
         ("api-worker", "local"),
         ("api-worker", "remote"),
@@ -1350,9 +1395,10 @@ async fn generated_role_executables_smoke() {
         if target == "api-worker-split" {
             let mut worker = std::process::Command::new(binaries.join(format!("{name}-worker")));
             seaweed::configure(&mut worker, &cloud_endpoint);
+            managed_runtime::configure(&mut worker, &url, &["worker"]);
             children.push(Child(
                 worker
-                    .args([&url, "2", "1000"])
+                    .args(["2", "1000"])
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .spawn()
@@ -1362,14 +1408,20 @@ async fn generated_role_executables_smoke() {
         let mut server = std::process::Command::new(binaries.join(format!("{name}-api-worker")));
         if target == "api-worker-split" {
             server = std::process::Command::new(binaries.join(format!("{name}-api")));
-            server.args([&url, &bind]);
+            server.args([&bind]);
         } else if persistence == "local" {
             server.arg(&database).args(["2", &bind]);
         } else {
-            server.args([&url, "2", "1000", &bind]);
+            server.args(["2", "1000", &bind]);
         }
         if persistence != "local" {
             seaweed::configure(&mut server, &cloud_endpoint);
+            let roles: &[&str] = if target == "api-worker-split" {
+                &["api"]
+            } else {
+                &["api", "worker"]
+            };
+            managed_runtime::configure(&mut server, &url, roles);
         }
         children.push(Child(
             server
@@ -1506,7 +1558,11 @@ async fn generated_remote_workers_drain_active_claims_without_claiming_backlog()
             "postgres://postgres:postgres@{host}:{}/postgres",
             postgres.get_host_port_ipv4(5432).await.unwrap()
         );
-        let store = PostgresStore::connect(&url).await.unwrap();
+        managed_runtime::prepare(&url).await;
+        let store =
+            PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+                .await
+                .unwrap();
         for (id, input) in [("slow", "1"), ("fast", "2"), ("backlog", "3")] {
             let mut item = Instance::new(
                 id,
@@ -1528,7 +1584,13 @@ async fn generated_remote_workers_drain_active_claims_without_claiming_backlog()
             .join("debug")
             .join(binary.replacen("orders-", &format!("{name}-"), 1));
         let mut command = std::process::Command::new(path);
-        command.args([&url, "2", "5000"]);
+        command.args(["2", "5000"]);
+        let roles: &[&str] = if target == "api-worker" {
+            &["api", "worker"]
+        } else {
+            &["worker"]
+        };
+        managed_runtime::configure(&mut command, &url, roles);
         command.env("BLKIT_TEST_GATE_DIR", &root);
         seaweed::configure(&mut command, &endpoint);
         if target == "api-worker" {
@@ -2512,9 +2574,21 @@ async fn generated_binaries_configure_logging_before_runtime_and_report_failures
         let args: Vec<_> = if role == "server" {
             vec![root.join("local.db").to_string_lossy().into_owned()]
         } else {
-            vec!["postgres://user:secret@127.0.0.1:1/orders".into()]
+            vec![]
         };
-        let invalid = Command::new(&binary)
+        let configure = |command: &mut Command| {
+            if role == "worker" {
+                managed_runtime::configure(
+                    command,
+                    "postgres://postgres:postgres@127.0.0.1:1/orders",
+                    &["worker"],
+                );
+                seaweed::configure(command, &endpoint);
+            }
+        };
+        let mut command = Command::new(&binary);
+        configure(&mut command);
+        let invalid = command
             .args(&args)
             .env("BLKIT_LOG_OUTPUTS", "file")
             .env_remove("BLKIT_LOG_FILE")
@@ -2522,7 +2596,12 @@ async fn generated_binaries_configure_logging_before_runtime_and_report_failures
             .unwrap();
         assert!(!invalid.status.success());
         let stderr = String::from_utf8_lossy(&invalid.stderr);
-        assert!(stderr.contains("BLKIT_LOG_FILE"), "{role}: {stderr}");
+        let expected = if role == "server" {
+            "BLKIT_LOG_FILE"
+        } else {
+            "logging initialization failed"
+        };
+        assert!(stderr.contains(expected), "{role}: {stderr}");
         assert!(
             !root.join("local.db").exists(),
             "runtime started before logging"
@@ -2533,9 +2612,7 @@ async fn generated_binaries_configure_logging_before_runtime_and_report_failures
             args.clone()
         };
         let mut command = Command::new(&binary);
-        if role == "worker" {
-            seaweed::configure(&mut command, &endpoint);
-        }
+        configure(&mut command);
         let fatal = command
             .args(&fatal_args)
             .env_remove("BLKIT_LOG_OUTPUTS")
@@ -2544,19 +2621,20 @@ async fn generated_binaries_configure_logging_before_runtime_and_report_failures
             .unwrap();
         assert!(!fatal.status.success());
         let stdout = String::from_utf8_lossy(&fatal.stdout);
-        assert!(
-            stdout.contains("ERROR") && stdout.contains("error"),
-            "{role}: {stdout}"
-        );
-        assert!(!stdout.contains("secret"), "{stdout}");
-        assert!(
-            stdout.contains(if role == "server" {
-                "open store"
-            } else {
-                "connect to postgres"
-            }),
-            "{role}: {stdout}"
-        );
+        let stderr = String::from_utf8_lossy(&fatal.stderr);
+        assert!(!stdout.contains("startup-test") && !stderr.contains("startup-test"));
+        assert!(!stdout.contains("postgres://") && !stderr.contains("postgres://"));
+        if role == "server" {
+            assert!(
+                stdout.contains("ERROR")
+                    && stdout.contains("error")
+                    && stdout.contains("open store"),
+                "{stdout}"
+            );
+        } else {
+            assert!(stderr.contains("database operation failed"), "{stderr}");
+            assert!(!stdout.contains("ready") && !stderr.contains("ready"));
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }
@@ -2687,7 +2765,11 @@ async fn project_worker_binary_claims_only_its_compiled_process_version() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    managed_runtime::prepare(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let graph = GraphDefinition {
         namespace: "orders",
         version: "1",
@@ -2735,8 +2817,8 @@ async fn project_worker_binary_claims_only_its_compiled_process_version() {
     }
     let mut command = Command::new(binary);
     seaweed::configure(&mut command, &endpoint);
+    managed_runtime::configure(&mut command, &url, &["worker"]);
     let mut child = command
-        .arg(&url)
         .args(["32", "5000"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

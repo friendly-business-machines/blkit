@@ -5,6 +5,10 @@
     feature = "attachment-local"
 ))]
 
+#[cfg(feature = "remote-persistence")]
+#[path = "../../blkit-cli/tests/support/postgres.rs"]
+mod postgres_fixture;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -93,9 +97,15 @@ async fn remote_worker_resumes_file_bearing_input_reply_from_http() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let metadata = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let metadata =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let first_worker = DistributedWorker::new(
-        PostgresStore::connect(&url).await.unwrap(),
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap(),
         "first",
         vec![review_graph()],
         1,
@@ -152,7 +162,9 @@ async fn remote_worker_resumes_file_bearing_input_reply_from_http() {
         .unwrap()
         .unwrap();
     let reader = AttachmentReader::remote(
-        PostgresStore::connect(&url).await.unwrap(),
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap(),
         AttachmentStore::local(&db, None).await.unwrap(),
     );
     assert_eq!(
@@ -164,7 +176,9 @@ async fn remote_worker_resumes_file_bearing_input_reply_from_http() {
         Some(b"proof bytes".to_vec())
     );
     let second_worker = DistributedWorker::new(
-        PostgresStore::connect(&url).await.unwrap(),
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap(),
         "second",
         vec![review_graph()],
         1,

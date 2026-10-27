@@ -1,10 +1,11 @@
-use std::{env, time::Duration};
-
 use blkit_core::{
-    attachment_store::{AttachmentRole, AttachmentStore},
+    attachment_store::{AttachmentRole, AttachmentStore, RemoteAttachmentConfig},
     distributed::DistributedWorker,
-    postgres_store::PostgresStore,
+    logging,
+    postgres_config::{DatabaseRole, EffectivePostgresConfig},
+    remote_executable::{ExecutableError, ExecutableOperation, RemoteArgs, RemoteExecutable},
 };
+use std::{env, time::Duration};
 
 // Generated Rust is checked by compilation and integration tests, not style lints.
 #[allow(clippy::all)]
@@ -13,38 +14,57 @@ mod compiled {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<_> = env::args().collect();
-    if args.get(1).is_some_and(|arg| arg == "--help") {
-        println!("usage: blkit-worker POSTGRES_URL [MAX_TASKS] [LEASE_MS]");
+async fn main() -> Result<(), ExecutableError> {
+    let mode = RemoteExecutable::Worker;
+    let Some(args) = RemoteArgs::parse(mode, env::args_os().skip(1))? else {
+        println!("{}", mode.usage());
         return Ok(());
+    };
+    let config = EffectivePostgresConfig::from_env(args.env_file.as_deref())?;
+    let options = config.connection_options()?;
+    let database = config.resolve_role(DatabaseRole::Worker, &options)?;
+    let pool_max = config.worker_pool_max()?;
+    let attachment_config = RemoteAttachmentConfig::from_lookup(|name| {
+        config.get(name).map(|value| value.map(str::to_owned))
+    })
+    .map_err(|_| ExecutableError::operation(ExecutableOperation::Attachments))?;
+    if let Some(warning) = options.warning() {
+        eprintln!("{warning}");
     }
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .init();
-    let url = args
-        .get(1)
-        .ok_or("usage: blkit-worker POSTGRES_URL [MAX_TASKS] [LEASE_MS]")?;
-    if args.len() > 4 {
-        return Err("usage: blkit-worker POSTGRES_URL [MAX_TASKS] [LEASE_MS]".into());
-    }
-    let limit = args.get(2).map_or(Ok(32), |n| n.parse::<usize>())?;
-    let lease_ms = args.get(3).map_or(Ok(5000), |n| n.parse::<i64>())?;
-    let _attachments = AttachmentStore::remote_from_env(AttachmentRole::Worker).await?;
-    let store = PostgresStore::connect(url).await?;
+    let _logging = logging::init(concat!(env!("CARGO_PKG_NAME"), "-worker"))
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Logging))?;
+    let _attachments =
+        AttachmentStore::remote_with_config(AttachmentRole::Worker, &attachment_config)
+            .await
+            .map_err(|_| ExecutableError::operation(ExecutableOperation::Attachments))?;
+    let store = database
+        .connect_store(pool_max)
+        .await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Database))?;
     let id = uuid::Uuid::new_v4().to_string();
     let worker = DistributedWorker::new(
         store,
         &id,
         compiled::named_graph_definitions(),
-        limit,
-        lease_ms,
-    )?;
-    worker.advertise().await?;
+        args.max_tasks,
+        args.lease_ms,
+    )
+    .map_err(|_| ExecutableError::operation(ExecutableOperation::Worker))?;
+    worker
+        .advertise()
+        .await
+        .map_err(|_| ExecutableError::operation(ExecutableOperation::Worker))?;
     eprintln!("blkit-worker {id} ready");
     loop {
-        worker.run_once().await?;
-        if worker.drain_if_requested().await? {
+        worker
+            .run_once()
+            .await
+            .map_err(|_| ExecutableError::operation(ExecutableOperation::Worker))?;
+        if worker
+            .drain_if_requested()
+            .await
+            .map_err(|_| ExecutableError::operation(ExecutableOperation::Worker))?
+        {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

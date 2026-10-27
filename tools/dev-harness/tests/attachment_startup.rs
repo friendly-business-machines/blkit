@@ -14,8 +14,16 @@ fn remote_harness_roles_reject_missing_or_filesystem_cloud_store() {
         for backend in [None, Some("fs")] {
             let mut command = Command::new(binary);
             command
-                .arg("postgres://127.0.0.1:1/blkit")
-                .env_remove("BLKIT_ATTACHMENT_BACKEND");
+                .env_clear()
+                .env("TOKIO_WORKER_THREADS", "2")
+                .env(
+                    "BLKIT_API_DATABASE_URL",
+                    "postgres://blkit_api:test@127.0.0.1:1/blkit",
+                )
+                .env(
+                    "BLKIT_WORKER_DATABASE_URL",
+                    "postgres://blkit_worker:test@127.0.0.1:1/blkit",
+                );
             if let Some(backend) = backend {
                 command.env("BLKIT_ATTACHMENT_BACKEND", backend);
             }
@@ -25,7 +33,8 @@ fn remote_harness_roles_reject_missing_or_filesystem_cloud_store() {
                 "{binary} started with {backend:?}"
             );
             assert!(
-                String::from_utf8_lossy(&output.stderr).contains("BLKIT_ATTACHMENT_BACKEND"),
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("attachment initialization failed"),
                 "{binary}: {}",
                 String::from_utf8_lossy(&output.stderr)
             );

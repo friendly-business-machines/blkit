@@ -4,14 +4,17 @@ use std::{
     time::Duration,
 };
 
-use clap::{CommandFactory, Parser, Subcommand};
+use blkit_cli::postgres_admin::{ManagedRoles, Preparation, PreparationOutcome, prepare_database};
+use blkit_core::postgres_config::EffectivePostgresConfig;
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use indicatif::ProgressBar;
 
 #[derive(Parser)]
 #[command(
     version,
-    about = "Transpile .bl sources and projects to Rust",
+    about = "Transpile .bl sources and projects to Rust; administer PostgreSQL deployments",
+    after_help = format!("Database administration:\n  blkit db init     Initialize schema and managed roles\n  blkit db migrate  Upgrade schema and reconcile grants\n\n{DB_HELP}"),
     args_conflicts_with_subcommands = true,
     arg_required_else_help = true,
     disable_help_subcommand = true
@@ -37,8 +40,70 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Operation {
-    Transpile { project_dir: Option<PathBuf> },
-    Update { project_dir: Option<PathBuf> },
+    Transpile {
+        project_dir: Option<PathBuf>,
+    },
+    Update {
+        project_dir: Option<PathBuf>,
+    },
+    /// Initialize or migrate an existing dedicated PostgreSQL database
+    #[command(long_about = DB_HELP)]
+    Db {
+        #[command(subcommand)]
+        command: DatabaseOperation,
+    },
+}
+
+const DB_HELP: &str =
+    "Prepare an existing, dedicated PostgreSQL database; does not create a server or database.
+No project, Cargo, .bl sources, or cloud credentials are required.
+
+Administration uses BLKIT_ADMIN_DATABASE_URL or BLKIT_ADMIN_DATABASE_URL_FILE only.
+New runtime logins require BLKIT_API_DATABASE_URL and BLKIT_WORKER_DATABASE_URL (or
+corresponding _FILE settings), with the same database endpoint and managed usernames.
+Existing login passwords are never reset; prepared reruns normally need only admin credentials.
+Never supply database URLs, usernames or passwords as arguments. URL-encode special characters.
+
+Use process environment or an explicitly selected --env-file PATH (dotenv data, no
+shell execution or automatic discovery). Process settings override dotenv by name.
+A required URL and its _FILE counterpart conflict; secret files contain one UTF-8 URL
+with an optional trailing LF/CRLF. Paths are relative to the working directory.
+
+TLS verifies certificates and hostnames using platform trust plus the optional
+BLKIT_POSTGRES_CA_FILE corporate PEM CA bundle. BLKIT_POSTGRES_INSECURE_DEV=true
+explicitly selects plaintext for development/testing only and conflicts with a CA file.
+
+--role-prefix selects <prefix>_owner (NOLOGIN), <prefix>_api and <prefix>_worker.
+Prefixes use 1-56 lowercase ASCII letters, digits or underscores, start with a letter
+or underscore, and cannot start with pg_. Init defaults to blkit; migrate without a
+prefix uses the persisted identity (blkit for first legacy adoption). Existing role
+name conflicts are refused. Migration requires quiesced legacy writers; only recognized
+blkit schemas are adopted, with application data preserved.";
+
+#[derive(Subcommand)]
+enum DatabaseOperation {
+    /// Install schema and roles in an empty database, or reconcile a prepared database
+    #[command(long_about = DB_HELP)]
+    Init(DatabaseArguments),
+    /// Upgrade a recognized legacy schema, or reconcile a prepared database
+    #[command(long_about = DB_HELP)]
+    Migrate(DatabaseArguments),
+}
+
+#[derive(Args)]
+struct DatabaseArguments {
+    /// Explicit dotenv file; process environment takes precedence
+    #[arg(long, value_name = "PATH")]
+    env_file: Option<PathBuf>,
+    /// Managed role prefix; migrate omission preserves the recorded identity
+    #[arg(long, value_name = "PREFIX", value_parser = parse_role_prefix)]
+    role_prefix: Option<String>,
+}
+
+fn parse_role_prefix(value: &str) -> Result<String, String> {
+    ManagedRoles::from_prefix(value)
+        .map(|_| value.to_owned())
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
@@ -138,12 +203,29 @@ fn main() {
             )
             .exit();
     }
-    let cli = Cli::parse();
+    // Clap's ordinary errors can echo credential-bearing operands, including unknown flags.
+    let arguments: Vec<_> = std::env::args_os().collect();
+    if arguments.iter().skip(1).any(|argument| {
+        let value = argument.to_string_lossy();
+        value.contains("postgres://") || value.contains("postgresql://")
+    }) {
+        invalid_usage();
+    }
+    let cli = Cli::try_parse_from(arguments).unwrap_or_else(|error| match error.kind() {
+        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
+            error.exit()
+        }
+        _ => invalid_usage(),
+    });
     if let Some(shell) = cli.completions {
         clap_complete::generate(shell, &mut Cli::command(), "blkit", &mut std::io::stdout());
         return;
     }
     let result = match cli.command {
+        Some(Operation::Db { command }) => {
+            administer_database(command);
+            return;
+        }
         Some(Operation::Transpile { project_dir }) => project("transpile", project_dir.as_deref()),
         Some(Operation::Update { project_dir }) => project("update", project_dir.as_deref()),
         None => {
@@ -159,6 +241,49 @@ fn main() {
             .expect("writing a diagnostic to String cannot fail");
         eprint!("{diagnostic}");
         std::process::exit(1);
+    }
+}
+
+fn invalid_usage() -> ! {
+    Cli::command()
+        .error(
+            clap::error::ErrorKind::InvalidValue,
+            "invalid arguments; use --help; database credentials belong in environment or secret files, not arguments",
+        )
+        .exit()
+}
+
+fn administer_database(command: DatabaseOperation) {
+    let (arguments, init) = match command {
+        DatabaseOperation::Init(arguments) => (arguments, true),
+        DatabaseOperation::Migrate(arguments) => (arguments, false),
+    };
+    // Format only the closed, redacted config/runner errors, never driver sources or Debug.
+    let result = EffectivePostgresConfig::from_env(arguments.env_file.as_deref())
+        .map_err(|error| error.to_string())
+        .and_then(|settings| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| "cannot start database administration runtime".to_owned())?;
+            let role_prefix = arguments.role_prefix.as_deref();
+            let preparation = if init {
+                Preparation::Init { role_prefix }
+            } else {
+                Preparation::Migrate { role_prefix }
+            };
+            runtime
+                .block_on(prepare_database(&settings, preparation))
+                .map_err(|error| error.to_string())
+        });
+    match result {
+        Ok(PreparationOutcome::Initialized) => println!("Database initialized."),
+        Ok(PreparationOutcome::Migrated) => println!("Database migrated."),
+        Ok(PreparationOutcome::AlreadyCurrent) => println!("Database already current."),
+        Err(error) => {
+            eprintln!("database preparation failed: {error}");
+            std::process::exit(1);
+        }
     }
 }
 

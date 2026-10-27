@@ -180,7 +180,22 @@ fn binary_name(root: &Path, role: &str) -> String {
 }
 
 fn missing_cloud(binary: &Path, args: &[&str]) {
-    let output = Command::new(binary)
+    let configure = |command: &mut Command| {
+        command
+            .env_clear()
+            .env("TOKIO_WORKER_THREADS", "2")
+            .env(
+                "BLKIT_API_DATABASE_URL",
+                "postgres://blkit_api:test@127.0.0.1:1/blkit",
+            )
+            .env(
+                "BLKIT_WORKER_DATABASE_URL",
+                "postgres://blkit_worker:test@127.0.0.1:1/blkit",
+            );
+    };
+    let mut command = Command::new(binary);
+    configure(&mut command);
+    let output = command
         .args(args)
         .env_remove("BLKIT_ATTACHMENT_BACKEND")
         .env_remove("BLKIT_ATTACHMENT_BUCKET")
@@ -195,11 +210,13 @@ fn missing_cloud(binary: &Path, args: &[&str]) {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("BLKIT_ATTACHMENT_BACKEND"),
+        stderr.contains("attachment initialization failed"),
         "{}: {stderr}",
         binary.display()
     );
-    let output = Command::new(binary)
+    let mut command = Command::new(binary);
+    configure(&mut command);
+    let output = command
         .args(args)
         .env("BLKIT_ATTACHMENT_BACKEND", "fs")
         .env_remove("BLKIT_LOG_OUTPUTS")
@@ -207,11 +224,13 @@ fn missing_cloud(binary: &Path, args: &[&str]) {
         .unwrap();
     assert!(
         !output.status.success()
-            && String::from_utf8_lossy(&output.stderr).contains("BLKIT_ATTACHMENT_BACKEND"),
+            && String::from_utf8_lossy(&output.stderr).contains("attachment initialization failed"),
         "{} accepted remote fs",
         binary.display()
     );
-    let output = Command::new(binary)
+    let mut command = Command::new(binary);
+    configure(&mut command);
+    let output = command
         .args(args)
         .env("BLKIT_ATTACHMENT_BACKEND", "s3")
         .env_remove("BLKIT_ATTACHMENT_BUCKET")
@@ -220,7 +239,7 @@ fn missing_cloud(binary: &Path, args: &[&str]) {
         .unwrap();
     assert!(
         !output.status.success()
-            && String::from_utf8_lossy(&output.stderr).contains("BLKIT_ATTACHMENT_BUCKET"),
+            && String::from_utf8_lossy(&output.stderr).contains("attachment initialization failed"),
         "{} accepted missing bucket",
         binary.display()
     );
@@ -242,7 +261,7 @@ fn generated_remote_roles_reject_missing_cloud_before_postgres() {
         let target_dir = build(&root);
         for role in binaries {
             let binary = target_dir.join(binary_name(&root, role));
-            missing_cloud(&binary, &["postgres://127.0.0.1:1/blkit"]);
+            missing_cloud(&binary, &[]);
         }
         fs::remove_dir_all(root).unwrap();
     }

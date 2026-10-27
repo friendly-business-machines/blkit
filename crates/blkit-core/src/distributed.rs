@@ -23,7 +23,7 @@ use tokio::{
     time,
 };
 #[cfg(feature = "api-server")]
-use tokio_postgres::{AsyncMessage, NoTls};
+use tokio_postgres::AsyncMessage;
 
 #[cfg(feature = "api-server")]
 struct RemoteEvents {
@@ -307,13 +307,19 @@ impl Drop for RemoteSubscription {
 #[cfg(feature = "api-server")]
 async fn run_listener(store: PostgresStore, events: std::sync::Weak<RemoteEvents>) {
     while let Some(shared) = events.upgrade() {
-        let mut config = store.listener_config();
-        config.application_name(&shared.channel);
+        let mut connector = store.listener_connection();
+        connector.config.application_name(&shared.channel);
         let result: Result<(), String> = async {
-            let (client, mut connection) = config.connect(NoTls).await.map_err(|e| e.to_string())?;
+            let (client, mut connection) = connector.connect_raw().await.map_err(|_| "postgres listener connection failed; check endpoint, credentials, TLS support, and certificate trust/hostname/validity".to_string())?;
             let (messages, mut incoming) = mpsc::channel(32);
             tokio::spawn(async move {
                 while let Some(message) = std::future::poll_fn(|cx| connection.poll_message(cx)).await {
+                    // Never forward raw server errors or notices into logs or the hint queue.
+                    let message = match message {
+                        Ok(AsyncMessage::Notification(notification)) => Ok(AsyncMessage::Notification(notification)),
+                        Ok(_) => continue,
+                        Err(_) => Err("postgres listener session failed; check database availability and transport"),
+                    };
                     if messages.try_send(message).is_err() {
                         tracing::error!("SSE listener notification buffer overflow; reconnecting");
                         return;
@@ -322,7 +328,7 @@ async fn run_listener(store: PostgresStore, events: std::sync::Weak<RemoteEvents
             });
             // The connection must be polled while LISTEN executes. Autocommit completes
             // before any interest can be registered or snapshot queried.
-            client.batch_execute(&format!("LISTEN {}", shared.channel)).await.map_err(|e| e.to_string())?;
+            client.batch_execute(&format!("LISTEN {}", shared.channel)).await.map_err(|_| "postgres listener LISTEN failed".to_string())?;
             let mut pending_resync: VecDeque<_> = shared.state.lock().await.watchers.clone().into_iter().collect();
             let mut deferred_resync = VecDeque::new();
             let mut resynced = HashSet::new();

@@ -1,3 +1,8 @@
+#[path = "../../test-support/managed_runtime.rs"]
+mod managed_runtime;
+#[path = "../../../crates/blkit-cli/tests/support/postgres.rs"]
+mod postgres_fixture;
+
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -43,9 +48,11 @@ async fn postgres_pool_allows_independent_operation_while_another_session_is_blo
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect_with_pool_size(
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store = PostgresStore::connect_with_options(
         &format!("{url}?application_name=blkit_pool_independent"),
         2,
+        &postgres_fixture::plaintext_options(),
     )
     .await
     .unwrap();
@@ -107,9 +114,11 @@ async fn postgres_pool_replaces_terminated_backend_without_acknowledging_its_wri
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect_with_pool_size(
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store = PostgresStore::connect_with_options(
         &format!("{url}?application_name=blkit_pool_replacement"),
         1,
+        &postgres_fixture::plaintext_options(),
     )
     .await
     .unwrap();
@@ -213,9 +222,11 @@ async fn postgres_pool_limits_sessions_under_concurrent_load() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect_with_pool_size(
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store = PostgresStore::connect_with_options(
         &format!("{url}?application_name=blkit_pool_bounded"),
         2,
+        &postgres_fixture::plaintext_options(),
     )
     .await
     .unwrap();
@@ -313,9 +324,11 @@ async fn postgres_pool_checkout_times_out_when_only_slot_is_held() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect_with_pool_size(
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store = PostgresStore::connect_with_options(
         &format!("{url}?application_name=blkit_pool_timeout"),
         1,
+        &postgres_fixture::plaintext_options(),
     )
     .await
     .unwrap();
@@ -451,7 +464,11 @@ async fn distributed_admission_requires_a_live_exact_capability_and_queues_after
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let graph = || distributed_batch_graph(Arc::new(|value, _| Ok(value.clone())));
     let control = DistributedControl::new(store.clone());
     assert!(
@@ -533,7 +550,11 @@ async fn worker_registration_rejects_conflicting_policy_and_queue_deadline_survi
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let graph = |ms| {
         let mut graph = distributed_batch_graph(Arc::new(|value, _| Ok(value.clone())));
         graph.deadline = Some(blkit::DeadlinePolicy {
@@ -586,8 +607,15 @@ async fn concurrent_workers_can_advertise_identical_process_policies() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let first_store = PostgresStore::connect(&url).await.unwrap();
-    let second_store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let first_store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
+    let second_store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
         .await
         .unwrap();
@@ -639,7 +667,11 @@ async fn distributed_worker_validates_admitted_input_on_claim() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let mut graph = distributed_batch_graph(Arc::new(|value, _| Ok(value.clone())));
     graph.decode_input = Box::new(|input| {
         if input.is_number() {
@@ -710,7 +742,11 @@ async fn distributed_recovery_rejects_old_checkpoints_without_changing_rows() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let graph = distributed_batch_graph(Arc::new(|input, _| Ok(input.clone())));
     let mut json = serde_json::to_value(graph.checkpoint(&json!([1])).unwrap()).unwrap();
     json.as_object_mut().unwrap().remove("version");
@@ -776,7 +812,11 @@ async fn distributed_takeover_resumes_uncommitted_multi_instance_item() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let visits = Arc::new(std::sync::Mutex::new(Vec::new()));
     let entered = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
@@ -956,7 +996,11 @@ async fn distributed_takeover_keeps_prior_cycle_activation_committed() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let visited = Arc::new(std::sync::Mutex::new(Vec::new()));
     let entered = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
@@ -1049,7 +1093,11 @@ async fn distributed_pending_branch_is_claimed_despite_parallel_wait() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
     let graph = || {
         let hits = hits.clone();
@@ -1184,7 +1232,11 @@ async fn distributed_task_free_cycle_starts_before_first_claim_deadline() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let graph = || GraphDefinition {
         namespace: "test",
         version: "1",
@@ -1311,7 +1363,11 @@ async fn distributed_deadline_precedes_iteration_bound_and_late_claim_writes() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let entered = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
     let task: Evaluate = {
@@ -1416,7 +1472,11 @@ async fn distributed_queued_and_first_claim_deadlines_expire_without_retrying_la
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let graph = |origin: &'static str| GraphDefinition {
         namespace: "test",
         version: "1",
@@ -1555,7 +1615,11 @@ async fn postgres_deadline_terminalizes_unclaimed_wait_and_fences_late_claim() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let mut item = Instance::new("timeout", "test", "1", "pause", json!(null));
     item.status = "waiting".into();
     item.wake_at_ms = Some(1);
@@ -1603,7 +1667,11 @@ async fn distributed_wait_releases_claim_and_resumes_on_another_worker() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
     let graph = || {
         let hits = hits.clone();
@@ -1711,7 +1779,11 @@ async fn postgres_preserves_wake_and_first_claim_deadline_across_reclaim() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let mut waiting = Instance::new("waiting", "orders", "1", "route", json!(null));
     waiting.status = "waiting".into();
     waiting.wake_at_ms = Some(100);
@@ -1800,7 +1872,11 @@ async fn postgres_store_reopens_queued_checkpoint_retry_and_worker_capabilities(
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let mut item = Instance::new(
         "order-1",
         "orders",
@@ -1825,7 +1901,10 @@ async fn postgres_store_reopens_queued_checkpoint_retry_and_worker_capabilities(
         .await
         .unwrap();
     drop(store);
-    let reopened = PostgresStore::connect(&url).await.unwrap();
+    let reopened =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let row = reopened.get("order-1").await.unwrap().unwrap();
     assert_eq!(row.instance.status, "retry-waiting");
     assert_eq!(row.instance.input, json!({"total": "12.50"}));
@@ -1861,7 +1940,11 @@ async fn distributed_worker_resumes_version_two_checkpoint_without_request_field
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let graph = versioned_graph("1.0", Arc::new(|input, _| Ok(input.clone())), None);
     let input = json!("before-rollout");
     let mut checkpoint = serde_json::to_value(graph.checkpoint(&input).unwrap()).unwrap();
@@ -1894,7 +1977,10 @@ async fn distributed_worker_resumes_version_two_checkpoint_without_request_field
 
     drop(db);
     drop(store);
-    let reopened = PostgresStore::connect(&url).await.unwrap();
+    let reopened =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let worker = DistributedWorker::new(reopened.clone(), "capable", vec![graph], 1, 5000).unwrap();
     worker.advertise().await.unwrap();
     assert_eq!(worker.run_once().await.unwrap(), 1);
@@ -1917,8 +2003,15 @@ async fn concurrent_claims_match_exact_identity_without_double_assignment() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let first = PostgresStore::connect(&url).await.unwrap();
-    let second = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let first =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
+    let second =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     first
         .register_worker("w1", &[("orders", "1.0", "decide")])
         .await
@@ -1979,12 +2072,15 @@ async fn pooled_cross_session_claim_and_drain_keep_owned_claim_and_gate_backlog(
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let worker = PostgresStore::connect_with_pool_size(&url, 2)
-        .await
-        .unwrap();
-    let control = PostgresStore::connect_with_pool_size(&url, 2)
-        .await
-        .unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let worker =
+        PostgresStore::connect_with_options(&url, 2, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
+    let control =
+        PostgresStore::connect_with_options(&url, 2, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     worker
         .register_worker("w1", &[("orders", "1.0", "decide")])
         .await
@@ -1994,7 +2090,7 @@ async fn pooled_cross_session_claim_and_drain_keep_owned_claim_and_gate_backlog(
         item.created_at = created_at;
         worker.create(&item).await.unwrap();
     }
-    let peer = PostgresStore::connect_with_pool_size(&url, 2)
+    let peer = PostgresStore::connect_with_options(&url, 2, &postgres_fixture::plaintext_options())
         .await
         .unwrap();
     let (mut gate, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
@@ -2145,9 +2241,11 @@ async fn active_claim_renewal_reports_pool_contention_then_recovers_without_stal
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect_with_pool_size(
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store = PostgresStore::connect_with_options(
         &format!("{url}?application_name=blkit_active_claim"),
         1,
+        &postgres_fixture::plaintext_options(),
     )
     .await
     .unwrap();
@@ -2269,7 +2367,11 @@ async fn claim_lease_renewal_checks_owner_expiry_and_increments_generation_on_re
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     store
         .register_worker("w1", &[("orders", "1.0", "decide")])
         .await
@@ -2346,8 +2448,15 @@ async fn expired_claim_reconciliation_is_idempotent_and_fences_old_owner_writes(
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let first = PostgresStore::connect(&url).await.unwrap();
-    let second = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let first =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
+    let second =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     for worker in ["w1", "w2"] {
         first
             .register_worker(worker, &[("orders", "1.0", "decide")])
@@ -2477,7 +2586,11 @@ async fn expired_claim_without_retry_fails_with_checkpoint_intact() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     store
         .register_worker("w1", &[("orders", "1.0", "decide")])
         .await
@@ -2521,7 +2634,11 @@ async fn worker_advertises_linked_identity_and_runs_multiple_instances_under_bou
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let entered = Arc::new(AtomicUsize::new(0));
     let active = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
@@ -2665,7 +2782,11 @@ async fn worker_execution_error_releases_claim_for_retry_without_losing_checkpoi
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let graph = GraphDefinition {
         namespace: "orders",
         version: "1.0",
@@ -2734,6 +2855,33 @@ impl Drop for WorkerChild {
     }
 }
 
+// Match the README's role-only env file; provider authentication stays ambient.
+fn select_runtime_env_file(command: &mut Command, url: &str, role: &str) -> CrashDir {
+    let root = std::env::temp_dir().join(format!("blkit-harness-{role}-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let files = CrashDir(root);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&files.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let secret = files.0.join("url");
+    std::fs::write(&secret, managed_runtime::role_url(url, role)).unwrap();
+    let setting = format!("BLKIT_{}_DATABASE_URL", role.to_uppercase());
+    let dotenv = files.0.join("role.env");
+    std::fs::write(&dotenv, format!("{setting}_FILE={}\nBLKIT_POSTGRES_INSECURE_DEV=true\nBLKIT_ATTACHMENT_BACKEND=s3\nBLKIT_ATTACHMENT_BUCKET=my-bucket\n", secret.display())).unwrap();
+    for name in [
+        setting.as_str(),
+        "BLKIT_POSTGRES_INSECURE_DEV",
+        "BLKIT_ATTACHMENT_BACKEND",
+        "BLKIT_ATTACHMENT_BUCKET",
+    ] {
+        command.env_remove(name);
+    }
+    command.arg("--env-file").arg(dotenv);
+    files
+}
+
 // Generated Rust is checked by compilation and integration tests, not style lints.
 #[allow(clippy::all)]
 mod compiled {
@@ -2754,12 +2902,18 @@ async fn worker_binary_advertises_only_linked_identities_and_runs_without_source
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    managed_runtime::prepare(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_blkit-worker"));
     seaweed::configure(&mut command, &endpoint);
+    managed_runtime::configure(&mut command, &url, &["worker"]);
+    let _files = select_runtime_env_file(&mut command, &url, "worker");
     let mut child = WorkerChild(
         command
-            .args([&url, "2", "1000"])
+            .args(["2", "1000"])
             .current_dir(std::env::temp_dir())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -2786,6 +2940,8 @@ async fn worker_binary_advertises_only_linked_identities_and_runs_without_source
     })
     .await
     .expect("worker binary should register");
+    managed_runtime::assert_child_configuration(&child.0, &["worker"]);
+    managed_runtime::assert_sessions(&url, &["worker"]).await;
     let advertised = store.get_worker(&worker_id).await.unwrap().unwrap();
     assert_eq!(
         advertised.identities,
@@ -2907,7 +3063,11 @@ async fn distributed_subprocess_retry_and_wait_handoff_share_one_parent_claim() 
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
     let call: blkit::runtime::Evaluate = {
         let hits = hits.clone();
@@ -3001,7 +3161,11 @@ async fn distributed_parent_cancellation_signals_parallel_children() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let entered = Arc::new(AtomicUsize::new(0));
     let hooks = Arc::new(AtomicUsize::new(0));
     let released = Arc::new(AtomicBool::new(false));
@@ -3228,7 +3392,11 @@ async fn distributed_worker_refills_while_slow_claim_is_active() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let release = Arc::new(AtomicBool::new(false));
     let _release_on_drop = ReleaseOnDrop(&release, &release);
     let active = Arc::new(AtomicUsize::new(0));
@@ -3284,7 +3452,11 @@ async fn distributed_worker_claims_late_work_after_capacity_frees() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let release = Arc::new(AtomicBool::new(false));
     let _release_on_drop = ReleaseOnDrop(&release, &release);
     let active = Arc::new(AtomicUsize::new(0));
@@ -3356,7 +3528,11 @@ async fn distributed_worker_refill_respects_active_and_task_limit() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let release = Arc::new(AtomicBool::new(false));
     let active = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
@@ -3456,7 +3632,11 @@ async fn distributed_worker_defers_refill_error_until_active_claim_finishes() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let release = Arc::new(AtomicBool::new(false));
@@ -3564,7 +3744,11 @@ async fn distributed_worker_resumes_due_wait_during_sustained_refills() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let release = Arc::new(AtomicBool::new(false));
@@ -3706,12 +3890,16 @@ async fn distributed_worker_refill_does_not_burst_or_poll_on_heartbeat() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
+    postgres_fixture::prepare_fresh_database_url(&url).await;
     let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     db.batch_execute("CREATE EXTENSION pg_stat_statements")
         .await
         .unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let release_slow = Arc::new(AtomicBool::new(false));
     let release_fast = Arc::new(AtomicBool::new(false));
     let _release_on_drop = ReleaseOnDrop(&release_slow, &release_fast);
@@ -3799,7 +3987,11 @@ async fn draining_worker_finishes_owned_work_but_does_not_claim_old_version_back
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let entered = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
     let old_task: blkit::runtime::Evaluate = Arc::new({
@@ -3896,7 +4088,11 @@ async fn draining_worker_does_not_refill_freed_slot_after_committed_drain() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let release_slow = Arc::new(AtomicBool::new(false));
     let release_fast = Arc::new(AtomicBool::new(false));
     let _release_on_drop = ReleaseOnDrop(&release_slow, &release_fast);
@@ -4001,7 +4197,11 @@ async fn retry_released_while_draining_goes_to_another_capable_worker() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let entered = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
     let hits = Arc::new(AtomicUsize::new(0));
@@ -4076,7 +4276,11 @@ async fn distributed_rest_starts_reports_and_cancels_inflight_worker_without_lat
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let entered = Arc::new(AtomicBool::new(false));
     let released = Arc::new(AtomicBool::new(false));
     let hooks = Arc::new(AtomicUsize::new(0));
@@ -4208,7 +4412,11 @@ async fn cancellation_racing_checkpoint_or_lease_expiry_never_retries_or_overwri
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     store
         .register_worker("w1", &[("orders", "1.0", "decide")])
         .await
@@ -4273,7 +4481,11 @@ async fn distributed_api_binary_serves_graph_free_process_control_on_loopback() 
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    managed_runtime::prepare(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     store
         .register_worker("test-worker", &[("orders", "1.0", "decide")])
         .await
@@ -4283,9 +4495,11 @@ async fn distributed_api_binary_serves_graph_free_process_control_on_loopback() 
     drop(socket);
     let mut command = Command::new(env!("CARGO_BIN_EXE_blkit-api"));
     seaweed::configure(&mut command, &endpoint);
+    managed_runtime::configure(&mut command, &url, &["api"]);
+    let _files = select_runtime_env_file(&mut command, &url, "api");
     let _api = WorkerChild(
         command
-            .args([&url, &format!("127.0.0.1:{port}")])
+            .arg(format!("127.0.0.1:{port}"))
             .current_dir(std::env::temp_dir())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -4303,6 +4517,8 @@ async fn distributed_api_binary_serves_graph_free_process_control_on_loopback() 
     })
     .await
     .expect("API binary should bind loopback");
+    managed_runtime::assert_child_configuration(&_api.0, &["api"]);
+    managed_runtime::assert_sessions(&url, &["api"]).await;
     let output = std::process::Command::new("curl")
         .args([
             "-fsS",
@@ -4462,14 +4678,45 @@ fn crash_test_graph(
     }
 }
 
+#[test]
+fn process_worker_child_ignores_ambient_role_without_fixture_marker() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "process_worker_child", "--test-threads=1"])
+        .env(
+            "BLKIT_WORKER_DATABASE_URL",
+            format!(
+                "postgres://worker:private@{}/db",
+                listener.local_addr().unwrap()
+            ),
+        )
+        .env_remove("BLKIT_CRASH_CHILD_DIR")
+        .env("TOKIO_WORKER_THREADS", "2")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "child helper activated without its fixture marker"
+    );
+    assert!(
+        listener.accept().is_err(),
+        "child helper used ambient database configuration"
+    );
+}
+
 #[tokio::test]
 async fn process_worker_child() {
-    let Ok(url) = std::env::var("BLKIT_CRASH_CHILD_URL") else {
+    let Ok(dir) = std::env::var("BLKIT_CRASH_CHILD_DIR") else {
         return;
     };
-    let dir = std::path::PathBuf::from(std::env::var("BLKIT_CRASH_CHILD_DIR").unwrap());
+    let dir = std::path::PathBuf::from(dir);
+    let url = std::env::var("BLKIT_WORKER_DATABASE_URL").unwrap();
     let id = std::env::var("BLKIT_CRASH_CHILD_ID").unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let worker = DistributedWorker::new(
         store,
         &id,
@@ -4509,27 +4756,29 @@ async fn second_worker_process_resumes_c_after_owner_killed_without_replaying_b(
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
+    managed_runtime::prepare(&url).await;
     let dir = std::env::temp_dir().join(format!("blkit-crash-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let _cleanup = CrashDir(dir.clone());
     std::fs::write(dir.join("hold"), "").unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let graph = crash_test_graph(dir.join("b.log"), dir.join("c.started"), dir.join("hold"));
     let mut item = Instance::new("crash-job", "orders", "1.0", "parallel", json!(null));
     item.checkpoint = Some(graph.checkpoint(&item.input).unwrap());
     store.create(&item).await.unwrap();
     let spawn = |id: &str| {
-        WorkerChild(
-            Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "process_worker_child", "--nocapture"])
-                .env("BLKIT_CRASH_CHILD_URL", &url)
-                .env("BLKIT_CRASH_CHILD_DIR", &dir)
-                .env("BLKIT_CRASH_CHILD_ID", id)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap(),
-        )
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "process_worker_child", "--nocapture"])
+            .env("BLKIT_CRASH_CHILD_DIR", &dir)
+            .env("BLKIT_CRASH_CHILD_ID", id)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        managed_runtime::configure(&mut command, &url, &["worker"]);
+        WorkerChild(command.spawn().unwrap())
     };
     let mut owner = spawn("owner");
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -4552,8 +4801,11 @@ async fn second_worker_process_resumes_c_after_owner_killed_without_replaying_b(
     })
     .await
     .expect("B must commit while C is in flight");
+    managed_runtime::assert_child_configuration(&owner.0, &["worker"]);
+    managed_runtime::assert_sessions(&url, &["worker"]).await;
     let first_generation = store.get("crash-job").await.unwrap().unwrap().generation;
     let survivor = spawn("survivor");
+    managed_runtime::assert_child_configuration(&survivor.0, &["worker"]);
     owner.0.kill().unwrap();
     owner.0.wait().unwrap();
     std::fs::remove_file(dir.join("hold")).unwrap();
@@ -4628,7 +4880,11 @@ async fn distributed_api_reconciles_expired_claims_without_a_live_worker() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let graph = versioned_graph(
         "1.0",
         Arc::new(|input, _| Ok(input.clone())),
@@ -4673,7 +4929,11 @@ async fn malformed_claim_does_not_stop_worker_or_abandon_other_instances() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let mut graph = versioned_graph("1.0", Arc::new(|input, _| Ok(input.clone())), None);
     graph.decode_input = Box::new(|input| {
         if input == json!(1) {
@@ -4720,7 +4980,11 @@ async fn expired_lease_signals_inflight_hook_without_stopping_other_instances() 
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let entered = Arc::new(AtomicBool::new(false));
     let released = Arc::new(AtomicBool::new(false));
     let hooks = Arc::new(AtomicUsize::new(0));
@@ -4819,7 +5083,11 @@ async fn api_reconciles_expired_old_version_after_linked_graph_rolls_forward() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let old = versioned_graph(
         "1.0",
         Arc::new(|input, _| Ok(input.clone())),
@@ -4841,7 +5109,10 @@ async fn api_reconciles_expired_old_version_after_linked_graph_rolls_forward() {
     tokio::time::sleep(Duration::from_millis(70)).await;
     drop(old_api);
     drop(store);
-    let store = PostgresStore::connect(&url).await.unwrap();
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let new_api = DistributedControl::new(store.clone());
     assert_eq!(new_api.reconcile_once().await.unwrap(), 1);
     let waiting = store.get(&id).await.unwrap().unwrap();
@@ -4980,7 +5251,11 @@ async fn postgres_request_notifications_target_only_live_interested_replicas() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let (_listen_a, mut a) = listen_hints(&url, "replica_a").await;
@@ -5060,7 +5335,11 @@ async fn postgres_retired_request_and_completed_instance_notify_only_interested_
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let (_listen_a, mut a) = listen_hints(&url, "replica_a").await;
@@ -5136,7 +5415,11 @@ async fn postgres_request_notifications_rollback_expiry_and_interest_removal() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let (_listen_a, mut a) = listen_hints(&url, "replica_a").await;
@@ -5203,14 +5486,24 @@ async fn remote_sse_listener_startup_failure_returns_http_error_and_retries() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
+    managed_runtime::prepare(&admin_url).await;
     let (admin, connection) = tokio_postgres::connect(&admin_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    admin.batch_execute("CREATE ROLE sse_limited LOGIN PASSWORD 'secret' CONNECTION LIMIT 1; GRANT ALL ON SCHEMA public TO sse_limited;").await.unwrap();
-    let url = admin_url.replace("postgres:postgres@", "sse_limited:secret@");
-    let store = PostgresStore::connect_with_pool_size(&url, 1)
+    admin
+        .batch_execute("ALTER ROLE blkit_api CONNECTION LIMIT 1")
         .await
         .unwrap();
-    store
+    let url = managed_runtime::role_url(&admin_url, "api");
+    let store =
+        PostgresStore::connect_with_options(&url, 1, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
+    // Seed internal fixture state as admin; GET/SSE remain under the managed API login.
+    let fixture =
+        PostgresStore::connect_with_options(&admin_url, 1, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
+    fixture
         .create(&Instance::new(
             "watched",
             "input",
@@ -5220,6 +5513,7 @@ async fn remote_sse_listener_startup_failure_returns_http_error_and_retries() {
         ))
         .await
         .unwrap();
+    drop(fixture);
     let app = router_distributed(Arc::new(DistributedControl::new(store.clone())));
     // The request pool still serves GET, but the separate listener cannot acquire a session.
     assert!(store.get("watched").await.unwrap().is_some());
@@ -5237,7 +5531,7 @@ async fn remote_sse_listener_startup_failure_returns_http_error_and_retries() {
     .unwrap();
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     admin
-        .batch_execute("ALTER ROLE sse_limited CONNECTION LIMIT -1")
+        .batch_execute("ALTER ROLE blkit_api CONNECTION LIMIT -1")
         .await
         .unwrap();
     let mut body = tokio::time::timeout(Duration::from_secs(5), remote_sse_body(&app, "watched"))
@@ -5261,7 +5555,11 @@ fn remote_subscription_drop_after_runtime_stops_does_not_panic() {
             "postgres://postgres:postgres@{host}:{}/postgres",
             node.get_host_port_ipv4(5432).await.unwrap()
         );
-        let store = PostgresStore::connect(&url).await.unwrap();
+        postgres_fixture::prepare_fresh_database_url(&url).await;
+        let store =
+            PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+                .await
+                .unwrap();
         store
             .create(&Instance::new(
                 "watched",
@@ -5295,7 +5593,11 @@ async fn remote_sse_cancelled_registration_does_not_leave_a_live_interest() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     for id in ["watched", "other"] {
         store
             .create(&Instance::new(id, "input", "1", "review", json!(null)))
@@ -5355,7 +5657,11 @@ async fn remote_sse_blocked_registration_does_not_delay_other_instance_hints() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     for id in ["blocked-a", "watched-b"] {
         store
             .create(&Instance::new(id, "input", "1", "review", json!(null)))
@@ -5443,7 +5749,11 @@ async fn remote_sse_duplicate_blocked_instance_hints_do_not_starve_other_instanc
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     for id in ["blocked-a", "watched-b"] {
         store
             .create(&Instance::new(id, "input", "1", "review", json!(null)))
@@ -5529,7 +5839,11 @@ async fn remote_sse_renews_more_than_32_instances_without_starving_hints() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let app = router_distributed(Arc::new(DistributedControl::new(store.clone())));
     let mut watched = Vec::new();
     for index in 0..36 {
@@ -5621,7 +5935,11 @@ async fn remote_sse_retry_waiting_behind_registrations_does_not_starve_other_ren
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     for id in ["locked-a0", "locked-a1", "watched-b"] {
         store
             .create(&Instance::new(id, "input", "1", "review", json!(null)))
@@ -5702,7 +6020,11 @@ async fn remote_sse_lagged_client_closes_and_reconnects_to_current_state() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     store
         .create(&Instance::new(
             "watched",
@@ -5788,7 +6110,11 @@ async fn remote_sse_registration_serializes_both_orders_of_request_commit() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let app = router_distributed(Arc::new(DistributedControl::new(store.clone())));
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
@@ -5889,7 +6215,11 @@ async fn remote_sse_fans_out_only_to_each_replicas_local_instance_clients() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     for id in ["watched", "other"] {
         store
             .create(&Instance::new(id, "input", "1", "review", json!(null)))
@@ -5982,9 +6312,11 @@ async fn remote_sse_two_replicas_use_distinct_listener_sessions_and_fan_out() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect_with_pool_size(&url, 1)
-        .await
-        .unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 1, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     store
         .create(&Instance::new(
             "watched",
@@ -6076,19 +6408,31 @@ async fn postgres_request_transition_fanout_load_check() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let worker =
-        PostgresStore::connect_with_pool_size(&format!("{url}?application_name=load_worker"), 4)
-            .await
-            .unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let worker = PostgresStore::connect_with_options(
+        &format!("{url}?application_name=load_worker"),
+        4,
+        &postgres_fixture::plaintext_options(),
+    )
+    .await
+    .unwrap();
     let api_a = router_distributed(Arc::new(DistributedControl::new(
-        PostgresStore::connect_with_pool_size(&format!("{url}?application_name=load_api_a"), 2)
-            .await
-            .unwrap(),
+        PostgresStore::connect_with_options(
+            &format!("{url}?application_name=load_api_a"),
+            2,
+            &postgres_fixture::plaintext_options(),
+        )
+        .await
+        .unwrap(),
     )));
     let api_b = router_distributed(Arc::new(DistributedControl::new(
-        PostgresStore::connect_with_pool_size(&format!("{url}?application_name=load_api_b"), 2)
-            .await
-            .unwrap(),
+        PostgresStore::connect_with_options(
+            &format!("{url}?application_name=load_api_b"),
+            2,
+            &postgres_fixture::plaintext_options(),
+        )
+        .await
+        .unwrap(),
     )));
     let (observer, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
@@ -6362,7 +6706,11 @@ async fn remote_sse_renews_resynced_b_while_a_reconnect_is_locked() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     for id in ["locked-a0", "locked-a1", "watched-b"] {
         store
             .create(&Instance::new(id, "input", "1", "review", json!(null)))
@@ -6462,9 +6810,11 @@ async fn remote_sse_recovers_expired_interest_duplicate_hints_and_listener_outag
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect_with_pool_size(&url, 1)
-        .await
-        .unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 1, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     store
         .create(&Instance::new(
             "watched",
@@ -6646,7 +6996,11 @@ async fn distributed_http_graph_free_request_visibility_validation_and_response(
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let worker_store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let worker_store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let worker = DistributedWorker::new(
         worker_store.clone(),
         "w1",
@@ -6656,7 +7010,10 @@ async fn distributed_http_graph_free_request_visibility_validation_and_response(
     )
     .unwrap();
     worker.advertise().await.unwrap();
-    let api_store = PostgresStore::connect(&url).await.unwrap();
+    let api_store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let app = router_distributed(Arc::new(DistributedControl::new(api_store)));
     let start = app
         .clone()
@@ -6838,7 +7195,11 @@ async fn distributed_input_wait_releases_fenced_claim_without_retry_or_clock_wak
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let worker =
         DistributedWorker::new(store.clone(), "w1", vec![input_wait_graph()], 1, 300).unwrap();
     worker.advertise().await.unwrap();
@@ -6895,7 +7256,11 @@ async fn postgres_reply_survives_no_worker_and_reclaims_only_matching_identity_w
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let worker =
         DistributedWorker::new(store.clone(), "w1", vec![input_wait_graph()], 1, 5000).unwrap();
     worker.advertise().await.unwrap();
@@ -6929,7 +7294,10 @@ async fn postgres_reply_survives_no_worker_and_reclaims_only_matching_identity_w
             .await
             .is_err()
     );
-    let reopened = PostgresStore::connect(&url).await.unwrap();
+    let reopened =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     assert_eq!(
         reopened.answers(&id).await.unwrap(),
         vec![(request.id.clone(), json!({"approved": true}))]
@@ -7008,7 +7376,11 @@ async fn postgres_input_reply_cancel_and_timeout_retire_outstanding_requests() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let worker =
         DistributedWorker::new(store.clone(), "w1", vec![input_wait_graph()], 1, 5000).unwrap();
     worker.advertise().await.unwrap();
@@ -7055,7 +7427,11 @@ async fn postgres_request_checkpoint_write_rolls_back_when_request_insert_fails(
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     db.batch_execute("CREATE FUNCTION reject_request() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'request unavailable'; END $$; CREATE TRIGGER reject_request BEFORE INSERT ON input_requests FOR EACH ROW EXECUTE FUNCTION reject_request()") .await.unwrap();
@@ -7089,7 +7465,11 @@ async fn postgres_reply_racing_claim_release_cannot_strand_pending_response() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     store
         .register_worker("w1", &[("input", "1", "review")])
         .await
@@ -7134,7 +7514,11 @@ async fn postgres_owned_request_checkpoint_rolls_back_on_request_write_failure()
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     store
         .register_worker("owner", &[("input", "1", "review")])
         .await
@@ -7266,7 +7650,11 @@ async fn distributed_sibling_completion_releases_input_claim_and_preserves_check
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
     let graph = input_with_sibling_graph(
         GraphNodeKind::Task(Arc::new({
@@ -7319,7 +7707,11 @@ async fn distributed_reply_after_timer_release_reclaims_before_clock_and_keeps_a
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let graph = input_with_sibling_graph(GraphNodeKind::PauseFor(Duration::from_secs(3)), "timer");
     let worker =
         DistributedWorker::new(store.clone(), "timer-worker", vec![graph], 1, 5000).unwrap();
@@ -7395,7 +7787,11 @@ async fn distributed_reply_before_timer_release_prevents_unclaimable_wait() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let graph = input_with_sibling_graph(GraphNodeKind::PauseFor(Duration::from_secs(5)), "timer");
     store
         .register_worker("owner", &[("input", "1", "timer")])
@@ -7441,7 +7837,11 @@ async fn postgres_get_never_mixes_pre_reply_status_with_post_reply_requests() {
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let mut instance = Instance::new("job", "input", "1", "review", json!(null));
     instance.status = "waiting-for-input".into();
     let mut checkpoint = input_wait_graph().checkpoint(&json!(null)).unwrap();
@@ -7452,9 +7852,13 @@ async fn postgres_get_never_mixes_pre_reply_status_with_post_reply_requests() {
         .insert("padding".into(), json!("x".repeat(20_000_000)));
     instance.checkpoint = Some(checkpoint);
     store.create(&instance).await.unwrap();
-    let reader = PostgresStore::connect(&format!("{url}?application_name=blkit_snapshot_reader"))
-        .await
-        .unwrap();
+    let reader = PostgresStore::connect_with_options(
+        &format!("{url}?application_name=blkit_snapshot_reader"),
+        4,
+        &postgres_fixture::plaintext_options(),
+    )
+    .await
+    .unwrap();
     let (observer, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let reading = tokio::spawn(async move { reader.get("job").await.unwrap().unwrap() });
@@ -7492,7 +7896,11 @@ async fn distributed_reply_wins_before_timer_release_without_retrying_sibling() 
         "postgres://postgres:postgres@{host}:{}/postgres",
         node.get_host_port_ipv4(5432).await.unwrap()
     );
-    let store = PostgresStore::connect(&url).await.unwrap();
+    postgres_fixture::prepare_fresh_database_url(&url).await;
+    let store =
+        PostgresStore::connect_with_options(&url, 4, &postgres_fixture::plaintext_options())
+            .await
+            .unwrap();
     let release = Arc::new(AtomicBool::new(false));
     let hits = Arc::new(AtomicUsize::new(0));
     let mut graph = input_with_sibling_graph(

@@ -19,6 +19,7 @@ uuid = { version = "1", features = ["v4"] }
 blkit-transpiler = { version = "=0.1.0", path = "../../crates/blkit-transpiler" }
 
 [dev-dependencies]
+blkit-cli = { path = "../../crates/blkit-cli" }
 blkit-transpiler = { version = "=0.1.0", path = "../../crates/blkit-transpiler" }
 http-body-util = "0.1"
 testcontainers-modules = { version = "=0.15.0", features = ["postgres"] }

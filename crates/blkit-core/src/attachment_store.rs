@@ -13,6 +13,51 @@ pub enum AttachmentRole {
     Worker,
 }
 
+/// Validated BLKIT cloud settings, independent of PostgreSQL and provider credentials.
+#[cfg(feature = "attachment-cloud")]
+pub struct RemoteAttachmentConfig {
+    backend: String,
+    location: String,
+}
+
+#[cfg(feature = "attachment-cloud")]
+impl std::fmt::Debug for RemoteAttachmentConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteAttachmentConfig")
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "attachment-cloud")]
+impl RemoteAttachmentConfig {
+    /// Reads only BLKIT settings for the selected backend from an explicit source.
+    /// Provider credentials and endpoints are deliberately not looked up here.
+    ///
+    /// # Errors
+    /// Rejects missing, empty, non-UTF-8 or invalid settings without echoing values
+    /// or lookup errors. Unused bucket/container settings are not read.
+    pub fn from_lookup<E>(
+        mut get: impl FnMut(&str) -> Result<Option<String>, E>,
+    ) -> Result<Self, String> {
+        let backend = get("BLKIT_ATTACHMENT_BACKEND")
+            .ok()
+            .flatten()
+            .ok_or("BLKIT_ATTACHMENT_BACKEND must be s3|gcs|azure")?;
+        let setting = match backend.as_str() {
+            "s3" | "gcs" => "BLKIT_ATTACHMENT_BUCKET",
+            "azure" => "BLKIT_ATTACHMENT_CONTAINER",
+            _ => return Err("BLKIT_ATTACHMENT_BACKEND must be s3|gcs|azure".into()),
+        };
+        let location = get(setting)
+            .map_err(|_| format!("{setting} must be UTF-8"))?
+            .ok_or_else(|| format!("{setting} is required"))?;
+        if location.trim().is_empty() {
+            return Err(format!("{setting} must not be empty"));
+        }
+        Ok(Self { backend, location })
+    }
+}
+
 impl AttachmentStore {
     pub fn object_store(&self) -> &dyn ObjectStore {
         self.0.as_ref()
@@ -46,51 +91,53 @@ impl AttachmentStore {
         Ok(store)
     }
 
+    /// Opens using process BLKIT settings only; no configuration file is discovered.
     #[cfg(feature = "attachment-cloud")]
     pub async fn remote_from_env(role: AttachmentRole) -> Result<Self, String> {
-        let backend = std::env::var("BLKIT_ATTACHMENT_BACKEND")
-            .map_err(|_| "BLKIT_ATTACHMENT_BACKEND must be s3|gcs|azure".to_string())?;
-        let location = match backend.as_str() {
-            "s3" | "gcs" => std::env::var("BLKIT_ATTACHMENT_BUCKET")
-                .map_err(|_| "BLKIT_ATTACHMENT_BUCKET is required".to_string())?,
-            "azure" => std::env::var("BLKIT_ATTACHMENT_CONTAINER")
-                .map_err(|_| "BLKIT_ATTACHMENT_CONTAINER is required".to_string())?,
-            _ => return Err("BLKIT_ATTACHMENT_BACKEND must be s3|gcs|azure".into()),
-        };
-        if location.trim().is_empty() {
-            return Err(format!(
-                "BLKIT_ATTACHMENT_{0} must not be empty",
-                if backend == "azure" {
-                    "CONTAINER"
-                } else {
-                    "BUCKET"
-                }
-            ));
-        }
-        let store: Arc<dyn ObjectStore> = match backend.as_str() {
+        let config = RemoteAttachmentConfig::from_lookup(|name| match std::env::var(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(error) => Err(error),
+        })?;
+        Self::remote_with_config(role, &config).await
+    }
+
+    /// Opens cloud storage with explicit BLKIT settings and the existing role probes.
+    /// Provider builders still discover credentials/endpoints from the ambient
+    /// environment and their normal provider chain, never from the BLKIT overlay.
+    #[cfg(feature = "attachment-cloud")]
+    pub async fn remote_with_config(
+        role: AttachmentRole,
+        config: &RemoteAttachmentConfig,
+    ) -> Result<Self, String> {
+        let location = &config.location;
+        let store: Arc<dyn ObjectStore> = match config.backend.as_str() {
             "s3" => Arc::new(
                 object_store::aws::AmazonS3Builder::from_env()
                     .with_bucket_name(location)
                     .build()
-                    .map_err(|e| format!("attachment S3 configuration: {e}"))?,
+                    .map_err(|_| "attachment S3 configuration failed; check BLKIT_ATTACHMENT_BUCKET and provider settings".to_string())?,
             ),
             "gcs" => Arc::new(
                 object_store::gcp::GoogleCloudStorageBuilder::from_env()
                     .with_bucket_name(location)
                     .build()
-                    .map_err(|e| format!("attachment GCS configuration: {e}"))?,
+                    .map_err(|_| "attachment GCS configuration failed; check BLKIT_ATTACHMENT_BUCKET and provider settings".to_string())?,
             ),
             "azure" => Arc::new(
                 object_store::azure::MicrosoftAzureBuilder::from_env()
                     .with_container_name(location)
                     .build()
-                    .map_err(|e| format!("attachment Azure configuration: {e}"))?,
+                    .map_err(|_| "attachment Azure configuration failed; check BLKIT_ATTACHMENT_CONTAINER and provider settings".to_string())?,
             ),
             _ => unreachable!(),
         };
         let store = Self(store);
         match role {
-            AttachmentRole::Api => store.probe_write().await?,
+            AttachmentRole::Api => store.probe_write().await.map_err(|_| {
+                "attachment API readiness probe failed; requires write, read and delete access"
+                    .to_string()
+            })?,
             AttachmentRole::Worker => {
                 use futures_util::StreamExt;
                 // Workers need list and read permissions under the private attachment prefix.
@@ -102,7 +149,7 @@ impl AttachmentStore {
                 .await
                 .map_err(|_| "attachment worker list probe timed out".to_string())?
                 .transpose()
-                .map_err(|e| format!("attachment worker requires list access: {e}"))?;
+                .map_err(|_| "attachment worker requires list access".to_string())?;
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(15),
                     store.object_store().get(&Self::new_key()),
@@ -111,7 +158,7 @@ impl AttachmentStore {
                 .map_err(|_| "attachment worker read probe timed out".to_string())?
                 {
                     Err(object_store::Error::NotFound { .. }) => {}
-                    Err(e) => return Err(format!("attachment worker requires read access: {e}")),
+                    Err(_) => return Err("attachment worker requires read access".into()),
                     Ok(_) => {
                         return Err(
                             "attachment worker read probe found an unexpected object".into()
